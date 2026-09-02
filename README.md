@@ -62,7 +62,15 @@ device draws it, honouring the timezone, time format, week-start and weekday
 settings; the firmware has no way to report what it is actually showing. it
 reads current values and merges edits into the full object before posting, so
 unshown fields are preserved. type is loaded from google fonts and falls back
-to system faces offline. `serve.py` serves the page and proxies
+to system faces offline.
+
+![the tc002 console panel: a live simulated clock preview above cards for device info, display settings, built-in and custom apps, mqtt and led gain](panel/screenshots/console.png)
+
+<img src="panel/screenshots/console-narrow.png" width="330" alt="the same panel at phone width, stacked into a single column">
+
+(screenshots are against a stand-in device, so the serial, mac and ssid read as
+placeholders. the host field accepts `host:port`, which is how the stand-in
+was pointed at.) `serve.py` serves the page and proxies
 `/api/<device-ip>/<endpoint>` through to the device, so the browser only ever
 talks to its own origin: the device only returns cors headers on preflights
 and 404s, never on real 200 responses, so a browser can't read from it directly
