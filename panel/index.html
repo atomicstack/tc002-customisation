@@ -147,7 +147,7 @@ button:disabled{opacity:.5;cursor:default}
 <script>
 const $ = id => document.getElementById(id);
 const host = () => $('host').value.trim();
-const url = p => `http://${host()}/${p}`;
+const url = p => `/api/${host()}/${p}`;
 let TOOLS = null, CONFIG = null;
 
 function toast(msg, isErr){

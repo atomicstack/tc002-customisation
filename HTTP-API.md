@@ -55,10 +55,20 @@ open "x-apple.systempreferences:com.apple.preference.security?Privacy_LocalNetwo
 Base: `http://<device-ip>/`. No auth, no CSRF token, no rate limiting.
 Unknown paths 301-redirect to `/settings/general`.
 
-Every endpoint sends `Access-Control-Allow-Origin: *`, and the preflight
-answers `Access-Control-Allow-Methods: POST` with
-`Access-Control-Allow-Headers: content-type`. Any local web page can therefore
-drive the device directly from a browser — which is how `panel/` works.
+**CORS is effectively unusable.** The `OPTIONS` preflight *and* error responses
+(404/301) return `Access-Control-Allow-Origin: *`, but **real `200` responses carry
+no CORS headers at all**. A browser therefore blocks every cross-origin read, with
+a bare "Load failed" / "Failed to fetch". Verifying with `curl -I` is misleading —
+the device 404s HEAD requests, and that error response *does* include the header.
+Check a real `GET`:
+
+```bash
+curl -s -i -H 'Origin: http://localhost' http://<device-ip>/getConfig | grep -i access-control
+# (no output — the header is absent on 200 responses)
+```
+
+Consequence: a browser page cannot talk to the device directly. `panel/` ships a
+small same-origin proxy (`panel/serve.py`) instead.
 
 ### Pages (HTML)
 
@@ -295,9 +305,13 @@ firmware.
   and open it in a browser:
 
   ```bash
-  cd panel && /usr/bin/python3 -m http.server 8777 --bind 127.0.0.1
+  cd panel && /usr/bin/python3 serve.py 8777
   # then open http://127.0.0.1:8777  (override target with ?host=<device-ip>)
   ```
+
+  `serve.py` serves the page and proxies `/api/<device-ip>/<endpoint>` through to
+  the device, so the browser only ever talks to its own origin. A plain
+  `http.server` will *not* work — see the CORS note above.
 
   Covers display/general settings, MQTT (with live connection status), the nine
   built-in apps, and LED current gain behind a confirmation. It reads current
