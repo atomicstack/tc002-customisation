@@ -1,0 +1,5 @@
+popsquares
+test_led
+test_popsquares
+*.o
+.zig-cache/

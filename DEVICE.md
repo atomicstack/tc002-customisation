@@ -43,7 +43,8 @@ social counts, calendars and the update check — see [CLOUD.md](CLOUD.md).
 
 Userspace processes: `init`, `ueventd`, `vold`, `logd`, `adbd`, `wpa_supplicant`,
 and the FlyThings stack — `zkdaemon`, `zkdisplay`, `zkgui` (the app runtime that
-drives the display).
+drives the display; it is the init service `zkswe`, and how it pushes pixels to the
+led matrix over spi is in [LED-SPI.md](LED-SPI.md)).
 
 `/data/setting.ini` is the single source of truth the HTTP API writes: brightness,
 timezone, volume, wifi credentials, MQTT settings and social tokens. It also

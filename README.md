@@ -20,6 +20,7 @@ docs, one topic each:
 | [`CLOUD.md`](CLOUD.md) | what the device sends to ulanzi's cloud, how it authenticates, and why that's a problem |
 | [`MQTT.md`](MQTT.md) | driving the 52×16 display over a broker you control |
 | [`CUSTOM-APP.md`](CUSTOM-APP.md) | the custom-app frame payload shared by http and mqtt: text, draw primitives, bitmaps, gifs, lifecycle |
+| [`LED-SPI.md`](LED-SPI.md) | how the led matrix is really driven (spidev0.0 + a gpio latch, 3072-byte frames), how to take it over, and the native 60 fps renderer in `led/` |
 | [`SECURITY.md`](SECURITY.md) | every security observation in one place, with mitigations |
 
 tools:
@@ -29,6 +30,7 @@ tools:
 | [`tc002-adopt.py`](tc002-adopt.py) | discover tc002 devices on the lan and join a factory-fresh one to wifi — replaces ulanzi studio for setup |
 | [`panel/`](panel/) | an english web control panel for the device (the stock ui is chinese-only) |
 | [`mqtt-check.py`](mqtt-check.py) | verify mosquitto broker credentials from the raw mqtt connack code |
+| [`led/`](led/) | popsquares generative art running on the device at 60 fps, straight to the panel over spi — static armv7 binary built with zig, plus an adb start/stop wrapper |
 
 related: [pixdeck](https://github.com/cailurus/PixDeck) is a working stock-firmware
 client for the custom-app protocol over both http and mqtt — its `pixbar_core.py`
