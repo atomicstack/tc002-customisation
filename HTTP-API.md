@@ -22,6 +22,10 @@ It exposes two useful local interfaces with **no authentication**:
 | 80   | HTTP settings API | unauthenticated read/write of all config |
 | 5555 | `adbd` | wifi adb; USB is mass-storage only |
 
+It also phones home to `api.ulanzistudio.com` over **plain HTTP** for weather,
+social counts, calendars and the update check — see
+[Cloud authentication](#cloud-authentication).
+
 ---
 
 ## Gotcha: macOS Local Network Privacy
@@ -200,6 +204,88 @@ the device's CORS handling blocks browser reads (see the CORS note under
 
 ---
 
+## Cloud authentication
+
+Besides the local API, the firmware talks **outbound** to Ulanzi's cloud, and
+three keys in `/data/setting.ini` exist only for that:
+
+| `setting.ini` key | What it is |
+|-------------------|------------|
+| `secretKey` | 32-hex per-device credential, issued by the cloud at registration |
+| `authToken` | HS256 JWT (claims `deviceSn`, `pid`, `ts`, `exp`), 2-hour lifetime |
+| `authRefreshToken` | 32-hex refresh credential, 7-day lifetime |
+| `tokenExpireTime`, `refreshTokenExpireTime` | unix expiry of the two above |
+
+The logic is `awtrix::AuthManager` (`src/awtrix/http/AuthManager.cpp`) inside
+the app library `/res/lib/libzkgui.so`. The base URL is hardcoded:
+
+```
+http://api.ulanzistudio.com/api/uclock
+```
+
+### Flow
+
+1. **Register** — `POST /device/register` with `{deviceSn, macAddress,
+   initTimestamp}`. No credential is required. The response carries
+   `secretKey`, which the device stores.
+2. **Token** — `POST /auth/token` with `deviceSn`, a unix timestamp and
+
+   ```
+   signature = md5(secretKey + deviceSn + timestamp)   # lowercase hex
+   ```
+
+   The response carries the JWT, a `refreshToken` and `expireIn` (7200 s).
+   The formula was confirmed by recomputing a signature the device had logged.
+3. **Refresh** — when the JWT is expiring, `POST /auth/refresh` with the refresh
+   token returns a new JWT (and sometimes a new refresh token). If that fails
+   the device signs a fresh `/auth/token`; if *that* fails it re-registers. A
+   changed serial or MAC also clears the stored auth state.
+
+### What the token is for
+
+Every cloud call carries `Authorization: Bearer <authToken>` and, from the
+adjacent string table, a `DeviceSN` header:
+
+| Cloud path | Used by |
+|------------|---------|
+| `/weather/weatherInfo` | weather app (`city`) |
+| `/follower/<platform>` | social apps' follower counts (`uid`) |
+| `/tokenInfo`, `/authorizeUrl` | social OAuth status and login |
+| `/caldav/fetchServerEvents` | iCloud / Feishu / DingTalk / WeCom calendars — sends `serverUrl`, `period` and the stored `username` / `password`; **the cloud performs the CalDAV fetch** |
+| `/caldav/fetchWebCalEvents` | Google / Outlook calendars (`url`) |
+| `/firmware/checkUpdate` | the local `/checkUpdate` endpoint |
+
+Nothing local depends on these keys: the HTTP API, the web pages and MQTT never
+read them, no local endpoint returns them, and Ulanzi Studio does not reference
+them either.
+
+### Observations
+
+- **Plain HTTP.** The base URL is `http://`, and `api.ulanzistudio.com` answers
+  on port 80 without redirecting to HTTPS. `logcat` shows successful
+  registration, token issue and weather fetches against it. So the secret key
+  (in the register response), every bearer token, and any CalDAV
+  username/password cross the internet unencrypted. This is inferred from the
+  URL, the server's behaviour and the logs, not from a packet capture.
+- **The secret key is logged.** `AuthManager` prints it to `logcat` at
+  registration and again inside `calculateSignature`. Anyone with adb reads it.
+- **Registration is unauthenticated** and needs only serial + MAC, both of
+  which the local `/getBase` hands to anyone on the LAN. Whether a repeat
+  registration rotates the key was **not tested**, since doing so could
+  invalidate a live device's credential.
+- **Calendar credentials leave your network.** Configuring a CalDAV provider
+  means Ulanzi's server receives the server URL and password and does the
+  fetch on the device's behalf.
+
+### Mitigation
+
+If weather, social counts, calendars and the update check are not needed, block
+the device's outbound internet at the router. The local API and MQTT do not
+involve the cloud, so they should keep working; running the device that way has
+not been tested here for side effects such as retry spam in `logcat`.
+
+---
+
 ## Security observations
 
 These are properties of the device, not of anything installed on the Mac:
@@ -225,10 +311,21 @@ These are properties of the device, not of anything installed on the Mac:
    `POST /setConfig` from `Origin: http://evil.example`: `200`, saved. Nothing on
    the device prevents this. Some browsers' private-network-access protections
    may, but that varies by browser and version and was not tested here.
+7. **All cloud traffic is plain HTTP.** Device registration, bearer tokens,
+   and any CalDAV username/password you configure go to
+   `api.ulanzistudio.com` unencrypted. See
+   [Cloud authentication](#cloud-authentication).
+8. **The cloud secret key is logged in cleartext** to `logcat`, which is
+   readable over the unauthenticated adb.
+9. **Cloud registration is unauthenticated.** It needs only the serial and
+   MAC, which `/getBase` gives to anyone on the LAN. The consequence of a
+   third party re-registering your device was not tested.
 
 Reasonable mitigation: put the device on an isolated IoT VLAN/SSID and
 restrict which hosts may reach it. That also bounds the cross-site write
-exposure to browsers on the hosts you let through.
+exposure to browsers on the hosts you let through. If you don't use the
+cloud-backed apps, also block its outbound internet, and avoid giving it
+calendar credentials you care about.
 
 ---
 
@@ -280,7 +377,9 @@ and the FlyThings stack — `zkdaemon`, `zkdisplay`, `zkgui` (the app runtime th
 drives the display).
 
 `/data/setting.ini` is the single source of truth the HTTP API writes: brightness,
-timezone, volume, wifi credentials, MQTT settings and social tokens.
+timezone, volume, wifi credentials, MQTT settings and social tokens. It also
+holds the device's cloud credentials (`secretKey`, `authToken`,
+`authRefreshToken`) — see [Cloud authentication](#cloud-authentication).
 
 ### Shell access
 

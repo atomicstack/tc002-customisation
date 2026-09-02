@@ -68,11 +68,17 @@ the device:
   payload.
 - **setup** — factory-fresh devices come up as the `U-Clock` softap on
   `192.168.1.1`; `POST /setWifiConfig` joins them to a network.
+- **cloud** — the device registers itself with `api.ulanzistudio.com` over
+  plain http and keeps a per-device secret key plus a bearer/refresh token pair
+  in `setting.ini`. weather, social counts, calendars and the update check all
+  go through that api, and caldav credentials are sent to it for server-side
+  fetching.
 
 security caveats worth knowing before you put one on your main network: no auth
 on anything, writes forgeable from any web page you visit (the device ignores
-`Origin`), root adb with no pairing, and the wifi psk stored in cleartext in a
-world-readable file on the device. an isolated iot vlan/ssid is the sensible
+`Origin`), root adb with no pairing, the wifi psk stored in cleartext in a
+world-readable file on the device, and all cloud traffic (calendar passwords
+included) sent unencrypted. an isolated iot vlan/ssid is the sensible
 home for it. full detail in [`HTTP-API.md`](HTTP-API.md#security-observations).
 
 ## a note on macos
