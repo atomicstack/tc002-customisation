@@ -47,6 +47,12 @@ stdlib MQTT publisher (`pixbar_mqtt.py`), which drives the device in production:
 - Publishing `{}` to remove an app works over HTTP; over MQTT it is not
   established.
 
+Besides `custom/<app>`, the device subscribes to **`<prefix>/switchDiyApp`** —
+publishing a custom app's name there brings it to the foreground, the broker
+equivalent of `POST /api/switchDiyApp` (see
+[HTTP-API.md](HTTP-API.md#navigation-and-input)). The built-in apps and the
+button/knob injection are HTTP-only.
+
 Ulanzi's repo ships community MQTT apps under `apps/mqtt/`, including
 `vibe-coding-signal-light` (shows Claude Code / Codex / CI state as a traffic
 light) and `claude-bot`. These achieve the same result as Ulanzi Studio's

@@ -79,6 +79,9 @@ curl -s -i -H 'Origin: http://localhost' http://<device-ip>/getConfig | grep -i 
 | GET  | `/getMqttStatus` | `{enabled, connected}` |
 | POST | `/api/custom?name=<app>` | create/replace a custom (DIY) app's frame; body `{}` removes it — see [Custom apps](#custom-apps) |
 | GET  | `/api/customList` | `{apps: [...], count}` — the custom apps currently on the device |
+| POST | `/switchApp` | jump to a built-in app: body `{type, index}` — see [Navigation and input](#navigation-and-input) |
+| POST | `/api/switchDiyApp?name=<app>` | jump to a custom app by name — see [Navigation and input](#navigation-and-input) |
+| POST | `/keyEvent` | inject a button/knob press: body `{key, event}` — see [Navigation and input](#navigation-and-input) |
 | GET  | `/checkUpdate` | firmware update check |
 | POST | `/update` | **triggers firmware update — destructive** |
 | POST | `/resetConfig` | **factory reset — destructive** |
@@ -157,6 +160,70 @@ Like every other endpoint this is unauthenticated, and the same CORS gap
 applies: the preflight approves the cross-origin `POST`, so any web page can
 put content on the display or remove apps (see [SECURITY.md](SECURITY.md)).
 PixDeck ignores the response body; its format is not documented here.
+
+---
+
+## Navigation and input
+
+The device can be driven remotely the same way the front buttons do it. Three
+endpoints, all `POST`, all verified against `appVer 1.1.1`.
+
+### `/switchApp` — jump to a built-in app
+
+Body `{"type": <type>, "index": <n>}`. `type` is one of `tools`, `social`,
+`calendar` (the three built-in app groups). `index` is the **1-based position
+within that group's list** as returned by `/getToolsConfig`, `/getSocial` or
+`/getCalendar` — so for `tools`, `1` = weather, `2` = clock … `9` = ipshow.
+
+```bash
+curl -s -X POST http://<device-ip>/switchApp \
+  -H 'Content-Type: application/json' -d '{"type":"tools","index":2}'
+# {"code":200,"message":"app switched","data":{"type":"tools","index":2}}
+```
+
+- `index` is 1-based; `0` returns `{"code":400,"message":"Invalid app index"}`.
+- Both `type` and `index` are required; a bad `type` gives `Invalid app type`.
+- Pointing at a **disabled** tool does not error — the device coerces to an
+  enabled app (targeting weather, disabled here, landed on clock). Enabled
+  targets (`clock`, `ipshow`) switched exactly.
+- After a manual switch the carousel eventually resumes on its own timer.
+
+### `/api/switchDiyApp?name=<app>` — jump to a custom app
+
+Selects one of the custom (DIY) apps from `/api/customList` by name.
+
+```bash
+curl -s -X POST 'http://<device-ip>/api/switchDiyApp?name=popsquares'
+# {"code":200,"message":"app switch requested","data":{"name":"popsquares","index":100}}
+```
+
+Missing `name` returns `{"code":400,"message":"Missing query parameter: name"}`.
+The device also subscribes to `<prefix>/switchDiyApp` on MQTT for the same
+action (see [MQTT.md](MQTT.md)).
+
+### `/keyEvent` — inject a button or knob event
+
+Body `{"key": <key>, "event": <event>}`, optional `"source"` (a free label
+echoed to `logcat`). This simulates the physical controls:
+
+| `key` | `event` values |
+|-------|----------------|
+| `left`, `middle`, `right` | `shortPress`, `longPress` |
+| `knob` | `shortPress`, `longPress`, `cw`, `ccw` |
+
+```bash
+curl -s -X POST http://<device-ip>/keyEvent \
+  -H 'Content-Type: application/json' -d '{"key":"knob","event":"cw"}'
+# {"code":200,"message":"event accepted"}
+```
+
+- `cw` / `ccw` are knob-only; on another key the device replies
+  `cw event only supports knob`.
+- An unknown key or event gives `Invalid key or event`; a missing one gives
+  `Missing required parameter: key` / `event`.
+
+All three are unauthenticated and, like the rest of the API, forgeable
+cross-origin from any web page (see [SECURITY.md](SECURITY.md)).
 
 ---
 

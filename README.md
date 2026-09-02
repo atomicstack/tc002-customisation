@@ -95,7 +95,8 @@ the device:
   endpoints (`getConfig`/`setConfig`, `getMqttConfig`/`setMqttConfig`,
   `getToolsConfig`, `getCalendar`, `getSocial`, `setWifiConfig`,
   `setLedRegister`, and destructive `update`/`resetConfig`), plus the display
-  itself via `api/custom` / `api/customList` — no broker needed.
+  itself via `api/custom` / `api/customList`, and remote navigation via
+  `switchApp` / `switchDiyApp` / `keyEvent` — no broker needed.
   ([`HTTP-API.md`](HTTP-API.md))
 - **adb (port 5555)** — wifi only (usb is mass-storage); gives a **root** shell,
   though busybox is stripped to almost nothing and `/data` is the only

@@ -62,7 +62,9 @@ Seconds. Observed use: the time the frame stays up. PixDeck sets it to its
 own push interval and keeps re-pushing, so in practice it never expires; the
 exact interaction with the device's app carousel is *not established*.
 PixDeck's canvas tool clamps it to 1–300 as a sanity bound of its own, not a
-device limit.
+device limit. To force a custom app to the foreground regardless of the
+carousel, `POST /api/switchDiyApp?name=<app>` (see
+[HTTP-API.md](HTTP-API.md#navigation-and-input)).
 
 ### `text[]`
 
