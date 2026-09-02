@@ -47,6 +47,8 @@ button{background:var(--accent);color:var(--accent-ink);border:0;border-radius:7
   padding:8px 15px;font:inherit;font-weight:500;cursor:pointer}
 button.ghost{background:transparent;color:var(--ink);border:1px solid var(--line)}
 button:disabled{opacity:.5;cursor:default}
+.inline{display:flex;gap:6px;align-items:center}
+.inline select{width:auto;min-width:140px;flex:1}
 .actions{margin-top:14px;display:flex;gap:8px;align-items:center}
 .kv{display:grid;grid-template-columns:auto 1fr;gap:5px 14px;font-size:13px}
 .kv dt{color:var(--muted)}
@@ -127,6 +129,26 @@ button:disabled{opacity:.5;cursor:default}
       <h2>Built-in apps</h2>
       <div id="tools"><span class="muted">load to populate</span></div>
       <div class="actions"><button data-save="tools">Save apps</button></div>
+    </section>
+
+    <section class="card">
+      <h2>Navigation &amp; input</h2>
+      <div class="row"><label for="navTool">Show built-in app</label>
+        <span class="inline"><select id="navTool"><option>load to populate</option></select><button class="ghost" id="navToolGo">Show</button></span></div>
+      <div class="row"><label for="navDiy">Show custom app</label>
+        <span class="inline"><select id="navDiy"><option value="">—</option></select><button class="ghost" id="navDiyGo" disabled>Show</button></span></div>
+      <div class="row"><label>Buttons <span class="hint">inject a press, as if on the device</span>
+        <label class="inline muted" style="font-weight:400;margin-top:6px"><input type="checkbox" id="navLong"> long press</label></label></div>
+      <div class="actions" style="flex-wrap:wrap">
+        <button class="ghost" data-key="left">◀ Left</button>
+        <button class="ghost" data-key="middle">● Middle</button>
+        <button class="ghost" data-key="right">Right ▶</button>
+      </div>
+      <div class="actions" style="flex-wrap:wrap">
+        <button class="ghost" data-knob="ccw">Knob ↺</button>
+        <button class="ghost" data-knob="press">Knob press</button>
+        <button class="ghost" data-knob="cw">Knob ↻</button>
+      </div>
     </section>
 
     <section class="card danger">
@@ -220,7 +242,8 @@ async function loadAll(){
     $('mpwd').value = m.mqtt_pwd || ''; $('mprefix').value = m.mqtt_prefix || 'ulanzi';
     $('mha').checked = !!m.isHADiscoveryEnabled;
 
-    TOOLS = await getJSON('getToolsConfig'); renderTools(TOOLS);
+    TOOLS = await getJSON('getToolsConfig'); renderTools(TOOLS); renderNav(TOOLS);
+    await loadDiyApps();
     await mqttStatus();
     $('conn').className='pill on'; $('conn').textContent='connected';
     toast('Loaded settings from device');
@@ -228,6 +251,43 @@ async function loadAll(){
     $('conn').className='pill off'; $('conn').textContent='unreachable';
     toast(e.message, true);
   }
+}
+
+// Navigation: /switchApp {type:'tools', index} uses a 1-based index in the
+// device's own app order, which is NOT the getToolsConfig key order — clock is
+// first (1), weather second (2), then the rest through ipshow (9). Switching to
+// a disabled tool returns "app not found or disabled" (the device does not
+// substitute another app), so off tools are shown but marked and skipped-safe:
+// the toast surfaces the device's reply.
+const NAV_TOOL_ORDER = ['clock','weather','busy','scoreboard','tomato',
+  'stopwatch','battery','soundlight','ipshow'];
+function renderNav(cfg){
+  const sel = $('navTool'); sel.innerHTML = '';
+  const infos = cfg.toolsInfos || {};
+  NAV_TOOL_ORDER.forEach((k, i)=>{
+    if(!(k in infos)) return;
+    const o = document.createElement('option');
+    o.value = i + 1;
+    o.textContent = (TOOL_LABELS[k] || k) + (infos[k].enable ? '' : ' (off)');
+    sel.append(o);
+  });
+}
+async function loadDiyApps(){
+  const sel = $('navDiy'), go = $('navDiyGo');
+  try{
+    const d = await getJSON('api/customList');
+    const apps = d.apps || [];
+    sel.innerHTML = '';
+    if(!apps.length){ sel.innerHTML = '<option value="">none on device</option>'; go.disabled = true; return; }
+    apps.forEach(a=>{ const o=document.createElement('option'); o.value=a; o.textContent=a; sel.append(o); });
+    go.disabled = false;
+  }catch(e){ sel.innerHTML = '<option value="">unavailable</option>'; go.disabled = true; }
+}
+async function sendKey(key, event){
+  try{
+    await postJSON('keyEvent', {key, event, source:'panel'});
+    toast(`Sent ${key} ${event}`);
+  }catch(e){ toast(e.message, true); }
 }
 
 async function mqttStatus(){
@@ -278,6 +338,30 @@ document.querySelectorAll('[data-save]').forEach(b=>
   b.addEventListener('click', ()=>save(b.dataset.save)));
 $('reload').addEventListener('click', loadAll);
 $('mqttcheck').addEventListener('click', mqttStatus);
+
+$('navToolGo').addEventListener('click', async ()=>{
+  const index = +$('navTool').value;
+  if(!index) return;
+  try{
+    const r = await postJSON('switchApp', {type:'tools', index});
+    toast(r.message || 'app switched');
+  }catch(e){ toast(e.message, true); }
+});
+$('navDiyGo').addEventListener('click', async ()=>{
+  const name = $('navDiy').value;
+  if(!name) return;
+  try{
+    const r = await postJSON(`api/switchDiyApp?name=${encodeURIComponent(name)}`, {});
+    toast(r.message || `showing ${name}`);
+  }catch(e){ toast(e.message, true); }
+});
+document.querySelectorAll('[data-key]').forEach(b=>
+  b.addEventListener('click', ()=> sendKey(b.dataset.key, $('navLong').checked ? 'longPress' : 'shortPress')));
+document.querySelectorAll('[data-knob]').forEach(b=>
+  b.addEventListener('click', ()=>{
+    const k = b.dataset.knob;
+    sendKey('knob', k === 'press' ? ($('navLong').checked ? 'longPress' : 'shortPress') : k);
+  }));
 $('ledsend').addEventListener('click', async ()=>{
   const r=+$('rVal').value, g=+$('gVal').value, b=+$('bVal').value;
   if(!confirm(`Write LED current gain R=${r} G=${g} B=${b} to register 0x16?\n\nThis changes LED drive current. There is no read-back endpoint, so note your current values first.`)) return;
