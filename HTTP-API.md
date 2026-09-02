@@ -171,22 +171,31 @@ endpoints, all `POST`, all verified against `appVer 1.1.1`.
 ### `/switchApp` — jump to a built-in app
 
 Body `{"type": <type>, "index": <n>}`. `type` is one of `tools`, `social`,
-`calendar` (the three built-in app groups). `index` is the **1-based position
-within that group's list** as returned by `/getToolsConfig`, `/getSocial` or
-`/getCalendar` — so for `tools`, `1` = weather, `2` = clock … `9` = ipshow.
+`calendar` (the three built-in app groups). `index` is a **1-based index in the
+device's own app order**, which is **not** the key order of `/getToolsConfig`.
+For `tools`, established by enabling every tool and probing each index:
+
+| index | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 |
+|-------|---|---|---|---|---|---|---|---|---|
+| app | clock | weather | busy | scoreboard | tomato | stopwatch | battery | soundlight | ipshow |
+
+Note clock and weather are swapped relative to the `/getToolsConfig` listing
+(clock is the home app at index 1).
 
 ```bash
 curl -s -X POST http://<device-ip>/switchApp \
-  -H 'Content-Type: application/json' -d '{"type":"tools","index":2}'
-# {"code":200,"message":"app switched","data":{"type":"tools","index":2}}
+  -H 'Content-Type: application/json' -d '{"type":"tools","index":1}'
+# {"code":200,"message":"app switched","data":{"type":"tools","index":1}}
 ```
 
-- `index` is 1-based; `0` returns `{"code":400,"message":"Invalid app index"}`.
+- `index` is 1-based; `0` or `>9` returns `{"code":400,"message":"Invalid app index"}`.
 - Both `type` and `index` are required; a bad `type` gives `Invalid app type`.
-- Pointing at a **disabled** tool does not error — the device coerces to an
-  enabled app (targeting weather, disabled here, landed on clock). Enabled
-  targets (`clock`, `ipshow`) switched exactly.
+- Switching to a **disabled** tool returns `{"code":404,"message":"app not
+  found or disabled"}`; the device does **not** substitute another app. Only
+  enabled tools switch.
 - After a manual switch the carousel eventually resumes on its own timer.
+- `social` and `calendar` use the same 1-based scheme into their own lists;
+  those were not exercised here (no enabled providers on the test device).
 
 ### `/api/switchDiyApp?name=<app>` — jump to a custom app
 
