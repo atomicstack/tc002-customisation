@@ -55,9 +55,14 @@ cd panel && /usr/bin/python3 serve.py 8777
 ```
 
 the panel covers display/general settings, mqtt (with live connection status),
-the nine built-in apps, and led current-gain calibration behind a confirmation.
-it reads current values and merges edits into the full object before posting,
-so unshown fields are preserved. `serve.py` serves the page and proxies
+the nine built-in apps (enable, and jump to any that's on), custom apps, the
+physical buttons and knob, and led current-gain calibration behind a
+confirmation. a 52×16 preview at the top simulates the clock face the way the
+device draws it, honouring the timezone, time format, week-start and weekday
+settings; the firmware has no way to report what it is actually showing. it
+reads current values and merges edits into the full object before posting, so
+unshown fields are preserved. type is loaded from google fonts and falls back
+to system faces offline. `serve.py` serves the page and proxies
 `/api/<device-ip>/<endpoint>` through to the device, so the browser only ever
 talks to its own origin: the device only returns cors headers on preflights
 and 404s, never on real 200 responses, so a browser can't read from it directly
