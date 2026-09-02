@@ -10,9 +10,21 @@ without installing anything from ulanzi.
 
 ## what's here
 
+docs, one topic each:
+
+| doc | what it covers |
+|-----|----------------|
+| [`HTTP-API.md`](HTTP-API.md) | the local http api on port 80: cors behaviour, every endpoint with examples, led current gain, and the web ui language dead end |
+| [`DEVICE.md`](DEVICE.md) | what's inside: soc, kernel, partitions, the stripped busybox, root adb, flashing and recovery |
+| [`SETUP.md`](SETUP.md) | the setup-ap, discovery and adoption flow that replaces ulanzi studio |
+| [`CLOUD.md`](CLOUD.md) | what the device sends to ulanzi's cloud, how it authenticates, and why that's a problem |
+| [`MQTT.md`](MQTT.md) | driving the 52×16 display over a broker you control |
+| [`SECURITY.md`](SECURITY.md) | every security observation in one place, with mitigations |
+
+tools:
+
 | file | what it is |
 |------|-----------|
-| [`HTTP-API.md`](HTTP-API.md) | the reference: full http api, mqtt, adb, device internals, security notes, and the setup/adoption flow. start here. |
 | [`tc002-adopt.py`](tc002-adopt.py) | discover tc002 devices on the lan and join a factory-fresh one to wifi — replaces ulanzi studio for setup |
 | [`panel/`](panel/) | an english web control panel for the device (the stock ui is chinese-only) |
 | [`mqtt-check.py`](mqtt-check.py) | verify mosquitto broker credentials from the raw mqtt connack code |
@@ -36,10 +48,14 @@ cd panel && /usr/bin/python3 serve.py 8777
 ```
 
 the panel covers display/general settings, mqtt (with live connection status),
-the nine built-in apps, and led current-gain calibration. it serves the page
-and proxies api calls through itself, because the device only returns cors
-headers on preflights and 404s, never on real 200 responses — a browser can't
-read from it directly.
+the nine built-in apps, and led current-gain calibration behind a confirmation.
+it reads current values and merges edits into the full object before posting,
+so unshown fields are preserved. `serve.py` serves the page and proxies
+`/api/<device-ip>/<endpoint>` through to the device, so the browser only ever
+talks to its own origin: the device only returns cors headers on preflights
+and 404s, never on real 200 responses, so a browser can't read from it directly
+and a plain `http.server` will not work (see the
+[cors note](HTTP-API.md#http-api)).
 
 **adopt a factory-fresh device**
 
@@ -50,46 +66,78 @@ serves `192.168.1.x`. join that network, then:
 /usr/bin/python3 tc002-adopt.py adopt --ssid <your-wifi>
 ```
 
+the full flow is in [`SETUP.md`](SETUP.md).
+
+**verify your mqtt broker credentials**
+
+```bash
+/usr/bin/python3 mqtt-check.py <broker-ip> 1883
+```
+
+prompts for the password with echo off so it never reaches a transcript or
+shell history. `code=0` means valid. note that mosquitto returns `5` (not
+authorized) rather than the spec's `4` for bad credentials, so treat `5` as
+"wrong username/password".
+
 ## what's been established
 
 the device:
 
 - **soc / os** — sigmastar ssd21x, linux 4.9.84, ~32 mb ram, squashfs root.
   the app layer is the flythings stack (`zkdaemon` / `zkdisplay` / `zkgui`).
+  ([`DEVICE.md`](DEVICE.md))
 - **http api (port 80, no auth)** — read/write of every setting via json
   endpoints (`getConfig`/`setConfig`, `getMqttConfig`/`setMqttConfig`,
   `getToolsConfig`, `getCalendar`, `getSocial`, `setWifiConfig`,
   `setLedRegister`, and destructive `update`/`resetConfig`).
+  ([`HTTP-API.md`](HTTP-API.md))
 - **adb (port 5555)** — wifi only (usb is mass-storage); gives a **root** shell,
   though busybox is stripped to almost nothing and `/data` is the only
-  persistent writable mount.
+  persistent writable mount. ([`DEVICE.md`](DEVICE.md))
 - **mqtt** — the supported way to drive the 52×16 display without ulanzi studio;
   custom-app topic `[prefix]/custom/[app]` with a `{duration,text,image,draw}`
-  payload.
+  payload. ([`MQTT.md`](MQTT.md))
 - **setup** — factory-fresh devices come up as the `U-Clock` softap on
   `192.168.1.1`; `POST /setWifiConfig` joins them to a network.
+  ([`SETUP.md`](SETUP.md))
 - **cloud** — the device registers itself with `api.ulanzistudio.com` over
   plain http and keeps a per-device secret key plus a bearer/refresh token pair
   in `setting.ini`. weather, social counts, calendars and the update check all
   go through that api, and caldav credentials are sent to it for server-side
-  fetching.
+  fetching. ([`CLOUD.md`](CLOUD.md))
 
 security caveats worth knowing before you put one on your main network: no auth
 on anything, writes forgeable from any web page you visit (the device ignores
 `Origin`), root adb with no pairing, the wifi psk stored in cleartext in a
 world-readable file on the device, and all cloud traffic (calendar passwords
 included) sent unencrypted. an isolated iot vlan/ssid is the sensible
-home for it. full detail in [`HTTP-API.md`](HTTP-API.md#security-observations).
+home for it. full detail in [`SECURITY.md`](SECURITY.md).
 
 ## a note on macos
 
 on macos 15+ (sequoia), local network privacy gates lan access **per binary**.
-apple's own binaries (`/usr/bin/curl`, `/usr/bin/python3`, `/sbin/ping`) are
-exempt; homebrew- and third-party-installed binaries (including a properly
-signed `adb`) are blocked, and the denial surfaces as a misleading
-`no route to host` / `host is down`, never a permission error. that's why the
-tools here call `/usr/bin/python3` explicitly. for `adb`, grant your terminal
-app local network access in system settings and fully relaunch it.
+apple's own binaries (`/usr/bin/curl`, `/usr/bin/python3`, `/sbin/ping`,
+`/usr/bin/nc`) are exempt; homebrew- and third-party-installed binaries
+(including a properly signed `adb`) are blocked until the **terminal app** is
+granted permission, and the denial surfaces as a misleading network error,
+never a permission error:
+
+| tool | symptom |
+|------|---------|
+| `adb connect` | `failed to connect to '<ip>:5555': No route to host` |
+| `nmap` | `Host seems down` / all ports `filtered (host-unreach)` |
+
+that split is the diagnostic: if `/usr/bin/curl` works and
+`/opt/homebrew/bin/nmap` does not, it is the permission, not the network. it is
+also why the tools here call `/usr/bin/python3` explicitly.
+
+**fix:** system settings → privacy & security → local network → enable your
+terminal app, then **fully quit and relaunch it** (the permission is evaluated
+at process launch; a new tab is not enough).
+
+```bash
+open "x-apple.systempreferences:com.apple.preference.security?Privacy_LocalNetwork"
+```
 
 ## status
 
@@ -108,3 +156,8 @@ firmware update. you are responsible for what you do to your own hardware —
 `resetConfig`, `update`, and `setLedRegister` in particular can disrupt or
 degrade the device. recovery to factory firmware is holding the reset button
 during power-up.
+
+## references
+
+- [UlanziTechnology/Ulanzi-U-Clock-TC002](https://github.com/UlanziTechnology/Ulanzi-U-Clock-TC002)
+- [FlyThings ADB docs](https://zkswe.github.io/flythings-doc/en/adb_debug.html)
