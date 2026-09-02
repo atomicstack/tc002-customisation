@@ -65,6 +65,49 @@ holds the device's cloud credentials (`secretKey`, `authToken`,
 
 ---
 
+## Time
+
+There is **no RTC** (`/dev/rtc*` and `/sys/class/rtc` are absent). The system
+clock starts at the 1970 epoch on every boot and is set purely by an SNTP
+client built into the app library (`ntp::` in `libzkgui.so`, calling
+`settimeofday`):
+
+- **When:** once at app start (`mainActivity::onCreate`), then from a
+  **repeating** scheduled task with a **2 h period** and a random component
+  of up to 1 h (`schedule(name, fn, 7200000, rand() % 3600000)` in the
+  binary; whether the random part is a first-run delay or per-run jitter was
+  not settled). Observed here: a boot sync, then one 16 h 12 min later, which
+  fits 2 h × 8 plus a 12 min initial delay. Between syncs the clock
+  free-runs, and each sync *steps* the time rather than slewing it, so with
+  the clock app set to `HH:MM:SS` a few seconds of drift can be visible just
+  before a sync.
+- **From where:** four hardcoded IPs, no hostname, not configurable:
+  `203.107.6.88` (`ntp.aliyun.com`), `182.92.12.11` (`time5.aliyun.com`),
+  `120.25.115.20` (`cn.ntp.org.cn`) and `103.11.143.248` (unlabelled,
+  AS58436). All in China; the sync still landed within a fraction of a second
+  of an NTP-checked host here.
+- **Timezone:** the OS runs in UTC (`date` prints UTC). The `timezone` value
+  from `/getConfig` is applied by the app when it renders.
+
+There is **no HTTP or MQTT endpoint** to set the time or the NTP server. Over
+adb the busybox `date` applet works, as root:
+
+```bash
+adb shell date -u -s "$(date -u +'%Y-%m-%d %H:%M:%S')"
+```
+
+It takes effect immediately, is overwritten at the next SNTP sync (harmless if
+the host is NTP-disciplined), and is lost on reboot. Measured here before and
+after such a set, the device was within half a second of an NTP-checked host
+both times: the sync itself is accurate, and any offset you see is drift
+between syncs.
+
+If you firewall the device's internet access, **leave UDP/123 open to those
+four IPs** (or redirect it to a local NTP server). Otherwise the clock never
+leaves 1970 after a reboot.
+
+---
+
 ## adb
 
 Wifi only — the USB-C port is mass storage plus force-recovery. Ulanzi's docs

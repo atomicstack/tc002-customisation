@@ -15,7 +15,7 @@ docs, one topic each:
 | doc | what it covers |
 |-----|----------------|
 | [`HTTP-API.md`](HTTP-API.md) | the local http api on port 80: cors behaviour, every endpoint with examples, led current gain, and the web ui language dead end |
-| [`DEVICE.md`](DEVICE.md) | what's inside: soc, kernel, partitions, the stripped busybox, root adb, flashing and recovery |
+| [`DEVICE.md`](DEVICE.md) | what's inside: soc, kernel, partitions, the stripped busybox, root adb, flashing and recovery, and how it keeps time |
 | [`SETUP.md`](SETUP.md) | the setup-ap, discovery and adoption flow that replaces ulanzi studio |
 | [`CLOUD.md`](CLOUD.md) | what the device sends to ulanzi's cloud, how it authenticates, and why that's a problem |
 | [`MQTT.md`](MQTT.md) | driving the 52×16 display over a broker you control |
@@ -106,6 +106,9 @@ the device:
 - **setup** — factory-fresh devices come up as the `U-Clock` softap on
   `192.168.1.1`; `POST /setWifiConfig` joins them to a network.
   ([`SETUP.md`](SETUP.md))
+- **time** — no rtc; the app's own sntp client steps the clock from four
+  hardcoded chinese ntp ips at boot and about every 2 h. no api to set it, but
+  `adb shell date -s` works. ([`DEVICE.md`](DEVICE.md#time))
 - **cloud** — the device registers itself with `api.ulanzistudio.com` over
   plain http and keeps a per-device secret key plus a bearer/refresh token pair
   in `setting.ini`. weather, social counts, calendars and the update check all

@@ -4,8 +4,9 @@ What the device sends to Ulanzi's servers, how it authenticates to them, and
 why that matters. Part of [tc002-customisation](README.md).
 
 Besides the local API ([HTTP-API.md](HTTP-API.md)), the firmware talks
-**outbound** to Ulanzi's cloud, and three keys in `/data/setting.ini` exist
-only for that:
+**outbound** to Ulanzi's cloud (and, separately, to four NTP servers — see
+[DEVICE.md](DEVICE.md#time)), and three keys in `/data/setting.ini` exist only
+for the cloud:
 
 | `setting.ini` key | What it is |
 |-------------------|------------|
@@ -89,6 +90,10 @@ These are summarised alongside the local-API findings in
 ## Mitigation
 
 If weather, social counts, calendars and the update check are not needed, block
-the device's outbound internet at the router. The local API and MQTT do not
-involve the cloud, so they should keep working; running the device that way has
-not been tested here for side effects such as retry spam in `logcat`.
+the device's outbound internet at the router — **except UDP/123 to the four
+NTP IPs listed in [DEVICE.md](DEVICE.md#time)**, or redirect that to a local
+NTP server. The device has no RTC and gets its time only from those servers,
+so a blanket block leaves the clock at 1970 after the next reboot. The local
+API and MQTT do not involve the cloud, so they should keep working; running the
+device that way has not been tested here for side effects such as retry spam
+in `logcat`.
