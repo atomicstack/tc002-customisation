@@ -7,7 +7,9 @@ analysis of `Mac_Apple_Ulanzi_Studio_V3.3.6_20260831.pkg`.
 Part of [tc002-customisation](README.md). The other docs: [DEVICE.md](DEVICE.md)
 for what the device is and how to get a shell, [SETUP.md](SETUP.md) for getting
 it onto wifi, [CLOUD.md](CLOUD.md) for its outbound traffic, [MQTT.md](MQTT.md)
-for driving the display, and [SECURITY.md](SECURITY.md) for the caveats.
+for driving the display over a broker, [CUSTOM-APP.md](CUSTOM-APP.md) for
+the frame payload both transports share, and [SECURITY.md](SECURITY.md) for
+the caveats.
 
 Device under test: `appVer 1.1.1`, `mcuVer V1.0.17`.
 
@@ -75,6 +77,8 @@ curl -s -i -H 'Origin: http://localhost' http://<device-ip>/getConfig | grep -i 
 | GET  | `/getMqttConfig` | broker address, credentials, topic prefix |
 | POST | `/setMqttConfig` | write MQTT settings |
 | GET  | `/getMqttStatus` | `{enabled, connected}` |
+| POST | `/api/custom?name=<app>` | create/replace a custom (DIY) app's frame; body `{}` removes it — see [Custom apps](#custom-apps) |
+| GET  | `/api/customList` | `{apps: [...], count}` — the custom apps currently on the device |
 | GET  | `/checkUpdate` | firmware update check |
 | POST | `/update` | **triggers firmware update — destructive** |
 | POST | `/resetConfig` | **factory reset — destructive** |
@@ -120,6 +124,39 @@ curl -s http://<device-ip>/getMqttStatus | jq .
 `/getCalendar` covers `feishu`, `dingding`, `wecom`, `icloud`, `google`,
 `outlook`. `/getSocial` covers `xhs`, `douyin`, `bilibili`, `weibo`,
 `youtube`, `instagram`, `facebook`, `tiktok`, `x`.
+
+---
+
+## Custom apps
+
+The display can be driven directly over HTTP, without a broker: `POST
+/api/custom?name=<app>` takes the same `{duration, text, image, draw}` JSON
+that the MQTT topic `<prefix>/custom/<app>` takes, and `GET /api/customList`
+lists what is there. This is the protocol [PixDeck](https://github.com/cailurus/PixDeck)
+uses on stock firmware. The payload — text, draw primitives, bitmaps, animated
+GIFs, the ASCII-only font and the no-scrolling caveat — is documented once in
+[CUSTOM-APP.md](CUSTOM-APP.md).
+
+```bash
+# push a frame (creates the app on first use)
+curl -s -X POST 'http://<device-ip>/api/custom?name=hello' \
+  -H 'Content-Type: application/json' \
+  -d '{"duration":10,"text":[{"content":"HELLO","fontHeight":10,"x":-1000,"y":3,
+       "align":"center","rect":[0,0,52,16],"color":"#3EE08A"}]}'
+
+# list custom apps
+curl -s http://<device-ip>/api/customList | jq .
+# {"apps":["hello"],"count":1}
+
+# remove it (empty object)
+curl -s -X POST 'http://<device-ip>/api/custom?name=hello' \
+  -H 'Content-Type: application/json' -d '{}'
+```
+
+Like every other endpoint this is unauthenticated, and the same CORS gap
+applies: the preflight approves the cross-origin `POST`, so any web page can
+put content on the display or remove apps (see [SECURITY.md](SECURITY.md)).
+PixDeck ignores the response body; its format is not documented here.
 
 ---
 

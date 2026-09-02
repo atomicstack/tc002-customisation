@@ -27,7 +27,11 @@ These are properties of the device, not of anything installed on the Mac:
    Verified with a no-op cross-origin `POST /setConfig` from
    `Origin: http://evil.example`: `200`, saved. Nothing on the device prevents
    this. Some browsers' private-network-access protections may, but that
-   varies by browser and version and was not tested here.
+   varies by browser and version and was not tested here. The display itself
+   is in the same position: `POST /api/custom?name=<app>` (see
+   [HTTP-API.md](HTTP-API.md#custom-apps)) lets any LAN host — or any web page
+   a LAN user visits — put arbitrary text or images on the clock, or wipe a
+   custom app by posting `{}`.
 7. **All cloud traffic is plain HTTP.** Device registration, bearer tokens,
    and any CalDAV username/password you configure go to
    `api.ulanzistudio.com` unencrypted. See [CLOUD.md](CLOUD.md).

@@ -19,6 +19,7 @@ docs, one topic each:
 | [`SETUP.md`](SETUP.md) | the setup-ap, discovery and adoption flow that replaces ulanzi studio |
 | [`CLOUD.md`](CLOUD.md) | what the device sends to ulanzi's cloud, how it authenticates, and why that's a problem |
 | [`MQTT.md`](MQTT.md) | driving the 52×16 display over a broker you control |
+| [`CUSTOM-APP.md`](CUSTOM-APP.md) | the custom-app frame payload shared by http and mqtt: text, draw primitives, bitmaps, gifs, lifecycle |
 | [`SECURITY.md`](SECURITY.md) | every security observation in one place, with mitigations |
 
 tools:
@@ -28,6 +29,10 @@ tools:
 | [`tc002-adopt.py`](tc002-adopt.py) | discover tc002 devices on the lan and join a factory-fresh one to wifi — replaces ulanzi studio for setup |
 | [`panel/`](panel/) | an english web control panel for the device (the stock ui is chinese-only) |
 | [`mqtt-check.py`](mqtt-check.py) | verify mosquitto broker credentials from the raw mqtt connack code |
+
+related: [pixdeck](https://github.com/cailurus/PixDeck) is a working stock-firmware
+client for the custom-app protocol over both http and mqtt — its `pixbar_core.py`
+and `plugins/` are the source for most of [`CUSTOM-APP.md`](CUSTOM-APP.md).
 
 ## quick start
 
@@ -89,14 +94,15 @@ the device:
 - **http api (port 80, no auth)** — read/write of every setting via json
   endpoints (`getConfig`/`setConfig`, `getMqttConfig`/`setMqttConfig`,
   `getToolsConfig`, `getCalendar`, `getSocial`, `setWifiConfig`,
-  `setLedRegister`, and destructive `update`/`resetConfig`).
+  `setLedRegister`, and destructive `update`/`resetConfig`), plus the display
+  itself via `api/custom` / `api/customList` — no broker needed.
   ([`HTTP-API.md`](HTTP-API.md))
 - **adb (port 5555)** — wifi only (usb is mass-storage); gives a **root** shell,
   though busybox is stripped to almost nothing and `/data` is the only
   persistent writable mount. ([`DEVICE.md`](DEVICE.md))
-- **mqtt** — the supported way to drive the 52×16 display without ulanzi studio;
-  custom-app topic `[prefix]/custom/[app]` with a `{duration,text,image,draw}`
-  payload. ([`MQTT.md`](MQTT.md))
+- **mqtt** — the other way to drive the 52×16 display without ulanzi studio;
+  custom-app topic `[prefix]/custom/[app]` with the same `{duration,text,image,draw}`
+  payload as `api/custom`. ([`MQTT.md`](MQTT.md), [`CUSTOM-APP.md`](CUSTOM-APP.md))
 - **setup** — factory-fresh devices come up as the `U-Clock` softap on
   `192.168.1.1`; `POST /setWifiConfig` joins them to a network.
   ([`SETUP.md`](SETUP.md))
