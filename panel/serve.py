@@ -11,7 +11,8 @@ access by macOS Local Network Privacy.
 import http.server, socketserver, urllib.request, urllib.error, json, sys, re
 
 PORT = int(sys.argv[1]) if len(sys.argv) > 1 else 8777
-HOST_RE = re.compile(r"^/api/([0-9a-zA-Z.\-]+)/(.+)$")
+# host may carry a port (host:1234) so a mock or a device behind a forward works
+HOST_RE = re.compile(r"^/api/([0-9a-zA-Z.\-]+(?::\d+)?)/(.+)$")
 
 
 class Handler(http.server.SimpleHTTPRequestHandler):

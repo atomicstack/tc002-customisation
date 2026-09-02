@@ -45,9 +45,9 @@ body{margin:0;background:var(--bg);color:var(--ink);font:14px/1.5 var(--body)}
 .hero{display:grid;grid-template-columns:minmax(0,7fr) minmax(0,5fr);gap:var(--gap);margin-bottom:var(--gap)}
 .screen{background:radial-gradient(1px 1px at 50% 50%,#1a1f2a 0,transparent 60%) 0 0/8px 8px,var(--screen);
   border:1px solid var(--line);border-radius:var(--radius);padding:18px 22px;display:flex;flex-direction:column;
-  align-items:center;justify-content:center;gap:12px;position:relative}
-.matrix{display:grid;grid-template-columns:repeat(52,1fr);gap:2px;width:100%;max-width:560px;aspect-ratio:52/16}
-.matrix i{display:block;aspect-ratio:1;background:var(--led-off)}
+  align-items:center;justify-content:center;gap:12px;position:relative;min-width:0;overflow:hidden}
+.matrix{display:grid;grid-template-columns:repeat(52,minmax(0,1fr));gap:2px;width:100%;max-width:560px;aspect-ratio:52/16;min-width:0}
+.matrix i{display:block;aspect-ratio:1;background:var(--led-off);min-width:0}
 .matrix i.on{background:var(--led-on);box-shadow:var(--led-glow)}
 .matrix i.wk{background:var(--led-on);opacity:.85}
 .matrix i.dim{background:var(--led-on);opacity:.16}
@@ -260,6 +260,8 @@ input.sw:checked::after{left:19px;background:var(--accent-ink)}
 
 <script>
 const $ = id => document.getElementById(id);
+// device-supplied strings are rendered as text, never as markup
+const esc = s => String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 const host = () => $('host').value.trim();
 const url = p => `/api/${host()}/${p}`;
 let CONFIG = null, TOOLS = null;
@@ -369,7 +371,7 @@ function renderTools(cfg){
   const infos = cfg.toolsInfos || {};
   NAV_TOOL_ORDER.filter(k => k in infos).forEach((k, i) => {
     const row = document.createElement('div'); row.className = 'field';
-    row.innerHTML = `<label for="tool_${k}">${TOOL_LABELS[k] || k}<span class="key">toolsInfos.${k}.enable · index ${i+1}</span></label>
+    row.innerHTML = `<label for="tool_${esc(k)}">${esc(TOOL_LABELS[k] || k)}<span class="key">toolsInfos.${esc(k)}.enable · index ${i+1}</span></label>
       <span class="rangewrap"><button class="btn ghost sm" data-nav="${i+1}" ${infos[k].enable ? '' : 'disabled'}>Show</button>
       <input type="checkbox" class="sw" id="tool_${k}" ${infos[k].enable ? 'checked' : ''}></span>`;
     box.append(row);
@@ -418,7 +420,7 @@ async function loadAll(){
   try{
     const base = await getJSON('getBase');
     $('baseinfo').innerHTML = Object.entries(base).map(([k,v]) =>
-      `<div class="field"><span class="lab">${({devSn:'Serial',ssid:'Wi-Fi',ip:'IP address',mac:'MAC',mcuVer:'MCU firmware',appVer:'App firmware'})[k] || k}<span class="key">${k}</span></span><span class="val">${String(v)}</span></div>`).join('');
+      `<div class="field"><span class="lab">${esc(({devSn:'Serial',ssid:'Wi-Fi',ip:'IP address',mac:'MAC',mcuVer:'MCU firmware',appVer:'App firmware'})[k] || k)}<span class="key">${esc(k)}</span></span><span class="val">${esc(v)}</span></div>`).join('');
 
     CONFIG = await getJSON('getConfig');
     const b = CONFIG.brightness || {};
