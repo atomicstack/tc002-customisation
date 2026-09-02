@@ -55,20 +55,38 @@ open "x-apple.systempreferences:com.apple.preference.security?Privacy_LocalNetwo
 Base: `http://<device-ip>/`. No auth, no CSRF token, no rate limiting.
 Unknown paths 301-redirect to `/settings/general`.
 
-**CORS is effectively unusable.** The `OPTIONS` preflight *and* error responses
-(404/301) return `Access-Control-Allow-Origin: *`, but **real `200` responses carry
-no CORS headers at all**. A browser therefore blocks every cross-origin read, with
-a bare "Load failed" / "Failed to fetch". Verifying with `curl -I` is misleading —
-the device 404s HEAD requests, and that error response *does* include the header.
-Check a real `GET`:
+**CORS: cross-origin reads are blocked, cross-origin writes are not.** The
+device sends `Access-Control-Allow-Origin: *` on `OPTIONS` preflights and on
+`404` responses, but **real `200` responses carry no CORS headers at all**.
+Measured against `appVer 1.1.1` with `Origin: http://evil.example`:
+
+| Request | Status | `Access-Control-*` headers |
+|---------|-------:|----------------------------|
+| `GET /getConfig` | 200 | none |
+| `POST /setConfig` | 200 | none — but the write is applied |
+| `OPTIONS /setConfig` (preflight) | 200 | `Allow-Origin: *`, `Allow-Methods: POST`, `Allow-Headers: content-type`, `Max-Age: 60` |
+| `HEAD /getConfig`, `POST /getBase` | 404 | `Allow-Origin: *` |
+| `GET /nope` (catch-all) | 301 | none |
+
+Two consequences:
+
+- **Reads:** a browser blocks every cross-origin response body, surfacing as a
+  bare "Load failed" / "Failed to fetch". A web page cannot talk to the device
+  directly, so `panel/` ships a small same-origin proxy (`panel/serve.py`).
+- **Writes:** the preflight *approves* a cross-origin `POST` with
+  `Content-Type: application/json`, and the device also accepts the same body
+  sent as `text/plain` (a "simple request" that needs no preflight at all). It
+  checks neither `Origin` nor `Content-Type`. The browser withholds the *reply*,
+  but the device has already acted on the request. See
+  [Security observations](#security-observations).
+
+Verifying with `curl -I` is misleading — the device 404s `HEAD`, and that error
+response *does* carry the header. Check a real `GET`:
 
 ```bash
 curl -s -i -H 'Origin: http://localhost' http://<device-ip>/getConfig | grep -i access-control
 # (no output — the header is absent on 200 responses)
 ```
-
-Consequence: a browser page cannot talk to the device directly. `panel/` ships a
-small same-origin proxy (`panel/serve.py`) instead.
 
 ### Pages (HTML)
 
@@ -175,8 +193,10 @@ The built-in web UI is **Chinese only** and cannot be switched:
 The `<title>` is English while the body is Chinese, which is easy to misread when
 fetching with `curl`.
 
-Because the device sends permissive CORS, the practical fix is to drive the JSON
-API from a local page instead — see `panel/` in this repo.
+The practical fix is to drive the JSON API from a local page instead — see
+`panel/` in this repo. That page has to go through a same-origin proxy, because
+the device's CORS handling blocks browser reads (see the CORS note under
+[HTTP API](#http-api)).
 
 ---
 
@@ -196,9 +216,19 @@ These are properties of the device, not of anything installed on the Mac:
    (world readable and writable), alongside the device serial and social tokens.
    It is *not* exposed over HTTP — every endpoint was checked for the literal
    value — but anyone who can reach port 5555 gets a root shell and can read it.
+6. **Writes are forgeable from any web page.** The device ignores `Origin`,
+   accepts JSON bodies sent as `text/plain`, and approves `POST` in its CORS
+   preflight (see [HTTP API](#http-api)). So a page on any website can fire
+   `/resetConfig`, `/update`, `/setWifiConfig` or `/setMqttConfig` at the device
+   from a visitor's browser with no user interaction — the browser hides the
+   reply, but the device has already acted. Verified with a no-op cross-origin
+   `POST /setConfig` from `Origin: http://evil.example`: `200`, saved. Nothing on
+   the device prevents this. Some browsers' private-network-access protections
+   may, but that varies by browser and version and was not tested here.
 
 Reasonable mitigation: put the device on an isolated IoT VLAN/SSID and
-restrict which hosts may reach it.
+restrict which hosts may reach it. That also bounds the cross-site write
+exposure to browsers on the hosts you let through.
 
 ---
 

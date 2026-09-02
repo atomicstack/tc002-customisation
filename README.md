@@ -38,8 +38,8 @@ cd panel && /usr/bin/python3 serve.py 8777
 the panel covers display/general settings, mqtt (with live connection status),
 the nine built-in apps, and led current-gain calibration. it serves the page
 and proxies api calls through itself, because the device only returns cors
-headers on error responses, not on real ones — a browser can't talk to it
-directly.
+headers on preflights and 404s, never on real 200 responses — a browser can't
+read from it directly.
 
 **adopt a factory-fresh device**
 
@@ -70,7 +70,8 @@ the device:
   `192.168.1.1`; `POST /setWifiConfig` joins them to a network.
 
 security caveats worth knowing before you put one on your main network: no auth
-on anything, root adb with no pairing, and the wifi psk stored in cleartext in a
+on anything, writes forgeable from any web page you visit (the device ignores
+`Origin`), root adb with no pairing, and the wifi psk stored in cleartext in a
 world-readable file on the device. an isolated iot vlan/ssid is the sensible
 home for it. full detail in [`HTTP-API.md`](HTTP-API.md#security-observations).
 
