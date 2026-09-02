@@ -1,0 +1,303 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>TC002 Control Panel</title>
+<style>
+:root{
+  --bg:#f4f5f7; --card:#fff; --ink:#15181d; --muted:#5c6570; --line:#e2e5ea;
+  --accent:#d50050; --accent-ink:#fff; --ok:#0f7b4f; --warn:#8a5300; --danger:#b3261e;
+  --field:#fff; --shadow:0 1px 2px rgba(0,0,0,.06),0 4px 12px rgba(0,0,0,.04);
+}
+@media (prefers-color-scheme:dark){:root:not([data-theme=light]){
+  --bg:#0f1216; --card:#171b21; --ink:#e8ebef; --muted:#98a2ae; --line:#262c34;
+  --accent:#ff2d72; --accent-ink:#fff; --ok:#4ade80; --warn:#fbbf24; --danger:#f87171;
+  --field:#0f1216; --shadow:0 1px 2px rgba(0,0,0,.4);
+}}
+:root[data-theme=dark]{
+  --bg:#0f1216; --card:#171b21; --ink:#e8ebef; --muted:#98a2ae; --line:#262c34;
+  --accent:#ff2d72; --accent-ink:#fff; --ok:#4ade80; --warn:#fbbf24; --danger:#f87171;
+  --field:#0f1216; --shadow:0 1px 2px rgba(0,0,0,.4);
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);
+  font:14px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Inter,sans-serif}
+.wrap{max-width:1080px;margin:0 auto;padding:24px 20px 64px}
+header{display:flex;align-items:baseline;gap:14px;flex-wrap:wrap;margin-bottom:6px}
+h1{font-size:20px;margin:0;letter-spacing:-.01em}
+.sub{color:var(--muted);font-size:13px}
+.bar{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin:14px 0 22px}
+.bar input{width:150px}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(330px,1fr));gap:16px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:12px;
+  padding:18px;box-shadow:var(--shadow)}
+.card h2{font-size:14px;margin:0 0 14px;letter-spacing:.02em;text-transform:uppercase;color:var(--muted)}
+.row{display:flex;justify-content:space-between;align-items:center;gap:12px;
+  padding:7px 0;border-bottom:1px solid var(--line)}
+.row:last-of-type{border-bottom:0}
+.row label{color:var(--ink);flex:1;min-width:0}
+.hint{display:block;color:var(--muted);font-size:12px;font-weight:400}
+input[type=text],input[type=number],input[type=password],select{
+  background:var(--field);color:var(--ink);border:1px solid var(--line);
+  border-radius:7px;padding:6px 9px;font:inherit;width:150px}
+input[type=range]{width:150px;accent-color:var(--accent)}
+input[type=checkbox]{width:17px;height:17px;accent-color:var(--accent)}
+button{background:var(--accent);color:var(--accent-ink);border:0;border-radius:7px;
+  padding:8px 15px;font:inherit;font-weight:500;cursor:pointer}
+button.ghost{background:transparent;color:var(--ink);border:1px solid var(--line)}
+button:disabled{opacity:.5;cursor:default}
+.actions{margin-top:14px;display:flex;gap:8px;align-items:center}
+.kv{display:grid;grid-template-columns:auto 1fr;gap:5px 14px;font-size:13px}
+.kv dt{color:var(--muted)}
+.kv dd{margin:0;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;word-break:break-all}
+.pill{font-size:12px;padding:2px 9px;border-radius:99px;border:1px solid var(--line);color:var(--muted)}
+.pill.on{color:var(--ok);border-color:currentColor}
+.pill.off{color:var(--danger);border-color:currentColor}
+.danger{border-color:var(--danger)}
+.danger h2{color:var(--danger)}
+.note{background:color-mix(in srgb,var(--warn) 12%,transparent);
+  border-left:3px solid var(--warn);padding:9px 12px;border-radius:0 7px 7px 0;
+  font-size:13px;margin-bottom:14px}
+#toast{position:fixed;left:50%;bottom:26px;transform:translateX(-50%) translateY(120%);
+  background:var(--ink);color:var(--bg);padding:11px 20px;border-radius:9px;
+  font-size:13px;transition:transform .22s;z-index:9;max-width:88vw}
+#toast.show{transform:translateX(-50%) translateY(0)}
+#toast.err{background:var(--danger);color:#fff}
+.muted{color:var(--muted)}
+@media (max-width:520px){.row{flex-wrap:wrap}input[type=text],input[type=number],
+  input[type=password],select,input[type=range]{width:100%}}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>TC002 Control Panel</h1>
+    <span class="sub">English UI for the Ulanzi pixel clock's local API</span>
+  </header>
+
+  <div class="bar">
+    <label class="muted" for="host">Device</label>
+    <input type="text" id="host" value="10.0.0.111">
+    <button id="reload">Connect / reload</button>
+    <span id="conn" class="pill">not connected</span>
+    <button class="ghost" id="theme" style="margin-left:auto">Theme</button>
+  </div>
+
+  <div class="grid">
+    <section class="card">
+      <h2>Device</h2>
+      <dl class="kv" id="baseinfo"><dt>—</dt><dd>load to populate</dd></dl>
+    </section>
+
+    <section class="card">
+      <h2>Display &amp; general</h2>
+      <div class="row"><label for="blevel">Brightness level</label>
+        <select id="blevel"><option value="low">Low</option><option value="mid">Medium</option><option value="high">High</option></select></div>
+      <div class="row"><label for="blow">Low preset <span class="hint">percent</span></label><input type="number" id="blow" min="0" max="100"></div>
+      <div class="row"><label for="bmid">Medium preset <span class="hint">percent</span></label><input type="number" id="bmid" min="0" max="100"></div>
+      <div class="row"><label for="bhigh">High preset <span class="hint">percent</span></label><input type="number" id="bhigh" min="0" max="100"></div>
+      <div class="row"><label for="volume">Volume <span class="hint">0–6</span></label><input type="number" id="volume" min="0" max="6"></div>
+      <div class="row"><label for="scrollSpeed">Scroll speed</label><input type="number" id="scrollSpeed" min="0" max="20"></div>
+      <div class="row"><label for="carouselSpeed">Carousel speed</label><input type="number" id="carouselSpeed" min="0" max="60"></div>
+      <div class="row"><label for="timezone">Timezone</label><input type="text" id="timezone" placeholder="UTC+2"></div>
+      <div class="row"><label for="dateFormat">Date format</label>
+        <select id="dateFormat"><option>MM/DD</option><option>DD/MM</option><option>YYYY/MM/DD</option></select></div>
+      <div class="row"><label for="weekStart">Week starts <span class="hint">0=Sun, 1=Mon</span></label><input type="number" id="weekStart" min="0" max="1"></div>
+      <div class="row"><label for="showWeek">Show weekday</label><input type="checkbox" id="showWeek"></div>
+      <div class="row"><label for="lowBatteryAutoSleep">Low-battery auto sleep</label><input type="checkbox" id="lowBatteryAutoSleep"></div>
+      <div class="actions"><button data-save="config">Save general</button><span class="muted" id="cfgstate"></span></div>
+    </section>
+
+    <section class="card">
+      <h2>MQTT</h2>
+      <div class="row"><label>Broker status</label><span id="mqttstate" class="pill">unknown</span></div>
+      <div class="row"><label for="isMqtt">MQTT enabled</label><input type="checkbox" id="isMqtt"></div>
+      <div class="row"><label for="mip">Broker IP</label><input type="text" id="mip" placeholder="10.0.0.136"></div>
+      <div class="row"><label for="mport">Broker port</label><input type="text" id="mport" placeholder="1883"></div>
+      <div class="row"><label for="mname">Username</label><input type="text" id="mname" autocomplete="off"></div>
+      <div class="row"><label for="mpwd">Password</label><input type="password" id="mpwd" autocomplete="new-password"></div>
+      <div class="row"><label for="mprefix">Topic prefix</label><input type="text" id="mprefix" placeholder="ulanzi"></div>
+      <div class="row"><label for="mha">Home Assistant discovery</label><input type="checkbox" id="mha"></div>
+      <div class="actions"><button data-save="mqtt">Save MQTT</button>
+        <button class="ghost" id="mqttcheck">Recheck status</button></div>
+    </section>
+
+    <section class="card">
+      <h2>Built-in apps</h2>
+      <div id="tools"><span class="muted">load to populate</span></div>
+      <div class="actions"><button data-save="tools">Save apps</button></div>
+    </section>
+
+    <section class="card danger">
+      <h2>LED current gain — advanced</h2>
+      <div class="note"><strong>Changes LED drive current</strong> (register 0x16, per channel, 0–63).
+      Affects white balance, heat and LED lifetime. There is <strong>no read-back endpoint</strong>,
+      so note your values before changing them. Stock default appears to be 30.</div>
+      <div class="row"><label for="rVal">Red gain</label><input type="number" id="rVal" min="0" max="63" value="30"></div>
+      <div class="row"><label for="gVal">Green gain</label><input type="number" id="gVal" min="0" max="63" value="30"></div>
+      <div class="row"><label for="bVal">Blue gain</label><input type="number" id="bVal" min="0" max="63" value="30"></div>
+      <div class="actions"><button class="ghost" id="ledsend">Send to device</button>
+        <span class="muted">asks for confirmation</span></div>
+    </section>
+  </div>
+</div>
+<div id="toast"></div>
+
+<script>
+const $ = id => document.getElementById(id);
+const host = () => $('host').value.trim();
+const url = p => `http://${host()}/${p}`;
+let TOOLS = null, CONFIG = null;
+
+function toast(msg, isErr){
+  const t = $('toast'); t.textContent = msg;
+  t.className = 'show' + (isErr ? ' err' : '');
+  clearTimeout(t._t); t._t = setTimeout(()=>t.className='', 3200);
+}
+async function getJSON(p){
+  const r = await fetch(url(p), {cache:'no-store'});
+  if(!r.ok) throw new Error(`${p} -> HTTP ${r.status}`);
+  return r.json();
+}
+async function postJSON(p, body){
+  const r = await fetch(url(p), {method:'POST',
+    headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)});
+  if(!r.ok) throw new Error(`${p} -> HTTP ${r.status}`);
+  const txt = await r.text();
+  try { return JSON.parse(txt); } catch { return {raw:txt}; }
+}
+
+const TOOL_LABELS = {weather:'Weather', clock:'Clock', busy:'Busy / focus',
+  scoreboard:'Scoreboard', tomato:'Pomodoro', stopwatch:'Stopwatch',
+  battery:'Battery', soundlight:'Sound-reactive light', ipshow:'Show IP address'};
+
+function renderTools(cfg){
+  const box = $('tools'); box.innerHTML = '';
+  const infos = cfg.toolsInfos || {};
+  Object.keys(infos).forEach(k=>{
+    const row = document.createElement('div'); row.className = 'row';
+    const lab = document.createElement('label');
+    lab.htmlFor = `tool_${k}`; lab.textContent = TOOL_LABELS[k] || k;
+    const cb = document.createElement('input');
+    cb.type='checkbox'; cb.id=`tool_${k}`; cb.checked = !!infos[k].enable;
+    row.append(lab, cb); box.append(row);
+  });
+  const city = infos.weather && 'city' in infos.weather;
+  if(city){
+    const row = document.createElement('div'); row.className='row';
+    const lab = document.createElement('label');
+    lab.htmlFor='weatherCity'; lab.textContent='Weather city';
+    const inp = document.createElement('input');
+    inp.type='text'; inp.id='weatherCity'; inp.value = infos.weather.city || '';
+    row.append(lab, inp); box.append(row);
+  }
+}
+
+async function loadAll(){
+  $('conn').className='pill'; $('conn').textContent='connecting…';
+  try{
+    const base = await getJSON('getBase');
+    $('baseinfo').innerHTML = Object.entries(base)
+      .map(([k,v])=>`<dt>${k}</dt><dd>${String(v)}</dd>`).join('');
+
+    CONFIG = await getJSON('getConfig');
+    const b = CONFIG.brightness || {};
+    $('blevel').value = b.level ?? 'low';
+    $('blow').value = b.low ?? 50; $('bmid').value = b.mid ?? 80; $('bhigh').value = b.high ?? 100;
+    $('volume').value = CONFIG.volume ?? 0;
+    $('scrollSpeed').value = CONFIG.scrollSpeed ?? 7;
+    $('carouselSpeed').value = CONFIG.carouselSpeed ?? 0;
+    $('timezone').value = CONFIG.timezone ?? '';
+    $('dateFormat').value = CONFIG.dateFormat ?? 'MM/DD';
+    $('weekStart').value = CONFIG.weekStart ?? 1;
+    $('showWeek').checked = !!CONFIG.showWeek;
+    $('lowBatteryAutoSleep').checked = !!CONFIG.lowBatteryAutoSleep;
+
+    const m = await getJSON('getMqttConfig');
+    $('isMqtt').checked = !!m.isMqtt; $('mip').value = m.ip || '';
+    $('mport').value = m.port || '1883'; $('mname').value = m.mqtt_name || '';
+    $('mpwd').value = m.mqtt_pwd || ''; $('mprefix').value = m.mqtt_prefix || 'ulanzi';
+    $('mha').checked = !!m.isHADiscoveryEnabled;
+
+    TOOLS = await getJSON('getToolsConfig'); renderTools(TOOLS);
+    await mqttStatus();
+    $('conn').className='pill on'; $('conn').textContent='connected';
+    toast('Loaded settings from device');
+  }catch(e){
+    $('conn').className='pill off'; $('conn').textContent='unreachable';
+    toast(e.message, true);
+  }
+}
+
+async function mqttStatus(){
+  try{
+    const s = await getJSON('getMqttStatus');
+    const d = s.data || {};
+    const el = $('mqttstate');
+    el.textContent = d.connected ? 'connected' : (d.enabled ? 'enabled, not connected' : 'disabled');
+    el.className = 'pill ' + (d.connected ? 'on' : 'off');
+  }catch(e){ $('mqttstate').textContent = 'unknown'; }
+}
+
+async function save(what){
+  try{
+    if(what==='config'){
+      const body = Object.assign({}, CONFIG, {
+        brightness:{level:$('blevel').value, low:+$('blow').value,
+                    mid:+$('bmid').value, high:+$('bhigh').value},
+        volume:+$('volume').value, scrollSpeed:+$('scrollSpeed').value,
+        carouselSpeed:+$('carouselSpeed').value, timezone:$('timezone').value.trim(),
+        dateFormat:$('dateFormat').value, weekStart:+$('weekStart').value,
+        showWeek:$('showWeek').checked, lowBatteryAutoSleep:$('lowBatteryAutoSleep').checked
+      });
+      await postJSON('setConfig', body); CONFIG = body; toast('General settings saved');
+    }
+    if(what==='mqtt'){
+      await postJSON('setMqttConfig', {
+        isMqtt:$('isMqtt').checked, ip:$('mip').value.trim(), port:$('mport').value.trim(),
+        mqtt_name:$('mname').value, mqtt_pwd:$('mpwd').value,
+        mqtt_prefix:$('mprefix').value.trim() || 'ulanzi',
+        isHADiscoveryEnabled:$('mha').checked
+      });
+      toast('MQTT settings saved'); setTimeout(mqttStatus, 1500);
+    }
+    if(what==='tools'){
+      const body = JSON.parse(JSON.stringify(TOOLS));
+      Object.keys(body.toolsInfos||{}).forEach(k=>{
+        const cb = $(`tool_${k}`); if(cb) body.toolsInfos[k].enable = cb.checked;
+      });
+      const c = $('weatherCity');
+      if(c && body.toolsInfos.weather) body.toolsInfos.weather.city = c.value.trim();
+      await postJSON('setToolsConfig', body); TOOLS = body; toast('App settings saved');
+    }
+  }catch(e){ toast(e.message, true); }
+}
+
+document.querySelectorAll('[data-save]').forEach(b=>
+  b.addEventListener('click', ()=>save(b.dataset.save)));
+$('reload').addEventListener('click', loadAll);
+$('mqttcheck').addEventListener('click', mqttStatus);
+$('ledsend').addEventListener('click', async ()=>{
+  const r=+$('rVal').value, g=+$('gVal').value, b=+$('bVal').value;
+  if(!confirm(`Write LED current gain R=${r} G=${g} B=${b} to register 0x16?\n\nThis changes LED drive current. There is no read-back endpoint, so note your current values first.`)) return;
+  try{
+    const res = await postJSON('setLedRegister',
+      {rReg:0x16,rVal:r,gReg:0x16,gVal:g,bReg:0x16,bVal:b});
+    toast('LED register written: ' + (res.message || res.code || 'ok'));
+  }catch(e){ toast(e.message, true); }
+});
+$('theme').addEventListener('click', ()=>{
+  const cur = document.documentElement.getAttribute('data-theme');
+  const next = cur === 'dark' ? 'light' : 'dark';
+  document.documentElement.setAttribute('data-theme', next);
+  try{ localStorage.setItem('tc002theme', next); }catch{}
+});
+try{ const t=localStorage.getItem('tc002theme');
+     if(t) document.documentElement.setAttribute('data-theme',t); }catch{}
+const q = new URLSearchParams(location.search).get('host');
+if(q) $('host').value = q;
+loadAll();
+</script>
+</body>
+</html>
