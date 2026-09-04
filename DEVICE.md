@@ -134,8 +134,12 @@ On macOS, `adb` is a third-party binary and reports `No route to host` until
 your terminal app has Local Network permission — see the
 [note on macOS](README.md#a-note-on-macos) in the README.
 
-**Persistence:** "Download and debug" from the IDE is volatile — code reverts
-on power loss or TF-card removal. To flash persistently:
+**Persistence:** "Download and debug" from the IDE is volatile — code pushed
+that way lives in tmpfs and is gone after a power cycle. (The FlyThings docs
+also say it reverts "if you unplug the TF card"; that applies to zkswe's dev
+boards, not the TC002, which has no card slot. Its SoC's SD/MMC controller
+is wired to the Wi-Fi chip as SDIO, and `/mnt/extsd` is an empty mount point
+left over from the SDK.) To flash persistently:
 
 ```bash
 adb push ./update.img /tmp/update.img

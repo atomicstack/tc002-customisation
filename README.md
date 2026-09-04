@@ -174,7 +174,10 @@ the case was not opened.
 
 **32 mib spi nor flash**, one chip, eight partitions. no nand, no emmc (the
 soc has controllers for both; the nand node is disabled and nothing is on
-the emmc bus). there is no sd slot.
+the emmc bus). there is no sd slot: the soc's single sd/mmc slot is
+configured for sdio and carries the wi-fi chip. the "tf card" in the
+flythings sdk docs refers to zkswe's dev boards, not this device; the empty
+`/mnt/extsd` mount point is a leftover from that sdk.
 
 | mtd | name | size | filesystem | mounted |
 |----:|------|-----:|------------|---------|
