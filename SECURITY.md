@@ -7,7 +7,11 @@ policy for this repository.
 These are properties of the device, not of anything installed on the Mac:
 
 1. **No authentication on any endpoint.** Anyone on the LAN can read and write
-   every setting, including triggering `/resetConfig` and `/update`.
+   every setting, including triggering `/resetConfig` and `/update`. `/update`
+   takes the firmware **download URL and checksum from the request body**, so
+   it will fetch and flash whatever it is pointed at; whether the image is
+   signature-checked before flashing was not established. `/setSn` likewise
+   lets anyone rewrite the device serial.
 2. **Credentials are returned in plaintext.** `/getCalendar` returns calendar
    `password` fields and `/getSocial` returns OAuth `token` values in clear
    text over unencrypted HTTP.
@@ -15,9 +19,11 @@ These are properties of the device, not of anything installed on the Mac:
 4. **adb is open on 5555** with no pairing step, and `adbd` runs as **root** —
    everything on the device runs as uid 0 with no privilege separation.
 5. **The wifi PSK is stored in cleartext** in `/data/setting.ini` at mode `0666`
-   (world readable and writable), alongside the device serial and social tokens.
-   It is *not* exposed over HTTP — every endpoint was checked for the literal
-   value — but anyone who can reach port 5555 gets a root shell and can read it.
+   (world readable and writable), alongside the device serial and social tokens,
+   and the `/setWifiConfig` handler **also logs it in clear to `logcat`**
+   (`Saving WiFi - SSID: %s, pwd = %s`). It is *not* exposed over HTTP — every
+   endpoint was checked for the literal value — but anyone who can reach port
+   5555 gets a root shell and can read both.
 6. **Writes are forgeable from any web page.** The device ignores `Origin`,
    accepts JSON bodies sent as `text/plain`, and approves `POST` in its CORS
    preflight (see [HTTP-API.md](HTTP-API.md#http-api)). So a page on any
