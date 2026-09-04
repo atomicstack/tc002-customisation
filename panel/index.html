@@ -40,6 +40,9 @@ body{margin:0;background:var(--bg);color:var(--ink);font:14px/1.5 var(--body)}
 .pill.on{color:var(--ok);border-color:color-mix(in srgb,var(--ok) 45%,transparent)}
 .pill.off{color:var(--danger);border-color:color-mix(in srgb,var(--danger) 45%,transparent)}
 .pill.warn{color:var(--warn);border-color:color-mix(in srgb,var(--warn) 45%,transparent)}
+.found{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin:-4px 0 var(--gap);font-size:12px;color:var(--muted)}
+.found .eyebrow{margin-right:2px}
+.found .btn .k{font-family:var(--data);letter-spacing:0;text-transform:none;font-weight:400;color:var(--muted);margin-left:8px}
 
 /* hero */
 .hero{display:grid;grid-template-columns:minmax(0,7fr) minmax(0,5fr);gap:var(--gap);margin-bottom:var(--gap)}
@@ -146,11 +149,13 @@ input.sw:checked::after{left:19px;background:var(--accent-ink)}
     <div class="brand"><span class="logo">TC002</span><small>pixel clock console</small></div>
     <div class="devbar">
       <label for="host">Device</label>
-      <input type="text" id="host" value="10.0.0.111" autocomplete="off" spellcheck="false">
+      <input type="text" id="host" placeholder="device ip" autocomplete="off" spellcheck="false">
       <button class="btn ghost" id="reload">Connect</button>
+      <button class="btn ghost" id="find" title="listen for the device's broadcast on udp/55555">Find</button>
       <span id="conn" class="pill">not connected</span>
     </div>
   </header>
+  <div class="found" id="found" hidden></div>
 
   <section class="hero">
     <div class="screen">
@@ -414,8 +419,46 @@ document.querySelectorAll('[data-knob]').forEach(b =>
   b.addEventListener('click', ()=>{ const k = b.dataset.knob;
     sendKey('knob', k === 'press' ? ($('navLong').checked ? 'longPress' : 'shortPress') : k); }));
 
+/* ---------- discovery: serve.py listens on udp/55555 and serves /discover ---------- */
+async function findDevices(quiet){
+  const box = $('found');
+  try{
+    const r = await fetch('/discover', {cache:'no-store'});
+    if(!r.ok) throw new Error(`discover -> HTTP ${r.status}`);
+    const d = await r.json();
+    box.innerHTML = ''; box.hidden = false;
+    const eb = document.createElement('span'); eb.className = 'eyebrow'; box.append(eb);
+    if(!d.listening){
+      eb.textContent = 'discovery'; box.append(document.createTextNode(d.error || 'not listening'));
+      return [];
+    }
+    if(!d.devices.length){
+      eb.textContent = 'discovery';
+      box.append(document.createTextNode(`nothing heard on udp/${d.port} — a joined tc002 announces itself every second; on another vlan, type the address`));
+      if(!quiet) toast('No device heard');
+      return [];
+    }
+    eb.textContent = d.devices.length === 1 ? 'found' : `found ${d.devices.length}`;
+    d.devices.forEach(dev => {
+      const b = document.createElement('button'); b.className = 'btn ghost sm';
+      b.append(document.createTextNode(dev.ip));
+      const k = document.createElement('span'); k.className = 'k';
+      k.textContent = `sn …${String(dev.sn).slice(-4)} · seen ${dev.age}s ago`; b.append(k);
+      b.title = `serial ${dev.sn}, mac ${dev.mac}`;
+      b.addEventListener('click', ()=>{ $('host').value = dev.ip; loadAll(); });
+      box.append(b);
+    });
+    return d.devices;
+  }catch(e){
+    box.hidden = false; box.textContent = e.message;
+    if(!quiet) toast(e.message, true);
+    return [];
+  }
+}
+
 /* ---------- load / save ---------- */
 async function loadAll(){
+  if(!host()){ $('conn').className = 'pill off'; $('conn').textContent = 'no device'; findDevices(true); return; }
   $('conn').className = 'pill'; $('conn').textContent = 'connecting…';
   try{
     const base = await getJSON('getBase');
@@ -451,6 +494,7 @@ async function loadAll(){
   }catch(e){
     $('conn').className = 'pill off'; $('conn').textContent = 'unreachable';
     toast(e.message, true);
+    findDevices(true);   // offer whatever is announcing itself instead
   }
 }
 function updateMeta(){
@@ -499,6 +543,8 @@ async function save(what){
 }
 document.querySelectorAll('[data-save]').forEach(b => b.addEventListener('click', ()=>save(b.dataset.save)));
 $('reload').addEventListener('click', loadAll);
+$('find').addEventListener('click', ()=>findDevices(false));
+$('host').addEventListener('keydown', e => { if(e.key === 'Enter') loadAll(); });
 $('mqttcheck').addEventListener('click', mqttStatus);
 $('diyRefresh').addEventListener('click', loadDiy);
 $('ledsend').addEventListener('click', async ()=>{
@@ -510,10 +556,18 @@ $('ledsend').addEventListener('click', async ()=>{
 
 /* ---------- boot ---------- */
 buildMatrix($('matrix'));
-const q = new URLSearchParams(location.search).get('host');
-if(q) $('host').value = q; else { try{ const h = localStorage.getItem('tc002host'); if(h) $('host').value = h; }catch{} }
 tick(); setInterval(tick, 1000);
-loadAll();
+(async ()=>{
+  // address precedence: ?host= in the url, then the last one used, then
+  // whatever single device is announcing itself on the lan
+  const q = new URLSearchParams(location.search).get('host');
+  if(q) $('host').value = q; else { try{ const h = localStorage.getItem('tc002host'); if(h) $('host').value = h; }catch{} }
+  if(!host()){
+    const devs = await findDevices(true);
+    if(devs.length === 1) $('host').value = devs[0].ip;
+  }
+  loadAll();
+})();
 </script>
 </body>
 </html>
