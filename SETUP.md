@@ -31,21 +31,41 @@ mode** instead of joining a network:
 Returns `{"code":200}` on success, after which the device drops the AP and
 joins the target network. The web UI then redirects to `/wifi/result`.
 
-**Discovery once on the LAN.** Ulanzi Studio finds devices by UDP broadcast
-(the app has a `discoverTC002` routine over `QUdpSocket`), but the device does
-**not** advertise mDNS/Bonjour in station mode, and udp/36202 on the device is
-an ephemeral client socket, not a responder. The robust, protocol-independent
-method is an HTTP sweep: any host answering `GET /getBase` with a JSON object
-carrying `{devSn, mac, mcuVer, appVer, ssid, ip}` is a TC002. `tc002-adopt.py`
-does exactly this.
+**Discovery once on the LAN.** A joined device **announces itself by UDP
+broadcast**: about once a second it sends, from an ephemeral source port, a
+datagram to **port 55555** with the payload
+
+```
+Ulanzi TC002 <mac-tail>:<mac>:<serial>:<flag>
+```
+
+where `<mac-tail>` is the last four hex digits of the MAC (the same suffix the
+default MQTT prefix uses), `<mac>` is the full 12-hex MAC, `<serial>` is
+`devSn`, and `<flag>` is `true`/`false` (the firmware derives it from its
+Bluetooth service; it read `true` here with BLE up, and its exact meaning is
+not established). This is what Ulanzi Studio's `discoverTC002` listens for.
+The port is a literal in the firmware's `UdpBroadcaster` constructor, and the
+format was confirmed by capturing packets on the LAN. There is **no**
+mDNS/Bonjour.
+
+`tc002-adopt.py discover` listens on udp/55555 for a few seconds, then confirms
+each announced device with `GET /getBase` (which adds the IP, SSID and firmware
+versions). If nothing is heard, because the host is on another VLAN or the AP
+filters broadcasts, it falls back to an HTTP sweep of the subnet: any host
+answering `/getBase` with `{devSn, mac, mcuVer, appVer, ssid, ip}` is a TC002.
 
 ```bash
-# find devices already on your wifi
-/usr/bin/python3 tc002-adopt.py discover --subnet 10.0.0
+# find devices already on your wifi (listen, then confirm; ~3 s)
+/usr/bin/python3 tc002-adopt.py discover
+
+# sweep only, e.g. from another vlan (~4 s for a /24)
+/usr/bin/python3 tc002-adopt.py discover --no-listen --subnet 10.0.0
 
 # adopt a factory-fresh device (after joining its "U-Clock" ap)
 /usr/bin/python3 tc002-adopt.py adopt --ssid <your-wifi>
 ```
+
+Whether the device also broadcasts while in setup-AP mode was not checked.
 
 The macOS side of joining the `U-Clock` AP is manual (or scriptable with
 `networksetup -setairportnetwork`), because the device's on-AP `wpa_psk` is a

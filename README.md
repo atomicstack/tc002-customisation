@@ -44,8 +44,13 @@ everything uses apple's `/usr/bin/python3` deliberately — see
 **find a device already on your wifi**
 
 ```bash
-/usr/bin/python3 tc002-adopt.py discover --subnet 10.0.0
+/usr/bin/python3 tc002-adopt.py discover
 ```
+
+it listens for the device's own udp broadcast (port 55555, about once a
+second) and confirms over http, so it answers in a few seconds. from another
+vlan, or if your ap filters broadcasts, it falls back to a subnet sweep
+(`--no-listen --subnet 10.0.0` forces that).
 
 **control it in english**
 
@@ -120,8 +125,10 @@ the device:
 - **mqtt** — the other way to drive the 52×16 display without ulanzi studio;
   custom-app topic `[prefix]/custom/[app]` with the same `{duration,text,image,draw}`
   payload as `api/custom`. ([`MQTT.md`](MQTT.md), [`CUSTOM-APP.md`](CUSTOM-APP.md))
-- **setup** — factory-fresh devices come up as the `U-Clock` softap on
-  `192.168.1.1`; `POST /setWifiConfig` joins them to a network.
+- **setup / discovery** — factory-fresh devices come up as the `U-Clock`
+  softap on `192.168.1.1`; `POST /setWifiConfig` joins them to a network. once
+  joined, the device broadcasts `Ulanzi TC002 <tail>:<mac>:<serial>:<flag>` to
+  udp/55555 every second, which is how ulanzi studio finds it.
   ([`SETUP.md`](SETUP.md))
 - **time** — no rtc; the app's own sntp client steps the clock from four
   hardcoded chinese ntp ips at boot and about every 2 h. no api to set it, but

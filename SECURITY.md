@@ -38,7 +38,9 @@ These are properties of the device, not of anything installed on the Mac:
 8. **The cloud secret key is logged in cleartext** to `logcat`, which is
    readable over the unauthenticated adb.
 9. **Cloud registration is unauthenticated.** It needs only the serial and
-   MAC, which `/getBase` gives to anyone on the LAN. The consequence of a
+   MAC, which `/getBase` gives to anyone on the LAN, and which the device
+   also **broadcasts to the whole segment every second** on udp/55555 (see
+   [SETUP.md](SETUP.md)), so no request is even needed. The consequence of a
    third party re-registering your device was not tested.
 
 Reasonable mitigation: put the device on an isolated IoT VLAN/SSID and
