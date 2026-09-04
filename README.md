@@ -59,7 +59,11 @@ cd panel && /usr/bin/python3 serve.py 8777
 # open http://127.0.0.1:8777  (override the target with ?host=<device-ip>)
 ```
 
-the panel covers display/general settings, mqtt (with live connection status),
+the page finds the device by itself: `serve.py` listens for the udp/55555
+broadcast in the background and the page picks the address up from it (or
+offers a list if there are several; **find** re-checks). `--no-discover`
+turns that off, and the address can always be typed. the panel covers
+display/general settings, mqtt (with live connection status),
 the nine built-in apps (enable, and jump to any that's on), custom apps, the
 physical buttons and knob, and led current-gain calibration behind a
 confirmation. a 52×16 preview at the top simulates the clock face the way the
