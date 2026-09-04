@@ -29,6 +29,15 @@ pub fn build(b: *std.Build) void {
         }),
     });
     const run_frame_tests = b.addRunArtifact(frame_tests);
-    const test_step = b.step("test", "run frame tests");
+    const popsquares_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/popsquares.zig"),
+            .target = b.graph.host,
+            .optimize = .Debug,
+        }),
+    });
+    const run_popsquares_tests = b.addRunArtifact(popsquares_tests);
+    const test_step = b.step("test", "run host tests");
     test_step.dependOn(&run_frame_tests.step);
+    test_step.dependOn(&run_popsquares_tests.step);
 }
