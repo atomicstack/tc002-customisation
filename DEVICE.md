@@ -30,11 +30,16 @@ social counts, calendars and the update check — see [CLOUD.md](CLOUD.md).
 
 ## Device internals
 
+The full hardware inventory (SoC, clock, DRAM split, flash map, the pixel MCU,
+wireless chip, inputs, audio, power) lives in the
+[README's hardware section](README.md#hardware). The short version:
+
 | | |
 |---|---|
-| SoC | SigmaStar SSD21x, dual core (`Zkswe_SSD21X_SPINOR`) |
+| SoC | SigmaStar SSD21x "Pioneer3", 2 × Cortex-A7 at a fixed 1.0 GHz (`Zkswe_SSD21X_SPINOR`) |
 | Kernel | Linux 4.9.84 SMP PREEMPT, built with OpenWrt GCC 9.1.0 |
-| RAM | ~32 MB |
+| RAM | 64 MB in-package; ~35 MB left for Linux after the media-heap and framebuffer reservations |
+| Flash | 32 MiB SPI NOR, eight MTD partitions |
 | Root fs | squashfs, 3.5 MB, **read-only** |
 | `/res` | squashfs on `mtdblock3`, 2.8 MB, **read-only** (UI assets, fonts, certs) |
 | `/data` | jffs2, 8 MB, **read-write and persistent** |
