@@ -14,7 +14,7 @@ docs, one topic each:
 
 | doc | what it covers |
 |-----|----------------|
-| [`HTTP-API.md`](HTTP-API.md) | the local http api on port 80: cors behaviour, every endpoint with examples, led current gain, and the web ui language dead end |
+| [`HTTP-API.md`](HTTP-API.md) | the local http api on port 80: conventions, cors behaviour, and every endpoint with its request fields, response shape, error messages and how it was established |
 | [`DEVICE.md`](DEVICE.md) | living with the device: the stripped busybox, root adb, flashing and recovery, and how it keeps time. the hardware inventory itself is in this readme under [hardware](#hardware) |
 | [`SETUP.md`](SETUP.md) | the setup-ap, discovery and adoption flow that replaces ulanzi studio |
 | [`CLOUD.md`](CLOUD.md) | what the device sends to ulanzi's cloud, how it authenticates, and why that's a problem |
