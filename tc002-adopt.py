@@ -3,8 +3,16 @@
 
 Replaces the Ulanzi Studio desktop app for initial setup.
 
-  discover                    sweep the local subnet for TC002 devices
+  discover                    find TC002 devices on the LAN
   adopt --ssid NAME           join a device (in setup-AP mode) to wifi
+
+Discovery:
+  A joined TC002 announces itself about once a second by UDP broadcast to
+  port 55555 with the payload "Ulanzi TC002 <mac-tail>:<mac>:<serial>:<bool>".
+  'discover' listens for that first (a few seconds), then confirms each
+  device over HTTP. If nothing is heard - a different VLAN, a firewall, or a
+  broadcast-filtering AP - it falls back to sweeping the subnet for hosts
+  answering GET /getBase.
 
 Adoption flow:
   A factory-fresh TC002 with no wifi credentials starts a WPA2 access point
@@ -16,12 +24,15 @@ Adoption flow:
 Use Apple's /usr/bin/python3 - Homebrew binaries are blocked from LAN access
 by macOS Local Network Privacy.
 """
-import argparse, getpass, json, socket, struct, subprocess, sys, urllib.error, urllib.request
+import argparse, getpass, json, re, socket, subprocess, sys, time, urllib.error, urllib.request
 from concurrent.futures import ThreadPoolExecutor
 
 SETUP_AP_SSID = "U-Clock"
 SETUP_AP_HOST = "192.168.1.1"
 TC002_KEYS = {"devSn", "mac", "mcuVer", "appVer", "ssid", "ip"}
+BROADCAST_PORT = 55555
+BROADCAST_RE = re.compile(
+    r"^Ulanzi TC002 (?P<tail>[0-9a-f]{4}):(?P<mac>[0-9a-f]{12}):(?P<sn>[A-Za-z0-9]+):(?P<flag>true|false)$")
 
 
 def http_json(host, path, payload=None, timeout=3.0):
@@ -62,7 +73,8 @@ def probe(host):
         return None
 
 
-def discover(subnet, workers=128):
+def sweep(subnet, workers=128):
+    """Probe every host in a /24 for a TC002 answering GET /getBase."""
     hosts = [f"{subnet}.{i}" for i in range(1, 255)]
     found = []
     with ThreadPoolExecutor(max_workers=workers) as ex:
@@ -72,21 +84,78 @@ def discover(subnet, workers=128):
     return found
 
 
+def listen(seconds):
+    """Collect TC002 broadcast announcements on udp/55555.
+
+    Returns {ip: {"mac", "sn", "flag"}}. The device sends about once a second,
+    so a few seconds is enough. SO_REUSEPORT lets this coexist with Ulanzi
+    Studio, which listens on the same port.
+    """
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    try:
+        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
+    except (AttributeError, OSError):
+        pass
+    try:
+        s.bind(("0.0.0.0", BROADCAST_PORT))
+    except OSError as e:
+        print(f"  cannot listen on udp/{BROADCAST_PORT}: {e}", file=sys.stderr)
+        return {}
+    heard = {}
+    deadline = time.monotonic() + seconds
+    while True:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        s.settimeout(remaining)
+        try:
+            data, (ip, _port) = s.recvfrom(1024)
+        except socket.timeout:
+            break
+        except OSError:
+            continue
+        m = BROADCAST_RE.match(data.decode("utf-8", "replace").strip())
+        if m:
+            heard[ip] = m.groupdict()
+    s.close()
+    return heard
+
+
 def cmd_discover(args):
-    subnet = args.subnet or local_subnet()
-    if not subnet:
-        print("could not determine local subnet; pass --subnet 10.0.0", file=sys.stderr)
-        return 2
-    print(f"scanning {subnet}.0/24 for tc002 devices ...")
-    found = discover(subnet)
+    found = []          # list of (ip, base-json-or-None, broadcast-dict-or-None)
+
+    if not args.no_listen:
+        print(f"listening for tc002 broadcasts on udp/{BROADCAST_PORT} for {args.listen:g}s ...")
+        heard = listen(args.listen)
+        if heard:
+            # confirm each over http; the broadcast alone carries mac + serial
+            with ThreadPoolExecutor(max_workers=8) as ex:
+                for ip, base in zip(heard, ex.map(probe, heard)):
+                    found.append((ip, base[1] if base else None, heard[ip]))
+
+    if not found and not args.no_sweep:
+        subnet = args.subnet or local_subnet()
+        if not subnet:
+            print("  nothing heard, and could not determine the local subnet; pass --subnet 10.0.0",
+                  file=sys.stderr)
+            return 2
+        if not args.no_listen:
+            print("  nothing heard (different vlan, or broadcasts filtered?)")
+        print(f"sweeping {subnet}.0/24 for tc002 devices ...")
+        found = [(ip, base, None) for ip, base in sweep(subnet)]
+
     if not found:
         print("  none found")
         print(f"  if the device is unconfigured it is hosting the '{SETUP_AP_SSID}' ap;")
         print(f"  join that network and run: {sys.argv[0]} adopt --ssid <your-wifi>")
         return 1
-    for host, b in found:
-        print(f"  {host}  sn={b.get('devSn')}  app={b.get('appVer')} "
-              f"mcu={b.get('mcuVer')}  joined-ssid={b.get('ssid')!r}")
+    for ip, base, bc in found:
+        if base:
+            print(f"  {ip}  sn={base.get('devSn')}  mac={base.get('mac')}  app={base.get('appVer')} "
+                  f"mcu={base.get('mcuVer')}  joined-ssid={base.get('ssid')!r}")
+        else:
+            print(f"  {ip}  sn={bc['sn']}  mac={bc['mac']}  (announced by broadcast; http not reachable)")
     return 0
 
 
@@ -126,8 +195,12 @@ def main():
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = p.add_subparsers(dest="cmd", required=True)
 
-    d = sub.add_parser("discover", help="sweep the subnet for tc002 devices")
-    d.add_argument("--subnet", help="first three octets, e.g. 10.0.0")
+    d = sub.add_parser("discover", help="find tc002 devices on the lan")
+    d.add_argument("--listen", type=float, default=3.0, metavar="SECONDS",
+                   help="how long to listen for udp broadcasts (default 3)")
+    d.add_argument("--no-listen", action="store_true", help="skip listening; sweep only")
+    d.add_argument("--no-sweep", action="store_true", help="do not fall back to the subnet sweep")
+    d.add_argument("--subnet", help="first three octets for the sweep, e.g. 10.0.0")
     d.set_defaults(func=cmd_discover)
 
     a = sub.add_parser("adopt", help="join a device in setup-ap mode to wifi")
