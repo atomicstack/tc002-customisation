@@ -5,7 +5,7 @@ service `zkswe`) renders each frame in software and ships it to the panel's mcu
 over spi with a gpio latch. anything that can open two device nodes can do the
 same, which is how [`led/popsquares`](led/) runs generative art at a locked
 60 fps on the device itself, with no wifi and no json in the loop. the
-custom-app route over http/mqtt ([`CUSTOM-APP.md`](CUSTOM-APP.md)) tops out
+custom-app route over http/mqtt (`CUSTOM-APP.md`) tops out
 around 30 fps because the app parses and renders every frame.
 
 ## how the panel is driven
@@ -82,7 +82,7 @@ make test     # host unit tests
 make          # ./popsquares — static armv7 binary, ~40 kb
 ```
 
-run (after `adb connect <device-ip>`, see [`DEVICE.md`](DEVICE.md)):
+run (after `adb connect <device-ip>`, see `DEVICE.md`):
 
 ```bash
 ./tc002-led.sh start --stats     # stop zkswe, push to /tmp, run detached

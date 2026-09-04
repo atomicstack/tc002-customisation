@@ -1,9 +1,9 @@
 # Ulanzi TC002 — Custom App payload
 
 The frame format the device accepts for "custom apps" (the stock UI calls them
-DIY apps), shared by the local HTTP endpoint and the MQTT topic. Part of
-[tc002-customisation](README.md); the transports are described in
-[HTTP-API.md](HTTP-API.md#custom-apps) and [MQTT.md](MQTT.md).
+DIY apps), shared by the local HTTP endpoint and the MQTT topic. The
+transports are described in [HTTP-API.md](HTTP-API.md#custom-apps) and
+`MQTT.md`.
 
 Everything here comes from what [PixDeck](https://github.com/cailurus/PixDeck)
 sends to stock firmware and observes working — it drives the display through

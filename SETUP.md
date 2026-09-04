@@ -1,9 +1,8 @@
 # Ulanzi TC002 — initial setup / adoption (replacing Ulanzi Studio)
 
 How a factory-fresh TC002 gets onto your wifi, how to find it once it's there,
-and how `tc002-adopt.py` does both without the Ulanzi Studio desktop app. Part
-of [tc002-customisation](README.md); the endpoints involved are in
-[HTTP-API.md](HTTP-API.md).
+and how `tc002-adopt.py` does both without the Ulanzi Studio desktop app. The
+endpoints involved are in `HTTP-API.md`.
 
 > Identifiers (serial, MAC, SSID) are replaced with placeholders.
 

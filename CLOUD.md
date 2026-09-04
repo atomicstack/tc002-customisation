@@ -1,9 +1,9 @@
 # Ulanzi TC002 — cloud authentication and outbound traffic
 
 What the device sends to Ulanzi's servers, how it authenticates to them, and
-why that matters. Part of [tc002-customisation](README.md).
+why that matters.
 
-Besides the local API ([HTTP-API.md](HTTP-API.md)), the firmware talks
+Besides the local API (`HTTP-API.md`), the firmware talks
 **outbound** to Ulanzi's cloud (and, separately, to four NTP servers — see
 [DEVICE.md](DEVICE.md#time)), and three keys in `/data/setting.ini` exist only
 for the cloud:
@@ -83,7 +83,7 @@ them either.
   fetch on the device's behalf.
 
 These are summarised alongside the local-API findings in
-[SECURITY.md](SECURITY.md).
+`SECURITY.md`.
 
 ---
 

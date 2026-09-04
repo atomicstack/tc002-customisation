@@ -1,8 +1,7 @@
 # Ulanzi TC002 — device internals, shell and adb
 
 What the TC002 is running, how to get a root shell on it, and how to flash or
-recover it. Part of [tc002-customisation](README.md); the local API is in
-[HTTP-API.md](HTTP-API.md).
+recover it. The local API is in `HTTP-API.md`.
 
 Device under test: `appVer 1.1.1`, `mcuVer V1.0.17`.
 
@@ -20,11 +19,11 @@ It exposes two useful local interfaces with **no authentication**:
 
 | Port | Service | Notes |
 |-----:|---------|-------|
-| 80   | HTTP settings API | unauthenticated read/write of all config — see [HTTP-API.md](HTTP-API.md) |
+| 80   | HTTP settings API | unauthenticated read/write of all config — see `HTTP-API.md` |
 | 5555 | `adbd` | wifi adb; USB is mass-storage only |
 
 It also phones home to `api.ulanzistudio.com` over **plain HTTP** for weather,
-social counts, calendars and the update check — see [CLOUD.md](CLOUD.md).
+social counts, calendars and the update check — see `CLOUD.md`.
 
 ---
 
@@ -49,12 +48,12 @@ wireless chip, inputs, audio, power) lives in the
 Userspace processes: `init`, `ueventd`, `vold`, `logd`, `adbd`, `wpa_supplicant`,
 and the FlyThings stack — `zkdaemon`, `zkdisplay`, `zkgui` (the app runtime that
 drives the display; it is the init service `zkswe`, and how it pushes pixels to the
-led matrix over spi is in [LED-SPI.md](LED-SPI.md)).
+led matrix over spi is in `LED-SPI.md`).
 
 `/data/setting.ini` is the single source of truth the HTTP API writes: brightness,
 timezone, volume, wifi credentials, MQTT settings and social tokens. It also
 holds the device's cloud credentials (`secretKey`, `authToken`,
-`authRefreshToken`) — see [CLOUD.md](CLOUD.md).
+`authRefreshToken`) — see `CLOUD.md`.
 
 ### Shell access
 

@@ -2,7 +2,7 @@
 
 Findings about the device itself, collected while reverse-engineering it, with
 the mitigations that follow from them. This is not a vulnerability-disclosure
-policy for this repository. Part of [tc002-customisation](README.md).
+policy for this repository.
 
 These are properties of the device, not of anything installed on the Mac:
 
@@ -34,13 +34,13 @@ These are properties of the device, not of anything installed on the Mac:
    custom app by posting `{}`.
 7. **All cloud traffic is plain HTTP.** Device registration, bearer tokens,
    and any CalDAV username/password you configure go to
-   `api.ulanzistudio.com` unencrypted. See [CLOUD.md](CLOUD.md).
+   `api.ulanzistudio.com` unencrypted. See `CLOUD.md`.
 8. **The cloud secret key is logged in cleartext** to `logcat`, which is
    readable over the unauthenticated adb.
 9. **Cloud registration is unauthenticated.** It needs only the serial and
    MAC, which `/getBase` gives to anyone on the LAN, and which the device
    also **broadcasts to the whole segment every second** on udp/55555 (see
-   [SETUP.md](SETUP.md)), so no request is even needed. The consequence of a
+   `SETUP.md`), so no request is even needed. The consequence of a
    third party re-registering your device was not tested.
 
 Reasonable mitigation: put the device on an isolated IoT VLAN/SSID and

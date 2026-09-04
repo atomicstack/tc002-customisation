@@ -4,12 +4,7 @@ The unauthenticated HTTP API the device serves on port 80, reverse-engineered
 from a TC002 (Pixbar Smart Pixel Clock II) on the local network plus static
 analysis of `Mac_Apple_Ulanzi_Studio_V3.3.6_20260831.pkg`.
 
-Part of [tc002-customisation](README.md). The other docs: [DEVICE.md](DEVICE.md)
-for what the device is and how to get a shell, [SETUP.md](SETUP.md) for getting
-it onto wifi, [CLOUD.md](CLOUD.md) for its outbound traffic, [MQTT.md](MQTT.md)
-for driving the display over a broker, [CUSTOM-APP.md](CUSTOM-APP.md) for
-the frame payload both transports share, and [SECURITY.md](SECURITY.md) for
-the caveats.
+The other documents in this repository are listed in the README.
 
 Device under test: `appVer 1.1.1`, `mcuVer V1.0.17`.
 
@@ -46,7 +41,7 @@ Two consequences:
   sent as `text/plain` (a "simple request" that needs no preflight at all). It
   checks neither `Origin` nor `Content-Type`. The browser withholds the *reply*,
   but the device has already acted on the request. See
-  [SECURITY.md](SECURITY.md).
+  `SECURITY.md`.
 
 Verifying with `curl -I` is misleading — the device 404s `HEAD`, and that error
 response *does* carry the header. Check a real `GET`:
@@ -86,7 +81,7 @@ curl -s -i -H 'Origin: http://localhost' http://<device-ip>/getConfig | grep -i 
 | POST | `/update` | **triggers firmware update — destructive** |
 | POST | `/resetConfig` | **factory reset — destructive** |
 | ?    | `/wifi/config` | wifi configuration |
-| POST | `/setWifiConfig` | join a wifi network — payload and flow in [SETUP.md](SETUP.md) |
+| POST | `/setWifiConfig` | join a wifi network — payload and flow in `SETUP.md` |
 | POST | `/setLedRegister` | LED driver current gain (see below) |
 | GET  | `/social/authorizeUrl?platform=<id>` | OAuth authorize URL |
 | GET  | `/social/tokenStatus?platform=<id>` | OAuth token status |
@@ -138,7 +133,7 @@ that the MQTT topic `<prefix>/custom/<app>` takes, and `GET /api/customList`
 lists what is there. This is the protocol [PixDeck](https://github.com/cailurus/PixDeck)
 uses on stock firmware. The payload — text, draw primitives, bitmaps, animated
 GIFs, the ASCII-only font and the no-scrolling caveat — is documented once in
-[CUSTOM-APP.md](CUSTOM-APP.md).
+`CUSTOM-APP.md`.
 
 ```bash
 # push a frame (creates the app on first use)
@@ -158,7 +153,7 @@ curl -s -X POST 'http://<device-ip>/api/custom?name=hello' \
 
 Like every other endpoint this is unauthenticated, and the same CORS gap
 applies: the preflight approves the cross-origin `POST`, so any web page can
-put content on the display or remove apps (see [SECURITY.md](SECURITY.md)).
+put content on the display or remove apps (see `SECURITY.md`).
 PixDeck ignores the response body; its format is not documented here.
 
 ---
@@ -208,7 +203,7 @@ curl -s -X POST 'http://<device-ip>/api/switchDiyApp?name=popsquares'
 
 Missing `name` returns `{"code":400,"message":"Missing query parameter: name"}`.
 The device also subscribes to `<prefix>/switchDiyApp` on MQTT for the same
-action (see [MQTT.md](MQTT.md)).
+action (see `MQTT.md`).
 
 ### `/keyEvent` — inject a button or knob event
 
@@ -232,7 +227,7 @@ curl -s -X POST http://<device-ip>/keyEvent \
   `Missing required parameter: key` / `event`.
 
 All three are unauthenticated and, like the rest of the API, forgeable
-cross-origin from any web page (see [SECURITY.md](SECURITY.md)).
+cross-origin from any web page (see `SECURITY.md`).
 
 ---
 
