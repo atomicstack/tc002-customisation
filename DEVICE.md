@@ -75,41 +75,84 @@ holds the device's cloud credentials (`secretKey`, `authToken`,
 There is **no RTC** (`/dev/rtc*` and `/sys/class/rtc` are absent). The system
 clock starts at the 1970 epoch on every boot and is set purely by an SNTP
 client built into the app library (`ntp::` in `libzkgui.so`, calling
-`settimeofday`):
+`settimeofday`). Everything below was read out of that library's disassembly
+and then checked against the running device.
 
 - **When:** once at app start (`mainActivity::onCreate`), then from a
-  **repeating** scheduled task with a **2 h period** and a random component
-  of up to 1 h (`schedule(name, fn, 7200000, rand() % 3600000)` in the
-  binary; whether the random part is a first-run delay or per-run jitter was
-  not settled). Observed here: a boot sync, then one 16 h 12 min later, which
-  fits 2 h × 8 plus a 12 min initial delay. Between syncs the clock
-  free-runs, and each sync *steps* the time rather than slewing it, so with
-  the clock app set to `HH:MM:SS` a few seconds of drift can be visible just
-  before a sync.
-- **From where:** four hardcoded IPs, no hostname, not configurable:
+  repeating `UiHandler::schedule(name, fn, period, firstDelay)` with
+  `period = 7200000` ms and `firstDelay = rand() % 3600000` ms — **every
+  2 h**, starting at a random point in the first hour. (The argument order is
+  settled by `postDelayed`, which passes its delay in the `firstDelay` slot.)
+  Each sync *steps* the clock rather than slewing it. An earlier note here
+  about a 16 h gap was an artefact of the log buffer, which a once-a-second
+  audio message keeps to about an hour of history.
+- **How:** a detached thread tries the servers in order with a **3 s** receive
+  timeout each, takes the first reply, sets the time and logs
+  `time sync success` (`D/NTP`) and `NTP sync success, server=<ip>`
+  (`I/zkgui`). If all seven fail it logs `can not sync time`, sleeps 5 s and
+  starts over, forever, until one answers.
+- **From where:** seven hardcoded IPv4 literals, parsed with `inet_addr`, so
+  there is no DNS lookup to redirect and no hostname involved:
   `203.107.6.88` (`ntp.aliyun.com`), `182.92.12.11` (`time5.aliyun.com`),
-  `120.25.115.20` (`cn.ntp.org.cn`) and `103.11.143.248` (unlabelled,
-  AS58436). All in China; the sync still landed within a fraction of a second
-  of an NTP-checked host here.
+  `120.25.115.20` (`cn.ntp.org.cn`), `103.11.143.248`, `202.73.57.107`,
+  `158.69.48.97` and `216.218.254.202`. The first two drop ICMP but answer
+  NTP; syncs here have landed on the first three.
+- **Drift:** the unit tested here runs about **70 ppm fast** (three offset
+  samples against an NTP-disciplined host over 7 min, and the same figure from
+  the offset accumulated since a logged sync). That is roughly half a second
+  ahead just before each 2 h sync, and about 6 s/day if it cannot sync at all.
 - **Timezone:** the OS runs in UTC (`date` prints UTC). The `timezone` value
   from `/getConfig` is applied by the app when it renders.
 
-There is **no HTTP or MQTT endpoint** to set the time or the NTP server. Over
-adb the busybox `date` applet works, as root:
+There is **no HTTP or MQTT endpoint** to set the time, the period or the
+servers. Over adb the busybox `date` applet works, as root:
 
 ```bash
 adb shell date -u -s "$(date -u +'%Y-%m-%d %H:%M:%S')"
 ```
 
 It takes effect immediately, is overwritten at the next SNTP sync (harmless if
-the host is NTP-disciplined), and is lost on reboot. Measured here before and
-after such a set, the device was within half a second of an NTP-checked host
-both times: the sync itself is accurate, and any offset you see is drift
-between syncs.
+the host is NTP-disciplined), and is lost on reboot.
 
 If you firewall the device's internet access, **leave UDP/123 open to those
-four IPs** (or redirect it to a local NTP server). Otherwise the clock never
+seven IPs**, DNAT it to a local NTP server (it must be NAT: the list is
+addresses, not names), or patch the list as below. Otherwise the clock never
 leaves 1970 after a reboot.
+
+### Syncing more often, or from your own server (`tc002-ntp-patch.py`)
+
+The period, the first-delay expression and the seven server strings are
+constants in `libzkgui.so`, which lives on the read-only `/res` squashfs. The
+launcher opens it by absolute path (`startupLibPath` in `/res/etc/EasyUI.cfg`),
+so the `/tmp`-first `LD_LIBRARY_PATH` that `init.rc` sets does not help — but
+a bind mount over that path does, and nothing in flash has to change.
+`tc002-ntp-patch.py` does the whole thing:
+
+```bash
+/usr/bin/python3 tc002-ntp-patch.py status -s <device-ip>
+/usr/bin/python3 tc002-ntp-patch.py apply  -s <device-ip> --period 10
+/usr/bin/python3 tc002-ntp-patch.py apply  -s <device-ip> --period 10 --server 10.0.0.5
+/usr/bin/python3 tc002-ntp-patch.py revert -s <device-ip>
+```
+
+`apply` pulls the library, refuses anything but the app 1.1.1 build the
+offsets were worked out on (by sha256), patches the constants, pushes the copy
+to `/tmp`, bind-mounts it over `/res/lib/libzkgui.so`, stops and starts the
+`zkswe` service (this init silently ignores `ctl.restart`) and confirms by
+inode that the new process mapped the copy. `--period` also swaps the
+first-delay `rand() % 3600000` for `rand() & 0xff00` (0–65 s) so the regular
+cadence starts straight away; `--server` overwrites all seven 16-byte slots
+with the IPv4 literals you give, cycling if you give fewer than seven.
+`patch --in --out` does the byte edit on a local copy with no device attached.
+
+Verified here with `--period 10`: the app synced at start, again 24 s later,
+and then every 10 min.
+
+What it costs: the copy sits in tmpfs, so **about 7.5 MB of the ~13 MB the
+device had available** is gone while it is applied (`MemAvailable` went from
+13.3 MB to 7–8 MB here, with no ill effect seen in the time it has run). It is
+**not persistent**: a power cycle brings back the stock 2 h schedule and you
+run `apply` again. `status` says which library the running app has mapped.
 
 ---
 
@@ -147,6 +190,10 @@ adb shell setprop sys.zkupgrade.flag 255
 adb shell setprop sys.zkupgrade.dir /tmp
 adb shell setprop ctl.restart zkswe
 ```
+
+(That last line is the vendor recipe as published. When tried here,
+`ctl.restart` was silently ignored by this init; `setprop ctl.stop zkswe`
+followed by `setprop ctl.start zkswe` does restart the app.)
 
 **Recovery:** hold the reset button during power-up to restore factory
 firmware.

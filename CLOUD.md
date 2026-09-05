@@ -4,7 +4,7 @@ What the device sends to Ulanzi's servers, how it authenticates to them, and
 why that matters.
 
 Besides the local API (`HTTP-API.md`), the firmware talks
-**outbound** to Ulanzi's cloud (and, separately, to four NTP servers — see
+**outbound** to Ulanzi's cloud (and, separately, to seven NTP servers — see
 [DEVICE.md](DEVICE.md#time)), and three keys in `/data/setting.ini` exist only
 for the cloud:
 
@@ -90,10 +90,13 @@ These are summarised alongside the local-API findings in
 ## Mitigation
 
 If weather, social counts, calendars and the update check are not needed, block
-the device's outbound internet at the router — **except UDP/123 to the four
+the device's outbound internet at the router — **except UDP/123 to the seven
 NTP IPs listed in [DEVICE.md](DEVICE.md#time)**, or redirect that to a local
-NTP server. The device has no RTC and gets its time only from those servers,
-so a blanket block leaves the clock at 1970 after the next reboot. The local
+NTP server. The list is IP literals, not names, so the redirect has to be a
+destination-NAT rule rather than DNS; the other option is to write your own
+server's address into the app library with `tc002-ntp-patch.py --server`
+(same section). The device has no RTC and gets its time only from those
+servers, so a blanket block leaves the clock at 1970 after the next reboot. The local
 API and MQTT do not involve the cloud, so they should keep working; running the
 device that way has not been tested here for side effects such as retry spam
 in `logcat`.
