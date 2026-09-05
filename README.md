@@ -30,6 +30,7 @@ tools:
 | [`tc002-adopt.py`](tc002-adopt.py) | discover tc002 devices on the lan and join a factory-fresh one to wifi — replaces ulanzi studio for setup |
 | [`panel/`](panel/) | an english web control panel for the device (the stock ui is chinese-only) |
 | [`mqtt-check.py`](mqtt-check.py) | verify mosquitto broker credentials from the raw mqtt connack code |
+| [`tc002-ntp-patch.py`](tc002-ntp-patch.py) | make the clock sync every n minutes instead of every 2 h, and/or from your own ntp server — patches the app library in tmpfs, nothing in flash |
 | [`led/`](led/) | popsquares generative art running on the device at 60 fps, straight to the panel over spi — static armv7 binary built with zig, plus an adb start/stop wrapper |
 
 related: [pixdeck](https://github.com/cailurus/PixDeck) is a working stock-firmware
@@ -108,6 +109,19 @@ shell history. `code=0` means valid. note that mosquitto returns `5` (not
 authorized) rather than the spec's `4` for bad credentials, so treat `5` as
 "wrong username/password".
 
+**make the clock sync more often**
+
+```bash
+/usr/bin/python3 tc002-ntp-patch.py apply -s <device-ip> --period 10
+```
+
+the stock firmware syncs every 2 h and the crystal gains about 70 ppm, so
+the seconds run visibly ahead before each sync. this pushes a patched copy of
+the app library into tmpfs and bind-mounts it over the stock one; add
+`--server <ip>` to point it at your own ntp server instead of the seven
+hardcoded ones. it costs ~7.5 mb of the device's ram, is gone after a power
+cycle, and `revert` undoes it now. details in [`DEVICE.md`](DEVICE.md#time).
+
 ## what's been established
 
 the device:
@@ -134,9 +148,12 @@ the device:
   joined, the device broadcasts `Ulanzi TC002 <tail>:<mac>:<serial>:<flag>` to
   udp/55555 every second, which is how ulanzi studio finds it.
   ([`SETUP.md`](SETUP.md))
-- **time** — no rtc; the app's own sntp client steps the clock from four
-  hardcoded chinese ntp ips at boot and about every 2 h. no api to set it, but
-  `adb shell date -s` works. ([`DEVICE.md`](DEVICE.md#time))
+- **time** — no rtc; the app's own sntp client steps the clock from seven
+  hardcoded ntp ips (four in china) at boot and every 2 h, and the crystal
+  runs ~70 ppm fast, so the seconds drift visibly between syncs. no api for
+  any of it, but `adb shell date -s` works and
+  [`tc002-ntp-patch.py`](tc002-ntp-patch.py) changes the period and the
+  servers in place. ([`DEVICE.md`](DEVICE.md#time))
 - **cloud** — the device registers itself with `api.ulanzistudio.com` over
   plain http and keeps a per-device secret key plus a bearer/refresh token pair
   in `setting.ini`. weather, social counts, calendars and the update check all
