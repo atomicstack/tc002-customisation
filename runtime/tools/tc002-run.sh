@@ -46,10 +46,10 @@ case "${1:-status}" in
     need_adb
     (cd "$RUNTIME" && zig build && zig build check) || die "build failed"
     adb shell "mkdir -p $DEV" >/dev/null
-    for f in bin/tc002d bin/tc002-supervisor lib/libtc002-bootstrap.so; do
+    for f in bin/tc002d bin/tc002-supervisor bin/tc002-netd lib/libtc002-bootstrap.so; do
         adb push "$RUNTIME/zig-out/$f" "$DEV/$(basename "$f")" >/dev/null || die "push of $f failed"
     done
-    adb shell "chmod 755 $DEV/tc002d $DEV/tc002-supervisor" >/dev/null
+    adb shell "chmod 755 $DEV/tc002d $DEV/tc002-supervisor $DEV/tc002-netd" >/dev/null
     dsh "ls -la $DEV"
     ;;
   start)

@@ -343,3 +343,102 @@ pub fn evdevKeyDown(fd: Fd, code: u16) Error!bool {
     if (code / 8 >= bits.len) return false;
     return (bits[code / 8] >> @intCast(code % 8)) & 1 == 1;
 }
+
+// tcp
+
+fn inetAddr(addr: [4]u8, port: u16) linux.sockaddr.in {
+    return .{ .port = std.mem.nativeToBig(u16, port), .addr = @bitCast(addr) };
+}
+
+/// a nonblocking listening socket on 0.0.0.0:port (needs root for ports below 1024).
+pub fn tcpListener(port: u16, backlog: u32) Error!Fd {
+    const fd: Fd = @intCast(try check(linux.socket(linux.AF.INET, linux.SOCK.STREAM | linux.SOCK.CLOEXEC | linux.SOCK.NONBLOCK, 0)));
+    errdefer close(fd);
+    const one: u32 = 1;
+    _ = try check(linux.setsockopt(fd, linux.SOL.SOCKET, linux.SO.REUSEADDR, @ptrCast(&one), @sizeOf(u32)));
+    const sa = inetAddr(.{ 0, 0, 0, 0 }, port);
+    _ = try check(linux.bind(fd, @ptrCast(&sa), @sizeOf(linux.sockaddr.in)));
+    _ = try check(linux.listen(fd, backlog));
+    return fd;
+}
+
+/// accept one nonblocking, close-on-exec connection, or null when none is waiting.
+pub fn accept(listener: Fd) Error!?Fd {
+    const rc = linux.accept4(listener, null, null, linux.SOCK.NONBLOCK | linux.SOCK.CLOEXEC);
+    const fd = check(rc) catch |e| switch (e) {
+        error.WouldBlock, error.Interrupted => return null,
+        else => return e,
+    };
+    return @intCast(fd);
+}
+
+/// start a nonblocking tcp connect; completion is reported by epoll OUT and `socketConnected`.
+pub fn tcpConnect(addr: [4]u8, port: u16) Error!Fd {
+    const fd: Fd = @intCast(try check(linux.socket(linux.AF.INET, linux.SOCK.STREAM | linux.SOCK.CLOEXEC | linux.SOCK.NONBLOCK, 0)));
+    errdefer close(fd);
+    const sa = inetAddr(addr, port);
+    const rc = linux.connect(fd, &sa, @sizeOf(linux.sockaddr.in));
+    switch (errno(rc)) {
+        .SUCCESS, .INPROGRESS => return fd,
+        else => return error.Unexpected,
+    }
+}
+
+/// after epoll reports writability on a connecting socket: true when the connect succeeded.
+pub fn socketConnected(fd: Fd) bool {
+    var err: i32 = 0;
+    var len: linux.socklen_t = @sizeOf(i32);
+    const rc = linux.getsockopt(fd, linux.SOL.SOCKET, linux.SO.ERROR, @ptrCast(&err), &len);
+    return errno(rc) == .SUCCESS and err == 0;
+}
+
+pub fn epollMod(ep: Fd, fd: Fd, events: u32, tag: u64) void {
+    var ev = Event{ .events = events, .data = .{ .u64 = tag } };
+    _ = linux.epoll_ctl(ep, linux.EPOLL.CTL_MOD, fd, &ev);
+}
+
+pub fn setTcpNodelay(fd: Fd) void {
+    const one: u32 = 1;
+    _ = linux.setsockopt(fd, linux.IPPROTO.TCP, linux.TCP.NODELAY, @ptrCast(&one), @sizeOf(u32));
+}
+
+// privileges and files
+
+/// drop to an unprivileged uid/gid with no supplementary groups; verified, never assumed.
+pub fn dropPrivileges(uid: u32, gid: u32) Error!void {
+    const no_groups: [0]u32 = .{};
+    _ = try check(linux.setgroups(0, &no_groups));
+    _ = try check(linux.setresgid(gid, gid, gid));
+    _ = try check(linux.setresuid(uid, uid, uid));
+    if (linux.getuid() != uid) return error.Unexpected;
+}
+
+/// read a whole small file (procfs or a config file) into `buf`.
+pub fn readFile(path: [*:0]const u8, buf: []u8) Error![]u8 {
+    const fd = try open(path, .{ .ACCMODE = .RDONLY, .CLOEXEC = true }, 0);
+    defer close(fd);
+    var len: usize = 0;
+    while (len < buf.len) {
+        const n = read(fd, buf[len..]) catch |e| switch (e) {
+            error.Interrupted => continue,
+            else => return e,
+        };
+        if (n == 0) break;
+        len += n;
+    }
+    return buf[0..len];
+}
+
+/// temp file, checked flush, atomic rename, directory flush; the last valid file survives a crash.
+pub fn saveFileAtomic(dir_path: [*:0]const u8, tmp_path: [*:0]const u8, final_path: [*:0]const u8, bytes: []const u8) Error!void {
+    const fd = try open(tmp_path, .{ .ACCMODE = .WRONLY, .CREAT = true, .TRUNC = true, .CLOEXEC = true }, 0o600);
+    {
+        defer close(fd);
+        try writeAll(fd, bytes);
+        _ = try check(linux.fsync(fd));
+    }
+    _ = try check(linux.rename(tmp_path, final_path));
+    const dfd = try open(dir_path, .{ .ACCMODE = .RDONLY, .DIRECTORY = true, .CLOEXEC = true }, 0);
+    defer close(dfd);
+    _ = try check(linux.fsync(dfd));
+}

@@ -22,6 +22,7 @@ test "every message kind round-trips through a packet" {
         .time_corrected,
         .{ .ip_changed = .{ .present = 1, .addr = .{ 10, 0, 0, 111 } } },
         .stop,
+        .{ .set_timezone = config.Text.init("JST-9") },
         .{ .credentials = .{ .control = [_]u8{0x11} ** 32, .admin = [_]u8{0x22} ** 32 } },
         .{ .config = blk: {
             var c = config.Config{};
@@ -112,6 +113,7 @@ pub const Kind = enum(u8) {
     time_corrected = 22,
     ip_changed = 23,
     stop = 24,
+    set_timezone = 25,
     // supervisor <-> netd
     credentials = 32,
     config = 33,
@@ -374,6 +376,7 @@ pub const Message = union(Kind) {
     time_corrected,
     ip_changed: IpChanged,
     stop,
+    set_timezone: config.Text,
     credentials: Credentials,
     config: config.Config,
     config_get,
@@ -401,6 +404,11 @@ fn encodePayload(msg: Message, out: []u8) usize {
             return 17;
         },
         .ready, .arm_stream, .time_corrected, .stop, .config_get, .status_get => return 0,
+        .set_timezone => |t| {
+            var o: usize = 0;
+            putText(out, &o, t);
+            return o;
+        },
         .credentials => |c| {
             out[0..32].* = c.control;
             out[32..64].* = c.admin;
@@ -596,6 +604,11 @@ pub fn decodePacket(bytes: []const u8) Error!Packet {
         .status_get => blk: {
             _ = try fixed(p, 0);
             break :blk .status_get;
+        },
+        .set_timezone => blk: {
+            const b = try fixed(p, 1 + config.text_max);
+            var o: usize = 0;
+            break :blk .{ .set_timezone = try getText(b, &o) };
         },
         .credentials => blk: {
             const b = try fixed(p, 64);

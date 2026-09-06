@@ -128,7 +128,21 @@ const Renderer = struct {
     fn heartbeat(self: *Renderer, now: u64) void {
         _ = now;
         const state: u8 = if (self.stopping) 2 else if (self.ready_sent) 1 else 0;
-        self.send(.{ .heartbeat = .{ .presented = pres.transfers, .revision = arb.revision, .state = state } }, 0);
+        const overlay: u8 = switch (arb.overlay) {
+            .none => 0,
+            .notify => 1,
+            .raw => 2,
+            .stream_arming => 3,
+        };
+        self.send(.{ .heartbeat = .{
+            .presented = pres.transfers,
+            .revision = arb.revision,
+            .state = state,
+            .base = @intFromEnum(arb.base),
+            .generator = @intFromEnum(arb.art.generator),
+            .overlay = overlay,
+            .brightness = arb.brightness,
+        } }, 0);
     }
 
     fn handlePacket(self: *Renderer, bytes: []const u8, now: u64) void {
@@ -154,7 +168,18 @@ const Renderer = struct {
                 self.reply(p.request_id, .applied, arb.revision);
                 return;
             },
-            .heartbeat, .ready, .result => return, // wrong direction; ignore
+            .set_timezone => |t| {
+                if (tz.parse(t.slice())) |rule| {
+                    arb.clock.rule = rule;
+                    _ = arb.apply(.time_corrected, now);
+                    self.render_deadline = null;
+                    self.reply(p.request_id, .applied, arb.revision);
+                } else |_| {
+                    self.reply(p.request_id, .rejected, arb.revision);
+                }
+                return;
+            },
+            .heartbeat, .ready, .result, .credentials, .config, .config_get, .config_patch, .config_save, .save_result, .mqtt_put, .status_get, .status => return, // not for the renderer
             else => {},
         }
         // discrete, non-idempotent commands: epoch, then the deduplication window, then apply

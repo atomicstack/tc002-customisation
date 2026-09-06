@@ -253,84 +253,104 @@ pub fn route(req: http.Request, body: []const u8, creds: *const Credentials, ori
 
     if (std.mem.eql(u8, ep.path, "/api/v1/frame")) {
         if (!isOctets(req.content_type)) return .{ .reject = .{ .status = 415, .code = "unsupported_media_type", .message = "frames are application/octet-stream" } };
-        if (body.len != geometry.rgb_bytes) return bad("invalid_frame", "a frame is exactly 2496 rgb888 bytes");
-        const duration_text = queryValue(req.query, "duration_s") orelse return bad("missing_duration", "duration_s is required in the query");
-        const duration = std.fmt.parseInt(u16, duration_text, 10) catch return bad("invalid_duration", "duration_s must be 1..300");
-        if (duration < 1 or duration > 300) return bad("invalid_duration", "duration_s must be 1..300");
-        const rid = parseRequestId(queryValue(req.query, "request_id") orelse "") orelse return bad("missing_request_id", "request_id (hex) is required in the query");
-        const epoch_text = queryValue(req.query, "epoch") orelse return bad("missing_epoch", "epoch is required in the query");
-        const epoch = std.fmt.parseInt(u32, epoch_text, 10) catch return bad("invalid_epoch", "epoch must be a number");
-        return .{ .op = .{ .frame = .{ .rgb = body[0..geometry.rgb_bytes], .duration_s = duration, .request_id = rid, .epoch = epoch } } };
+        return parseFrame(req.query, body);
     }
     // everything below is json
     if (!isJson(req.content_type)) return .{ .reject = .{ .status = 415, .code = "unsupported_media_type", .message = "this route takes application/json" } };
-    if (std.mem.eql(u8, ep.path, "/api/v1/scene")) {
-        const b = json.parse(SceneBody, body, arena) catch |e| return jsonError(e);
-        const base = parseBase(b.base) orelse return bad("invalid_base", "base must be art, clock or ip");
-        const generator: ?scene.Generator = if (b.generator) |g| (parseGenerator(g) orelse return bad("invalid_generator", "unknown generator")) else null;
-        const rid = parseRequestId(b.request_id) orelse return bad("invalid_request_id", "request_id must be 1..16 hex digits");
-        return .{ .op = .{ .set_scene = .{ .base = base, .generator = generator, .seed = b.seed, .request_id = rid, .epoch = b.epoch } } };
-    }
-    if (std.mem.eql(u8, ep.path, "/api/v1/action")) {
-        const b = json.parse(ActionBody, body, arena) catch |e| return jsonError(e);
-        const rid = parseRequestId(b.request_id) orelse return bad("invalid_request_id", "request_id must be 1..16 hex digits");
-        var kind: ?ActionKind = null;
-        inline for (@typeInfo(ActionKind).@"enum".fields) |f| if (std.mem.eql(u8, b.action, f.name)) {
-            kind = @enumFromInt(f.value);
-        };
-        const k = kind orelse return bad("invalid_action", "unknown action");
-        if (k == .brightness) {
-            const v = b.brightness orelse return bad("missing_brightness", "brightness is required for that action");
-            if (v < 1 or v > 100) return bad("invalid_brightness", "brightness must be 1..100");
-        }
-        return .{ .op = .{ .action = .{ .kind = k, .brightness = b.brightness, .seed = b.seed, .request_id = rid, .epoch = b.epoch } } };
-    }
-    if (std.mem.eql(u8, ep.path, "/api/v1/notify")) {
-        const b = json.parse(NotifyBody, body, arena) catch |e| return jsonError(e);
-        if (b.text.len == 0 or b.text.len > 128) return bad("invalid_text", "text must be 1..128 printable ascii characters");
-        for (b.text) |c| if (c < 0x20 or c > 0x7e) return bad("invalid_text", "text must be 1..128 printable ascii characters");
-        if (b.duration_s < 1 or b.duration_s > 300) return bad("invalid_duration", "duration_s must be 1..300");
-        const colour = if (b.colour) |c| (parseColour(c) orelse return bad("invalid_colour", "colour must be rrggbb hex")) else [3]u8{ 255, 255, 255 };
-        const rid = parseRequestId(b.request_id) orelse return bad("invalid_request_id", "request_id must be 1..16 hex digits");
-        return .{ .op = .{ .notify = .{ .text = b.text, .colour = colour, .duration_s = b.duration_s, .request_id = rid, .epoch = b.epoch } } };
-    }
-    if (std.mem.eql(u8, ep.path, "/api/v1/config")) {
-        const b = json.parse(ConfigBody, body, arena) catch |e| return jsonError(e);
-        if (b.brightness) |v| if (v < 1 or v > 100) return bad("invalid_brightness", "brightness must be 1..100");
-        if (b.timezone) |t| if (t.len == 0 or t.len > 64) return bad("invalid_timezone", "timezone must be 1..64 characters");
-        if (b.ntp_interval_s) |v| if (v != 300 and v != 600) return bad("invalid_ntp_interval", "ntp_interval_s must be 300 or 600");
-        if (b.frame_timeout_ms) |v| if (v < 100 or v > 2000) return bad("invalid_frame_timeout", "frame_timeout_ms must be 100..2000");
-        if (b.metrics_interval_s) |v| if (v != 0 and (v < 10 or v > 3600)) return bad("invalid_metrics_interval", "metrics_interval_s must be 0 (off) or 10..3600");
-        if (b.discovery_prefix) |p| if (p.len == 0 or p.len > 64) return bad("invalid_discovery_prefix", "discovery_prefix must be 1..64 characters");
-        const ntp: ?[4]u8 = if (b.ntp_server) |s| (parseIpv4(s) orelse return bad("invalid_ntp_server", "ntp_server must be a dotted ipv4 address")) else null;
-        return .{ .op = .{ .config_patch = .{
-            .brightness = b.brightness,
-            .base = if (b.base) |t| (parseBase(t) orelse return bad("invalid_base", "base must be art, clock or ip")) else null,
-            .generator = if (b.generator) |g| (parseGenerator(g) orelse return bad("invalid_generator", "unknown generator")) else null,
-            .timezone = b.timezone,
-            .ntp_server = ntp,
-            .ntp_interval_s = b.ntp_interval_s,
-            .frame_timeout_ms = b.frame_timeout_ms,
-            .metrics_interval_s = b.metrics_interval_s,
-            .discovery = b.discovery,
-            .discovery_prefix = b.discovery_prefix,
-            .expected_revision = b.expected_revision,
-        } } };
-    }
-    if (std.mem.eql(u8, ep.path, "/api/v1/config/save")) {
-        const b = if (body.len == 0) SaveBody{} else json.parse(SaveBody, body, arena) catch |e| return jsonError(e);
-        return .{ .op = .{ .config_save = .{ .revision = b.revision } } };
-    }
-    if (std.mem.eql(u8, ep.path, "/api/v1/mqtt")) {
-        const b = json.parse(MqttBody, body, arena) catch |e| return jsonError(e);
-        if (b.host) |h| if (h.len == 0 or h.len > 64 or parseIpv4(h) == null) return bad("invalid_host", "host must be a dotted ipv4 address in this profile");
-        if (b.port) |p| if (p == 0) return bad("invalid_port", "port must be 1..65535");
-        inline for (.{ "username", "password", "client_id", "prefix" }) |name| {
-            if (@field(b, name)) |v| if (v.len > 64) return bad("invalid_" ++ name, name ++ " must be at most 64 characters");
-        }
-        return .{ .op = .{ .mqtt_put = .{ .enabled = b.enabled, .host = b.host, .port = b.port, .username = b.username, .password = b.password, .client_id = b.client_id, .prefix = b.prefix, .tls = b.tls } } };
-    }
+    if (std.mem.eql(u8, ep.path, "/api/v1/scene")) return parseBody(.scene, body, arena);
+    if (std.mem.eql(u8, ep.path, "/api/v1/action")) return parseBody(.action, body, arena);
+    if (std.mem.eql(u8, ep.path, "/api/v1/notify")) return parseBody(.notify, body, arena);
+    if (std.mem.eql(u8, ep.path, "/api/v1/config")) return parseBody(.config_patch, body, arena);
+    if (std.mem.eql(u8, ep.path, "/api/v1/config/save")) return parseBody(.config_save, body, arena);
+    if (std.mem.eql(u8, ep.path, "/api/v1/mqtt")) return parseBody(.mqtt_put, body, arena);
     return .{ .reject = .{ .status = 404, .code = "not_found", .message = "no such route" } };
+}
+
+
+pub const BodyKind = enum { scene, action, notify, config_patch, config_save, mqtt_put };
+
+/// a raw frame: exactly 2,496 rgb bytes, with duration, request id and epoch in the query.
+pub fn parseFrame(query: []const u8, body: []const u8) Route {
+    if (body.len != geometry.rgb_bytes) return bad("invalid_frame", "a frame is exactly 2496 rgb888 bytes");
+    const duration_text = queryValue(query, "duration_s") orelse return bad("missing_duration", "duration_s is required in the query");
+    const duration = std.fmt.parseInt(u16, duration_text, 10) catch return bad("invalid_duration", "duration_s must be 1..300");
+    if (duration < 1 or duration > 300) return bad("invalid_duration", "duration_s must be 1..300");
+    const rid = parseRequestId(queryValue(query, "request_id") orelse "") orelse return bad("missing_request_id", "request_id (hex) is required in the query");
+    const epoch_text = queryValue(query, "epoch") orelse return bad("missing_epoch", "epoch is required in the query");
+    const epoch = std.fmt.parseInt(u32, epoch_text, 10) catch return bad("invalid_epoch", "epoch must be a number");
+    return .{ .op = .{ .frame = .{ .rgb = body[0..geometry.rgb_bytes], .duration_s = duration, .request_id = rid, .epoch = epoch } } };
+}
+
+/// a json body for one of the schemas; shared by http routes and mqtt command topics.
+pub fn parseBody(kind: BodyKind, body: []const u8, arena: *Arena) Route {
+    switch (kind) {
+        .scene => {
+            const b = json.parse(SceneBody, body, arena) catch |e| return jsonError(e);
+            const base = parseBase(b.base) orelse return bad("invalid_base", "base must be art, clock or ip");
+            const generator: ?scene.Generator = if (b.generator) |g| (parseGenerator(g) orelse return bad("invalid_generator", "unknown generator")) else null;
+            const rid = parseRequestId(b.request_id) orelse return bad("invalid_request_id", "request_id must be 1..16 hex digits");
+            return .{ .op = .{ .set_scene = .{ .base = base, .generator = generator, .seed = b.seed, .request_id = rid, .epoch = b.epoch } } };
+        },
+        .action => {
+            const b = json.parse(ActionBody, body, arena) catch |e| return jsonError(e);
+            const rid = parseRequestId(b.request_id) orelse return bad("invalid_request_id", "request_id must be 1..16 hex digits");
+            var kind_found: ?ActionKind = null;
+            inline for (@typeInfo(ActionKind).@"enum".fields) |f| if (std.mem.eql(u8, b.action, f.name)) {
+                kind_found = @enumFromInt(f.value);
+            };
+            const k = kind_found orelse return bad("invalid_action", "unknown action");
+            if (k == .brightness) {
+                const v = b.brightness orelse return bad("missing_brightness", "brightness is required for that action");
+                if (v < 1 or v > 100) return bad("invalid_brightness", "brightness must be 1..100");
+            }
+            return .{ .op = .{ .action = .{ .kind = k, .brightness = b.brightness, .seed = b.seed, .request_id = rid, .epoch = b.epoch } } };
+        },
+        .notify => {
+            const b = json.parse(NotifyBody, body, arena) catch |e| return jsonError(e);
+            if (b.text.len == 0 or b.text.len > 128) return bad("invalid_text", "text must be 1..128 printable ascii characters");
+            for (b.text) |c| if (c < 0x20 or c > 0x7e) return bad("invalid_text", "text must be 1..128 printable ascii characters");
+            if (b.duration_s < 1 or b.duration_s > 300) return bad("invalid_duration", "duration_s must be 1..300");
+            const colour = if (b.colour) |c| (parseColour(c) orelse return bad("invalid_colour", "colour must be rrggbb hex")) else [3]u8{ 255, 255, 255 };
+            const rid = parseRequestId(b.request_id) orelse return bad("invalid_request_id", "request_id must be 1..16 hex digits");
+            return .{ .op = .{ .notify = .{ .text = b.text, .colour = colour, .duration_s = b.duration_s, .request_id = rid, .epoch = b.epoch } } };
+        },
+        .config_patch => {
+            const b = json.parse(ConfigBody, body, arena) catch |e| return jsonError(e);
+            if (b.brightness) |v| if (v < 1 or v > 100) return bad("invalid_brightness", "brightness must be 1..100");
+            if (b.timezone) |t| if (t.len == 0 or t.len > 64) return bad("invalid_timezone", "timezone must be 1..64 characters");
+            if (b.ntp_interval_s) |v| if (v != 300 and v != 600) return bad("invalid_ntp_interval", "ntp_interval_s must be 300 or 600");
+            if (b.frame_timeout_ms) |v| if (v < 100 or v > 2000) return bad("invalid_frame_timeout", "frame_timeout_ms must be 100..2000");
+            if (b.metrics_interval_s) |v| if (v != 0 and (v < 10 or v > 3600)) return bad("invalid_metrics_interval", "metrics_interval_s must be 0 (off) or 10..3600");
+            if (b.discovery_prefix) |p| if (p.len == 0 or p.len > 64) return bad("invalid_discovery_prefix", "discovery_prefix must be 1..64 characters");
+            const ntp: ?[4]u8 = if (b.ntp_server) |s| (parseIpv4(s) orelse return bad("invalid_ntp_server", "ntp_server must be a dotted ipv4 address")) else null;
+            return .{ .op = .{ .config_patch = .{
+                .brightness = b.brightness,
+                .base = if (b.base) |t| (parseBase(t) orelse return bad("invalid_base", "base must be art, clock or ip")) else null,
+                .generator = if (b.generator) |g| (parseGenerator(g) orelse return bad("invalid_generator", "unknown generator")) else null,
+                .timezone = b.timezone,
+                .ntp_server = ntp,
+                .ntp_interval_s = b.ntp_interval_s,
+                .frame_timeout_ms = b.frame_timeout_ms,
+                .metrics_interval_s = b.metrics_interval_s,
+                .discovery = b.discovery,
+                .discovery_prefix = b.discovery_prefix,
+                .expected_revision = b.expected_revision,
+            } } };
+        },
+        .config_save => {
+            const b = if (body.len == 0) SaveBody{} else json.parse(SaveBody, body, arena) catch |e| return jsonError(e);
+            return .{ .op = .{ .config_save = .{ .revision = b.revision } } };
+        },
+        .mqtt_put => {
+            const b = json.parse(MqttBody, body, arena) catch |e| return jsonError(e);
+            if (b.host) |h| if (h.len == 0 or h.len > 64 or parseIpv4(h) == null) return bad("invalid_host", "host must be a dotted ipv4 address in this profile");
+            if (b.port) |p| if (p == 0) return bad("invalid_port", "port must be 1..65535");
+            inline for (.{ "username", "password", "client_id", "prefix" }) |name| {
+                if (@field(b, name)) |v| if (v.len > 64) return bad("invalid_" ++ name, name ++ " must be at most 64 characters");
+            }
+            return .{ .op = .{ .mqtt_put = .{ .enabled = b.enabled, .host = b.host, .port = b.port, .username = b.username, .password = b.password, .client_id = b.client_id, .prefix = b.prefix, .tls = b.tls } } };
+        },
+    }
 }
 
 pub fn parseIpv4(text: []const u8) ?[4]u8 {
