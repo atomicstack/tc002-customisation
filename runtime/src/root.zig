@@ -12,4 +12,5 @@ test {
     _ = @import("scene/ip.zig");
     _ = @import("input/evdev.zig");
     _ = @import("input/actions.zig");
+    _ = @import("scene/arbiter.zig");
 }
