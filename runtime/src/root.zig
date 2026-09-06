@@ -18,4 +18,6 @@ test {
     _ = @import("ipc/dedup.zig");
     _ = @import("supervisor/child.zig");
     _ = @import("supervisor/maintenance.zig");
+    _ = @import("tc002d/cli.zig");
+    _ = @import("tc002d/sched.zig");
 }

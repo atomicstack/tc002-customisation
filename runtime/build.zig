@@ -14,7 +14,8 @@ pub fn build(b: *std.Build) void {
         .os_tag = .linux,
         .abi = .musleabihf,
     });
-    const optimize = b.standardOptimizeOption(.{ .preferred_optimize_mode = .ReleaseSafe });
+    // device binaries default to ReleaseSafe; -Doptimize=ReleaseSmall/ReleaseFast for size/speed comparisons
+    const optimize = b.option(std.builtin.OptimizeMode, "optimize", "optimize mode for the device binaries") orelse .ReleaseSafe;
 
     inline for (.{ .{ "tc002d", "src/tc002d_main.zig" }, .{ "tc002-supervisor", "src/supervisor_main.zig" } }) |spec| {
         const exe = b.addExecutable(.{

@@ -45,8 +45,7 @@ pub const Cache = struct {
         return null;
     }
 
-    /// remember a completed request; false when the cache is full of live entries.
-    pub fn insert(self: *Cache, id: u64, status: messages.Status, revision: u32, now_ns: u64) bool {
+    fn sweep(self: *Cache, now_ns: u64) void {
         var w: usize = 0;
         for (self.entries[0..self.len]) |e| {
             if (!expired(e, now_ns)) {
@@ -55,9 +54,29 @@ pub const Cache = struct {
             }
         }
         self.len = w;
+    }
+
+    /// whether a new discrete action can be remembered; when not, it must be rejected rather
+    /// than applied without a deduplication record.
+    pub fn available(self: *Cache, now_ns: u64) bool {
+        self.sweep(now_ns);
+        return self.len < capacity;
+    }
+
+    /// remember a completed request; false when the cache is full of live entries.
+    pub fn insert(self: *Cache, id: u64, status: messages.Status, revision: u32, now_ns: u64) bool {
+        self.sweep(now_ns);
         if (self.len == capacity) return false;
         self.entries[self.len] = .{ .id = id, .status = status, .revision = revision, .at_ns = now_ns };
         self.len += 1;
         return true;
     }
 };
+
+test "available reports room after sweeping expired entries" {
+    var c = Cache{};
+    var i: u64 = 0;
+    while (i < Cache.capacity) : (i += 1) _ = c.insert(i, .applied, 0, 0);
+    try std.testing.expect(!c.available(1));
+    try std.testing.expect(c.available(61 * s_ns));
+}
