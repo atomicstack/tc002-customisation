@@ -1,0 +1,23 @@
+#!/bin/bash
+set -u
+
+case "${1:-}" in
+    get-state)
+        exit 0
+        ;;
+    shell)
+        if [ "${2:-}" = getprop ] && [ "${3:-}" = init.svc.zkswe ]; then
+            printf 'running\r\n'
+            exit 0
+        fi
+        case "${2:-}" in
+            "cat /tmp/popsquares.pid 2>/dev/null") printf '123\r\n' ;;
+            "cat /tmp/popsquares.log 2>/dev/null") ;;
+            "cat /proc/123/cmdline 2>/dev/null") printf '/tmp/popsquares\000--stats\000' ;;
+            *) exit 1 ;;
+        esac
+        ;;
+    *)
+        exit 1
+        ;;
+esac

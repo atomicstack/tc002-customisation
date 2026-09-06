@@ -37,6 +37,8 @@ pub fn build(b: *std.Build) void {
         });
         test_step.dependOn(&b.addRunArtifact(tests).step);
     }
+    const wrapper_tests = b.addSystemCommand(&.{ "bash", "test_wrapper.sh" });
+    test_step.dependOn(&wrapper_tests.step);
 
     const native_exe = b.addExecutable(.{
         .name = "popsquares-host",
