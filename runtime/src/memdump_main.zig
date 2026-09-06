@@ -25,7 +25,7 @@ pub const std_options: std.Options = .{ .enable_segfault_handler = false };
 const chunk = 64 * 1024;
 const max_mapping = 512 * 1024 * 1024;
 var buf: [chunk]u8 = undefined;
-var text_buf: [64 * 1024]u8 = undefined;
+var text_buf: [256 * 1024]u8 = undefined; // smaps of a 30-thread process exceeds 64 kib
 
 var hex_mode = false;
 var hex_col: usize = 0;
