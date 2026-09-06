@@ -23,7 +23,8 @@ class PureTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             p = os.path.join(d, "tokens")
             raw = secrets.token_bytes(64)
-            open(p, "wb").write(raw)
+            with open(p, "wb") as f:
+                f.write(raw)
             self.assertEqual(serve.load_token_file(p), {"control": raw[:32].hex(), "admin": raw[32:].hex()})
 
     def test_token_for(self):
@@ -42,6 +43,113 @@ class PureTests(unittest.TestCase):
         self.assertEqual(serve.rewrite("/api/10.0.0.5/v1/config/save"), ("10.0.0.5", "config/save", ""))
         for bad in ("/api/10.0.0.5/status", "/api//v1/status", "/tokens", "/api/10.0.0.5/v1/../etc"):
             self.assertIsNone(serve.rewrite(bad), bad)
+
+
+def load_mock():
+    spec = importlib.util.spec_from_file_location("mock_device", os.path.join(HERE, "mock-device.py"))
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+class EndToEndTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.mock_mod = load_mock()
+        cls.control, cls.admin = secrets.token_hex(32), secrets.token_hex(32)
+        cls.device = cls.mock_mod.Device(cls.control, cls.admin)
+        cls.mock = cls.mock_mod.make_server(0, cls.device)
+        cls.mock_port = cls.mock.server_address[1]
+        threading.Thread(target=cls.mock.serve_forever, daemon=True).start()
+        cls.proxy = serve.make_server(0, {"control": cls.control, "admin": cls.admin}, HERE)
+        cls.proxy_port = cls.proxy.server_address[1]
+        threading.Thread(target=cls.proxy.serve_forever, daemon=True).start()
+        cls.bare = serve.make_server(0, {"control": None, "admin": None}, HERE)
+        cls.bare_port = cls.bare.server_address[1]
+        threading.Thread(target=cls.bare.serve_forever, daemon=True).start()
+
+    @classmethod
+    def tearDownClass(cls):
+        for s in (cls.mock, cls.proxy, cls.bare):
+            s.shutdown(); s.server_close()
+
+    def call(self, method, path, body=None, ctype="application/json", port=None, headers=None):
+        port = port or self.proxy_port
+        url = f"http://127.0.0.1:{port}/api/127.0.0.1:{self.mock_port}/v1/{path}"
+        data = None
+        if body is not None:
+            data = body if isinstance(body, bytes) else json.dumps(body).encode()
+        req = urllib.request.Request(url, data=data, method=method, headers=headers or {})
+        if data is not None:
+            req.add_header("Content-Type", ctype)
+        try:
+            with urllib.request.urlopen(req, timeout=5) as r:
+                return r.status, json.loads(r.read())
+        except urllib.error.HTTPError as e:
+            return e.code, json.loads(e.read())
+
+    def test_tokens_endpoint_reports_presence_only(self):
+        with urllib.request.urlopen(f"http://127.0.0.1:{self.proxy_port}/tokens") as r:
+            self.assertEqual(json.loads(r.read()), {"control": True, "admin": True})
+        with urllib.request.urlopen(f"http://127.0.0.1:{self.bare_port}/tokens") as r:
+            self.assertEqual(json.loads(r.read()), {"control": False, "admin": False})
+
+    def test_status_through_the_proxy(self):
+        status, doc = self.call("GET", "status")
+        self.assertEqual(status, 200)
+        for k in ("epoch", "revision", "renderer", "base", "generator", "overlay", "brightness", "transport", "mqtt", "network", "time"):
+            self.assertIn(k, doc)
+        self.assertEqual(doc["transport"], "plaintext")
+
+    def test_no_token_is_503_from_the_proxy(self):
+        status, doc = self.call("GET", "status", port=self.bare_port)
+        self.assertEqual(status, 503)
+        self.assertEqual(doc["error"], "no_token")
+
+    def test_client_authorization_is_dropped(self):
+        status, _ = self.call("GET", "status", headers={"Authorization": "Bearer " + "00" * 32})
+        self.assertEqual(status, 200)
+
+    def test_admin_route_uses_the_admin_token(self):
+        status, doc = self.call("PATCH", "config", {"brightness": 42})
+        self.assertEqual(status, 200)
+        self.assertEqual(doc["brightness"], 42)
+        status, doc = self.call("GET", "mqtt")
+        self.assertEqual(status, 200)
+        self.assertIn("password_set", doc)
+
+    def test_scene_action_notify_and_frame(self):
+        _, st = self.call("GET", "status")
+        status, doc = self.call("PUT", "scene", {"base": "clock", "request_id": "a1", "epoch": st["epoch"]})
+        self.assertEqual((status, doc["status"]), (200, "applied"))
+        status, doc = self.call("POST", "action", {"action": "brightness", "brightness": 30, "request_id": "a2", "epoch": st["epoch"]})
+        self.assertEqual((status, doc["status"]), (200, "applied"))
+        status, doc = self.call("POST", "notify", {"text": "hi", "duration_s": 2, "request_id": "a3", "epoch": st["epoch"]})
+        self.assertEqual((status, doc["status"]), (200, "applied"))
+        frame = bytes([9]) * 2496
+        status, doc = self.call("POST", f"frame?duration_s=2&request_id=a4&epoch={st['epoch']}", frame, "application/octet-stream")
+        self.assertEqual((status, doc["status"]), (200, "applied"))
+        _, st2 = self.call("GET", "status")
+        self.assertEqual(st2["overlay"], "frame")
+        self.assertEqual(st2["base"], "clock")
+        self.assertEqual(st2["brightness"], 30)
+
+    def test_device_errors_pass_through(self):
+        status, doc = self.call("POST", "notify", {"text": "hi", "request_id": "b1", "epoch": 999})
+        self.assertEqual((status, doc["error"]), (409, "stale_epoch"))
+        status, doc = self.call("POST", "notify", {"text": "hi", "request_id": "b2", "epoch": 1, "bogus": 1})
+        self.assertEqual((status, doc["error"]), (400, "unknown_field"))
+        status, doc = self.call("GET", "nope")
+        self.assertEqual(status, 404)
+
+    def test_unreachable_device_is_502(self):
+        url = f"http://127.0.0.1:{self.proxy_port}/api/127.0.0.1:1/v1/status"
+        try:
+            urllib.request.urlopen(url, timeout=5)
+            self.fail("expected an http error")
+        except urllib.error.HTTPError as e:
+            self.assertEqual(e.code, 502)
+            self.assertEqual(json.loads(e.read())["error"], "proxy")
 
 
 if __name__ == "__main__":
