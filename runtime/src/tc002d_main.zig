@@ -51,7 +51,8 @@ var pres = presenter.Presenter{};
 var frame_version: u32 = 0;
 var cache = dedup.Cache{};
 var packet_buf: [codec.max_message]u8 = undefined;
-var reply_buf: [64]u8 = undefined;
+/// sized for the largest reply (a screen read: 6 + 2,496 bytes of payload)
+var reply_buf: [codec.max_message]u8 = undefined;
 var evbuf: [evdev_events_per_read * evdev.event_size]u8 = undefined;
 
 const Renderer = struct {
@@ -85,7 +86,10 @@ const Renderer = struct {
     fn send(self: *Renderer, msg: messages.Message, request_id: u64) void {
         if (self.ipc_dead) return;
         const fd = self.cfg.ipc_fd orelse return;
-        const packet = messages.encodePacket(msg, request_id, self.cfg.epoch, &reply_buf) catch return;
+        const packet = messages.encodePacket(msg, request_id, self.cfg.epoch, &reply_buf) catch {
+            log.warn("ipc message {s} does not fit a packet", .{@tagName(msg)});
+            return;
+        };
         sys.sendPacket(fd, packet) catch |e| switch (e) {
             error.WouldBlock => {}, // the supervisor is behind; heartbeats and results are bounded
             else => log.warn("ipc send failed: {s}", .{sys.errText(e)}),
