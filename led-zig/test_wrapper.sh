@@ -1,10 +1,11 @@
 #!/bin/bash
 set -u
 
-PATH=$(pwd)/testdata:$PATH
+HERE=$(cd "$(dirname "$0")" && pwd)
+PATH=$HERE/testdata:$PATH
 export PATH
 
-output=$(./tc002-led.sh status)
+output=$("$HERE/tc002-led.sh" status)
 case "$output" in
     *"stock app: running"*) ;;
     *) echo "test_wrapper: missing stock status" >&2; exit 1 ;;
