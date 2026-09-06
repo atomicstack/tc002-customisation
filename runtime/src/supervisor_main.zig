@@ -86,6 +86,8 @@ const Supervisor = struct {
     cpu_busy_prev: u64 = 0,
     cpu_total_prev: u64 = 0,
     boot_id: u32 = 0,
+    proc_cpu_prev: [3]u64 = .{ 0, 0, 0 },
+    proc_cpu_prev_ns: u64 = 0,
 
     fn send(self: *Supervisor, msg: messages.Message) void {
         self.request_id += 1;
@@ -341,6 +343,35 @@ const Supervisor = struct {
         return null;
     }
 
+    /// utime+stime jiffies of a process from /proc/<pid>/stat (field 14 and 15, after the comm).
+    fn cpuJiffiesOf(pid: ?sys.Pid) ?u64 {
+        const p = pid orelse return null;
+        var path: [48]u8 = undefined;
+        const text = sys.readFile(std.fmt.bufPrintZ(&path, "/proc/{d}/stat", .{p}) catch return null, &proc_buf) catch return null;
+        const close = std.mem.lastIndexOfScalar(u8, text, ')') orelse return null;
+        var it = std.mem.tokenizeScalar(u8, text[close + 1 ..], ' ');
+        var i: usize = 0;
+        var total: u64 = 0;
+        while (it.next()) |f| : (i += 1) {
+            // fields after ')': state(3) ppid(4) ... utime(14) stime(15)
+            if (i + 3 == 14 or i + 3 == 15) total += std.fmt.parseInt(u64, f, 10) catch 0;
+            if (i + 3 > 15) break;
+        }
+        return total;
+    }
+
+    fn readMac(self: *Supervisor) void {
+        var buf: [32]u8 = undefined;
+        const text = sys.readFile("/sys/class/net/wlan0/address", &buf) catch return;
+        const t = std.mem.trim(u8, text, " \n\r");
+        if (t.len != 17) return;
+        var mac: [6]u8 = undefined;
+        var i: usize = 0;
+        while (i < 6) : (i += 1) mac[i] = std.fmt.parseInt(u8, t[i * 3 .. i * 3 + 2], 16) catch return;
+        self.snapshot.mac = mac;
+        self.snapshot.mac_present = 1;
+    }
+
     fn rssOf(pid: ?sys.Pid) u32 {
         const p = pid orelse return 0;
         var path: [48]u8 = undefined;
@@ -373,6 +404,54 @@ const Supervisor = struct {
                 self.cpu_total_prev = total;
             }
         } else |_| {}
+        if (sys.readFile("/proc/meminfo", &proc_buf)) |text| {
+            self.snapshot.mem_free_kb = @intCast(@min(procValue(text, "MemFree:") orelse 0, 0xffffffff));
+            self.snapshot.tmpfs_used_kb = @intCast(@min(procValue(text, "Shmem:") orelse 0xffffffff, 0xffffffff));
+        } else |_| {}
+        if (sys.readFile("/proc/loadavg", &proc_buf)) |text| {
+            // "0.12 0.08 0.05 1/78 1234"
+            if (std.mem.indexOfScalar(u8, text, ' ')) |sp| {
+                const one = text[0..sp];
+                if (std.mem.indexOfScalar(u8, one, '.')) |dot| {
+                    const whole = std.fmt.parseInt(u16, one[0..dot], 10) catch 0;
+                    const frac = std.fmt.parseInt(u16, one[dot + 1 ..][0..@min(2, one.len - dot - 1)], 10) catch 0;
+                    self.snapshot.load_1m_x100 = @min(whole * 100 + frac, 0xfffe);
+                }
+            }
+        } else |_| {}
+        if (sys.readFile("/proc/net/wireless", &proc_buf)) |text| {
+            // "wlan0: 0000   49.  -61.  -256        0 ..." : link quality, level dbm
+            var lines = std.mem.splitScalar(u8, text, '\n');
+            self.snapshot.wifi_level_dbm = -32768;
+            self.snapshot.wifi_quality = 255;
+            while (lines.next()) |line| {
+                const t = std.mem.trim(u8, line, " ");
+                if (!std.mem.startsWith(u8, t, "wlan0:")) continue;
+                var it = std.mem.tokenizeAny(u8, t[6..], " .");
+                _ = it.next(); // status
+                const q = it.next() orelse break;
+                const l = it.next() orelse break;
+                self.snapshot.wifi_quality = @intCast(@min(std.fmt.parseInt(u16, q, 10) catch 255, 255));
+                self.snapshot.wifi_level_dbm = std.fmt.parseInt(i16, l, 10) catch -32768;
+            }
+        } else |_| {}
+        // per-process cpu over the sample interval, in tenths of a percent of one core
+        const jiffies = [3]?u64{ cpuJiffiesOf(self.self_pid), cpuJiffiesOf(self.child_pid), cpuJiffiesOf(self.netd_pid) };
+        if (self.proc_cpu_prev_ns != 0 and now > self.proc_cpu_prev_ns) {
+            const interval_ns = now - self.proc_cpu_prev_ns;
+            const fields = [3]*u16{ &self.snapshot.cpu_supervisor_pct_x10, &self.snapshot.cpu_renderer_pct_x10, &self.snapshot.cpu_netd_pct_x10 };
+            for (jiffies, 0..) |j, i| {
+                if (j) |v| {
+                    if (v >= self.proc_cpu_prev[i]) {
+                        // 100 jiffies per second on this kernel (CONFIG_HZ=100)
+                        const pct_x10 = (v - self.proc_cpu_prev[i]) * 10 * ns_per_s / (interval_ns / 100 * 100) / 100 * 100 / 100;
+                        fields[i].* = @intCast(@min(pct_x10, 0xfffe));
+                    }
+                } else fields[i].* = 0xffff;
+            }
+        }
+        for (jiffies, 0..) |j, i| self.proc_cpu_prev[i] = j orelse 0;
+        self.proc_cpu_prev_ns = now;
         self.snapshot.rss_supervisor_kb = rssOf(self.self_pid);
         self.snapshot.rss_renderer_kb = rssOf(self.child_pid);
         self.snapshot.rss_netd_kb = rssOf(self.netd_pid);
@@ -746,6 +825,11 @@ fn run(cfg: cli.Config, environ: anytype, args: []const [:0]const u8) !u8 {
     sys.getrandom(&boot) catch {};
     s.boot_id = std.mem.readInt(u32, &boot, .little);
     s.snapshot.boot_id = s.boot_id;
+    s.readMac();
+    if (s.snapshot.mac_present != 0) {
+        const m = s.snapshot.mac;
+        log.info("device identity from wlan0: tc002-{x:0>2}{x:0>2}{x:0>2}{x:0>2}{x:0>2}{x:0>2}", .{ m[0], m[1], m[2], m[3], m[4], m[5] });
+    } else log.warn("no wlan0 mac; discovery identity falls back to the boot id", .{});
     // 7. the network daemon's privileged resources: credentials, configuration, the listener
     s.loadCredentials() catch |e| log.err("credentials unavailable: {s}; netd will refuse every request", .{sys.errText(e)});
     s.loadConfig();

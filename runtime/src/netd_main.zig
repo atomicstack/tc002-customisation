@@ -633,7 +633,9 @@ const Netd = struct {
         if (st.time_age_s == 0xffffffff) o.add("null") else o.fmt("{d}", .{st.time_age_s});
         o.fmt("}},\"config_revision\":{d},\"saved_revision\":{d},\"transport\":\"plaintext\",\"mqtt\":", .{ st.config_revision, st.saved_revision });
         self.mqttStatusJson(o, now);
-        o.fmt(",\"boot_id\":\"{x:0>8}\",\"sample_age_ms\":{d}}}", .{ st.boot_id, st.sample_age_ms + @as(u32, @intCast(@min((now -| self.status_at_ns) / 1_000_000, 0xffffffff))) });
+        o.fmt(",\"boot_id\":\"{x:0>8}\",\"sample_age_ms\":{d},", .{ st.boot_id, st.sample_age_ms + @as(u32, @intCast(@min((now -| self.status_at_ns) / 1_000_000, 0xffffffff))) });
+        self.telemetryJson(o);
+        o.add("}");
     }
 
     fn configJson(self: *Netd, o: *Out) void {
@@ -677,7 +679,37 @@ const Netd = struct {
         if (st.cpu_pct == 255) o.add("\"cpu_pct\":null,") else o.fmt("\"cpu_pct\":{d},", .{st.cpu_pct});
         o.fmt("\"rss_kb\":{{\"supervisor\":{d},\"renderer\":{d},\"netd\":{d}}},\"renderer_restarts\":{d},\"mqtt_reconnects\":{d},\"scene\":\"{s}\",\"brightness\":{d},", .{ st.rss_supervisor_kb, st.rss_renderer_kb, st.rss_netd_kb, st.restarts, self.client.reconnects, baseName(st.base), st.brightness });
         self.fpsJson(o);
-        o.fmt("\"presented\":{d},\"http_requests\":{d},\"http_rejected\":{d},\"mqtt_commands\":{d},\"mqtt_dropped\":{d},\"time\":{{\"state\":\"{s}\"}}}}", .{ st.presented, self.http_requests, self.http_rejected, self.mqtt_commands, self.mqtt_dropped, timeStateName(st.time_state) });
+        o.fmt("\"presented\":{d},\"http_requests\":{d},\"http_rejected\":{d},\"mqtt_commands\":{d},\"mqtt_dropped\":{d},\"time\":{{\"state\":\"{s}\"}},", .{ st.presented, self.http_requests, self.http_rejected, self.mqtt_commands, self.mqtt_dropped, timeStateName(st.time_state) });
+        self.telemetryJson(o);
+        o.add("}");
+    }
+
+    /// the added telemetry, with explicit nulls for anything not measured.
+    fn telemetryJson(self: *Netd, o: *Out) void {
+        const st = self.status;
+        var id: [24]u8 = undefined;
+        o.fmt("\"device_id\":\"{s}\",", .{self.deviceId(&id)});
+        if (st.load_1m_x100 == 0xffff) o.add("\"load_1m\":null,") else o.fmt("\"load_1m\":{d}.{d:0>2},", .{ st.load_1m_x100 / 100, st.load_1m_x100 % 100 });
+        o.fmt("\"memory_free_kb\":{d},", .{st.mem_free_kb});
+        if (st.tmpfs_used_kb == 0xffffffff) o.add("\"tmpfs_used_kb\":null,") else o.fmt("\"tmpfs_used_kb\":{d},", .{st.tmpfs_used_kb});
+        o.add("\"wifi\":{\"rssi_dbm\":");
+        if (st.wifi_level_dbm == -32768) o.add("null") else o.fmt("{d}", .{st.wifi_level_dbm});
+        o.add(",\"quality\":");
+        if (st.wifi_quality == 255) o.add("null") else o.fmt("{d}", .{st.wifi_quality});
+        o.add("},\"cpu_pct_by_process\":{");
+        const names = [_][]const u8{ "supervisor", "renderer", "netd" };
+        const vals = [_]u16{ st.cpu_supervisor_pct_x10, st.cpu_renderer_pct_x10, st.cpu_netd_pct_x10 };
+        for (names, vals, 0..) |n, v, i| {
+            if (i > 0) o.add(",");
+            if (v == 0xffff) o.fmt("\"{s}\":null", .{n}) else o.fmt("\"{s}\":{d}.{d}", .{ n, v / 10, v % 10 });
+        }
+        o.add("},\"battery\":{\"millivolts\":");
+        if (st.battery_mv == 0xffff) o.add("null") else o.fmt("{d}", .{st.battery_mv});
+        o.add(",\"percent\":");
+        if (st.battery_pct == 255) o.add("null") else o.fmt("{d}", .{st.battery_pct});
+        o.add(",\"usb_present\":");
+        if (st.usb_present == 255) o.add("null") else o.add(if (st.usb_present != 0) "true" else "false");
+        o.add("}");
     }
 
     // mqtt
@@ -1010,7 +1042,7 @@ const Netd = struct {
             self.last_state_pub_ns = now;
         }
         if (self.m_connected and self.cfg.metrics_interval_s != 0 and self.next_metrics_ns != 0 and now >= self.next_metrics_ns) {
-            var o = Out{ .buf = json_buf[0..1024] };
+            var o = Out{ .buf = json_buf[0..1536] };
             self.metricsJson(&o, now);
             if (!o.overflow) self.mqttPublish("metrics", o.slice(), 0, false) else self.mqtt_dropped += 1;
             self.next_metrics_ns = now + @as(u64, self.cfg.metrics_interval_s) * ns_per_s;
@@ -1034,10 +1066,29 @@ const Netd = struct {
         .{ .key = "fps", .name = "achieved fps", .template = "{{ value_json.fps if value_json.fps is not none else 'unknown' }}", .unit = "fps", .device_class = "", .state_class = "measurement" },
         .{ .key = "presented", .name = "frames presented", .template = "{{ value_json.presented }}", .unit = "", .device_class = "", .state_class = "total_increasing" },
         .{ .key = "time_state", .name = "time sync", .template = "{{ value_json.time.state }}", .unit = "", .device_class = "", .state_class = "" },
+        .{ .key = "load_1m", .name = "load average 1m", .template = "{{ value_json.load_1m }}", .unit = "", .device_class = "", .state_class = "measurement" },
+        .{ .key = "memory_free", .name = "memory free", .template = "{{ value_json.memory_free_kb }}", .unit = "kB", .device_class = "data_size", .state_class = "measurement" },
+        .{ .key = "tmpfs_used", .name = "tmpfs and shmem used", .template = "{{ value_json.tmpfs_used_kb }}", .unit = "kB", .device_class = "data_size", .state_class = "measurement" },
+        .{ .key = "wifi_rssi", .name = "wifi signal", .template = "{{ value_json.wifi.rssi_dbm }}", .unit = "dBm", .device_class = "signal_strength", .state_class = "measurement" },
+        .{ .key = "wifi_quality", .name = "wifi link quality", .template = "{{ value_json.wifi.quality }}", .unit = "", .device_class = "", .state_class = "measurement" },
+        .{ .key = "cpu_supervisor", .name = "supervisor cpu", .template = "{{ value_json.cpu_pct_by_process.supervisor }}", .unit = "%", .device_class = "", .state_class = "measurement" },
+        .{ .key = "cpu_renderer", .name = "renderer cpu", .template = "{{ value_json.cpu_pct_by_process.renderer }}", .unit = "%", .device_class = "", .state_class = "measurement" },
+        .{ .key = "cpu_netd", .name = "netd cpu", .template = "{{ value_json.cpu_pct_by_process.netd }}", .unit = "%", .device_class = "", .state_class = "measurement" },
+        .{ .key = "battery_voltage", .name = "battery voltage", .template = "{{ value_json.battery.millivolts }}", .unit = "mV", .device_class = "voltage", .state_class = "measurement" },
+        .{ .key = "battery", .name = "battery", .template = "{{ value_json.battery.percent }}", .unit = "%", .device_class = "battery", .state_class = "measurement" },
+        .{ .key = "usb_power", .name = "usb power", .template = "{{ 'on' if value_json.battery.usb_present else ('off' if value_json.battery.usb_present is not none else 'unknown') }}", .unit = "", .device_class = "", .state_class = "" },
     };
 
+    /// the stable device identity: the wlan0 mac, or the boot id when there is none. never the ip.
+    fn deviceId(self: *Netd, buf: *[24]u8) []const u8 {
+        const st = self.status;
+        if (st.mac_present != 0) return std.fmt.bufPrint(buf, "tc002-{x:0>2}{x:0>2}{x:0>2}{x:0>2}{x:0>2}{x:0>2}", .{ st.mac[0], st.mac[1], st.mac[2], st.mac[3], st.mac[4], st.mac[5] }) catch buf[0..0];
+        return std.fmt.bufPrint(buf, "tc002-boot{x:0>8}", .{st.boot_id}) catch buf[0..0];
+    }
+
     fn discoveryTopic(self: *Netd, buf: []u8, key: []const u8) []const u8 {
-        return std.fmt.bufPrint(buf, "{s}/sensor/tc002-{x:0>8}/{s}/config", .{ self.disc_prefix_used.slice(), self.status.boot_id, key }) catch buf[0..0];
+        var id: [24]u8 = undefined;
+        return std.fmt.bufPrint(buf, "{s}/sensor/{s}/{s}/config", .{ self.disc_prefix_used.slice(), self.deviceId(&id), key }) catch buf[0..0];
     }
 
     /// start a discovery pass: publish (or, when removing, clear) every entity, one per second.
@@ -1069,11 +1120,13 @@ const Netd = struct {
         } else {
             var o = Out{ .buf = json_buf[0..1024] };
             const interval: u64 = if (self.cfg.metrics_interval_s != 0) self.cfg.metrics_interval_s else 30;
-            o.fmt("{{\"name\":\"{s}\",\"unique_id\":\"tc002_{x:0>8}_{s}\",\"state_topic\":\"{s}/metrics\",\"value_template\":\"{s}\",\"availability_topic\":\"{s}/availability\",\"expire_after\":{d},\"entity_category\":\"diagnostic\"", .{ e.name, self.status.boot_id, e.key, self.prefix(), e.template, self.prefix(), interval * 3 });
+            var id: [24]u8 = undefined;
+            const dev = self.deviceId(&id);
+            o.fmt("{{\"name\":\"{s}\",\"unique_id\":\"{s}_{s}\",\"state_topic\":\"{s}/metrics\",\"value_template\":\"{s}\",\"availability_topic\":\"{s}/availability\",\"expire_after\":{d},\"entity_category\":\"diagnostic\"", .{ e.name, dev, e.key, self.prefix(), e.template, self.prefix(), interval * 3 });
             if (e.unit.len > 0) o.fmt(",\"unit_of_measurement\":\"{s}\"", .{e.unit});
             if (e.device_class.len > 0) o.fmt(",\"device_class\":\"{s}\"", .{e.device_class});
             if (e.state_class.len > 0) o.fmt(",\"state_class\":\"{s}\"", .{e.state_class});
-            o.fmt(",\"device\":{{\"identifiers\":[\"tc002-{x:0>8}\"],\"name\":\"tc002\",\"model\":\"tc002 custom runtime\",\"manufacturer\":\"ulanzi (custom firmware)\",\"sw_version\":\"plan-b\"}},\"origin\":{{\"name\":\"tc002-netd\"}}}}", .{self.status.boot_id});
+            o.fmt(",\"device\":{{\"identifiers\":[\"{s}\"],\"name\":\"tc002\",\"model\":\"tc002 custom runtime\",\"manufacturer\":\"ulanzi (custom firmware)\",\"sw_version\":\"plan-b\"}},\"origin\":{{\"name\":\"tc002-netd\"}}}}", .{dev});
             if (!o.overflow) self.mqttPublishTopic(t, o.slice(), 1, true) else self.mqtt_dropped += 1;
         }
         self.disc_index += 1;

@@ -35,7 +35,7 @@ test "every message kind round-trips through a packet" {
         .{ .save_result = .{ .status = .conflict, .saved_revision = 5 } },
         .{ .mqtt_put = try MqttPut.fromApi(.{ .host = "10.0.0.2", .password = "Pw", .enabled = true }) },
         .status_get,
-        .{ .status = .{ .renderer_state = 2, .epoch = 3, .revision = 4, .presented = 5, .base = 1, .brightness = 77, .uptime_s = 8, .mem_available_kb = 14000, .cpu_pct = 12, .fps_x10 = 599, .ip_present = 1, .ip = .{ 10, 0, 0, 111 }, .config_revision = 2, .saved_revision = 1, .boot_id = 0xabcd, .sample_age_ms = 40 } },
+        .{ .status = .{ .renderer_state = 2, .epoch = 3, .revision = 4, .presented = 5, .base = 1, .brightness = 77, .uptime_s = 8, .mem_available_kb = 14000, .cpu_pct = 12, .fps_x10 = 599, .ip_present = 1, .ip = .{ 10, 0, 0, 111 }, .config_revision = 2, .saved_revision = 1, .boot_id = 0xabcd, .sample_age_ms = 40, .mac = .{ 1, 2, 3, 4, 5, 6 }, .mac_present = 1, .load_1m_x100 = 123, .mem_free_kb = 4000, .wifi_level_dbm = -61, .wifi_quality = 49, .cpu_renderer_pct_x10 = 87, .tmpfs_used_kb = 1300, .battery_mv = 3987, .battery_pct = 80, .usb_present = 1 } },
     };
     var buf: [codec.max_message]u8 = undefined;
     for (all) |m| {
@@ -359,8 +359,22 @@ pub const StatusSnapshot = struct {
     saved_revision: u32 = 0,
     boot_id: u32 = 0,
     sample_age_ms: u32 = 0,
+    // v2 fields: stable identity and more telemetry (unknown values are explicit, never zero)
+    mac: [6]u8 = .{ 0, 0, 0, 0, 0, 0 },
+    mac_present: u8 = 0,
+    load_1m_x100: u16 = 0xffff,
+    mem_free_kb: u32 = 0,
+    wifi_level_dbm: i16 = -32768, // -32768 unknown
+    wifi_quality: u8 = 255,
+    cpu_supervisor_pct_x10: u16 = 0xffff,
+    cpu_renderer_pct_x10: u16 = 0xffff,
+    cpu_netd_pct_x10: u16 = 0xffff,
+    tmpfs_used_kb: u32 = 0xffffffff,
+    battery_mv: u16 = 0xffff,
+    battery_pct: u8 = 255,
+    usb_present: u8 = 255,
 
-    pub const wire_len = 1 + 4 + 4 + 8 + 4 + 4 + 4 + 1 + 4 + 4 + 4 + 4 + 2 + 1 + 4 + 1 + 4 + 4 + 4 + 4 + 4;
+    pub const wire_len = 1 + 4 + 4 + 8 + 4 + 4 + 4 + 1 + 4 + 4 + 4 + 4 + 2 + 1 + 4 + 1 + 4 + 4 + 4 + 4 + 4 + (6 + 1 + 2 + 4 + 2 + 1 + 2 + 2 + 2 + 4 + 2 + 1 + 1);
 };
 
 pub const Message = union(Kind) {
@@ -515,6 +529,31 @@ fn encodePayload(msg: Message, out: []u8) usize {
             o += 4;
             std.mem.writeInt(u32, out[o..][0..4], st.sample_age_ms, .big);
             o += 4;
+            out[o..][0..6].* = st.mac;
+            o += 6;
+            out[o] = st.mac_present;
+            o += 1;
+            std.mem.writeInt(u16, out[o..][0..2], st.load_1m_x100, .big);
+            o += 2;
+            std.mem.writeInt(u32, out[o..][0..4], st.mem_free_kb, .big);
+            o += 4;
+            std.mem.writeInt(i16, out[o..][0..2], st.wifi_level_dbm, .big);
+            o += 2;
+            out[o] = st.wifi_quality;
+            o += 1;
+            std.mem.writeInt(u16, out[o..][0..2], st.cpu_supervisor_pct_x10, .big);
+            o += 2;
+            std.mem.writeInt(u16, out[o..][0..2], st.cpu_renderer_pct_x10, .big);
+            o += 2;
+            std.mem.writeInt(u16, out[o..][0..2], st.cpu_netd_pct_x10, .big);
+            o += 2;
+            std.mem.writeInt(u32, out[o..][0..4], st.tmpfs_used_kb, .big);
+            o += 4;
+            std.mem.writeInt(u16, out[o..][0..2], st.battery_mv, .big);
+            o += 2;
+            out[o] = st.battery_pct;
+            out[o + 1] = st.usb_present;
+            o += 2;
             return o;
         },
         .result => |r| {
@@ -717,6 +756,31 @@ pub fn decodePacket(bytes: []const u8) Error!Packet {
             st.boot_id = std.mem.readInt(u32, b[o..][0..4], .big);
             o += 4;
             st.sample_age_ms = std.mem.readInt(u32, b[o..][0..4], .big);
+            o += 4;
+            st.mac = b[o..][0..6].*;
+            o += 6;
+            st.mac_present = b[o];
+            o += 1;
+            st.load_1m_x100 = std.mem.readInt(u16, b[o..][0..2], .big);
+            o += 2;
+            st.mem_free_kb = std.mem.readInt(u32, b[o..][0..4], .big);
+            o += 4;
+            st.wifi_level_dbm = std.mem.readInt(i16, b[o..][0..2], .big);
+            o += 2;
+            st.wifi_quality = b[o];
+            o += 1;
+            st.cpu_supervisor_pct_x10 = std.mem.readInt(u16, b[o..][0..2], .big);
+            o += 2;
+            st.cpu_renderer_pct_x10 = std.mem.readInt(u16, b[o..][0..2], .big);
+            o += 2;
+            st.cpu_netd_pct_x10 = std.mem.readInt(u16, b[o..][0..2], .big);
+            o += 2;
+            st.tmpfs_used_kb = std.mem.readInt(u32, b[o..][0..4], .big);
+            o += 4;
+            st.battery_mv = std.mem.readInt(u16, b[o..][0..2], .big);
+            o += 2;
+            st.battery_pct = b[o];
+            st.usb_present = b[o + 1];
             break :blk .{ .status = st };
         },
         .ready => blk: {
