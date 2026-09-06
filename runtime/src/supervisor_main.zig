@@ -15,6 +15,7 @@ const cli = @import("supervisor/cli.zig");
 const config = @import("supervisor/config.zig");
 const mcu = @import("supervisor/mcu.zig");
 const logring = @import("supervisor/logring.zig");
+const sntp = @import("supervisor/sntp.zig");
 const api = @import("net/api.zig");
 
 const linux = std.os.linux;
@@ -27,7 +28,7 @@ pub const std_options: std.Options = .{ .enable_segfault_handler = false };
 
 const ns_per_s = std.time.ns_per_s;
 
-const Tag = enum(u64) { timer = 1, signals = 2, ipc = 3, keys = 4, netd = 5, mcu = 6, logs = 7 };
+const Tag = enum(u64) { timer = 1, signals = 2, ipc = 3, keys = 4, netd = 5, mcu = 6, logs = 7, sntp = 8 };
 
 const tick_ns: u64 = 100_000_000;
 const property_timeout_ns: u64 = 2 * ns_per_s;
@@ -177,6 +178,126 @@ const McuLink = struct {
     }
 };
 
+// --- sntp (feat/sntp) ---------------------------------------------------------------------------
+
+/// the sntp client's socket side: one udp socket connected to the configured server, the pure
+/// client state machine, the clock corrections, and rate-limited logging.
+const SntpLink = struct {
+    fd: ?sys.Fd = null,
+    client: sntp.Client = .{},
+    nonce: u32 = 0x9e37_79b9,
+    consecutive_failures: u32 = 0,
+
+    fn nextNonce(self: *SntpLink) u32 {
+        var x = self.nonce;
+        x ^= x << 13;
+        x ^= x >> 17;
+        x ^= x << 5;
+        self.nonce = x;
+        return x;
+    }
+
+    /// (re)open the socket for the configured server; at startup and whenever the settings change.
+    fn configure(self: *SntpLink, s: *Supervisor, now: u64) void {
+        if (self.fd) |fd| {
+            sys.epollDel(s.ep, fd);
+            sys.close(fd);
+            self.fd = null;
+        }
+        self.client.configure(s.cfg.ntp_server, s.cfg.ntp_interval_s, now);
+        self.client.setNetwork(s.last_ip != null, now);
+        const addr = s.cfg.ntp_server orelse {
+            log.info("sntp disabled: no ntp_server configured", .{});
+            return;
+        };
+        const fd = sys.udpConnect(addr, sntp.port) catch |e| {
+            log.warn("sntp socket to {d}.{d}.{d}.{d} failed: {s}", .{ addr[0], addr[1], addr[2], addr[3], sys.errText(e) });
+            self.client.configure(null, s.cfg.ntp_interval_s, now);
+            return;
+        };
+        sys.epollAdd(s.ep, fd, linux.EPOLL.IN, @intFromEnum(Tag.sntp)) catch |e| {
+            log.warn("sntp socket epoll add failed: {s}", .{sys.errText(e)});
+            sys.close(fd);
+            self.client.configure(null, s.cfg.ntp_interval_s, now);
+            return;
+        };
+        self.fd = fd;
+        log.info("sntp server {d}.{d}.{d}.{d}, polling every {d} s once wlan0 has an address", .{ addr[0], addr[1], addr[2], addr[3], s.cfg.ntp_interval_s });
+    }
+
+    fn failure(self: *SntpLink, text: []const u8) void {
+        self.consecutive_failures +|= 1;
+        if (self.consecutive_failures == 1 or self.consecutive_failures % 10 == 0) log.warn("sntp: {s} ({d} consecutive failures)", .{ text, self.consecutive_failures });
+    }
+
+    fn poll(self: *SntpLink, now: u64) void {
+        switch (self.client.poll(now)) {
+            .none => {},
+            .timeout => self.failure("no reply within 2 s"),
+            .send => {
+                const fd = self.fd orelse return;
+                const t1 = sys.realtimeNs();
+                const req = sntp.buildRequest(t1, self.nextNonce());
+                sys.udpSend(fd, &req.bytes) catch |e| {
+                    self.client.onSocketError(now);
+                    self.failure(sys.errText(e));
+                    return;
+                };
+                self.client.onSent(req.sent, t1, now);
+            },
+        }
+    }
+
+    fn readable(self: *SntpLink, s: *Supervisor, now: u64) void {
+        const fd = self.fd orelse return;
+        var buf: [128]u8 = undefined;
+        var rounds: u32 = 0;
+        while (rounds < 4) : (rounds += 1) {
+            const pkt = sys.udpRecv(fd, &buf) catch |e| {
+                self.client.onSocketError(now);
+                self.failure(if (e == error.Closed) "server unreachable (icmp)" else sys.errText(e));
+                return;
+            } orelse return;
+            const t4 = sys.realtimeNs();
+            switch (self.client.onReply(pkt, t4, now)) {
+                .ok => |r| self.apply(s, r, now),
+                .rejected => |why| self.failure(sntp.rejectText(why)),
+            }
+        }
+    }
+
+    /// step large offsets (the renderer rearms its wall-clock deadline), slew small ones.
+    fn apply(self: *SntpLink, s: *Supervisor, r: sntp.Reply, now: u64) void {
+        const how = sntp.correctionFor(r.offset_ns);
+        switch (how) {
+            .step => {
+                const target: i128 = @as(i128, sys.realtimeNs()) + r.offset_ns;
+                sys.clockSetRealtime(@intCast(@max(target, 0))) catch |e| {
+                    log.err("sntp: clock_settime failed: {s}", .{sys.errText(e)});
+                    return;
+                };
+                s.send(.time_corrected);
+            },
+            .slew => sys.adjtimeOffset(@intCast(@divTrunc(r.offset_ns, 1000))) catch |e| {
+                log.err("sntp: adjtimex failed: {s}", .{sys.errText(e)});
+                return;
+            },
+        }
+        log.info("sntp: offset {d} ms, delay {d} ms, stratum {d}, {s}", .{ @divTrunc(r.offset_ns, 1_000_000), @divTrunc(r.delay_ns, 1_000_000), r.stratum, if (how == .step) "stepped" else "slewing" });
+        self.consecutive_failures = 0;
+        self.publish(s, now);
+        s.sendNetd(.{ .status = s.snapshot }, 0);
+    }
+
+    fn publish(self: *SntpLink, s: *Supervisor, now: u64) void {
+        const ts = self.client.timeState(now);
+        s.snapshot.time_state = ts.state;
+        s.snapshot.time_age_s = ts.age_s;
+    }
+};
+
+// --- end sntp -----------------------------------------------------------------------------------
+
 const Supervisor = struct {
     cfg_cli: cli.Config,
     cfg_dir_text: []const u8,
@@ -218,6 +339,7 @@ const Supervisor = struct {
     mcu_link: McuLink = .{},
     /// the children's stdout and stderr: drained into the ring and echoed to our own stderr
     log_pipe: ?[2]sys.Fd = null,
+    sntp_link: SntpLink = .{},
 
     fn send(self: *Supervisor, msg: messages.Message) void {
         self.request_id += 1;
@@ -313,6 +435,7 @@ const Supervisor = struct {
         if (before.brightness != c.brightness) self.send(.{ .brightness = .{ .value = c.brightness } });
         if (before.base != c.base or before.generator != c.generator) self.send(.{ .set_base = .{ .base = c.base, .generator = c.generator, .seed = 0 } });
         if (!std.mem.eql(u8, before.timezone.slice(), c.timezone.slice())) self.send(.{ .set_timezone = c.timezone });
+        if (!std.meta.eql(before.ntp_server, c.ntp_server) or before.ntp_interval_s != c.ntp_interval_s) self.sntp_link.configure(self, sys.monotonicNs()); // sntp
         self.snapshot.config_revision = c.revision;
         self.snapshot.saved_revision = c.saved_revision;
     }
@@ -603,6 +726,7 @@ const Supervisor = struct {
         self.snapshot.uptime_s = @intCast(now / ns_per_s);
         self.snapshot.sample_age_ms = 0;
         self.snapshot.restarts = self.restarts;
+        self.sntp_link.publish(self, now); // sntp
         self.snapshot.ip_present = @intFromBool(self.last_ip != null);
         self.snapshot.ip = self.last_ip orelse .{ 0, 0, 0, 0 };
         self.snapshot.config_revision = self.cfg.revision;
@@ -878,6 +1002,7 @@ const Supervisor = struct {
         };
         if (std.meta.eql(addr, self.last_ip)) return;
         self.last_ip = addr;
+        self.sntp_link.client.setNetwork(addr != null, now); // sntp
         if (addr) |a| log.info("wlan0 address {d}.{d}.{d}.{d}", .{ a[0], a[1], a[2], a[3] }) else log.info("wlan0 has no address", .{});
         self.send(.{ .ip_changed = .{ .present = if (addr != null) 1 else 0, .addr = addr orelse .{ 0, 0, 0, 0 } } });
     }
@@ -1034,6 +1159,8 @@ fn run(cfg: cli.Config, environ: anytype, args: []const [:0]const u8) !u8 {
             log.info("mcu link {s} at {d} baud, polling every {d} s", .{ cfg.mcu_path, cfg.mcu_baud, cfg.mcu_poll_s });
         } else |e| log.warn("mcu link unavailable ({s}: {s}); battery telemetry stays unknown", .{ cfg.mcu_path, sys.errText(e) });
     }
+    // 9. the sntp client, on the configured server (none by default)
+    s.sntp_link.configure(&s, sys.monotonicNs());
 
     var events: [8]sys.Event = undefined;
     while (true) {
@@ -1048,6 +1175,7 @@ fn run(cfg: cli.Config, environ: anytype, args: []const [:0]const u8) !u8 {
         s.drainNetd(now);
         s.pollNetd(now);
         s.mcu_link.poll(&s, now);
+        s.sntp_link.poll(now); // sntp
         s.expireRelays(now);
         if (now >= s.next_sample_ns) {
             s.sample(now);
@@ -1062,9 +1190,10 @@ fn run(cfg: cli.Config, environ: anytype, args: []const [:0]const u8) !u8 {
         for (events[0..n]) |ev| {
             if (ev.data.u64 == @intFromEnum(Tag.timer)) sys.timerfdDrain(timer);
             if (ev.data.u64 == @intFromEnum(Tag.mcu)) s.mcu_link.readable(&s, sys.monotonicNs());
+            if (ev.data.u64 == @intFromEnum(Tag.sntp)) s.sntp_link.readable(&s, sys.monotonicNs()); // sntp
         }
     }
-    log.info("exit: {d} heartbeats, {d} renderer restarts, {d} netd restarts, mcu replies {d} timeouts {d} unsolicited {d}, final state {s}", .{ s.heartbeats, s.restarts, s.netd_exits.restarts, s.mcu_link.replies, s.mcu_link.timeouts, s.mcu_link.unsolicited, @tagName(lifecycle.state) });
+    log.info("exit: {d} heartbeats, {d} renderer restarts, {d} netd restarts, mcu replies {d} timeouts {d} unsolicited {d}, sntp ok {d} failed {d}, final state {s}", .{ s.heartbeats, s.restarts, s.netd_exits.restarts, s.mcu_link.replies, s.mcu_link.timeouts, s.mcu_link.unsolicited, s.sntp_link.client.successes, s.sntp_link.client.failures, @tagName(lifecycle.state) });
     return 0;
 }
 
