@@ -320,7 +320,132 @@
     }
   }
 
+  /* ---------- generators (scene.zig, popsquares.zig, plasma.zig) ---------- */
+  const clamp = (v, lo, hi) => Math.min(Math.max(v, lo), hi);
+  class Rng {
+    constructor(seed) { this.state = (seed >>> 0) || 0x9e3779b9; }
+    next() {
+      let x = this.state;
+      x = (x ^ (x << 13)) >>> 0;
+      x = (x ^ (x >>> 17)) >>> 0;
+      x = (x ^ (x << 5)) >>> 0;
+      this.state = x;
+      return x;
+    }
+    unit() { return (this.next() >>> 8) / 16777216; }
+    range(lo, hi) { return lo + (hi - lo) * this.unit(); }
+  }
+
+  const POP_DEFAULTS = { pop_s: 2, alive: 1, dim: 0.25, dim_lo: 0, dim_hi: 127, tint_frac: 0.15, tint: [58, 110, 165] };
+  const LEVEL_MAX = 127, DT_MAX = 0.5, SPENT = 1e-4;
+  class Popsquares {
+    constructor(seed, options) {
+      this.o = Object.assign({}, POP_DEFAULTS, options || {});
+      this.rng = new Rng(seed);
+      this.level = new Float32Array(PIXELS);
+      this.rank = new Float32Array(PIXELS);
+      this.tinted = new Uint8Array(PIXELS);
+      for (let i = 0; i < PIXELS; i++) {
+        this.level[i] = this.rng.range(0, LEVEL_MAX);
+        this.rank[i] = this.rng.unit();
+        this.tinted[i] = this.rng.unit() < this.o.tint_frac ? 1 : 0;
+      }
+    }
+    rearm(i) {
+      const lo = Math.min(this.o.dim_lo, this.o.dim_hi), hi = Math.max(this.o.dim_lo, this.o.dim_hi);
+      this.level[i] = this.rng.unit() < this.o.dim ? this.rng.range(lo, hi) : LEVEL_MAX;
+      this.tinted[i] = this.rng.unit() < this.o.tint_frac ? 1 : 0;
+    }
+    step(dtS) {
+      const dt = clamp(dtS, 0, DT_MAX);
+      const pop = this.o.pop_s > 0 ? this.o.pop_s : 1;
+      const drop = LEVEL_MAX * dt / pop;
+      for (let i = 0; i < PIXELS; i++) {
+        if (this.rank[i] >= this.o.alive) { this.level[i] = 0; continue; }
+        this.level[i] -= drop;
+        if (this.level[i] <= SPENT) this.rearm(i);
+      }
+    }
+    render(rgb) {
+      for (let i = 0; i < PIXELS; i++) {
+        const f = clamp(this.level[i] / LEVEL_MAX, 0, 1);
+        const c = this.tinted[i] ? this.o.tint : WHITE;
+        rgb[i * 3] = Math.floor(c[0] * f); rgb[i * 3 + 1] = Math.floor(c[1] * f); rgb[i * 3 + 2] = Math.floor(c[2] * f);
+      }
+    }
+  }
+
+  const SINE = new Uint8Array(256);
+  for (let i = 0; i < 256; i++) SINE[i] = Math.round((Math.sin(i * 2 * Math.PI / 256) + 1) * 127.5);
+  class Plasma {
+    constructor(seed) {
+      const r = new Rng(seed);
+      this.phase = r.next() & 0xff;
+      this.speed = 1 + (r.next() % 3);
+      this.t = 0; this.acc = 0;
+    }
+    step(dtS) {
+      const d = clamp(dtS, 0, DT_MAX);
+      this.acc += d * 60 * this.speed;
+      const whole = Math.floor(this.acc);
+      this.t = (this.t + whole) >>> 0;
+      this.acc -= whole;
+    }
+    render(rgb) {
+      const t = this.t & 0xff;
+      for (let y = 0; y < HEIGHT; y++) for (let x = 0; x < WIDTH; x++) {
+        const xi = (x * 4) & 0xff, yi = (y * 12) & 0xff;
+        const v = SINE[(xi + t) & 0xff] + SINE[(yi + t * 2 + this.phase) & 0xff] + SINE[((((xi + yi) & 0xff) >> 1) + t) & 0xff];
+        const c = Math.floor(v / 3);
+        const i = pixelOffset(x, y);
+        rgb[i] = SINE[c]; rgb[i + 1] = SINE[(c + 85) & 0xff]; rgb[i + 2] = SINE[(c + 170) & 0xff];
+      }
+    }
+  }
+
+  const GENERATORS = ['popsquares', 'plasma'];
+  class Art {
+    constructor(generator, seed) { this.generator = GENERATORS.includes(generator) ? generator : 'popsquares'; this.reseed(seed); }
+    reseed(seed) { this.seed = seed >>> 0; this.popsquares = new Popsquares(this.seed); this.plasma = new Plasma(this.seed); }
+    select(generator) { if (GENERATORS.includes(generator)) this.generator = generator; }
+    current() { return this.generator === 'plasma' ? this.plasma : this.popsquares; }
+    step(dtS) { this.current().step(dtS); }
+    render(rgb) { this.current().render(rgb); }
+  }
+
+  /* ---------- compose: what the panel shows for a status document plus what this page knows ---------- */
+  const FRAME_MS = 1000 / 60;
+  function compose(status, local, nowMs) {
+    if (local.pending) return { rgb: local.pending.slice(), cadenceMs: null, label: 'pending frame' };
+    const rgb = black();
+    if (status.overlay === 'frame') {
+      if (local.frame) return { rgb: local.frame.slice(), cadenceMs: null, label: 'frame' };
+      rgb.fill(24);
+      return { rgb, cadenceMs: null, label: 'frame (contents unknown: not sent from this page)' };
+    }
+    if (status.overlay === 'notify') {
+      if (local.notify) {
+        const n = local.notify;
+        renderNotify(rgb, n.text, n.colour, nowMs - n.sinceMs);
+        return { rgb, cadenceMs: textWidth(n.text) > WIDTH ? SCROLL_MS : null, label: 'notification' };
+      }
+      return { rgb, cadenceMs: null, label: 'notification (text unknown: not sent from this page)' };
+    }
+    switch (status.base) {
+      case 'clock':
+        renderClock(rgb, nowMs, local.tz || TZ_UTC);
+        return { rgb, cadenceMs: nextSecondMs(nowMs) - nowMs, label: 'clock' };
+      case 'ip':
+        renderIp(rgb, ipFromString(status.ip));
+        return { rgb, cadenceMs: null, label: 'ip' };
+      default:
+        if (local.art) local.art.render(rgb);
+        return { rgb, cadenceMs: FRAME_MS, label: `art: ${status.generator}, same algorithm, local seed` };
+    }
+  }
+
   return { WIDTH, HEIGHT, PIXELS, RGB_BYTES, WHITE, black, pixelOffset, glyph, textWidth, blit, remap, buildLut,
     tzParse, utcOffsetAt, localFromUtc, daysFromCivil, civilFromDays, weekday, TZ_UTC,
-    CLOCK_X, CLOCK_Y, formatTime, renderClock, nextSecondMs, ipFromString, renderIp, SCROLL_MS, renderNotify };
+    CLOCK_X, CLOCK_Y, formatTime, renderClock, nextSecondMs, ipFromString, renderIp, SCROLL_MS, renderNotify,
+    Rng, Popsquares, Plasma, Art, GENERATORS, FRAME_MS, compose };
 });

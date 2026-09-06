@@ -149,3 +149,99 @@ test('notify: short text is centred, long text scrolls one pixel per period', ()
   S.blit(e, S.WIDTH - 10, 4, long, S.WHITE);
   assert.deepEqual(b, e);
 });
+
+test('rng is deterministic and never returns zero for a zero seed', () => {
+  const a = new S.Rng(0), b = new S.Rng(0);
+  assert.equal(a.next(), b.next());
+  assert.notEqual(a.state, 0);
+  const u = new S.Rng(42).unit();
+  assert.ok(u >= 0 && u < 1);
+});
+
+test('popsquares: same seed same bytes, cells re-arm, no alive cells is black, long pauses are clamped', () => {
+  const a = new S.Popsquares(1), b = new S.Popsquares(1);
+  const ra = S.black(), rb = S.black();
+  a.render(ra); b.render(rb);
+  assert.deepEqual(ra, rb);
+  const s = new S.Popsquares(3);
+  let rose = false;
+  for (let i = 0; i < 40; i++) {
+    const before = Float32Array.from(s.level);
+    s.step(0.5);
+    for (let j = 0; j < before.length; j++) if (s.level[j] > before[j]) rose = true;
+  }
+  assert.equal(rose, true);
+  const dead = new S.Popsquares(5, { alive: 0 });
+  dead.step(0.01);
+  const rgb = S.black();
+  dead.render(rgb);
+  assert.deepEqual(rgb, S.black());
+  const p = new S.Popsquares(7), q = new S.Popsquares(7);
+  p.step(10); q.step(0.5);
+  assert.deepEqual(p.level, q.level);
+});
+
+test('plasma: same seed same bytes, different seeds differ, stepping changes the frame', () => {
+  const ra = S.black(), rb = S.black(), rc = S.black();
+  new S.Plasma(4).render(ra); new S.Plasma(4).render(rb); new S.Plasma(5).render(rc);
+  assert.deepEqual(ra, rb);
+  assert.notDeepEqual(ra, rc);
+  const s = new S.Plasma(1);
+  const before = S.black(), after = S.black();
+  s.render(before);
+  assert.notDeepEqual(before, S.black());
+  s.step(0.1);
+  s.render(after);
+  assert.notDeepEqual(before, after);
+});
+
+test('art: selecting plasma renders what a fresh plasma renders; reseeding changes popsquares', () => {
+  const art = new S.Art('popsquares', 9);
+  art.select('plasma');
+  art.step(0.1);
+  const fromArt = S.black(), direct = S.black();
+  art.render(fromArt);
+  const p = new S.Plasma(9); p.step(0.1); p.render(direct);
+  assert.deepEqual(fromArt, direct);
+  const a2 = new S.Art('popsquares', 1);
+  const x = S.black(), y = S.black();
+  a2.render(x); a2.reseed(2); a2.render(y);
+  assert.notDeepEqual(x, y);
+});
+
+test('compose picks the right layer and cadence', () => {
+  const base = { base: 'clock', generator: 'popsquares', overlay: 'none', brightness: 100, ip: '10.0.0.5' };
+  const local = { art: new S.Art('popsquares', 1), tz: S.tzParse('JST-9'), notify: null, frame: null, pending: null };
+  const wallMs = (4 * 3600 + 5 * 60 + 6) * 1000 + 700;
+  const clock = S.compose(base, local, wallMs);
+  const expected = S.black();
+  S.blit(expected, S.CLOCK_X, S.CLOCK_Y, '13:05:06', S.WHITE);
+  assert.deepEqual(clock.rgb, expected);
+  assert.equal(clock.cadenceMs, 300);
+  assert.equal(clock.label, 'clock');
+
+  const ip = S.compose({ ...base, base: 'ip' }, local, 0);
+  const e2 = S.black(); S.blit(e2, 1, 0, '10.0.', S.WHITE); S.blit(e2, 1, 8, '0.5', S.WHITE);
+  assert.deepEqual(ip.rgb, e2);
+  assert.equal(ip.cadenceMs, null);
+
+  const art = S.compose({ ...base, base: 'art', generator: 'plasma' }, local, 0);
+  assert.notDeepEqual(art.rgb, S.black());
+  assert.equal(art.cadenceMs, 1000 / 60);
+  assert.match(art.label, /local seed/);
+
+  const n = S.compose({ ...base, overlay: 'notify' }, { ...local, notify: { text: 'hi', colour: [1, 2, 3], sinceMs: 0 } }, 100);
+  const e3 = S.black(); S.blit(e3, 20, 4, 'hi', [1, 2, 3]);
+  assert.deepEqual(n.rgb, e3);
+  assert.equal(n.cadenceMs, null);
+  const unknownN = S.compose({ ...base, overlay: 'notify' }, local, 100);
+  assert.match(unknownN.label, /unknown/);
+
+  const frame = new Uint8Array(S.RGB_BYTES).fill(9);
+  const f = S.compose({ ...base, overlay: 'frame' }, { ...local, frame }, 0);
+  assert.deepEqual(f.rgb, frame);
+  const pend = new Uint8Array(S.RGB_BYTES).fill(7);
+  const pdg = S.compose(base, { ...local, pending: pend }, 0);
+  assert.deepEqual(pdg.rgb, pend);
+  assert.equal(pdg.label, 'pending frame');
+});
