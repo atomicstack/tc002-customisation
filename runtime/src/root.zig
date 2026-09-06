@@ -13,4 +13,7 @@ test {
     _ = @import("input/evdev.zig");
     _ = @import("input/actions.zig");
     _ = @import("scene/arbiter.zig");
+    _ = @import("ipc/codec.zig");
+    _ = @import("ipc/messages.zig");
+    _ = @import("ipc/dedup.zig");
 }
