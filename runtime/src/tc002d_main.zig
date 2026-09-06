@@ -7,6 +7,7 @@ const log = @import("sys/log.zig");
 const geometry = @import("panel/geometry.zig");
 const pack = @import("panel/pack.zig");
 const presenter = @import("panel/presenter.zig");
+const fade = @import("panel/fade.zig");
 const spidev = @import("panel/spidev.zig");
 const scene = @import("scene/scene.zig");
 const tz = @import("scene/tz.zig");
@@ -40,6 +41,9 @@ const evdev_events_per_read = 64;
 // everything the loop touches is static: allocated once, never in the render path.
 var arb: arbiter.Arbiter = undefined;
 var rgb: geometry.Rgb = undefined;
+/// what goes to the panel after fades: the scene output blended and levelled, before brightness.
+var out_rgb: geometry.Rgb = geometry.black_rgb;
+var fader = fade.Fader{};
 var frame: geometry.Frame = undefined;
 var lut: pack.Lut = undefined;
 var lut_brightness: u8 = 0;
@@ -62,6 +66,9 @@ const Renderer = struct {
     mapper: actions.Mapper,
     started_ns: u64,
     render_deadline: ?u64 = null,
+    /// the last redraw found nothing to schedule (an idle scene, or the panel dark): redraw only
+    /// on a change instead of on every wake-up.
+    idle: bool = false,
     next_heartbeat: u64 = 0,
     next_stats: u64 = 0,
     stopping: bool = false,
@@ -100,20 +107,36 @@ const Renderer = struct {
         pres.submit(frame_version, .isolated);
     }
 
+    /// rearm wall-clock presentation and redraw on the next iteration.
+    fn forceRedraw(self: *Renderer) void {
+        self.render_deadline = null;
+        self.idle = false;
+    }
+
     fn redraw(self: *Renderer, now: u64, base_deadline: u64) void {
         const wall = sys.realtimeNs();
         arb.tick(now, wall);
+        if (arb.takeTransition()) fader.beginCross(&out_rgb, now);
+        fader.setPower(arb.power, now);
         arb.render(wall, &rgb);
+        const fading = fader.apply(&rgb, &out_rgb, now);
         if (lut_brightness != arb.brightness) {
             lut = pack.buildLut(arb.brightness);
             lut_brightness = arb.brightness;
         }
-        pack.packWithLut(&rgb, &lut, &frame);
+        pack.packWithLut(&out_rgb, &lut, &frame);
         frame_version +%= 1;
-        const cadence = arb.cadence(wall);
+        // a running fade owns the cadence; a dark panel has none; otherwise the scene decides
+        const cadence: scene.Cadence = if (fading) .{ .continuous = scene.frame_period_ns } else if (fader.dark()) .idle else arb.cadence(wall);
         pres.submit(frame_version, if (cadence == .continuous) .continuous else .isolated);
         self.redraws += 1;
         self.render_deadline = sched.nextDeadline(cadence, base_deadline, now, wall);
+        self.idle = cadence == .idle;
+    }
+
+    fn sendEdges(self: *Renderer, edges: *const actions.EdgeQueue) void {
+        for (edges.slice()) |e| self.send(.{ .input = .{ .control = @intFromEnum(e.control), .event = @intFromEnum(e.event), .position = e.position } }, 0);
+        if (edges.dropped > 0) log.warn("dropped {d} input edges under load", .{edges.dropped});
     }
 
     fn transfer(self: *Renderer, now: u64) void {
@@ -149,6 +172,7 @@ const Renderer = struct {
             .generator = @intFromEnum(arb.art.generator),
             .overlay = overlay,
             .brightness = arb.brightness,
+            .power = @intFromBool(arb.power),
         } }, 0);
     }
 
@@ -166,7 +190,7 @@ const Renderer = struct {
             },
             .time_corrected => {
                 _ = arb.apply(.time_corrected, now);
-                self.render_deadline = null; // rearm wall-clock presentation on the next iteration
+                self.forceRedraw();
                 self.reply(p.request_id, .applied, arb.revision);
                 return;
             },
@@ -179,14 +203,19 @@ const Renderer = struct {
                 if (tz.parse(t.slice())) |rule| {
                     arb.clock.rule = rule;
                     _ = arb.apply(.time_corrected, now);
-                    self.render_deadline = null;
+                    self.forceRedraw();
                     self.reply(p.request_id, .applied, arb.revision);
                 } else |_| {
                     self.reply(p.request_id, .rejected, arb.revision);
                 }
                 return;
             },
-            .heartbeat, .ready, .result, .credentials, .config, .config_get, .config_patch, .config_save, .save_result, .mqtt_put, .status_get, .status => return, // not for the renderer
+            .screen_get => {
+                // a read: what is on the panel now, outside the epoch and dedup rules
+                self.send(.{ .screen = .{ .revision = arb.revision, .brightness = arb.brightness, .power = @intFromBool(arb.power), .rgb = out_rgb } }, p.request_id);
+                return;
+            },
+            .heartbeat, .ready, .result, .screen, .input, .log_get, .log_lines, .credentials, .config, .config_get, .config_patch, .config_save, .save_result, .mqtt_put, .status_get, .status => return, // not for the renderer
             else => {},
         }
         // discrete, non-idempotent commands: epoch, then the deduplication window, then apply
@@ -217,6 +246,17 @@ const Renderer = struct {
             .brightness => |b| arb.apply(.{ .brightness = b.value }, now),
             .reseed => |r| arb.apply(.{ .reseed = r.seed }, now),
             .arm_stream => arb.apply(.arm_stream, now),
+            .power => |pw| arb.apply(.{ .power = pw.on != 0 }, now),
+            .inject_input => |i| blk: {
+                const control = messages.enumFromInt(actions.Control, i.control) orelse break :blk arbiter.Result{ .rejected = .invalid_text };
+                const event = messages.enumFromInt(actions.EdgeEvent, i.event) orelse break :blk arbiter.Result{ .rejected = .invalid_text };
+                var queue = actions.ActionQueue{};
+                var edges = actions.EdgeQueue{};
+                if (!self.mapper.inject(control, event, i.steps, now, &queue, &edges)) break :blk arbiter.Result{ .rejected = .invalid_text };
+                for (queue.slice()) |a| arb.action(a, now);
+                self.sendEdges(&edges);
+                break :blk arbiter.Result{ .applied = arb.revision };
+            },
             else => unreachable,
         };
         const status: messages.Status = switch (res) {
@@ -250,7 +290,7 @@ const Renderer = struct {
         }
     }
 
-    fn drainDevice(self: *Renderer, fd: sys.Fd, now: u64, queue: *actions.ActionQueue) void {
+    fn drainDevice(self: *Renderer, fd: sys.Fd, now: u64, queue: *actions.ActionQueue, edges: *actions.EdgeQueue) void {
         while (true) {
             const n = sys.read(fd, &evbuf) catch |e| switch (e) {
                 error.WouldBlock, error.Interrupted => return,
@@ -262,7 +302,7 @@ const Renderer = struct {
             if (n == 0) return;
             var off: usize = 0;
             while (off + evdev.event_size <= n) : (off += evdev.event_size) {
-                self.mapper.feed(evdev.decode(evbuf[off..][0..evdev.event_size]), now, queue);
+                self.mapper.feed(evdev.decode(evbuf[off..][0..evdev.event_size]), now, queue, edges);
             }
             if (n < evbuf.len) return;
         }
@@ -270,13 +310,19 @@ const Renderer = struct {
 
     fn drainInput(self: *Renderer, now: u64) void {
         var queue = actions.ActionQueue{};
-        if (self.keys) |fd| self.drainDevice(fd, now, &queue);
-        if (self.knob) |fd| self.drainDevice(fd, now, &queue);
-        self.mapper.poll(now, &queue);
+        var edges = actions.EdgeQueue{};
+        if (self.keys) |fd| self.drainDevice(fd, now, &queue, &edges);
+        if (self.knob) |fd| self.drainDevice(fd, now, &queue, &edges);
+        self.mapper.poll(now, &queue, &edges);
         for (queue.slice()) |a| arb.action(a, now);
         if (queue.dropped > 0) {
             self.dropped_actions += queue.dropped;
             log.warn("dropped {d} physical actions under load", .{queue.dropped});
+        }
+        self.sendEdges(&edges);
+        if (self.mapper.unmapped_code != 0) {
+            log.info("unmapped keycode {d} pressed (keymap {d},{d},{d},{d})", .{ self.mapper.unmapped_code, self.mapper.keymap.left, self.mapper.keymap.middle, self.mapper.keymap.right, self.mapper.keymap.knob });
+            self.mapper.unmapped_code = 0;
         }
     }
 
@@ -355,6 +401,8 @@ fn run(cfg: cli.Config) !u8 {
     const seed = if (cfg.seed != 0) cfg.seed else seedFromClock();
     arb = arbiter.Arbiter.init(cfg.base, cfg.generator, seed, rule);
     arb.brightness = cfg.brightness;
+    fader.crossfade_ns = @as(u64, cfg.crossfade_ms) * 1_000_000;
+    fader.power_ns = @as(u64, cfg.power_fade_ms) * 1_000_000;
 
     const started = sys.monotonicNs();
     var r = Renderer{
@@ -388,7 +436,7 @@ fn run(cfg: cli.Config) !u8 {
             if (r.render_deadline) |d| {
                 if (now >= d) r.redraw(now, d);
             }
-            if (arb.takeDirty() or r.render_deadline == null) {
+            if (arb.takeDirty() or (r.render_deadline == null and !r.idle)) {
                 // an isolated change: redraw immediately; keep a continuous phase if one is running
                 const base = if (r.render_deadline) |d| (if (d <= now) d else d - scene.frame_period_ns) else now;
                 r.redraw(now, base);

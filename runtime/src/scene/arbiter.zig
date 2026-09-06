@@ -137,6 +137,45 @@ test "physical actions: buttons select the base, rotary and knob depend on the b
     try std.testing.expectEqual(@as(u8, 1), a.brightness); // never fully off from the knob
 }
 
+test "transitions mark scene changes and notification edges, never raw frames or repeats" {
+    var a = fresh();
+    try std.testing.expect(!a.takeTransition());
+    _ = a.apply(.{ .set_base = .art }, 0); // already art: no transition
+    try std.testing.expect(!a.takeTransition());
+    _ = a.apply(.{ .set_base = .clock }, 0);
+    try std.testing.expect(a.takeTransition());
+    try std.testing.expect(!a.takeTransition());
+    _ = a.apply(.{ .notify = .{ .text = "hi", .colour = white, .duration_s = 1 } }, 0);
+    try std.testing.expect(a.takeTransition());
+    a.tick(1 * s_ns, 0); // expiry reveals the base
+    try std.testing.expect(a.takeTransition());
+    var frame = geometry.black_rgb;
+    _ = a.apply(.{ .raw = .{ .rgb = &frame, .duration_s = 2 } }, 2 * s_ns);
+    try std.testing.expect(!a.takeTransition());
+    a.tick(4 * s_ns, 0); // a raw frame ends without a fade
+    try std.testing.expect(!a.takeTransition());
+    _ = a.apply(.{ .set_base = .art }, 0);
+    _ = a.takeTransition();
+    a.action(.rotate_cw, 0); // generator change in art
+    try std.testing.expect(a.takeTransition());
+    _ = a.apply(.{ .reseed = 5 }, 0);
+    _ = a.apply(.{ .brightness = 50 }, 0);
+    try std.testing.expect(!a.takeTransition());
+}
+
+test "power is a command that bumps the revision only when it changes" {
+    var a = fresh();
+    try std.testing.expect(a.power);
+    try std.testing.expectEqual(Result{ .applied = 0 }, a.apply(.{ .power = true }, 0));
+    try std.testing.expectEqual(Result{ .applied = 1 }, a.apply(.{ .power = false }, 0));
+    try std.testing.expect(!a.power);
+    try std.testing.expect(a.takeDirty());
+    try std.testing.expectEqual(Result{ .applied = 1 }, a.apply(.{ .power = false }, 0));
+    try std.testing.expect(!a.takeDirty());
+    try std.testing.expectEqual(Result{ .applied = 2 }, a.apply(.{ .power = true }, 0));
+    try std.testing.expect(!a.takeTransition());
+}
+
 test "brightness and reseed commands" {
     var a = fresh();
     try expectRejected(a.apply(.{ .brightness = 0 }, 0), .invalid_brightness);
@@ -185,6 +224,8 @@ pub const Command = union(enum) {
     arm_stream,
     time_corrected,
     ip_changed: ?[4]u8,
+    /// display power: off keeps every scene decision but the renderer shows black.
+    power: bool,
 };
 
 pub const Reject = enum { invalid_text, invalid_duration, invalid_brightness };
@@ -195,8 +236,12 @@ pub const Arbiter = struct {
     overlay: Overlay = .none,
     revision: u32 = 0,
     brightness: u8 = 100,
+    power: bool = true,
     /// set whenever the visible output changed; the renderer takes it to redraw immediately.
     dirty: bool = true,
+    /// set when what is shown changes to something else (base, generator, a notification
+    /// starting or ending); the renderer takes it to cross-fade. raw frames switch at once.
+    transition: bool = false,
     last_tick_ns: u64 = 0,
     art: scene.Art,
     clock: clock.State,
@@ -218,6 +263,12 @@ pub const Arbiter = struct {
         return d;
     }
 
+    pub fn takeTransition(self: *Arbiter) bool {
+        const t = self.transition;
+        self.transition = false;
+        return t;
+    }
+
     fn validDuration(d: u16) bool {
         return d >= 1 and d <= 300;
     }
@@ -225,11 +276,13 @@ pub const Arbiter = struct {
     pub fn apply(self: *Arbiter, cmd: Command, now_ns: u64) Result {
         switch (cmd) {
             .set_base => |b| {
+                if (b != self.base or self.overlay != .none) self.transition = true;
                 self.base = b;
                 self.overlay = .none;
                 return .{ .applied = self.bump() };
             },
             .select_generator => |g| {
+                if (g != self.art.generator) self.transition = true;
                 self.art.select(g);
                 return .{ .applied = self.bump() };
             },
@@ -240,6 +293,12 @@ pub const Arbiter = struct {
                 var o = Notify{ .text = undefined, .len = @intCast(n.text.len), .colour = n.colour, .since_ns = now_ns, .until_ns = now_ns + @as(u64, n.duration_s) * s_ns };
                 @memcpy(o.text[0..n.text.len], n.text);
                 self.overlay = .{ .notify = o };
+                self.transition = true;
+                return .{ .applied = self.bump() };
+            },
+            .power => |on| {
+                if (on == self.power) return .{ .applied = self.revision };
+                self.power = on;
                 return .{ .applied = self.bump() };
             },
             .raw => |r| {
@@ -279,6 +338,7 @@ pub const Arbiter = struct {
             .rotate_cw, .rotate_ccw => switch (self.base) {
                 .art => {
                     self.art.nextGenerator(a == .rotate_cw);
+                    self.transition = true;
                     _ = self.bump();
                 },
                 .clock, .ip => {
@@ -307,6 +367,7 @@ pub const Arbiter = struct {
             .none => null,
         };
         if (until) |u| if (now_ns >= u) {
+            if (self.overlay == .notify) self.transition = true;
             self.overlay = .none;
             _ = self.bump();
         };

@@ -23,6 +23,18 @@ test "every message kind round-trips through a packet" {
         .{ .ip_changed = .{ .present = 1, .addr = .{ 10, 0, 0, 111 } } },
         .stop,
         .{ .set_timezone = config.Text.init("JST-9") },
+        .screen_get,
+        .{ .screen = .{ .revision = 9, .brightness = 60, .power = 1, .rgb = frame.rgb } },
+        .{ .input = .{ .control = 4, .event = 5, .position = -3 } },
+        .{ .inject_input = .{ .control = 3, .event = 2, .steps = 1 } },
+        .{ .power = .{ .on = 0 } },
+        .{ .log_get = .{ .after = 41 } },
+        .{ .log_lines = blk: {
+            var l = LogLines{ .next = 44 };
+            try std.testing.expect(l.add(42, "tc002d 12 info first"));
+            try std.testing.expect(l.add(43, ""));
+            break :blk l;
+        } },
         .{ .credentials = .{ .control = [_]u8{0x11} ** 32, .admin = [_]u8{0x22} ** 32 } },
         .{ .config = blk: {
             var c = config.Config{};
@@ -50,7 +62,7 @@ test "every message kind round-trips through a packet" {
 test "fixed hex vectors" {
     var buf: [codec.max_message]u8 = undefined;
     const hb = try encodePacket(.{ .heartbeat = .{ .presented = 0x1122334455667788, .revision = 7, .state = 2 } }, 1, 2, &buf);
-    try std.testing.expectEqualSlices(u8, &unhex("54434931" ++ "01" ++ "01" ++ "0000" ++ "0000000000000001" ++ "00000002" ++ "0011" ++ "0000" ++ "1122334455667788" ++ "00000007" ++ "02" ++ "00000000"), hb);
+    try std.testing.expectEqualSlices(u8, &unhex("54434931" ++ "01" ++ "01" ++ "0000" ++ "0000000000000001" ++ "00000002" ++ "0012" ++ "0000" ++ "1122334455667788" ++ "00000007" ++ "02" ++ "00000000" ++ "01"), hb);
     const st = try encodePacket(.stop, 0, 9, &buf);
     try std.testing.expectEqualSlices(u8, &unhex("54434931" ++ "01" ++ "18" ++ "0000" ++ "0000000000000000" ++ "00000009" ++ "0000" ++ "0000"), st);
     const nt = try encodePacket(.{ .notify = Notify.init("hi", .{ 0xff, 0x80, 0x00 }, 300) }, 0, 0, &buf);
@@ -92,6 +104,30 @@ test "malformed payloads are rejected" {
     // trailing bytes on a fixed-size message
     const trailing = try codec.encode(.{ .kind = @intFromEnum(Kind.stop), .request_id = 0, .epoch = 0, .payload_len = 1 }, "x", &buf);
     try std.testing.expectError(error.BadPayload, decodePacket(trailing));
+    // a log page whose record runs past its data, and one whose count lies
+    const overrun = try codec.encode(.{ .kind = @intFromEnum(Kind.log_lines), .request_id = 0, .epoch = 0, .payload_len = 7 + 6 }, &([_]u8{ 0, 0, 0, 2, 1, 0, 6 } ++ [_]u8{ 0, 0, 0, 1, 9, 'a' }), &buf);
+    try std.testing.expectError(error.BadPayload, decodePacket(overrun));
+    const miscount = try codec.encode(.{ .kind = @intFromEnum(Kind.log_lines), .request_id = 0, .epoch = 0, .payload_len = 7 + 6 }, &([_]u8{ 0, 0, 0, 2, 2, 0, 6 } ++ [_]u8{ 0, 0, 0, 1, 1, 'a' }), &buf);
+    try std.testing.expectError(error.BadPayload, decodePacket(miscount));
+}
+
+test "log pages iterate their records and refuse to overfill" {
+    var l = LogLines{ .next = 0 };
+    var i: u32 = 0;
+    while (l.add(i, "x" ** 127)) : (i += 1) {}
+    try std.testing.expectEqual(@as(u32, log_lines_per_reply), i);
+    try std.testing.expectEqual(@as(u16, log_data_max), l.len);
+    var it = l.iterator();
+    var n: u32 = 0;
+    while (it.next()) |r| : (n += 1) {
+        try std.testing.expectEqual(n, r.seq);
+        try std.testing.expectEqual(@as(usize, 127), r.text.len);
+    }
+    try std.testing.expectEqual(@as(u32, log_lines_per_reply), n);
+    var short = LogLines{ .next = 0 };
+    try std.testing.expect(short.add(7, "x" ** 200)); // truncated to the line maximum
+    var sit = short.iterator();
+    try std.testing.expectEqual(@as(usize, 127), sit.next().?.text.len);
 }
 
 fn unhex(comptime hex: []const u8) [hex.len / 2]u8 {
@@ -114,6 +150,13 @@ pub const Kind = enum(u8) {
     ip_changed = 23,
     stop = 24,
     set_timezone = 25,
+    screen_get = 26,
+    screen = 27,
+    input = 28,
+    inject_input = 29,
+    power = 30,
+    log_get = 41,
+    log_lines = 42,
     // supervisor <-> netd
     credentials = 32,
     config = 33,
@@ -128,8 +171,60 @@ pub const Kind = enum(u8) {
 
 pub const Status = enum(u8) { applied = 0, rejected = 1, overload = 2, stale_epoch = 3, expired = 4, unavailable = 5, timeout = 6, conflict = 7 };
 
-pub const Heartbeat = struct { presented: u64, revision: u32, state: u8, base: u8 = 0, generator: u8 = 0, overlay: u8 = 0, brightness: u8 = 0 };
+pub const Heartbeat = struct { presented: u64, revision: u32, state: u8, base: u8 = 0, generator: u8 = 0, overlay: u8 = 0, brightness: u8 = 0, power: u8 = 1 };
 pub const Result = struct { status: Status, revision: u32 };
+
+/// the renderer's output as shown (after fades, before brightness and the level curve).
+pub const Screen = struct { revision: u32, brightness: u8, power: u8, rgb: geometry.Rgb };
+/// a physical or injected control event (`input`), or a request to inject one (`inject_input`).
+/// control and event are `input/actions.zig` enums on the wire; `steps` only matters for cw/ccw.
+pub const Input = struct { control: u8, event: u8, position: i32 = 0, steps: u8 = 1 };
+pub const Power = struct { on: u8 };
+pub const LogGet = struct { after: u32 };
+
+pub const log_line_max = 127;
+pub const log_lines_per_reply = 16;
+pub const log_data_max = log_lines_per_reply * (5 + log_line_max);
+
+/// a page of the supervisor's log ring: `count` records of `u32 seq, u8 len, bytes` in `data`.
+pub const LogLines = struct {
+    next: u32,
+    count: u8 = 0,
+    len: u16 = 0,
+    data: [log_data_max]u8 = undefined,
+
+    pub fn add(self: *LogLines, seq: u32, text: []const u8) bool {
+        const n: usize = @min(text.len, log_line_max);
+        if (self.count == log_lines_per_reply or @as(usize, self.len) + 5 + n > log_data_max) return false;
+        const o: usize = self.len;
+        std.mem.writeInt(u32, self.data[o..][0..4], seq, .big);
+        self.data[o + 4] = @intCast(n);
+        @memcpy(self.data[o + 5 .. o + 5 + n], text[0..n]);
+        self.len += @intCast(5 + n);
+        self.count += 1;
+        return true;
+    }
+
+    pub const Record = struct { seq: u32, text: []const u8 };
+
+    /// iterate the records; the layout was validated on decode.
+    pub const Iterator = struct {
+        lines: *const LogLines,
+        off: usize = 0,
+        pub fn next(self: *Iterator) ?Record {
+            if (self.off + 5 > self.lines.len) return null;
+            const d = self.lines.data[self.off..];
+            const n = d[4];
+            const r = Record{ .seq = std.mem.readInt(u32, d[0..4], .big), .text = d[5 .. 5 + @as(usize, n)] };
+            self.off += 5 + @as(usize, n);
+            return r;
+        }
+    };
+
+    pub fn iterator(self: *const LogLines) Iterator {
+        return .{ .lines = self };
+    }
+};
 pub const SetBase = struct { base: u8, generator: u8, seed: u32 };
 pub const Frame = struct { duration_s: u16, rgb: geometry.Rgb };
 pub const Brightness = struct { value: u8 };
@@ -373,8 +468,10 @@ pub const StatusSnapshot = struct {
     battery_mv: u16 = 0xffff,
     battery_pct: u8 = 255,
     usb_present: u8 = 255,
+    // v3: display power as the renderer reports it
+    power: u8 = 1,
 
-    pub const wire_len = 1 + 4 + 4 + 8 + 4 + 4 + 4 + 1 + 4 + 4 + 4 + 4 + 2 + 1 + 4 + 1 + 4 + 4 + 4 + 4 + 4 + (6 + 1 + 2 + 4 + 2 + 1 + 2 + 2 + 2 + 4 + 2 + 1 + 1);
+    pub const wire_len = 1 + 4 + 4 + 8 + 4 + 4 + 4 + 1 + 4 + 4 + 4 + 4 + 2 + 1 + 4 + 1 + 4 + 4 + 4 + 4 + 4 + (6 + 1 + 2 + 4 + 2 + 1 + 2 + 2 + 2 + 4 + 2 + 1 + 1) + 1;
 };
 
 pub const Message = union(Kind) {
@@ -391,6 +488,13 @@ pub const Message = union(Kind) {
     ip_changed: IpChanged,
     stop,
     set_timezone: config.Text,
+    screen_get,
+    screen: Screen,
+    input: Input,
+    inject_input: Input,
+    power: Power,
+    log_get: LogGet,
+    log_lines: LogLines,
     credentials: Credentials,
     config: config.Config,
     config_get,
@@ -415,9 +519,39 @@ fn encodePayload(msg: Message, out: []u8) usize {
             out[14] = h.generator;
             out[15] = h.overlay;
             out[16] = h.brightness;
-            return 17;
+            out[17] = h.power;
+            return 18;
         },
-        .ready, .arm_stream, .time_corrected, .stop, .config_get, .status_get => return 0,
+        .ready, .arm_stream, .time_corrected, .stop, .config_get, .status_get, .screen_get => return 0,
+        .screen => |s| {
+            std.mem.writeInt(u32, out[0..4], s.revision, .big);
+            out[4] = s.brightness;
+            out[5] = s.power;
+            @memcpy(out[6 .. 6 + geometry.rgb_bytes], &s.rgb);
+            return 6 + geometry.rgb_bytes;
+        },
+        .input, .inject_input => |i| {
+            out[0] = i.control;
+            out[1] = i.event;
+            std.mem.writeInt(i32, out[2..6], i.position, .big);
+            out[6] = i.steps;
+            return 7;
+        },
+        .power => |p| {
+            out[0] = p.on;
+            return 1;
+        },
+        .log_get => |g| {
+            std.mem.writeInt(u32, out[0..4], g.after, .big);
+            return 4;
+        },
+        .log_lines => |l| {
+            std.mem.writeInt(u32, out[0..4], l.next, .big);
+            out[4] = l.count;
+            std.mem.writeInt(u16, out[5..7], l.len, .big);
+            @memcpy(out[7 .. 7 + @as(usize, l.len)], l.data[0..l.len]);
+            return 7 + @as(usize, l.len);
+        },
         .set_timezone => |t| {
             var o: usize = 0;
             putText(out, &o, t);
@@ -554,6 +688,8 @@ fn encodePayload(msg: Message, out: []u8) usize {
             out[o] = st.battery_pct;
             out[o + 1] = st.usb_present;
             o += 2;
+            out[o] = st.power;
+            o += 1;
             return o;
         },
         .result => |r| {
@@ -633,8 +769,46 @@ pub fn decodePacket(bytes: []const u8) Error!Packet {
     const p = d.payload;
     const message: Message = switch (kind) {
         .heartbeat => blk: {
-            const b = try fixed(p, 17);
-            break :blk .{ .heartbeat = .{ .presented = std.mem.readInt(u64, b[0..8], .big), .revision = std.mem.readInt(u32, b[8..12], .big), .state = b[12], .base = b[13], .generator = b[14], .overlay = b[15], .brightness = b[16] } };
+            const b = try fixed(p, 18);
+            break :blk .{ .heartbeat = .{ .presented = std.mem.readInt(u64, b[0..8], .big), .revision = std.mem.readInt(u32, b[8..12], .big), .state = b[12], .base = b[13], .generator = b[14], .overlay = b[15], .brightness = b[16], .power = b[17] } };
+        },
+        .screen_get => blk: {
+            _ = try fixed(p, 0);
+            break :blk .screen_get;
+        },
+        .screen => blk: {
+            const b = try fixed(p, 6 + geometry.rgb_bytes);
+            break :blk .{ .screen = .{ .revision = std.mem.readInt(u32, b[0..4], .big), .brightness = b[4], .power = b[5], .rgb = b[6..][0..geometry.rgb_bytes].* } };
+        },
+        .input, .inject_input => blk: {
+            const b = try fixed(p, 7);
+            const i = Input{ .control = b[0], .event = b[1], .position = std.mem.readInt(i32, b[2..6], .big), .steps = b[6] };
+            break :blk if (kind == .input) .{ .input = i } else .{ .inject_input = i };
+        },
+        .power => blk: {
+            const b = try fixed(p, 1);
+            break :blk .{ .power = .{ .on = b[0] } };
+        },
+        .log_get => blk: {
+            const b = try fixed(p, 4);
+            break :blk .{ .log_get = .{ .after = std.mem.readInt(u32, b[0..4], .big) } };
+        },
+        .log_lines => blk: {
+            if (p.len < 7) return error.BadPayload;
+            var l = LogLines{ .next = std.mem.readInt(u32, p[0..4], .big), .count = p[4], .len = std.mem.readInt(u16, p[5..7], .big) };
+            if (l.len > log_data_max or p.len != 7 + @as(usize, l.len)) return error.BadPayload;
+            // every record must lie inside the data and the count must match
+            var off: usize = 0;
+            var n: u8 = 0;
+            while (off < l.len) : (n +%= 1) {
+                if (off + 5 > l.len) return error.BadPayload;
+                const len = p[7 + off + 4];
+                if (len > log_line_max or off + 5 + len > l.len) return error.BadPayload;
+                off += 5 + @as(usize, len);
+            }
+            if (n != l.count) return error.BadPayload;
+            @memcpy(l.data[0..l.len], p[7 .. 7 + @as(usize, l.len)]);
+            break :blk .{ .log_lines = l };
         },
         .config_get => blk: {
             _ = try fixed(p, 0);
@@ -781,6 +955,8 @@ pub fn decodePacket(bytes: []const u8) Error!Packet {
             o += 2;
             st.battery_pct = b[o];
             st.usb_present = b[o + 1];
+            o += 2;
+            st.power = b[o];
             break :blk .{ .status = st };
         },
         .ready => blk: {

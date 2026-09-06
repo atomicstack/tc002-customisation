@@ -3,6 +3,7 @@ test {
     _ = @import("panel/geometry.zig");
     _ = @import("panel/pack.zig");
     _ = @import("panel/presenter.zig");
+    _ = @import("panel/fade.zig");
     _ = @import("scene/scene.zig");
     _ = @import("scene/popsquares.zig");
     _ = @import("scene/plasma.zig");
@@ -27,4 +28,5 @@ test {
     _ = @import("net/mqtt.zig");
     _ = @import("supervisor/config.zig");
     _ = @import("supervisor/mcu.zig");
+    _ = @import("supervisor/logring.zig");
 }

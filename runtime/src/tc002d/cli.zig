@@ -21,6 +21,8 @@ pub const usage =
     \\  --seed N            art seed, 0 = from the clock (0)
     \\  --brightness N      1..100 (100)
     \\  --seconds S         stop after s seconds, 0 = run until stopped (0)
+    \\  --crossfade-ms N    cross-fade between scenes, 0..5000, 0 = none (500)
+    \\  --power-fade-ms N   fade to and from black on power changes, 0..5000 (600)
     \\  --dry-run           never open spidev/gpio; model the panel only
     \\  --stats             log achieved cadence every 5 s
     \\  --help
@@ -42,6 +44,8 @@ pub const Config = struct {
     seed: u32 = 0,
     brightness: u8 = 100,
     seconds: u32 = 0,
+    crossfade_ms: u32 = 500,
+    power_fade_ms: u32 = 600,
     dry_run: bool = false,
     stats: bool = false,
 };
@@ -71,7 +75,7 @@ pub fn parse(args: []const [:0]const u8) ParseError!Outcome {
             c.stats = true;
             continue;
         }
-        const known = [_][]const u8{ "--ipc-fd", "--epoch", "--lock", "--spi", "--gpio", "--keys", "--knob", "--keymap", "--tz", "--base", "--generator", "--seed", "--brightness", "--seconds" };
+        const known = [_][]const u8{ "--ipc-fd", "--epoch", "--lock", "--spi", "--gpio", "--keys", "--knob", "--keymap", "--tz", "--base", "--generator", "--seed", "--brightness", "--seconds", "--crossfade-ms", "--power-fade-ms" };
         var is_known = false;
         for (known) |k| is_known = is_known or std.mem.eql(u8, a, k);
         if (!is_known) return error.UnknownOption;
@@ -106,6 +110,10 @@ pub fn parse(args: []const [:0]const u8) ParseError!Outcome {
             c.brightness = @intCast(try parseU32(v, 1, 100));
         } else if (std.mem.eql(u8, a, "--seconds")) {
             c.seconds = try parseU32(v, 0, 10_000_000);
+        } else if (std.mem.eql(u8, a, "--crossfade-ms")) {
+            c.crossfade_ms = try parseU32(v, 0, 5000);
+        } else if (std.mem.eql(u8, a, "--power-fade-ms")) {
+            c.power_fade_ms = try parseU32(v, 0, 5000);
         } else {
             return error.UnknownOption;
         }
@@ -138,4 +146,8 @@ test "options are typed and validated" {
     try std.testing.expectError(error.BadValue, parse(&.{ "--base", "moon" }));
     try std.testing.expectError(error.BadValue, parse(&.{ "--generator", "9" }));
     try std.testing.expectError(error.UnknownOption, parse(&.{"--bogus"}));
+    const f = try parse(&.{ "--crossfade-ms", "0", "--power-fade-ms", "1000" });
+    try std.testing.expectEqual(@as(u32, 0), f.run.crossfade_ms);
+    try std.testing.expectEqual(@as(u32, 1000), f.run.power_fade_ms);
+    try std.testing.expectError(error.BadValue, parse(&.{ "--crossfade-ms", "5001" }));
 }
