@@ -55,6 +55,10 @@ tools/tc002ctl.py -s <device-ip> --token-file tokens status
 tools/tc002ctl.py -s <device-ip> --token-file tokens scene art --generator plasma --seed 5
 tools/tc002ctl.py -s <device-ip> --token-file tokens notify hello --colour 00ff80 --duration 4
 tools/tc002ctl.py -s <device-ip> --token-file tokens frame --colour ff0000 --duration 3
+tools/tc002ctl.py -s <device-ip> --token-file tokens power off               # fades to black; `power on` fades back
+tools/tc002ctl.py -s <device-ip> --token-file tokens input middle click      # a remote press; rotary cw --steps 3
+tools/tc002ctl.py -s <device-ip> --token-file tokens screen --ascii          # the frame as shown, drawn in the terminal
+tools/tc002ctl.py -s <device-ip> --token-file tokens logs --follow           # the supervisor's log ring
 tools/tc002ctl.py -s <device-ip> --token-file tokens config-set brightness=60 timezone=JST-9   # admin token
 tools/tc002ctl.py -s <device-ip> --token-file tokens config-save
 tools/tc002ctl.py -s <device-ip> --token-file tokens mqtt-set enabled=true host=10.0.0.2 port=1883 prefix=tc002/dev
@@ -64,8 +68,11 @@ tools/tc002-test-broker.py                              # a minimal broker on th
 
 mqtt topics under the configured prefix: `availability` (retained, last will `offline`), `state`
 (retained, at most twice per second), `result` (one per command, with the request id), `metrics`
-(every 30 s by default), and `cmd/scene`, `cmd/action`, `cmd/notify`, `cmd/frame`, `cmd/config`
-(control subset only). home-assistant discovery is opt-in and publishes read-only diagnostic sensors.
+(every 30 s by default), `screen` (a binary frame, in answer to `cmd/screen`), `input/<control>`
+(momentary button, knob and rotary events, never retained), and `cmd/scene`, `cmd/action`,
+`cmd/notify`, `cmd/frame`, `cmd/input`, `cmd/screen`, `cmd/config` (control subset only).
+home-assistant discovery is opt-in and publishes read-only sensors plus event entities for the
+controls. the full reference is [`RUNTIME.md`](../RUNTIME.md).
 
 ## tradeoffs made for this device (reported, not hidden)
 
@@ -83,6 +90,15 @@ mqtt topics under the configured prefix: `availability` (retained, last will `of
   ReleaseSmall; on the volatile path that is about 0.7 mb of tmpfs ram. `-Doptimize=ReleaseSmall`
   is available; a simple panic handler and no segfault handler already keep the dwarf unwinder out.
 - **procfs rss on this kernel reads 4 kb for every static process** and is reported as-is.
+- **fades in the renderer** cost one more 2,496-byte frame buffer and a per-pixel multiply-add at 60 hz
+  for at most 600 ms per transition; a dark panel costs nothing (no redraws at all).
+- **the screen document is base64 in json** (3,328 characters) so `curl` and `jq` can use it without
+  a binary path; `?format=raw` and the mqtt `screen` topic carry the bytes instead. netd's json buffer
+  grew from 2 kb to 3.5 kb for it.
+- **the log ring is 64 lines of 127 bytes** (8 kb of static storage in the supervisor), served sixteen
+  lines a page; older lines are gone, and a flooding child drops lines rather than blocking.
+- **input events are not retained** on mqtt, on purpose: a consumer that was offline must not replay
+  a stale press. events raised while the broker is unreachable are lost.
 
 ## running it on the device (volatile)
 
@@ -129,7 +145,8 @@ adb shell "/tmp/tc002-memdump $(pid) hex" | tr -d '\r\n' | xxd -r -p > snapshot.
 
 ## telemetry for home assistant and grafana
 
-with mqtt enabled and `discovery=true`, netd advertises 25 read-only diagnostic sensors grouped under
+with mqtt enabled and `discovery=true`, netd advertises 24 read-only diagnostic sensors, a display-power
+binary sensor and five event entities for the physical controls, grouped under
 one device whose identity is the wlan0 mac (`tc002-<mac>`), so entities survive reboots and never
 depend on the ip. every sensor reads a field of the `metrics` json (default every 30 s, `metrics_interval_s`
 10–3600 or 0 to disable) with `expire_after` = 3 × the interval and the shared availability topic, so a

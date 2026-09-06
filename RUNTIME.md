@@ -145,6 +145,17 @@ exercised on the device (nobody has pressed the knob during a run).
   (verified, not assumed), and restarted 1 s after any exit. if the bind fails
   the api is simply unavailable and the display keeps working.
 
+### the log ring
+
+every runtime process logs one line per `write(2)` to its stderr. the
+supervisor hands both children a non-blocking pipe as their stdout and stderr,
+drains it in its event loop, appends each line to `supervisor.log` as before,
+and keeps the last 64 lines (127 bytes each, 8 kib of static storage) in a
+ring numbered from 1; its own lines join the ring through a hook in the
+logger. netd serves the ring through `GET /logs?after=N`, sixteen lines a
+page. a child that logs faster than the supervisor drains loses lines rather
+than blocking in `write(2)`; the file and the ring are equally affected.
+
 ### what it samples
 
 every 5 s the supervisor reads `MemAvailable` from `/proc/meminfo`, cpu
@@ -174,6 +185,8 @@ usage: tc002d [options]
   --seed N            art seed, 0 = from the clock (0)
   --brightness N      1..100 (100)
   --seconds S         stop after s seconds, 0 = run until stopped (0)
+  --crossfade-ms N    cross-fade between scenes, 0..5000, 0 = none (500)
+  --power-fade-ms N   fade to and from black on power changes, 0..5000 (600)
   --dry-run           never open spidev/gpio; model the panel only
   --stats             log achieved cadence every 5 s
 ```
@@ -206,6 +219,15 @@ command had an effect. brightness is 1–100 (never fully off) and is applied
 before the panel's level curve ([`LED-SPI.md`](LED-SPI.md)): 0 stays 0, 1..255
 land on 50..255.
 
+**display power** is a separate switch (`power` action, `cmd/action`): off
+fades the output to black over 600 ms and then stops redrawing altogether (no
+art stepping, no transfers, no cpu); on fades back in. scene selection,
+notifications and brightness keep applying while the panel is dark, so it
+shows the current state when it comes back. **cross-fades** blend the frame
+that was on the panel into the new output over 500 ms whenever the base, the
+generator or a notification changes (start or end); raw frames, reseeds and
+brightness switch at once. both durations are renderer options; 0 disables.
+
 ### physical controls
 
 | control | in `art` | in `clock` / `ip` |
@@ -219,10 +241,19 @@ land on 50..255.
 
 the keycode assignment (`105,103,106,108` = left, middle, right, knob) is the
 working guess from the gpio-keys driver and has not been confirmed by pressing
-buttons on the device; it is overridable with `--keymap`. the rotary encoder
-reports an absolute counter, which is decoded as 8-bit with wrap-around.
-actions are queued eight at a time per loop iteration; overflow is counted and
-logged, never blocks.
+buttons on the device; it is overridable with `--keymap`, and a press on a
+keycode outside the map is logged (`unmapped keycode N pressed`) so the map
+can be corrected from the log route. the rotary encoder reports an absolute
+counter, which is decoded as 8-bit with wrap-around. actions are queued eight
+at a time per loop iteration; overflow is counted and logged, never blocks.
+
+every edge is also reported outward: each button press and release, the
+knob's long hold, and every rotary detent with the running position (cw
+positive, from renderer start). the supervisor forwards them to netd, which
+publishes them on mqtt as momentary events (see [mqtt](#mqtt)). the same
+controls can be driven remotely (`POST /input`, `cmd/input`): an injected
+`click` is a press and a release through the same mapper, so it produces the
+same actions and the same outward events as a finger would.
 
 ### presentation
 
@@ -323,6 +354,10 @@ api is for programs, not pages. `allowed_origins` can only be set by editing
 | `POST` | `/action` | control | `{"action":"brightness\|reseed\|arm_stream","brightness":1..100?,"seed":u32?,"request_id":hex,"epoch":u32}` | as above |
 | `POST` | `/notify` | control | `{"text":"…","colour":"rrggbb"?,"duration_s":1..300,"request_id":hex,"epoch":u32}` | as above |
 | `POST` | `/frame?duration_s=&request_id=&epoch=` | control | `application/octet-stream`, exactly 2,496 bytes | as above |
+| `POST` | `/action` (`"action":"power"`) | control | `{"action":"power","power":true\|false,"request_id":hex,"epoch":u32}` | as above; fades over 600 ms |
+| `POST` | `/input` | control | `{"control":"left\|middle\|right\|knob\|rotary","event":"press\|release\|click\|long\|cw\|ccw","steps":1..16?,"request_id":hex,"epoch":u32}` | as above. `long` is the knob only; `cw`/`ccw` are the rotary only and take `steps` |
+| `GET` | `/screen` | control | | `{"width":52,"height":16,"epoch","revision","brightness","power","rgb_base64":"…"}`: the frame as shown, after fades, before brightness. `?format=raw` returns the 2,496 rgb bytes as `application/octet-stream` |
+| `GET` | `/logs?after=N` | control | | `{"next":seq,"lines":[{"seq":n,"text":"…"}…]}`: up to 16 lines of the [log ring](#the-log-ring) after sequence number `after` (0 = oldest kept); pass `next` back to continue. a jump in `seq` means lines were evicted |
 | `GET` | `/config` | control | | the [settings document](#settings) |
 | `PATCH` | `/config` | admin | any subset of the settings fields plus `expected_revision`? | the settings document after the patch |
 | `POST` | `/config/save` | admin | `{"revision":u32}` or empty | `{"status":"saved","saved_revision":n}` |
@@ -367,7 +402,8 @@ lowercase code:
 
 `fps` is a number only while art is running with no overlay, otherwise
 `null` (there is no frame rate to report for a clock). `renderer` is `none`,
-`starting`, `running` or `stopping`. `boot_id` is random per supervisor start
+`starting`, `running` or `stopping`. `power` (after `brightness`) is the
+display power switch. `boot_id` is random per supervisor start
 and is what groups the mqtt discovery entities. `time.state` is always
 `unsynced` in this build because there is no sntp client yet.
 
@@ -423,6 +459,10 @@ never falls back to plaintext silently. the client id defaults to
 | `cmd/scene`, `cmd/action`, `cmd/notify` | in, qos 1 | exactly the http json bodies |
 | `cmd/frame` | in, qos 1 | binary, 2,510 bytes big-endian: `u64 request_id`, `u32 epoch`, `u16 duration_s`, 2,496 rgb bytes |
 | `cmd/config` | in, qos 1 | the control subset only: `brightness`, `base`, `generator` (transient, like `/action` and `/scene`). any durable field is answered `admin_only`; those are administered over http |
+| `cmd/input` | in, qos 1 | the `/input` json body; answered on `result` |
+| `cmd/screen` | in, qos 1 | any payload; answered on `screen` |
+| `screen` | out, not retained | binary, 2,502 bytes: `u32 revision, u8 brightness, u8 power`, then the 2,496 rgb bytes as shown |
+| `input/left`, `input/middle`, `input/right`, `input/knob`, `input/rotary` | out, qos 0, **not retained** | one json object per event, `{"event_type":"press\|release\|long\|cw\|ccw","position":n}`, the shape home assistant's mqtt `event` entities consume. deliberately not retained: a consumer that reconnects after being offline must not act on a stale press. events raised while the broker is unreachable are lost |
 
 retained deliveries are never treated as commands, so a stale retained
 `cmd/*` message cannot replay on reconnect. the same ten-frames-per-second and
@@ -446,21 +486,27 @@ once.
 
 opt-in with `discovery: true`. on every mqtt connection netd publishes one
 retained config per second under
-`<discovery_prefix>/sensor/tc002-<boot_id>/<key>/config` for thirteen
-read-only diagnostic sensors that all read from the `metrics` topic: uptime,
-memory available, cpu, the three rss figures, renderer restarts, mqtt
-reconnects, scene, brightness, achieved fps, frames presented, and time sync
-state. they are grouped into one device (`tc002 custom runtime`), linked to
-the `availability` topic, and expire after three metrics intervals. a
-home-assistant birth message (`<discovery_prefix>/status` = `online`) repeats
-the pass; turning discovery off, or changing the prefix, clears exactly those
-thirteen topics with empty retained publishes. nothing writable is exposed.
+`<discovery_prefix>/<component>/tc002-<mac>/<key>/config` (the boot id stands
+in when there is no wlan0 mac): 24 read-only diagnostic `sensor` entities that
+read from the `metrics` topic (uptime, memory, cpu overall and per process,
+load, wifi, tmpfs, battery and usb power, renderer restarts, mqtt reconnects,
+scene, brightness, fps, frames presented, time sync state), one
+`binary_sensor` for display power that reads the retained `state` topic, and
+five `event` entities (left, middle and right buttons, the knob, the rotary)
+fed by the momentary `input/<control>` topics with `event_types` press/release
+(plus `long` for the knob, `cw`/`ccw` for the rotary). they are grouped into
+one device, linked to the `availability` topic, and the metrics sensors expire
+after three metrics intervals. a home-assistant birth message
+(`<discovery_prefix>/status` = `online`) repeats the pass; turning discovery
+off, or changing the prefix, clears exactly those topics with empty retained
+publishes. nothing writable is exposed through discovery; control goes through
+`cmd/*`.
 
 ## host tools (`runtime/tools/`)
 
 | tool | what it does |
 |------|--------------|
-| `tc002ctl.py` | a client for every route: `status`, `scenes`, `scene`, `brightness`, `reseed`, `arm-stream`, `notify`, `frame`, `config`, `config-set`, `config-save`, `mqtt`, `mqtt-set`, `mqtt-status`. takes the pulled token file (`--token-file`) or a hex token, picks the admin token for admin commands, generates request ids and fetches the epoch for you |
+| `tc002ctl.py` | a client for every route: `status`, `scenes`, `scene`, `brightness`, `reseed`, `arm-stream`, `notify`, `frame`, `power`, `input`, `screen` (`--ascii` draws the panel in the terminal, `--out` saves the raw rgb), `logs` (`--follow`), `config`, `config-set`, `config-save`, `mqtt`, `mqtt-set`, `mqtt-status`. takes the pulled token file (`--token-file`) or a hex token, picks the admin token for admin commands, generates request ids and fetches the epoch for you |
 | `tc002-run.sh` | `push` (build, elf check, push to `/tmp/tc002/`), `start [supervisor options]` (under the lock: stop `zkswe`, start the supervisor detached with its log in `/tmp/tc002/`), `status`, `stop` (sigterm, restart the stock app, release the lock), `restore` (stop and remove everything under `/tmp`) |
 | `tc002-boot-experiment.sh` | `baseline` (time the stock `ctl.start` to the property), `start` (rewrite `startupLibPath` into `/tmp/EasyUI.cfg`, restart `zkswe` through the bootstrap, show the audit), `status`, `restore` |
 | `tc002-lock.sh` | the append-only advisory lock in `/tmp/tc002-lock.txt` on the host, for two agents sharing one device: `acquire <intent> [timeout]`, `release`, `status`, `note`. every device-mutating step in the scripts above runs under it |
@@ -562,6 +608,9 @@ all on a warm device that had been up for days, under the lock, on
   only.
 - the browser-facing panel, cors headers and an api field for
   `allowed_origins`.
+- **input on hardware.** the outward events and remote injection are tested
+  through the api; nobody has pressed the physical buttons under this runtime
+  yet, so the keymap is still the working guess above.
 
 ## design notes
 

@@ -13,6 +13,11 @@ commands:
   arm-stream                          arm stream mode (two-second wait)
   notify <text> [--colour rrggbb] [--duration S]
   frame <file.rgb|--colour rrggbb> [--duration S]   2496 raw rgb888 bytes
+  power <on|off>                      display power (fades to and from black)
+  input <control> <event> [--steps N] press a control remotely: left|middle|right|knob with
+                                      press|release|click (knob also long); rotary with cw|ccw
+  screen [--out FILE] [--ascii]       the framebuffer as shown: metadata, raw rgb to a file, or a preview
+  logs [after] [--follow]             the log ring after a sequence number; --follow polls every second
   config                              effective settings (admin token needed for patch/save)
   config-set key=value ...            patch settings; keys: brightness base generator timezone ntp_server
                                       ntp_interval_s frame_timeout_ms metrics_interval_s discovery discovery_prefix
@@ -25,7 +30,7 @@ the token file holds 64 raw bytes (control token then admin token) as written by
 or 64 hex characters of one token. everything travels in plain http on this profile: an observer
 on the network can read the token. use it only on an isolated lan.
 """
-import argparse, json, os, secrets, sys, urllib.error, urllib.request
+import argparse, base64, json, os, secrets, sys, time, urllib.error, urllib.request
 
 def load_token(args, want_admin):
     if args.token:
@@ -95,6 +100,10 @@ def main():
     ap.add_argument("--seed", type=int)
     ap.add_argument("--colour", default=None)
     ap.add_argument("--duration", type=int, default=5)
+    ap.add_argument("--steps", type=int, default=1)
+    ap.add_argument("--out")
+    ap.add_argument("--ascii", action="store_true")
+    ap.add_argument("--follow", action="store_true")
     a = ap.parse_args()
     admin_commands = {"config-set", "config-save", "mqtt", "mqtt-set"}
     token = load_token(a, a.admin or a.command in admin_commands)
@@ -114,6 +123,57 @@ def main():
         if c == "brightness": body["brightness"] = int(a.args[0])
         if c == "reseed" and a.args: body["seed"] = int(a.args[0])
         return show(*call(a, "POST", "/action", body, token=token))
+    if c == "power":
+        if not a.args or a.args[0] not in ("on", "off"):
+            sys.exit("power takes on or off")
+        body = {"action": "power", "power": a.args[0] == "on", "request_id": rid, "epoch": epoch(a, token)}
+        return show(*call(a, "POST", "/action", body, token=token))
+    if c == "input":
+        if len(a.args) != 2:
+            sys.exit("input takes <control> <event>")
+        body = {"control": a.args[0], "event": a.args[1], "request_id": rid, "epoch": epoch(a, token)}
+        if a.steps != 1: body["steps"] = a.steps
+        return show(*call(a, "POST", "/input", body, token=token))
+    if c == "screen":
+        if a.out:
+            status, raw = call(a, "GET", "/screen", token=token, query="format=raw")
+            if status != 200:
+                return show(status, raw)
+            open(a.out, "wb").write(raw)
+            print(f"wrote {len(raw)} bytes to {a.out}")
+            return 0
+        status, raw = call(a, "GET", "/screen", token=token)
+        if status != 200:
+            return show(status, raw)
+        doc = json.loads(raw)
+        rgb = base64.b64decode(doc.pop("rgb_base64"))
+        lit = sum(1 for i in range(0, len(rgb), 3) if rgb[i] or rgb[i + 1] or rgb[i + 2])
+        doc["lit_pixels"] = lit
+        print(json.dumps(doc, indent=2, sort_keys=True))
+        if a.ascii:
+            w, h = doc["width"], doc["height"]
+            for y in range(h):
+                row = ""
+                for x in range(w):
+                    o = (y * w + x) * 3
+                    row += f"\x1b[48;2;{rgb[o]};{rgb[o+1]};{rgb[o+2]}m  "
+                print(row + "\x1b[0m")
+        return 0
+    if c == "logs":
+        after = int(a.args[0]) if a.args else 0
+        while True:
+            status, raw = call(a, "GET", "/logs", token=token, query=f"after={after}")
+            if status != 200:
+                return show(status, raw)
+            doc = json.loads(raw)
+            for line in doc["lines"]:
+                print(f"{line['seq']:6d} {line['text']}")
+            if doc["lines"] and doc["next"] != after:
+                after = doc["next"]
+                continue  # more pages may follow
+            if not a.follow:
+                return 0
+            time.sleep(1)
     if c == "notify":
         body = {"text": " ".join(a.args), "duration_s": a.duration, "request_id": rid, "epoch": epoch(a, token)}
         if a.colour: body["colour"] = a.colour
