@@ -283,18 +283,38 @@ fn audit(environ: anytype, args: []const [:0]const u8, close_inherited: bool) vo
     log.info("{d} inherited environment variables (values not logged)", .{env_count});
 }
 
+/// when the loader exec'd us, stderr is whatever the loader had; keep the log in the runtime dir.
+fn redirectLog(cfg: cli.Config) void {
+    var path_buf: [128]u8 = undefined;
+    const path = std.fmt.bufPrintZ(&path_buf, "{s}/supervisor.log", .{cfg.dir}) catch return;
+    sys.mkdir(cfg.dir, 0o700) catch {};
+    const fd = sys.open(path, .{ .ACCMODE = .WRONLY, .CREAT = true, .APPEND = true, .CLOEXEC = true }, 0o644) catch return;
+    sys.dup2(fd, 1) catch {};
+    sys.dup2(fd, 2) catch {};
+    sys.close(fd);
+}
+
 fn run(cfg: cli.Config, environ: anytype, args: []const [:0]const u8) !u8 {
     const t0 = sys.monotonicNs();
     // 1. the anti-brick flag, before anything that could block or fail
-    if (cfg.no_property) {
-        log.warn("sys.zkapp.state not set (--no-property)", .{});
-    } else {
+    var property_ms: ?u64 = null;
+    if (!cfg.no_property) {
         props.set("sys.zkapp.state", "running", property_timeout_ns) catch |e| {
             log.err("sys.zkapp.state=running failed: {s}; exiting without pretending", .{@errorName(e)});
             return 2;
         };
-        log.info("sys.zkapp.state=running accepted {d} ms after entry (uptime {d} ms)", .{ (sys.monotonicNs() - t0) / 1_000_000, t0 / 1_000_000 });
+        property_ms = (sys.monotonicNs() - t0) / 1_000_000;
     }
+    // where stderr pointed before any redirect, for the audit
+    var stderr_target: [128]u8 = undefined;
+    const original_stderr = sys.readlink("/proc/self/fd/2", &stderr_target) catch "(unknown)";
+    if (cfg.from_bootstrap) redirectLog(cfg);
+    if (property_ms) |ms| {
+        log.info("sys.zkapp.state=running accepted {d} ms after entry (uptime {d} ms){s}", .{ ms, t0 / 1_000_000, if (cfg.from_bootstrap) ", exec'd by the bootstrap" else "" });
+    } else {
+        log.warn("sys.zkapp.state not set (--no-property)", .{});
+    }
+    log.info("original stderr -> {s}", .{original_stderr});
     // 2. audit and normalise inherited state
     audit(environ, args, cfg.close_inherited);
     sys.unblockAllSignals();
