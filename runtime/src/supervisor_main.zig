@@ -562,8 +562,8 @@ const Supervisor = struct {
             for (jiffies, 0..) |j, i| {
                 if (j) |v| {
                     if (v >= self.proc_cpu_prev[i]) {
-                        // 100 jiffies per second on this kernel (CONFIG_HZ=100)
-                        const pct_x10 = (v - self.proc_cpu_prev[i]) * 10 * ns_per_s / (interval_ns / 100 * 100) / 100 * 100 / 100;
+                        // /proc/<pid>/stat counts USER_HZ (100) ticks: delta ticks / interval seconds = percent of one core
+                        const pct_x10 = (v - self.proc_cpu_prev[i]) * 10 * ns_per_s / interval_ns;
                         fields[i].* = @intCast(@min(pct_x10, 0xfffe));
                     }
                 } else fields[i].* = 0xffff;

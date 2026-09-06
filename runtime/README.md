@@ -123,3 +123,36 @@ trustworthy residency signal.
 adb push zig-out/bin/tc002-memdump /tmp/tc002-memdump
 adb shell "/tmp/tc002-memdump $(pid) hex" | tr -d '\r\n' | xxd -r -p > snapshot.tcmd
 ```
+
+## telemetry for home assistant and grafana
+
+with mqtt enabled and `discovery=true`, netd advertises 25 read-only diagnostic sensors grouped under
+one device whose identity is the wlan0 mac (`tc002-<mac>`), so entities survive reboots and never
+depend on the ip. every sensor reads a field of the `metrics` json (default every 30 s, `metrics_interval_s`
+10–3600 or 0 to disable) with `expire_after` = 3 × the interval and the shared availability topic, so a
+silent device goes unavailable instead of freezing at its last value. `state_class: measurement`
+sensors chart directly in grafana through home assistant's recorder or influxdb export.
+
+| field | source | note |
+|---|---|---|
+| `cpu_pct` | `/proc/stat` deltas over 5 s, both cores | busy / total |
+| `cpu_pct_by_process.{supervisor,renderer,netd}` | `/proc/<pid>/stat` utime+stime deltas | percent of one core |
+| `memory_available_kb`, `memory_free_kb`, `tmpfs_used_kb` | `/proc/meminfo` | `Shmem` counts tmpfs on this kernel |
+| `rss_kb.*` | `/proc/<pid>/status` | this kernel reports 4 kb for static binaries; unreliable |
+| `load_1m` | `/proc/loadavg` | |
+| `wifi.rssi_dbm`, `wifi.quality` | `/proc/net/wireless` | kernel-reported |
+| `battery.millivolts`, `battery.percent`, `battery.usb_present` | the pixel mcu over `/dev/ttyS1` | see below |
+| `fps`, `presented`, `renderer_restarts`, `mqtt_reconnects`, `http_*`, `mqtt_*` | runtime counters | `fps` is null unless art runs |
+| `uptime_s`, `boot_id`, `device_id`, `sample_age_ms`, `time.state` | supervisor | counters identify their lifetime |
+
+### the pixel mcu link
+
+recovered from the vendor library and verified on the device: `/dev/ttyS1` at **1,500,000 baud**
+(the constant `McuManager::initialize` receives), frames `FF 55 <cmd> <len> <payload> <sum16>` with
+a big-endian 16-bit byte sum, commands `01` mic level, `02` usb state, `03` battery, `04` auto mic
+report, `10` power off, `11` version, `13` led register. the battery reply is one byte (percent) and a
+16-bit value the vendor multiplies by 1.3235 to get millivolts; measured here: version `V1.0.17`,
+`89 %`, raw 3121 → 4130 mV, usb present. the supervisor only queries (version once, then battery and
+usb every `--mcu-poll` seconds, one outstanding request, 500 ms timeout); it never sends the
+power-off, register or firmware-upload commands. the mcu also streams unsolicited mic reports that the
+synchroniser discards.
