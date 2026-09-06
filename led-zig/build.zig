@@ -37,4 +37,23 @@ pub fn build(b: *std.Build) void {
         });
         test_step.dependOn(&b.addRunArtifact(tests).step);
     }
+
+    const native_exe = b.addExecutable(.{
+        .name = "popsquares-host",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/main.zig"),
+            .target = b.graph.host,
+            .optimize = .Debug,
+        }),
+    });
+
+    const run_cmd = b.addRunArtifact(native_exe);
+    if (b.args) |args| run_cmd.addArgs(args);
+    const run_step = b.step("run", "run the native executable");
+    run_step.dependOn(&run_cmd.step);
+
+    const smoke_cmd = b.addRunArtifact(native_exe);
+    smoke_cmd.addArgs(&.{ "--dry-run", "--seconds", "0.02", "--fps", "20", "--seed", "1" });
+    const smoke_step = b.step("smoke", "run the native dry-run smoke test");
+    smoke_step.dependOn(&smoke_cmd.step);
 }
