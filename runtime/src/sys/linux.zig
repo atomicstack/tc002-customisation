@@ -138,6 +138,10 @@ pub fn epollAdd(ep: Fd, fd: Fd, events: u32, tag: u64) Error!void {
     _ = try check(linux.epoll_ctl(ep, linux.EPOLL.CTL_ADD, fd, &ev));
 }
 
+pub fn epollDel(ep: Fd, fd: Fd) void {
+    _ = linux.epoll_ctl(ep, linux.EPOLL.CTL_DEL, fd, null);
+}
+
 pub fn epollWait(ep: Fd, events: []Event, timeout_ms: i32) Error!usize {
     while (true) {
         return check(linux.epoll_wait(ep, events.ptr, @intCast(events.len), timeout_ms)) catch |e| switch (e) {

@@ -69,4 +69,39 @@ pub fn build(b: *std.Build) void {
     run_elfcheck.addArtifactArg(bootstrap);
     const check_step = b.step("check", "verify the bootstrap elf: arm et_dyn, no dt_needed, has init_array");
     check_step.dependOn(&run_elfcheck.step);
+
+    // host bootstrap test: the same source built as a host dylib, dlopened by a small host tool.
+    // one variant execs test/fake-supervisor.sh (expects exit 0), one a missing path (expects exit 1).
+    const dlopen_host = b.addExecutable(.{ .name = "dlopen-host", .root_module = b.createModule(.{
+        .root_source_file = b.path("src/dlopen_host_main.zig"),
+        .target = b.graph.host,
+        .optimize = .Debug,
+        .link_libc = true,
+    }) });
+    const bootstrap_test_step = b.step("test-bootstrap", "dlopen the host-built bootstrap and verify it execs the supervisor path");
+    const variants = [_]struct { name: []const u8, path: []const u8, code: u8 }{
+        .{ .name = "tc002-bootstrap-host-ok", .path = b.pathFromRoot("test/fake-supervisor.sh"), .code = 0 },
+        .{ .name = "tc002-bootstrap-host-missing", .path = "/nonexistent/tc002-supervisor", .code = 1 },
+    };
+    for (variants) |v| {
+        const host_options = b.addOptions();
+        host_options.addOption([]const u8, "supervisor_path", v.path);
+        const lib = b.addLibrary(.{
+            .name = v.name,
+            .linkage = .dynamic,
+            .root_module = b.createModule(.{
+                .root_source_file = b.path("src/bootstrap_main.zig"),
+                .target = b.graph.host,
+                .optimize = .Debug,
+                .link_libc = true,
+            }),
+        });
+        lib.root_module.addOptions("build_options", host_options);
+        const run = b.addRunArtifact(dlopen_host);
+        run.addArtifactArg(lib);
+        run.setEnvironmentVariable("TC002_TEST_ENV", "passed-through");
+        run.expectExitCode(v.code);
+        if (v.code == 1) run.expectStdErrEqual("tc002-bootstrap: exec of supervisor failed\n");
+        bootstrap_test_step.dependOn(&run.step);
+    }
 }

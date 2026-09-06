@@ -60,6 +60,7 @@ const Renderer = struct {
     stopping: bool = false,
     stop_deadline: u64 = 0,
     ready_sent: bool = false,
+    ipc_dead: bool = false,
     redraws: u64 = 0,
     write_errors: u64 = 0,
     short_writes: u64 = 0,
@@ -68,6 +69,7 @@ const Renderer = struct {
     dropped_actions: u32 = 0,
 
     fn send(self: *Renderer, msg: messages.Message, request_id: u64) void {
+        if (self.ipc_dead) return;
         const fd = self.cfg.ipc_fd orelse return;
         const packet = messages.encodePacket(msg, request_id, self.cfg.epoch, &reply_buf) catch return;
         sys.sendPacket(fd, packet) catch |e| switch (e) {
@@ -194,13 +196,17 @@ const Renderer = struct {
     }
 
     fn drainIpc(self: *Renderer, now: u64) void {
+        if (self.ipc_dead) return;
         const fd = self.cfg.ipc_fd orelse return;
         var count: u32 = 0;
         while (count < ipc_packets_per_iteration) : (count += 1) {
             const packet = sys.recvPacket(fd, &packet_buf) catch |e| {
                 switch (e) {
                     error.Closed => {
+                        // the supervisor is gone: stop once, and stop watching the dead socket
                         log.warn("supervisor channel closed, stopping", .{});
+                        self.ipc_dead = true;
+                        sys.epollDel(self.ep, fd);
                         self.beginStop(now);
                     },
                     error.Truncated => log.warn("oversized ipc packet dropped", .{}),
