@@ -20,6 +20,13 @@ const cli = @import("tc002d/cli.zig");
 const sched = @import("tc002d/sched.zig");
 
 const linux = std.os.linux;
+
+/// no symbolised stack traces on the device: a panic prints its message and exits. this keeps the
+/// dwarf unwinder and its tables out of the binary (it more than halves .text).
+pub const panic = std.debug.simple_panic;
+/// and no segfault handler: it would drag the dwarf unwinder back in.
+pub const std_options: std.Options = .{ .enable_segfault_handler = false };
+
 const ns_per_s = std.time.ns_per_s;
 
 const Tag = enum(u64) { timer = 1, keys = 2, knob = 3, ipc = 4, signals = 5 };

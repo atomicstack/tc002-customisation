@@ -38,6 +38,49 @@ favour of the earlier line; `release` appends RELEASE; `status` prints holders a
 file is never truncated. every device-mutating step (stopping/starting `zkswe`, running anything that
 opens spidev/gpio, writing `/tmp`, setprop) happens under the lock; read-only adb commands do not.
 
+## the network api (`tc002-netd`)
+
+`tc002-netd` serves `/api/v1` over plain http on port 80 (the design's `isolated-lan` profile; there is
+no tls in this build, see the tradeoffs below) and runs an mqtt 3.1.1 client. it runs as uid 1001 with
+two inherited descriptors: the supervisor's channel and a listener that root bound for it. bearer
+tokens (control and admin, 32 random bytes each) are generated once by the supervisor into
+`<dir>/credentials/tokens` (mode 0600) and handed over the channel; nothing on disk is readable by netd.
+
+```bash
+adb pull /tmp/tc002/credentials/tokens tokens          # root over adb; keep the file private
+tools/tc002ctl.py -s <device-ip> --token-file tokens status
+tools/tc002ctl.py -s <device-ip> --token-file tokens scene art --generator plasma --seed 5
+tools/tc002ctl.py -s <device-ip> --token-file tokens notify hello --colour 00ff80 --duration 4
+tools/tc002ctl.py -s <device-ip> --token-file tokens frame --colour ff0000 --duration 3
+tools/tc002ctl.py -s <device-ip> --token-file tokens config-set brightness=60 timezone=JST-9   # admin token
+tools/tc002ctl.py -s <device-ip> --token-file tokens config-save
+tools/tc002ctl.py -s <device-ip> --token-file tokens mqtt-set enabled=true host=10.0.0.2 port=1883 prefix=tc002/dev
+tools/tc002ctl.py -s <device-ip> --token-file tokens config-set discovery=true metrics_interval_s=30
+tools/tc002-test-broker.py                              # a minimal broker on the host, for tests
+```
+
+mqtt topics under the configured prefix: `availability` (retained, last will `offline`), `state`
+(retained, at most twice per second), `result` (one per command, with the request id), `metrics`
+(every 30 s by default), and `cmd/scene`, `cmd/action`, `cmd/notify`, `cmd/frame`, `cmd/config`
+(control subset only). home-assistant discovery is opt-in and publishes read-only diagnostic sensors.
+
+## tradeoffs made for this device (reported, not hidden)
+
+- **own http/1.1 parser and mqtt codec** instead of `std.http.Server` or a library: fixed buffers,
+  four connections, one request each, no chunked bodies, no dns. cost: a narrower protocol surface;
+  gain: bounded memory (about 60 kb of static buffers for the whole daemon) and no allocator.
+- **no tls**: zig 0.16's std has a tls client but no server, and no tls library is vendored. only the
+  plaintext profile ships; status reports `transport: plaintext`; an mqtt `tls: true` setting stays
+  disconnected instead of falling back. tokens are exposed to anyone on the lan path.
+- **relay through the supervisor** instead of a netd→renderer channel: one fewer descriptor to pass
+  across renderer restarts; the supervisor forwards typed messages and parses no http or mqtt.
+- **`std.json` for bodies** (validated utf-8, strict fields) rather than a hand parser: costs code
+  size, keeps correctness; bodies are capped at 4 kb and parsed into an 8 kb fixed arena.
+- **ReleaseSafe by default** (bounds checks on) at 255–411 kb per binary versus 66–170 kb for
+  ReleaseSmall; on the volatile path that is about 0.7 mb of tmpfs ram. `-Doptimize=ReleaseSmall`
+  is available; a simple panic handler and no segfault handler already keep the dwarf unwinder out.
+- **procfs rss on this kernel reads 4 kb for every static process** and is reported as-is.
+
 ## running it on the device (volatile)
 
 ```bash

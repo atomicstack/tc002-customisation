@@ -17,6 +17,13 @@ const geometry = @import("panel/geometry.zig");
 const scene = @import("scene/scene.zig");
 
 const linux = std.os.linux;
+
+/// no symbolised stack traces on the device: a panic prints its message and exits. this keeps the
+/// dwarf unwinder and its tables out of the binary (it more than halves .text).
+pub const panic = std.debug.simple_panic;
+/// and no segfault handler: it would drag the dwarf unwinder back in.
+pub const std_options: std.Options = .{ .enable_segfault_handler = false };
+
 const ns_per_s = std.time.ns_per_s;
 
 const supervisor_fd: sys.Fd = 3;
@@ -130,6 +137,13 @@ const Netd = struct {
     state_dirty: bool = true,
     last_state_pub_ns: u64 = 0,
     next_metrics_ns: u64 = 0,
+    // home-assistant discovery: one entity per second, at most one pass in flight
+    disc_index: u8 = 0,
+    disc_active: bool = false,
+    disc_remove: bool = false,
+    disc_next_ns: u64 = 0,
+    disc_published: bool = false,
+    disc_prefix_used: config.Text = .{},
     // counters
     http_requests: u32 = 0,
     http_rejected: u32 = 0,
@@ -470,7 +484,12 @@ const Netd = struct {
 
     fn onConfig(self: *Netd, request_id: u64, cfg: config.Config, now: u64) void {
         const mqtt_changed = !std.meta.eql(cfg.mqtt, self.cfg.mqtt);
+        const discovery_was = self.cfg.discovery;
+        const prefix_changed = !std.mem.eql(u8, cfg.discovery_prefix.slice(), self.cfg.discovery_prefix.slice());
         self.cfg = cfg;
+        if (self.m_connected and self.have_cfg) {
+            if ((discovery_was and !cfg.discovery) or (discovery_was and prefix_changed)) self.discoveryStart(true, now) else if (cfg.discovery and (!discovery_was or prefix_changed)) self.discoveryStart(false, now);
+        }
         self.have_cfg = true;
         if (mqtt_changed or !self.client.enabled) self.applyMqttSettings(now);
         if (self.next_metrics_ns == 0 and cfg.metrics_interval_s != 0) self.next_metrics_ns = now + @as(u64, cfg.metrics_interval_s) * ns_per_s;
@@ -573,10 +592,18 @@ const Netd = struct {
         };
     }
 
+    /// fps is only meaningful against a continuous cadence: art with no overlay. otherwise null.
+    fn fpsJson(self: *Netd, o: *Out) void {
+        const st = self.status;
+        if (st.base == 0 and st.overlay == 0 and st.renderer_state == 2) o.fmt("\"fps\":{d}.{d},", .{ st.fps_x10 / 10, st.fps_x10 % 10 }) else o.add("\"fps\":null,");
+    }
+
     fn statusJson(self: *Netd, o: *Out, now: u64) void {
         const st = self.status;
         o.add("{");
-        o.fmt("\"epoch\":{d},\"revision\":{d},\"renderer\":\"{s}\",\"base\":\"{s}\",\"generator\":\"{s}\",\"overlay\":\"{s}\",\"brightness\":{d},\"presented\":{d},\"fps\":{d}.{d},\"uptime_s\":{d},\"memory_available_kb\":{d},", .{ st.epoch, st.revision, rendererName(st.renderer_state), baseName(st.base), generatorName(st.generator), overlayName(st.overlay), st.brightness, st.presented, st.fps_x10 / 10, st.fps_x10 % 10, st.uptime_s, st.mem_available_kb });
+        o.fmt("\"epoch\":{d},\"revision\":{d},\"renderer\":\"{s}\",\"base\":\"{s}\",\"generator\":\"{s}\",\"overlay\":\"{s}\",\"brightness\":{d},\"presented\":{d},", .{ st.epoch, st.revision, rendererName(st.renderer_state), baseName(st.base), generatorName(st.generator), overlayName(st.overlay), st.brightness, st.presented });
+        self.fpsJson(o);
+        o.fmt("\"uptime_s\":{d},\"memory_available_kb\":{d},", .{ st.uptime_s, st.mem_available_kb });
         if (st.cpu_pct == 255) o.add("\"cpu_pct\":null,") else o.fmt("\"cpu_pct\":{d},", .{st.cpu_pct});
         o.fmt("\"restarts\":{d},\"network\":{{\"ip\":", .{st.restarts});
         if (st.ip_present != 0) o.fmt("\"{d}.{d}.{d}.{d}\"", .{ st.ip[0], st.ip[1], st.ip[2], st.ip[3] }) else o.add("null");
@@ -626,7 +653,9 @@ const Netd = struct {
         const st = self.status;
         o.fmt("{{\"v\":1,\"boot_id\":\"{x:0>8}\",\"epoch\":{d},\"sample_age_ms\":{d},\"uptime_s\":{d},\"memory_available_kb\":{d},", .{ st.boot_id, st.epoch, st.sample_age_ms + @as(u32, @intCast(@min((now -| self.status_at_ns) / 1_000_000, 0xffffffff))), st.uptime_s, st.mem_available_kb });
         if (st.cpu_pct == 255) o.add("\"cpu_pct\":null,") else o.fmt("\"cpu_pct\":{d},", .{st.cpu_pct});
-        o.fmt("\"rss_kb\":{{\"supervisor\":{d},\"renderer\":{d},\"netd\":{d}}},\"renderer_restarts\":{d},\"mqtt_reconnects\":{d},\"scene\":\"{s}\",\"brightness\":{d},\"fps\":{d}.{d},\"presented\":{d},\"http_requests\":{d},\"http_rejected\":{d},\"mqtt_commands\":{d},\"mqtt_dropped\":{d},\"time\":{{\"state\":\"{s}\"}}}}", .{ st.rss_supervisor_kb, st.rss_renderer_kb, st.rss_netd_kb, st.restarts, self.client.reconnects, baseName(st.base), st.brightness, st.fps_x10 / 10, st.fps_x10 % 10, st.presented, self.http_requests, self.http_rejected, self.mqtt_commands, self.mqtt_dropped, timeStateName(st.time_state) });
+        o.fmt("\"rss_kb\":{{\"supervisor\":{d},\"renderer\":{d},\"netd\":{d}}},\"renderer_restarts\":{d},\"mqtt_reconnects\":{d},\"scene\":\"{s}\",\"brightness\":{d},", .{ st.rss_supervisor_kb, st.rss_renderer_kb, st.rss_netd_kb, st.restarts, self.client.reconnects, baseName(st.base), st.brightness });
+        self.fpsJson(o);
+        o.fmt("\"presented\":{d},\"http_requests\":{d},\"http_rejected\":{d},\"mqtt_commands\":{d},\"mqtt_dropped\":{d},\"time\":{{\"state\":\"{s}\"}}}}", .{ st.presented, self.http_requests, self.http_rejected, self.mqtt_commands, self.mqtt_dropped, timeStateName(st.time_state) });
     }
 
     // mqtt
@@ -764,8 +793,13 @@ const Netd = struct {
                 var topics: [5][]const u8 = undefined;
                 const names = [_][]const u8{ "cmd/scene", "cmd/action", "cmd/notify", "cmd/frame", "cmd/config" };
                 for (names, 0..) |n, i| topics[i] = self.topic(&tb[i], n);
+                var birth_buf: [96]u8 = undefined;
+                const birth = std.fmt.bufPrint(&birth_buf, "{s}/status", .{self.cfg.discovery_prefix.slice()}) catch "homeassistant/status";
+                var all: [6][]const u8 = undefined;
+                for (topics, 0..) |t, i| all[i] = t;
+                all[5] = birth;
                 const space = self.mqttSpace();
-                const n = mqtt.encodeSubscribe(space, self.client.packetId(), &topics, 1) catch return;
+                const n = mqtt.encodeSubscribe(space, self.client.packetId(), if (self.cfg.discovery) all[0..6] else all[0..5], 1) catch return;
                 self.mqttQueue(n);
                 self.m_connected = true;
                 log.info("mqtt connected", .{});
@@ -774,6 +808,7 @@ const Netd = struct {
                 self.mqttPublish("availability", "online", 1, true);
                 self.state_dirty = true;
                 self.last_state_pub_ns = 0;
+                if (self.cfg.discovery) self.discoveryStart(false, now);
             },
             .send_ping => {
                 const space = self.mqttSpace();
@@ -874,6 +909,11 @@ const Netd = struct {
             if (mqtt.encodePuback(space, p.packet_id)) |n| self.mqttQueue(n) else |_| {}
             self.mqttFlush();
         }
+        // home-assistant birth: republish discovery when it comes online
+        if (self.cfg.discovery and std.mem.endsWith(u8, p.topic, "/status") and std.mem.startsWith(u8, p.topic, self.cfg.discovery_prefix.slice())) {
+            if (std.mem.eql(u8, p.payload, "online")) self.discoveryStart(false, now);
+            return;
+        }
         if (p.retain) return; // retained deliveries are never commands
         var pb: [96]u8 = undefined;
         const cmd_prefix = self.topic(&pb, "cmd/");
@@ -939,6 +979,7 @@ const Netd = struct {
             p.used = false;
             self.publishResult(p.id, .timeout, self.status.revision);
         };
+        self.discoveryStep(now);
         if (self.m_connected and self.state_dirty and now - self.last_state_pub_ns >= state_coalesce_ns) {
             var o = Out{ .buf = &json_buf };
             self.statusJson(&o, now);
@@ -952,6 +993,80 @@ const Netd = struct {
             if (!o.overflow) self.mqttPublish("metrics", o.slice(), 0, false) else self.mqtt_dropped += 1;
             self.next_metrics_ns = now + @as(u64, self.cfg.metrics_interval_s) * ns_per_s;
         }
+    }
+
+    // home-assistant mqtt discovery (read-only diagnostic sensors over the metrics topic)
+
+    const Entity = struct { key: []const u8, name: []const u8, template: []const u8, unit: []const u8, device_class: []const u8, state_class: []const u8 };
+    const entities = [_]Entity{
+        .{ .key = "uptime", .name = "uptime", .template = "{{ value_json.uptime_s }}", .unit = "s", .device_class = "duration", .state_class = "" },
+        .{ .key = "memory_available", .name = "memory available", .template = "{{ value_json.memory_available_kb }}", .unit = "kB", .device_class = "data_size", .state_class = "measurement" },
+        .{ .key = "cpu", .name = "cpu utilization", .template = "{{ value_json.cpu_pct }}", .unit = "%", .device_class = "", .state_class = "measurement" },
+        .{ .key = "rss_supervisor", .name = "supervisor rss", .template = "{{ value_json.rss_kb.supervisor }}", .unit = "kB", .device_class = "data_size", .state_class = "measurement" },
+        .{ .key = "rss_renderer", .name = "renderer rss", .template = "{{ value_json.rss_kb.renderer }}", .unit = "kB", .device_class = "data_size", .state_class = "measurement" },
+        .{ .key = "rss_netd", .name = "netd rss", .template = "{{ value_json.rss_kb.netd }}", .unit = "kB", .device_class = "data_size", .state_class = "measurement" },
+        .{ .key = "renderer_restarts", .name = "renderer restarts", .template = "{{ value_json.renderer_restarts }}", .unit = "", .device_class = "", .state_class = "total" },
+        .{ .key = "mqtt_reconnects", .name = "mqtt reconnects", .template = "{{ value_json.mqtt_reconnects }}", .unit = "", .device_class = "", .state_class = "total" },
+        .{ .key = "scene", .name = "scene", .template = "{{ value_json.scene }}", .unit = "", .device_class = "", .state_class = "" },
+        .{ .key = "brightness", .name = "brightness", .template = "{{ value_json.brightness }}", .unit = "%", .device_class = "", .state_class = "measurement" },
+        .{ .key = "fps", .name = "achieved fps", .template = "{{ value_json.fps if value_json.fps is not none else 'unknown' }}", .unit = "fps", .device_class = "", .state_class = "measurement" },
+        .{ .key = "presented", .name = "frames presented", .template = "{{ value_json.presented }}", .unit = "", .device_class = "", .state_class = "total_increasing" },
+        .{ .key = "time_state", .name = "time sync", .template = "{{ value_json.time.state }}", .unit = "", .device_class = "", .state_class = "" },
+    };
+
+    fn discoveryTopic(self: *Netd, buf: []u8, key: []const u8) []const u8 {
+        return std.fmt.bufPrint(buf, "{s}/sensor/tc002-{x:0>8}/{s}/config", .{ self.disc_prefix_used.slice(), self.status.boot_id, key }) catch buf[0..0];
+    }
+
+    /// start a discovery pass: publish (or, when removing, clear) every entity, one per second.
+    fn discoveryStart(self: *Netd, remove: bool, now: u64) void {
+        if (!self.m_connected) return;
+        if (!remove) self.disc_prefix_used = self.cfg.discovery_prefix;
+        self.disc_index = 0;
+        self.disc_active = true;
+        self.disc_remove = remove;
+        self.disc_next_ns = now;
+    }
+
+    fn discoveryStep(self: *Netd, now: u64) void {
+        if (!self.disc_active or !self.m_connected or now < self.disc_next_ns) return;
+        if (self.disc_index >= entities.len) {
+            self.disc_active = false;
+            if (!self.disc_remove) {
+                self.disc_published = true;
+                // a fresh sample right after the pass, then the periodic cadence continues
+                self.next_metrics_ns = now;
+            } else self.disc_published = false;
+            return;
+        }
+        const e = entities[self.disc_index];
+        var tb: [160]u8 = undefined;
+        const t = self.discoveryTopic(&tb, e.key);
+        if (self.disc_remove) {
+            self.mqttPublishTopic(t, "", 1, true);
+        } else {
+            var o = Out{ .buf = json_buf[0..1024] };
+            const interval: u64 = if (self.cfg.metrics_interval_s != 0) self.cfg.metrics_interval_s else 30;
+            o.fmt("{{\"name\":\"{s}\",\"unique_id\":\"tc002_{x:0>8}_{s}\",\"state_topic\":\"{s}/metrics\",\"value_template\":\"{s}\",\"availability_topic\":\"{s}/availability\",\"expire_after\":{d},\"entity_category\":\"diagnostic\"", .{ e.name, self.status.boot_id, e.key, self.prefix(), e.template, self.prefix(), interval * 3 });
+            if (e.unit.len > 0) o.fmt(",\"unit_of_measurement\":\"{s}\"", .{e.unit});
+            if (e.device_class.len > 0) o.fmt(",\"device_class\":\"{s}\"", .{e.device_class});
+            if (e.state_class.len > 0) o.fmt(",\"state_class\":\"{s}\"", .{e.state_class});
+            o.fmt(",\"device\":{{\"identifiers\":[\"tc002-{x:0>8}\"],\"name\":\"tc002\",\"model\":\"tc002 custom runtime\",\"manufacturer\":\"ulanzi (custom firmware)\",\"sw_version\":\"plan-b\"}},\"origin\":{{\"name\":\"tc002-netd\"}}}}", .{self.status.boot_id});
+            if (!o.overflow) self.mqttPublishTopic(t, o.slice(), 1, true) else self.mqtt_dropped += 1;
+        }
+        self.disc_index += 1;
+        self.disc_next_ns = now + ns_per_s;
+    }
+
+    fn mqttPublishTopic(self: *Netd, t: []const u8, payload: []const u8, qos: u2, retain: bool) void {
+        if (!self.m_connected) return;
+        const space = self.mqttSpace();
+        const n = mqtt.encodePublish(space, .{ .topic = t, .payload = payload, .qos = qos, .retain = retain, .packet_id = if (qos > 0) self.client.packetId() else 0 }) catch {
+            self.mqtt_dropped += 1;
+            return;
+        };
+        self.mqttQueue(n);
+        self.mqttFlush();
     }
 
     fn tick(self: *Netd, now: u64) void {
