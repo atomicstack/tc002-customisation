@@ -45,12 +45,16 @@ case "${1:-status}" in
   push)
     need_adb
     (cd "$RUNTIME" && zig build && zig build check) || die "build failed"
+    # replacing the binaries under another agent's live run truncates mapped executables on tmpfs
+    # (netd died that way on 2026-09-07), so the push itself runs under the lock
+    "$LOCK" acquire "tc002-run.sh push: replacing binaries in $DEV" 120 || exit 1
     adb shell "mkdir -p $DEV" >/dev/null
     for f in bin/tc002d bin/tc002-supervisor bin/tc002-netd lib/libtc002-bootstrap.so; do
-        adb push "$RUNTIME/zig-out/$f" "$DEV/$(basename "$f")" >/dev/null || die "push of $f failed"
+        adb push "$RUNTIME/zig-out/$f" "$DEV/$(basename "$f")" >/dev/null || { "$LOCK" release "push of $f failed"; die "push of $f failed"; }
     done
     adb shell "chmod 755 $DEV/tc002d $DEV/tc002-supervisor $DEV/tc002-netd" >/dev/null
     dsh "ls -la $DEV"
+    "$LOCK" release "push done ($(basename "$(cd "$RUNTIME/.." && git branch --show-current 2>/dev/null || echo unknown)"))"
     ;;
   start)
     shift
