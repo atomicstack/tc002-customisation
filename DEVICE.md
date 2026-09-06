@@ -126,6 +126,10 @@ constants in `libzkgui.so`, which lives on the read-only `/res` squashfs. The
 launcher opens it by absolute path (`startupLibPath` in `/res/etc/EasyUI.cfg`),
 so the `/tmp`-first `LD_LIBRARY_PATH` that `init.rc` sets does not help — but
 a bind mount over that path does, and nothing in flash has to change.
+(the launcher also reads `/tmp/EasyUI.cfg` in preference to the one in `/res`,
+which is how the custom runtime in [`RUNTIME.md`](RUNTIME.md#how-it-gets-started)
+replaces the app library wholesale; note that the runtime has no sntp client
+of its own yet, so the clock is not synced at all while it runs.)
 `tc002-ntp-patch.py` does the whole thing:
 
 ```bash

@@ -54,3 +54,35 @@ restrict which hosts may reach it. That also bounds the cross-site write
 exposure to browsers on the hosts you let through. If you don't use the
 cloud-backed apps, also block its outbound internet, and avoid giving it
 calendar credentials you care about.
+
+## the custom runtime (`runtime/`)
+
+while the custom runtime described in [`RUNTIME.md`](RUNTIME.md) is running,
+the stock app and its unauthenticated api are not, and the picture changes:
+
+- **every api route needs a bearer token**, including reads. two random
+  256-bit tokens (control and admin) are generated per runtime directory,
+  compared in constant time, stored at mode 0600 under `/tmp/tc002/credentials/`,
+  and never logged or returned. durable settings and the mqtt password need
+  the admin token; the password is never returned by the api.
+- **browser writes are refused.** a request carrying an `Origin` header is
+  answered `403` unless the origin is on an explicit allow list (empty by
+  default), and no cors headers are ever emitted. the destructive stock
+  endpoints (`update`, `resetConfig`, `setWifiConfig`, `setSn`) do not exist.
+- **the network daemon is unprivileged.** `tc002-netd` runs as uid 1001 with
+  two inherited descriptors and no access to the token or settings files.
+  gap: `/dev/socket/property_service` is world-writable on this init, so the
+  uid change alone does not deny it the property service.
+- **still no tls.** the tokens travel in plain http and plain mqtt; anyone on
+  the network path can read them. the build reports `transport: plaintext`
+  and is intended for an isolated lan only.
+- **adb can be gated by a physical gesture.** in the `hardened` profile the
+  supervisor turns `adbd` off at boot and on for fifteen minutes when the
+  knob is held for three seconds; the default `dev` profile leaves adbd as
+  it is. neither has been exercised on the device yet.
+- **the cloud client is gone** with the stock app: nothing talks to
+  `api.ulanzistudio.com`, and no calendar or social credentials are sent
+  anywhere. (nothing syncs the clock either; see `RUNTIME.md`.)
+
+the mqtt password, when set, is written in clear to the runtime's settings
+file (`/tmp/tc002/config/config.json`, mode 0600, root only, tmpfs).

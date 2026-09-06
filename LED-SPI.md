@@ -59,6 +59,15 @@ shown with:
 echo 0 > /sys/class/gpio/gpio35/value; cat frame.bin > /dev/spidev0.0; echo 1 > /sys/class/gpio/gpio35/value
 ```
 
+three things in this repo drive the panel this way: `led/` and `led-zig/`
+below (a single 60 fps animation, started and stopped by hand), and the full
+custom runtime in `runtime/`, which owns the panel through a lock file, adds
+a clock, an ip scene, notifications, raw frames and the physical controls,
+and can be started by the vendor loader itself. that one is documented in
+[`RUNTIME.md`](RUNTIME.md); its presentation model (why an isolated update is
+sent twice, paced 16.7 ms apart) is the mcu double-buffering described above
+made explicit.
+
 ## `led/`: native popsquares at 60 fps
 
 [`led/`](led/) is a small c program that runs the popsquares animation (the

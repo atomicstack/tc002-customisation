@@ -4,11 +4,14 @@ zig-built replacement for the stock application on the ulanzi tc002, following t
 `tc002-customisation/2026-09-03/custom-native-runtime` and implementation plan
 `tc002-customisation/2026-09-06/native-runtime-plan-b` in the agent-notes vault.
 
-what is here so far is the skeleton of phases 1–2: a no-libc bootstrap shared object that the vendor
-loader dlopens and whose constructor execs the supervisor; a supervisor that raises the anti-brick
-property first and then supervises the renderer; and `tc002d`, the renderer, with a hardware-free
-presentation model, pure scenes, evdev input, and a bounded ipc channel. nothing here writes flash
-or `/data`; every device run is volatile under `/tmp/tc002/`.
+what is here: a no-libc bootstrap shared object that the vendor loader dlopens and whose
+constructor execs the supervisor; `tc002-supervisor`, which raises the anti-brick property first and
+then supervises the renderer and the network daemon; `tc002d`, the renderer, with a hardware-free
+presentation model, pure scenes (popsquares, plasma, clock, ip), overlays, evdev input and a
+bounded ipc channel; `tc002-netd`, the unprivileged http `/api/v1` server and mqtt client; and
+`tc002-memdump`, a memory-audit tool. nothing here writes flash or `/data`; every device run is
+volatile under `/tmp/tc002/`. **the architecture, the api and the measured results are documented
+in [`../RUNTIME.md`](../RUNTIME.md); this file is the build-and-run reference.**
 
 ## build and test
 

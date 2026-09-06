@@ -21,6 +21,7 @@ docs, one topic each:
 | [`MQTT.md`](MQTT.md) | driving the 52×16 display over a broker you control |
 | [`CUSTOM-APP.md`](CUSTOM-APP.md) | the custom-app frame payload shared by http and mqtt: text, draw primitives, bitmaps, gifs, lifecycle |
 | [`LED-SPI.md`](LED-SPI.md) | how the led matrix is really driven (spidev0.0 + a gpio latch, 3072-byte frames), how to take it over, and the native 60 fps renderer in `led/` |
+| [`RUNTIME.md`](RUNTIME.md) | the custom runtime in `runtime/` that replaces the stock app while it runs: how it hooks the boot chain, the supervisor / renderer / network daemon split, scenes and controls, its own authenticated http and mqtt api, what has been measured and what is still missing |
 | [`SECURITY.md`](SECURITY.md) | every security observation in one place, with mitigations |
 
 tools:
@@ -33,6 +34,7 @@ tools:
 | [`tc002-ntp-patch.py`](tc002-ntp-patch.py) | make the clock sync every n minutes instead of every 2 h, and/or from your own ntp server — patches the app library in tmpfs, nothing in flash |
 | [`led/`](led/) | popsquares generative art running on the device at 60 fps, straight to the panel over spi — static armv7 binary built with zig, plus an adb start/stop wrapper |
 | [`led-zig/`](led-zig/) | full-parity idiomatic zig renderer with typed modules, colocated tests, native dry-run, static armv7 build, and adb wrapper |
+| [`runtime/`](runtime/) | the custom runtime: a supervisor, a renderer (popsquares, plasma, clock, ip, notifications, raw frames, buttons and knob) and an unprivileged network daemon with a bearer-authenticated `/api/v1` and an mqtt client with home-assistant discovery, plus the bootstrap the vendor loader runs and a memory-audit tool. zig 0.16, static armv7, no libc, volatile under `/tmp`. reference in [`RUNTIME.md`](RUNTIME.md) |
 
 related: [pixdeck](https://github.com/cailurus/PixDeck) is a working stock-firmware
 client for the custom-app protocol over both http and mqtt — its `pixbar_core.py`
@@ -299,6 +301,10 @@ open "x-apple.systempreferences:com.apple.preference.security?Privacy_LocalNetwo
 - the `adopt` / `setWifiConfig` write path is documented from the firmware's own
   setup page but **not executed** here, since it would drop the test device off
   the network. confirm it against a factory-fresh unit before relying on it.
+- the custom runtime in `runtime/` has been run on the device **volatile only**
+  (everything under `/tmp`, stock after a power cycle) and measured on a warm
+  system; there is no persistent install, no tls and no sntp yet. see
+  [`RUNTIME.md`](RUNTIME.md#what-is-not-there-yet).
 
 ## disclaimer
 
