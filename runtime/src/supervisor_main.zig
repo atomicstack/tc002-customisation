@@ -203,7 +203,7 @@ const Supervisor = struct {
     netd_fd: ?sys.Fd = null,
     netd_path: [:0]const u8 = "/tmp/tc002/tc002-netd",
     netd_restart_at: u64 = 0,
-    netd_restarts: u32 = 0,
+    netd_exits: child.NetdExits = .{},
     relays: [relay_max]Relay = [_]Relay{.{}} ** relay_max,
     snapshot: messages.StatusSnapshot = .{},
     last_heartbeat: messages.Heartbeat = .{ .presented = 0, .revision = 0, .state = 0 },
@@ -372,11 +372,17 @@ const Supervisor = struct {
             error.NoChild => @as(?u32, 0),
             else => return,
         } orelse return;
-        if ((status & 0x7f) == 0) log.warn("netd pid {d} exited with code {d}", .{ pid, (status >> 8) & 0xff }) else log.warn("netd pid {d} killed by signal {d}", .{ pid, status & 0x7f });
+        if (self.shutting_down) {
+            log.info("netd pid {d} stopped", .{pid});
+        } else if ((status & 0x7f) == 0) {
+            log.warn("netd pid {d} exited with code {d}", .{ pid, (status >> 8) & 0xff });
+        } else {
+            log.warn("netd pid {d} killed by signal {d}", .{ pid, status & 0x7f });
+        }
         if (self.netd_fd) |fd| sys.close(fd);
         self.netd_fd = null;
         self.netd_pid = null;
-        self.netd_restarts += 1;
+        self.netd_exits.onExit(self.shutting_down);
         self.netd_restart_at = now + netd_restart_ns;
         for (&self.relays) |*r| r.used = false;
     }
@@ -1058,7 +1064,7 @@ fn run(cfg: cli.Config, environ: anytype, args: []const [:0]const u8) !u8 {
             if (ev.data.u64 == @intFromEnum(Tag.mcu)) s.mcu_link.readable(&s, sys.monotonicNs());
         }
     }
-    log.info("exit: {d} heartbeats, {d} renderer restarts, {d} netd restarts, mcu replies {d} timeouts {d} unsolicited {d}, final state {s}", .{ s.heartbeats, s.restarts, s.netd_restarts, s.mcu_link.replies, s.mcu_link.timeouts, s.mcu_link.unsolicited, @tagName(lifecycle.state) });
+    log.info("exit: {d} heartbeats, {d} renderer restarts, {d} netd restarts, mcu replies {d} timeouts {d} unsolicited {d}, final state {s}", .{ s.heartbeats, s.restarts, s.netd_exits.restarts, s.mcu_link.replies, s.mcu_link.timeouts, s.mcu_link.unsolicited, @tagName(lifecycle.state) });
     return 0;
 }
 

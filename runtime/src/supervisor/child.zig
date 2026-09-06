@@ -119,6 +119,23 @@ test "a supervisor-initiated stop follows the same escalation" {
     try std.testing.expectEqual(Directive.none, l.poll(8 * s_ns));
 }
 
+test "a netd exit during shutdown is a requested stop, not a restart" {
+    var n = NetdExits{};
+    n.onExit(false);
+    try std.testing.expectEqual(@as(u32, 1), n.restarts);
+    n.onExit(true);
+    try std.testing.expectEqual(@as(u32, 1), n.restarts);
+}
+
+/// netd's exits: an exit while the supervisor is shutting down was asked for and is not counted.
+pub const NetdExits = struct {
+    restarts: u32 = 0,
+
+    pub fn onExit(self: *NetdExits, shutting_down: bool) void {
+        if (!shutting_down) self.restarts += 1;
+    }
+};
+
 pub const ready_timeout_ns: u64 = 10 * s_ns;
 pub const heartbeat_timeout_ns: u64 = 2 * s_ns;
 pub const stop_timeout_ns: u64 = 2 * s_ns;
