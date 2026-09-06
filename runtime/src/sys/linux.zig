@@ -442,3 +442,51 @@ pub fn saveFileAtomic(dir_path: [*:0]const u8, tmp_path: [*:0]const u8, final_pa
     defer close(dfd);
     _ = try check(linux.fsync(dfd));
 }
+
+// serial ports (termios2 with BOTHER so any baud, including 1,500,000, can be set on kernel 4.9)
+
+pub const Termios2 = extern struct {
+    iflag: u32,
+    oflag: u32,
+    cflag: u32,
+    lflag: u32,
+    line: u8,
+    cc: [19]u8,
+    ispeed: u32,
+    ospeed: u32,
+};
+
+const tcgets2: u32 = 0x802c542a;
+const tcsets2: u32 = 0x402c542b;
+const tcflsh: u32 = 0x540b;
+const cbaud: u32 = 0x100f;
+const bother: u32 = 0x1000;
+const cs8: u32 = 0x30;
+const cread: u32 = 0x80;
+const clocal: u32 = 0x800;
+const csize: u32 = 0x30;
+const vmin = 6;
+const vtime = 5;
+
+/// open a serial port raw, nonblocking, 8n1 at `baud`, and flush stale input.
+pub fn uartOpen(path: [*:0]const u8, baud: u32) Error!Fd {
+    const fd = try open(path, .{ .ACCMODE = .RDWR, .NOCTTY = true, .NONBLOCK = true, .CLOEXEC = true }, 0);
+    errdefer close(fd);
+    var t: Termios2 = undefined;
+    _ = try check(linux.ioctl(fd, tcgets2, @intFromPtr(&t)));
+    t.iflag = 0;
+    t.oflag = 0;
+    t.lflag = 0;
+    t.cflag = (t.cflag & ~(cbaud | csize)) | bother | cs8 | cread | clocal;
+    t.ispeed = baud;
+    t.ospeed = baud;
+    @memset(&t.cc, 0);
+    t.cc[vmin] = 0;
+    t.cc[vtime] = 0;
+    _ = try check(linux.ioctl(fd, tcsets2, @intFromPtr(&t)));
+    var back: Termios2 = undefined;
+    _ = try check(linux.ioctl(fd, tcgets2, @intFromPtr(&back)));
+    if (back.ospeed != baud) return error.Unexpected;
+    _ = linux.ioctl(fd, tcflsh, 2); // TCIOFLUSH
+    return fd;
+}

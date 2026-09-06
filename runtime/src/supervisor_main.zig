@@ -13,6 +13,7 @@ const child = @import("supervisor/child.zig");
 const maintenance = @import("supervisor/maintenance.zig");
 const cli = @import("supervisor/cli.zig");
 const config = @import("supervisor/config.zig");
+const mcu = @import("supervisor/mcu.zig");
 const api = @import("net/api.zig");
 
 const linux = std.os.linux;
@@ -25,7 +26,7 @@ pub const std_options: std.Options = .{ .enable_segfault_handler = false };
 
 const ns_per_s = std.time.ns_per_s;
 
-const Tag = enum(u64) { timer = 1, signals = 2, ipc = 3, keys = 4, netd = 5 };
+const Tag = enum(u64) { timer = 1, signals = 2, ipc = 3, keys = 4, netd = 5, mcu = 6 };
 
 const tick_ns: u64 = 100_000_000;
 const property_timeout_ns: u64 = 2 * ns_per_s;
@@ -49,6 +50,123 @@ var config_arena: [4096]u8 = undefined;
 var proc_buf: [4096]u8 = undefined;
 
 const Relay = struct { used: bool = false, id: u64 = 0, deadline_ns: u64 = 0 };
+
+const mcu_reply_timeout_ns: u64 = 500_000_000;
+
+/// the single nonblocking handler for the pixel mcu's serial link: one outstanding query at a
+/// time, bounded reads, unsolicited frames (mic reports) counted and discarded, no state changes
+/// sent to the mcu and never the firmware-upload protocol.
+const McuLink = struct {
+    fd: ?sys.Fd = null,
+    sync: mcu.Sync = .{},
+    awaiting: ?u8 = null,
+    deadline_ns: u64 = 0,
+    next_poll_ns: u64 = 0,
+    poll_ns: u64 = 30 * ns_per_s,
+    version_asked: bool = false,
+    replies: u32 = 0,
+    timeouts: u32 = 0,
+    unsolicited: u32 = 0,
+    last_ok_ns: u64 = 0,
+    version: [24]u8 = undefined,
+    version_len: usize = 0,
+
+    fn send(self: *McuLink, cmd: u8, payload: []const u8, now: u64) void {
+        const fd = self.fd orelse return;
+        var frame: [mcu.max_frame]u8 = undefined;
+        const bytes = mcu.encode(&frame, cmd, payload) catch return;
+        sys.writeAll(fd, bytes) catch |e| {
+            log.warn("mcu write failed: {s}", .{sys.errText(e)});
+            return;
+        };
+        self.awaiting = cmd;
+        self.deadline_ns = now + mcu_reply_timeout_ns;
+    }
+
+    fn readable(self: *McuLink, s: *Supervisor, now: u64) void {
+        const fd = self.fd orelse return;
+        var buf: [256]u8 = undefined;
+        var rounds: u32 = 0;
+        while (rounds < 8) : (rounds += 1) {
+            const n = sys.read(fd, &buf) catch |e| switch (e) {
+                error.WouldBlock, error.Interrupted => break,
+                else => {
+                    log.warn("mcu read failed: {s}", .{sys.errText(e)});
+                    return;
+                },
+            };
+            if (n == 0) break;
+            self.sync.push(buf[0..n]);
+        }
+        while (self.sync.next()) |f| {
+            const used = f.used;
+            self.handle(s, f, now);
+            self.sync.consume(used);
+        }
+    }
+
+    fn handle(self: *McuLink, s: *Supervisor, f: mcu.Frame, now: u64) void {
+        const want = self.awaiting orelse {
+            self.unsolicited +|= 1;
+            return;
+        };
+        if (f.cmd != want) {
+            self.unsolicited +|= 1;
+            return;
+        }
+        self.awaiting = null;
+        self.replies +|= 1;
+        self.last_ok_ns = now;
+        switch (f.cmd) {
+            @intFromEnum(mcu.Command.query_version) => {
+                const n = @min(f.payload.len, self.version.len);
+                @memcpy(self.version[0..n], f.payload[0..n]);
+                self.version_len = n;
+                log.info("mcu version reply: {s} ({d} bytes)", .{ self.version[0..n], f.payload.len });
+                self.send(@intFromEnum(mcu.Command.query_battery), "", now);
+            },
+            @intFromEnum(mcu.Command.query_battery) => {
+                if (mcu.parseBattery(f.payload)) |b| {
+                    s.snapshot.battery_mv = b.millivolts;
+                    s.snapshot.battery_pct = if (b.raw_first <= 100) b.raw_first else 255;
+                    if (s.cfg_stats) log.info("mcu battery: first={d} raw={d} -> {d} mv", .{ b.raw_first, b.raw_value, b.millivolts });
+                } else log.warn("mcu battery reply too short: {d} bytes", .{f.payload.len});
+                self.send(@intFromEnum(mcu.Command.query_usb), "", now);
+            },
+            @intFromEnum(mcu.Command.query_usb) => {
+                if (f.payload.len >= 1) {
+                    s.snapshot.usb_present = if (f.payload[0] != 0) 1 else 0;
+                    if (s.cfg_stats) log.info("mcu usb: {d}", .{f.payload[0]});
+                }
+            },
+            else => {},
+        }
+    }
+
+    fn poll(self: *McuLink, s: *Supervisor, now: u64) void {
+        if (self.fd == null) return;
+        if (self.awaiting != null) {
+            if (now >= self.deadline_ns) {
+                self.timeouts +|= 1;
+                if (self.timeouts == 1 or self.timeouts % 20 == 0) log.warn("mcu: no reply to command {x:0>2} within 500 ms ({d} timeouts so far)", .{ self.awaiting.?, self.timeouts });
+                self.awaiting = null;
+                self.next_poll_ns = now + self.poll_ns;
+                if (self.timeouts >= 3 and self.last_ok_ns == 0) {
+                    s.snapshot.battery_mv = 0xffff;
+                    s.snapshot.battery_pct = 255;
+                    s.snapshot.usb_present = 255;
+                }
+            }
+            return;
+        }
+        if (now < self.next_poll_ns) return;
+        self.next_poll_ns = now + self.poll_ns;
+        if (!self.version_asked) {
+            self.version_asked = true;
+            self.send(@intFromEnum(mcu.Command.query_version), "", now);
+        } else self.send(@intFromEnum(mcu.Command.query_battery), "", now);
+    }
+};
 
 const Supervisor = struct {
     cfg_cli: cli.Config,
@@ -88,6 +206,7 @@ const Supervisor = struct {
     boot_id: u32 = 0,
     proc_cpu_prev: [3]u64 = .{ 0, 0, 0 },
     proc_cpu_prev_ns: u64 = 0,
+    mcu_link: McuLink = .{},
 
     fn send(self: *Supervisor, msg: messages.Message) void {
         self.request_id += 1;
@@ -840,6 +959,15 @@ fn run(cfg: cli.Config, environ: anytype, args: []const [:0]const u8) !u8 {
         break :blk null;
     };
     if (s.listener != null) log.info("listening on port {d} (plaintext, isolated-lan profile)", .{http_port});
+    // 8. the pixel mcu link: queries only, on the vendor's baud
+    if (!cfg.no_mcu) {
+        s.mcu_link.poll_ns = @as(u64, cfg.mcu_poll_s) * ns_per_s;
+        if (sys.uartOpen(cfg.mcu_path, cfg.mcu_baud)) |fd| {
+            s.mcu_link.fd = fd;
+            try sys.epollAdd(ep, fd, linux.EPOLL.IN, @intFromEnum(Tag.mcu));
+            log.info("mcu link {s} at {d} baud, polling every {d} s", .{ cfg.mcu_path, cfg.mcu_baud, cfg.mcu_poll_s });
+        } else |e| log.warn("mcu link unavailable ({s}: {s}); battery telemetry stays unknown", .{ cfg.mcu_path, sys.errText(e) });
+    }
 
     var events: [8]sys.Event = undefined;
     while (true) {
@@ -852,6 +980,7 @@ fn run(cfg: cli.Config, environ: anytype, args: []const [:0]const u8) !u8 {
         s.pollIp(now);
         s.drainNetd(now);
         s.pollNetd(now);
+        s.mcu_link.poll(&s, now);
         s.expireRelays(now);
         if (now >= s.next_sample_ns) {
             s.sample(now);
@@ -863,9 +992,12 @@ fn run(cfg: cli.Config, environ: anytype, args: []const [:0]const u8) !u8 {
         if (s.shutting_down and s.child_pid == null and s.netd_pid == null) break;
         try sys.timerfdArmAt(timer, now + tick_ns);
         const n = try sys.epollWait(ep, &events, -1);
-        for (events[0..n]) |ev| if (ev.data.u64 == @intFromEnum(Tag.timer)) sys.timerfdDrain(timer);
+        for (events[0..n]) |ev| {
+            if (ev.data.u64 == @intFromEnum(Tag.timer)) sys.timerfdDrain(timer);
+            if (ev.data.u64 == @intFromEnum(Tag.mcu)) s.mcu_link.readable(&s, sys.monotonicNs());
+        }
     }
-    log.info("exit: {d} heartbeats, {d} renderer restarts, {d} netd restarts, final state {s}", .{ s.heartbeats, s.restarts, s.netd_restarts, @tagName(lifecycle.state) });
+    log.info("exit: {d} heartbeats, {d} renderer restarts, {d} netd restarts, mcu replies {d} timeouts {d} unsolicited {d}, final state {s}", .{ s.heartbeats, s.restarts, s.netd_restarts, s.mcu_link.replies, s.mcu_link.timeouts, s.mcu_link.unsolicited, @tagName(lifecycle.state) });
     return 0;
 }
 

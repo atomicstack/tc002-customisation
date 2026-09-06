@@ -14,6 +14,9 @@ pub const usage =
     \\  --keys PATH             button evdev node (/dev/input/event67)
     \\  --knob PATH             rotary evdev node (/dev/input/event68)
     \\  --ip-poll S             seconds between wlan0 address checks (5)
+    \\  --mcu PATH              pixel mcu serial port (/dev/ttyS1); --no-mcu disables the link
+    \\  --mcu-baud N            serial speed (1500000, the vendor's value)
+    \\  --mcu-poll S            seconds between battery/usb queries (30)
     \\  --no-property           do not set sys.zkapp.state (host-less experiments only)
     \\  --close-inherited       close every inherited descriptor above stderr after the audit
     \\  --stats                 ask the renderer for periodic statistics
@@ -36,6 +39,10 @@ pub const Config = struct {
     keys_path: [:0]const u8 = "/dev/input/event67",
     knob_path: [:0]const u8 = "/dev/input/event68",
     ip_poll_s: u32 = 5,
+    mcu_path: [:0]const u8 = "/dev/ttyS1",
+    mcu_baud: u32 = 1_500_000,
+    mcu_poll_s: u32 = 30,
+    no_mcu: bool = false,
     no_property: bool = false,
     close_inherited: bool = false,
     stats: bool = false,
@@ -59,6 +66,10 @@ pub fn parse(args: []const [:0]const u8) ParseError!Outcome {
             c.no_property = true;
             continue;
         }
+        if (std.mem.eql(u8, a, "--no-mcu")) {
+            c.no_mcu = true;
+            continue;
+        }
         if (std.mem.eql(u8, a, "--close-inherited")) {
             c.close_inherited = true;
             continue;
@@ -71,7 +82,7 @@ pub fn parse(args: []const [:0]const u8) ParseError!Outcome {
             c.from_bootstrap = true;
             continue;
         }
-        const known = [_][]const u8{ "--profile", "--renderer", "--fallback", "--dir", "--lock", "--tz", "--keymap", "--keys", "--knob", "--ip-poll" };
+        const known = [_][]const u8{ "--profile", "--renderer", "--fallback", "--dir", "--lock", "--tz", "--keymap", "--keys", "--knob", "--ip-poll", "--mcu", "--mcu-baud", "--mcu-poll" };
         var is_known = false;
         for (known) |k| is_known = is_known or std.mem.eql(u8, a, k);
         if (!is_known) return error.UnknownOption;
@@ -101,6 +112,16 @@ pub fn parse(args: []const [:0]const u8) ParseError!Outcome {
             const n = std.fmt.parseInt(u32, v, 10) catch return error.BadValue;
             if (n < 1 or n > 3600) return error.BadValue;
             c.ip_poll_s = n;
+        } else if (std.mem.eql(u8, a, "--mcu")) {
+            c.mcu_path = v;
+        } else if (std.mem.eql(u8, a, "--mcu-baud")) {
+            const n = std.fmt.parseInt(u32, v, 10) catch return error.BadValue;
+            if (n < 1200 or n > 4_000_000) return error.BadValue;
+            c.mcu_baud = n;
+        } else if (std.mem.eql(u8, a, "--mcu-poll")) {
+            const n = std.fmt.parseInt(u32, v, 10) catch return error.BadValue;
+            if (n < 5 or n > 3600) return error.BadValue;
+            c.mcu_poll_s = n;
         }
     }
     return .{ .run = c };
@@ -138,6 +159,11 @@ test "defaults and fallback path" {
     try std.testing.expectError(error.BadValue, parse(&.{ "--ip-poll", "0" }));
     try std.testing.expectError(error.UnknownOption, parse(&.{"--renderer-path"}));
     try std.testing.expectError(error.MissingValue, parse(&.{"--tz"}));
+    const m = try parse(&.{ "--mcu-baud", "115200", "--mcu-poll", "10", "--no-mcu" });
+    try std.testing.expectEqual(@as(u32, 115200), m.run.mcu_baud);
+    try std.testing.expectEqual(@as(u32, 10), m.run.mcu_poll_s);
+    try std.testing.expect(m.run.no_mcu);
+    try std.testing.expectError(error.BadValue, parse(&.{ "--mcu-poll", "1" }));
 }
 
 test "the renderer argv is exact" {
