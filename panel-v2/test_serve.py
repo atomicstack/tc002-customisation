@@ -151,6 +151,26 @@ class EndToEndTests(unittest.TestCase):
             self.assertEqual(e.code, 502)
             self.assertEqual(json.loads(e.read())["error"], "proxy")
 
+    def test_stream_route_authenticates_before_503(self):
+        # talks to the mock directly: the proxy always adds a token, so this is the only way to
+        # exercise the mock's own auth check ahead of its 503 not_implemented answer.
+        url = f"http://127.0.0.1:{self.mock_port}/api/v1/streams"
+        req = urllib.request.Request(url, method="POST")
+        try:
+            urllib.request.urlopen(req, timeout=5)
+            self.fail("expected an http error")
+        except urllib.error.HTTPError as e:
+            self.assertEqual(e.code, 401)
+            self.assertEqual(json.loads(e.read())["error"], "unauthorized")
+        req = urllib.request.Request(url, data=b"{}", method="POST",
+                                      headers={"Authorization": f"Bearer {self.control}", "Content-Type": "application/json"})
+        try:
+            urllib.request.urlopen(req, timeout=5)
+            self.fail("expected an http error")
+        except urllib.error.HTTPError as e:
+            self.assertEqual(e.code, 503)
+            self.assertEqual(json.loads(e.read())["error"], "not_implemented")
+
 
 if __name__ == "__main__":
     unittest.main()

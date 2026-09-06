@@ -309,8 +309,24 @@ SCHEMAS = {
 ROUTES = {("GET", "status"): "control", ("GET", "scenes"): "control", ("PUT", "scene"): "control",
           ("POST", "action"): "control", ("GET", "config"): "control", ("PATCH", "config"): "admin",
           ("POST", "config/save"): "admin", ("POST", "notify"): "control", ("POST", "frame"): "control",
-          ("GET", "mqtt"): "admin", ("PUT", "mqtt"): "admin", ("GET", "mqtt/status"): "control",
-          ("POST", "streams"): "control"}
+          ("GET", "mqtt"): "admin", ("PUT", "mqtt"): "admin", ("GET", "mqtt/status"): "control"}
+
+
+def route_lookup(method, endpoint):
+    """(authority, known) for an endpoint, mirroring the runtime's route(): stream routes are a
+    path family (`streams`, `streams/{id}`, `streams/{id}/palette`) matched by pattern, not by an
+    exact (method, endpoint) pair, so they cannot live in the ROUTES table."""
+    if endpoint == "streams":
+        return ("control" if method == "POST" else None), True
+    if endpoint.startswith("streams/"):
+        rest = endpoint[len("streams/"):]
+        if "/" not in rest:
+            return ("control" if method == "DELETE" else None), True
+        if rest.endswith("/palette"):
+            return ("control" if method == "PUT" else None), True
+        return None, True
+    known = {e for _, e in ROUTES}
+    return ROUTES.get((method, endpoint)), endpoint in known
 
 
 class Handler(http.server.BaseHTTPRequestHandler):
@@ -372,19 +388,18 @@ class Handler(http.server.BaseHTTPRequestHandler):
         endpoint = path[len("/api/v1/"):]
         if self.headers.get("Origin"):
             return self._error(403, "origin_denied", "this origin is not allowed")
-        if endpoint.startswith("streams"):
-            return self._error(503, "not_implemented", "stream sessions are not available in this release")
-        known = {e for _, e in ROUTES}
-        need = ROUTES.get((method, endpoint))
+        need, known = route_lookup(method, endpoint)
         if need is None:
-            return self._error(405 if endpoint in known else 404, "method_not_allowed" if endpoint in known else "not_found",
-                               "this route does not accept that method" if endpoint in known else "no such route")
+            return self._error(405 if known else 404, "method_not_allowed" if known else "not_found",
+                               "this route does not accept that method" if known else "no such route")
         auth = self.headers.get("Authorization") or ""
         have = "admin" if auth == f"Bearer {d.admin}" else "control" if auth == f"Bearer {d.control}" else None
         if have is None:
             return self._error(401, "unauthorized", "a valid bearer token is required")
         if need == "admin" and have != "admin":
             return self._error(403, "forbidden", "this route requires the admin token")
+        if endpoint == "streams" or endpoint.startswith("streams/"):
+            return self._error(503, "not_implemented", "stream sessions are not available in this release")
         try:
             with d.lock:
                 if endpoint == "status":
