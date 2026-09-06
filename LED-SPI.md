@@ -103,3 +103,35 @@ limits: the binary lives in the device's tmpfs and there is no autostart hook
 without reflashing, so a reboot returns the device to stock; run `start` again.
 while it runs the http api is down (`zkswe` is stopped). brightness is a cli
 option rather than read from the device's settings.
+
+## `led-zig/`: the same renderer in idiomatic zig
+
+[`led-zig/`](led-zig/) is a from-scratch zig 0.16 implementation with the same
+panel bytes, popsquares behaviour, cli, timing, shutdown, and adb workflow:
+
+| concern | `led/` c | `led-zig/` zig |
+|---------|----------|-----------------|
+| build | make using `zig cc` | `zig build` |
+| host tests | separate c test executables | test blocks beside each module, run by `zig build test` |
+| buffers | byte arrays sized by macros | named fixed-size `Rgb` and `Frame` types |
+| configuration | mutable c structs and string comparisons in `main` | typed `Config` plus a parse outcome union |
+| resources | file descriptors initialised to -1 and manually unwound | `Device.init` with `errdefer` and idempotent `deinit` |
+| failures | errno and integer return conventions | error unions at module boundaries |
+| dependencies | libc and linux headers | zig standard library and linux abi definitions |
+
+build and test:
+
+```bash
+cd led-zig
+zig build test
+zig build
+```
+
+the device binary is `zig-out/bin/popsquares`. deploy it with the wrapper in
+the same directory:
+
+```bash
+./tc002-led.sh start --stats
+./tc002-led.sh status
+./tc002-led.sh stop
+```
