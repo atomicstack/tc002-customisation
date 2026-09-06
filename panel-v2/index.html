@@ -1,0 +1,639 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="color-scheme" content="dark">
+<title>TC002 Runtime Console</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@500;600;700&family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+<style>
+/* console: a control surface for a lit instrument. single dark theme by design. */
+:root{
+  color-scheme:dark;
+  --bg:#0b0d12; --surface:#10131a; --surface-2:#151a24; --screen:#07080c;
+  --ink:#e8ebf1; --muted:#8b93a3; --line:#1f2531; --line-2:#2a3242;
+  --accent:#2b5cff; --accent-ink:#ffffff; --accent-text:#8fb0ff;
+  --ok:#3ddc97; --warn:#ffb340; --danger:#ff5c5c;
+  --led-on:#f4f6fb; --led-off:#12151d; --led-glow:0 0 5px rgba(244,246,251,.45);
+  --radius:4px; --radius-s:3px; --gap:14px;
+  --display:"Chakra Petch",system-ui,-apple-system,sans-serif;
+  --body:"IBM Plex Sans",system-ui,-apple-system,"Segoe UI",sans-serif;
+  --data:"IBM Plex Mono",ui-monospace,SFMono-Regular,Menlo,monospace;
+}
+*{box-sizing:border-box}
+html{background:var(--bg)}
+body{margin:0;background:var(--bg);color:var(--ink);font:14px/1.5 var(--body)}
+.wrap{max-width:1180px;margin:0 auto;padding:22px 20px 72px;container-type:inline-size}
+
+/* top bar */
+.top{display:flex;align-items:center;gap:16px;flex-wrap:wrap;margin-bottom:var(--gap)}
+.brand{display:flex;align-items:baseline;gap:10px}
+.logo{font-family:var(--display);font-weight:700;font-size:18px;letter-spacing:.14em}
+.brand small{color:var(--muted);font-size:13px}
+.devbar{display:flex;align-items:center;gap:10px;margin-left:auto;font-size:13px;flex-wrap:wrap}
+.devbar label{color:var(--muted)}
+#host{width:150px}
+.pill{font-size:12px;padding:3px 9px;border-radius:99px;border:1px solid var(--line);color:var(--muted);display:inline-flex;align-items:center;gap:6px;white-space:nowrap}
+.pill::before{content:"";width:6px;height:6px;border-radius:50%;background:currentColor}
+.pill.on{color:var(--ok);border-color:color-mix(in srgb,var(--ok) 45%,transparent)}
+.pill.off{color:var(--danger);border-color:color-mix(in srgb,var(--danger) 45%,transparent)}
+.pill.warn{color:var(--warn);border-color:color-mix(in srgb,var(--warn) 45%,transparent)}
+.found{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin:-4px 0 var(--gap);font-size:12px;color:var(--muted)}
+.found .eyebrow{margin-right:2px}
+.found .btn .k{font-family:var(--data);letter-spacing:0;text-transform:none;font-weight:400;color:var(--muted);margin-left:8px}
+
+/* hero */
+.hero{display:grid;grid-template-columns:minmax(0,7fr) minmax(0,5fr);gap:var(--gap);margin-bottom:var(--gap)}
+.screen{background:radial-gradient(1px 1px at 50% 50%,#1a1f2a 0,transparent 60%) 0 0/8px 8px,var(--screen);
+  border:1px solid var(--line);border-radius:var(--radius);padding:18px 22px;display:flex;flex-direction:column;
+  align-items:center;justify-content:center;gap:12px;position:relative;min-width:0;overflow:hidden}
+.matrix{display:grid;grid-template-columns:repeat(52,minmax(0,1fr));gap:2px;width:100%;max-width:560px;aspect-ratio:52/16;min-width:0}
+.matrix i{display:block;aspect-ratio:1;background:var(--led-off);min-width:0}
+.matrix i.on{background:var(--led-on);box-shadow:var(--led-glow)}
+.matrix i.wk{background:var(--led-on);opacity:.85}
+.matrix i.dim{background:var(--led-on);opacity:.16}
+.screen .cap{font-family:var(--data);font-size:11px;color:var(--muted);letter-spacing:.04em;text-align:center}
+.side{display:flex;flex-direction:column;gap:var(--gap)}
+
+/* cards */
+.grid{display:grid;grid-template-columns:repeat(12,minmax(0,1fr));gap:var(--gap)}
+.card{background:var(--surface);border:1px solid var(--line);border-radius:var(--radius);padding:16px 18px;min-width:0}
+.card h2{font-family:var(--display);font-size:12px;letter-spacing:.16em;text-transform:uppercase;color:var(--accent-text);margin:0 0 12px;font-weight:600;display:flex;align-items:center;gap:10px}
+.card h2 .pill{margin-left:auto;text-transform:none;letter-spacing:0;font-family:var(--body);font-weight:400}
+.s4{grid-column:span 4}.s3{grid-column:span 3}.s5{grid-column:span 5}.s7{grid-column:span 7}.s8{grid-column:span 8}.s12{grid-column:span 12}
+.rows{display:flex;flex-direction:column}
+.field{display:flex;align-items:center;justify-content:space-between;gap:14px;padding:7px 0;border-bottom:1px solid var(--line)}
+.field:last-child{border-bottom:0}
+.field>label,.field>.lab{display:flex;flex-direction:column;gap:1px;min-width:0;flex:1;color:var(--ink)}
+.key{font-family:var(--data);font-size:11px;color:var(--muted)}
+.hint{font-size:12px;color:var(--muted)}
+.val{font-family:var(--data);font-variant-numeric:tabular-nums;font-size:13px;color:var(--ink);text-align:right;word-break:break-all}
+.eyebrow{font-family:var(--display);font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--muted)}
+
+/* on-screen readout */
+.now{display:flex;flex-direction:column;gap:2px;margin-bottom:12px}
+.now-time{font-family:var(--display);font-size:30px;font-weight:600;letter-spacing:.06em;line-height:1.1;font-variant-numeric:tabular-nums}
+.now-meta{font-family:var(--data);font-size:12px;color:var(--muted);font-variant-numeric:tabular-nums}
+.controls{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.knob{width:52px;height:52px;border-radius:50%;background:var(--surface-2);border:1px solid var(--line-2);position:relative;flex:none;cursor:pointer;padding:0}
+.knob::after{content:"";position:absolute;left:50%;top:6px;width:4px;height:13px;margin-left:-2px;border-radius:2px;background:var(--accent-text)}
+.knob:active{background:var(--line)}
+.knobwrap{display:flex;align-items:center;gap:6px}
+.longpress{display:inline-flex;align-items:center;gap:8px;font-size:12px;color:var(--muted);margin-left:auto}
+
+/* inputs */
+input[type=text],input[type=number],input[type=password],select{
+  background:var(--surface-2);color:var(--ink);border:1px solid var(--line-2);border-radius:var(--radius-s);
+  padding:6px 9px;font:13px var(--data);width:150px}
+input[type=number]{width:84px}
+select{padding-right:26px;appearance:none;-webkit-appearance:none;
+  background-image:linear-gradient(45deg,transparent 50%,var(--muted) 50%),linear-gradient(135deg,var(--muted) 50%,transparent 50%);
+  background-position:calc(100% - 14px) 55%,calc(100% - 9px) 55%;background-size:5px 5px;background-repeat:no-repeat}
+input:focus-visible,select:focus-visible,button:focus-visible{outline:2px solid var(--accent-text);outline-offset:2px}
+.rangewrap{display:flex;align-items:center;gap:10px}
+input[type=range]{-webkit-appearance:none;appearance:none;width:150px;height:4px;border-radius:2px;margin:0;
+  background:linear-gradient(90deg,var(--accent) var(--pct,0%),var(--surface-2) var(--pct,0%));border:1px solid var(--line-2)}
+input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:14px;height:14px;border-radius:50%;background:var(--surface);border:2px solid var(--accent-text);cursor:pointer}
+input[type=range]::-moz-range-thumb{width:12px;height:12px;border-radius:50%;background:var(--surface);border:2px solid var(--accent-text);cursor:pointer}
+.rangewrap .val{width:38px;color:var(--muted);font-size:12px}
+input.sw{appearance:none;-webkit-appearance:none;width:38px;height:22px;border-radius:99px;background:var(--surface-2);
+  border:1px solid var(--line-2);position:relative;margin:0;cursor:pointer;flex:none}
+input.sw::after{content:"";position:absolute;top:3px;left:3px;width:14px;height:14px;border-radius:50%;background:var(--muted);transition:left .15s,background .15s}
+input.sw:checked{background:var(--accent);border-color:var(--accent)}
+input.sw:checked::after{left:19px;background:var(--accent-ink)}
+.seg{display:inline-flex;background:var(--surface-2);border:1px solid var(--line-2);border-radius:var(--radius-s);padding:3px;gap:2px}
+.seg button{border:0;background:transparent;color:var(--muted);font:600 12px var(--body);padding:4px 11px;border-radius:2px;cursor:pointer}
+.seg button[aria-checked="true"]{background:var(--accent);color:var(--accent-ink)}
+
+/* buttons */
+.btn{font:600 12px var(--display);text-transform:uppercase;letter-spacing:.08em;border:1px solid transparent;border-radius:var(--radius-s);
+  padding:8px 14px;background:var(--accent);color:var(--accent-ink);cursor:pointer;white-space:nowrap}
+.btn.ghost{background:transparent;color:var(--ink);border-color:var(--line-2)}
+.btn.ghost:hover{border-color:var(--accent-text)}
+.btn.danger{background:transparent;color:var(--danger);border-color:color-mix(in srgb,var(--danger) 50%,transparent)}
+.btn.sm{padding:5px 9px;font-size:11px}
+.btn:disabled{opacity:.4;cursor:default}
+.btn:active:not(:disabled){transform:translateY(1px)}
+.actions{display:flex;align-items:center;gap:10px;margin-top:12px;flex-wrap:wrap}
+.note{font-size:12.5px;color:var(--muted);line-height:1.45}
+.note b{color:var(--warn);font-weight:600}
+.gainrow{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:18px}
+.gain{display:flex;flex-direction:column;gap:6px}
+.gain .eyebrow{display:flex;justify-content:space-between}
+.gain input[type=range]{width:100%}
+.list-empty{color:var(--muted);font-size:13px;padding:6px 0}
+
+#toast{position:fixed;left:50%;bottom:26px;transform:translateX(-50%) translateY(140%);
+  background:var(--ink);color:var(--bg);padding:10px 18px;border-radius:var(--radius);font:13px var(--body);
+  transition:transform .2s;z-index:9;max-width:88vw}
+#toast.show{transform:translateX(-50%) translateY(0)}
+#toast.err{background:var(--danger);color:#fff}
+
+@container (max-width:860px){
+  .hero{grid-template-columns:1fr}
+  .s3,.s4,.s5,.s7,.s8{grid-column:span 12}
+}
+@container (max-width:560px){
+  .field{flex-wrap:wrap}
+  input[type=text],input[type=password],select,input[type=range],.rangewrap{width:100%}
+  .gainrow{grid-template-columns:1fr}
+}
+@media (prefers-reduced-motion:reduce){*{transition:none!important}}
+
+/* v2 additions */
+.screen canvas{width:100%;max-width:560px;aspect-ratio:52/16;display:block}
+.card.locked .field,.card.locked .actions{opacity:.45;pointer-events:none}
+.lockmsg{display:none;font-size:12px;color:var(--warn);margin:-4px 0 10px}
+.card.locked .lockmsg{display:block}
+input[type=color]{width:44px;height:28px;padding:2px;border:1px solid var(--line-2);border-radius:var(--radius-s);background:var(--surface-2);cursor:pointer}
+input[type=file]{font:12px var(--body);color:var(--muted);max-width:220px}
+.counter{font-family:var(--data);font-size:11px;color:var(--muted);margin-left:6px}
+.inline{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.rev{font-family:var(--data);font-size:12px;color:var(--muted)}
+.rev b{color:var(--warn);font-weight:600}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header class="top">
+    <div class="brand"><span class="logo">TC002</span><small>runtime console</small></div>
+    <div class="devbar">
+      <label for="host">Device</label>
+      <input type="text" id="host" placeholder="device ip" autocomplete="off" spellcheck="false">
+      <button class="btn ghost" id="reload">Connect</button>
+      <span id="conn" class="pill">not connected</span>
+    </div>
+  </header>
+
+  <section class="hero">
+    <div class="screen">
+      <canvas id="matrix" width="520" height="160" aria-label="simulated 52 by 16 preview of what the runtime is drawing"></canvas>
+      <div class="cap" id="cap">simulated from /status · not connected</div>
+    </div>
+    <div class="side">
+      <section class="card">
+        <h2>Now <span id="renderer" class="pill">unknown</span></h2>
+        <div class="rows" id="now"><div class="list-empty">connect to populate</div></div>
+      </section>
+    </div>
+  </section>
+
+  <div class="grid">
+    <section class="card s7">
+      <h2>Scene</h2>
+      <div class="rows">
+        <div class="field"><span class="lab">Base scene<span class="key">PUT /scene</span></span>
+          <div class="seg" id="base" role="radiogroup" aria-label="base scene">
+            <button type="button" data-v="art" role="radio" aria-checked="false">Art</button>
+            <button type="button" data-v="clock" role="radio" aria-checked="false">Clock</button>
+            <button type="button" data-v="ip" role="radio" aria-checked="false">IP</button>
+          </div></div>
+        <div class="field"><label for="gen">Generator<span class="key">art only</span></label><select id="gen"></select></div>
+        <div class="field"><label for="seed">Seed<span class="key">POST /action reseed · empty = random</span></label>
+          <span class="inline"><input type="number" id="seed" min="0" max="4294967295" placeholder="random"><button class="btn ghost sm" id="reseed">Reseed</button></span></div>
+        <div class="field"><label for="bright">Brightness<span class="key">POST /action brightness · 1–100</span></label>
+          <span class="rangewrap"><input type="range" id="bright" min="1" max="100" value="100" data-unit="%"><span class="val">100%</span></span></div>
+      </div>
+      <div class="actions"><span class="note">live changes to the running renderer. the settings card below is what persists across restarts.</span></div>
+    </section>
+
+    <section class="card s5">
+      <h2>Notification</h2>
+      <div class="rows">
+        <div class="field"><label for="ntext">Text<span class="key">1–128 printable ascii</span></label>
+          <span class="inline"><input type="text" id="ntext" maxlength="128" placeholder="hello" autocomplete="off"><span class="counter" id="ncount">0/128</span></span></div>
+        <div class="field"><label for="ncolour">Colour</label><input type="color" id="ncolour" value="#ffffff"></div>
+        <div class="field"><label for="ndur">Duration<span class="key">seconds, 1–300</span></label><input type="number" id="ndur" min="1" max="300" value="5"></div>
+      </div>
+      <div class="actions"><button class="btn" id="nsend">Send notification</button></div>
+    </section>
+
+    <section class="card s5">
+      <h2>Frame</h2>
+      <div class="rows">
+        <div class="field"><label for="fcolour">Solid colour</label><input type="color" id="fcolour" value="#ff0000"></div>
+        <div class="field"><label for="fimage">Image<span class="key">scaled to 52×16, cropped to fit</span></label><input type="file" id="fimage" accept="image/*"></div>
+        <div class="field"><label for="fdur">Duration<span class="key">seconds, 1–300</span></label><input type="number" id="fdur" min="1" max="300" value="5"></div>
+      </div>
+      <div class="actions">
+        <button class="btn" id="fsendcolour">Send colour</button>
+        <button class="btn" id="fsendimage" disabled>Send image</button>
+        <button class="btn ghost" id="fclear" disabled>Clear</button>
+      </div>
+    </section>
+
+    <section class="card s7" id="settingsCard">
+      <h2>Settings <span class="pill warn">admin</span></h2>
+      <div class="lockmsg">the proxy has no admin token: start serve.py with --token-file or --adb-pull to edit settings</div>
+      <div class="rows">
+        <div class="field"><label for="cbright">Brightness at start<span class="key">brightness · 1–100</span></label><input type="number" id="cbright" min="1" max="100"></div>
+        <div class="field"><label for="cbase">Base scene at start<span class="key">base</span></label>
+          <select id="cbase"><option value="art">art</option><option value="clock">clock</option><option value="ip">ip</option></select></div>
+        <div class="field"><label for="cgen">Generator at start<span class="key">generator</span></label><select id="cgen"></select></div>
+        <div class="field"><label for="ctz">Timezone<span class="key">timezone · posix rule, e.g. AEST-10AEDT,M10.1.0,M4.1.0/3</span></label><input type="text" id="ctz" placeholder="UTC0" spellcheck="false"></div>
+        <div class="field"><label for="cntp">NTP server<span class="key">ntp_server · ipv4, stored only in this build</span></label><input type="text" id="cntp" placeholder="none"></div>
+        <div class="field"><label for="cntpi">NTP interval<span class="key">ntp_interval_s</span></label>
+          <select id="cntpi"><option value="300">300 s</option><option value="600">600 s</option></select></div>
+        <div class="field"><label for="cft">Frame timeout<span class="key">frame_timeout_ms · 100–2000, for streaming</span></label><input type="number" id="cft" min="100" max="2000"></div>
+        <div class="field"><label for="cmi">Metrics interval<span class="key">metrics_interval_s · 0 = off, 10–3600</span></label><input type="number" id="cmi" min="0" max="3600"></div>
+        <div class="field"><label for="cdisc">Home Assistant discovery<span class="key">discovery</span></label><input type="checkbox" class="sw" id="cdisc"></div>
+        <div class="field"><label for="cdp">Discovery prefix<span class="key">discovery_prefix</span></label><input type="text" id="cdp" placeholder="homeassistant"></div>
+      </div>
+      <div class="actions">
+        <button class="btn" id="capply">Apply</button>
+        <button class="btn ghost" id="csave">Save to device</button>
+        <span class="rev" id="crev">—</span>
+      </div>
+    </section>
+
+    <section class="card s5" id="mqttCard">
+      <h2>MQTT <span id="mqttstate" class="pill">unknown</span></h2>
+      <div class="lockmsg">the proxy has no admin token: broker settings are read-only</div>
+      <div class="rows">
+        <div class="field"><label for="menabled">Enabled<span class="key">enabled</span></label><input type="checkbox" class="sw" id="menabled"></div>
+        <div class="field"><label for="mhost">Broker<span class="key">host · ipv4 literal</span></label><input type="text" id="mhost" placeholder="10.0.0.2"></div>
+        <div class="field"><label for="mport">Port<span class="key">port</span></label><input type="number" id="mport" min="1" max="65535" placeholder="1883"></div>
+        <div class="field"><label for="muser">Username<span class="key">username</span></label><input type="text" id="muser" autocomplete="off"></div>
+        <div class="field"><label for="mpwd">Password<span class="key">password · never returned</span></label><input type="password" id="mpwd" autocomplete="new-password" placeholder="unchanged"></div>
+        <div class="field"><label for="mcid">Client id<span class="key">client_id · empty = tc002-&lt;boot id&gt;</span></label><input type="text" id="mcid" autocomplete="off"></div>
+        <div class="field"><label for="mprefix">Topic prefix<span class="key">prefix · empty = tc002</span></label><input type="text" id="mprefix" placeholder="tc002"></div>
+        <div class="field"><label for="mtls">TLS<span class="key">tls · not available in this build: stays disconnected</span></label><input type="checkbox" class="sw" id="mtls"></div>
+      </div>
+      <div class="actions">
+        <button class="btn" id="mapply">Apply</button>
+        <button class="btn ghost" id="mcheck">Recheck</button>
+        <span class="note" id="mdetail"></span>
+      </div>
+      <div class="actions"><span class="note">broker changes bump the settings revision; use <b>save to device</b> above to keep them.</span></div>
+    </section>
+  </div>
+</div>
+<div id="toast" role="status" aria-live="polite"></div>
+<script src="sim.js"></script>
+<script>
+const $ = id => document.getElementById(id);
+const S = window.TC002Sim;
+const host = () => $('host').value.trim();
+const api = p => `/api/${host()}/v1/${p}`;
+let STATUS = null, SCENES = null, CONFIG = null, MQTT = null, TOKENS = { control: false, admin: false };
+let pollTimer = null;
+// what this page knows that /status does not report: the art it animates locally, the tz rule,
+// the notification text and frame bytes it sent, and a frame staged but not yet sent
+const local = { art: null, tz: S.TZ_UTC, notify: null, frame: null, pending: null };
+
+function toast(msg, isErr) {
+  const t = $('toast'); t.textContent = msg;
+  t.className = 'show' + (isErr ? ' err' : '');
+  clearTimeout(t._t); t._t = setTimeout(() => t.className = '', 3200);
+}
+function setConn(cls, text) { $('conn').className = 'pill ' + cls; $('conn').textContent = text; }
+const rid = () => { const b = new Uint8Array(8); crypto.getRandomValues(b); return [...b].map(x => x.toString(16).padStart(2, '0')).join(''); };
+
+/* ---------- api plumbing ---------- */
+async function call(method, path, body, contentType) {
+  const opts = { method, cache: 'no-store', headers: {} };
+  if (body !== undefined) {
+    opts.body = body instanceof Uint8Array ? body : JSON.stringify(body);
+    opts.headers['Content-Type'] = contentType || 'application/json';
+  }
+  const r = await fetch(api(path), opts);
+  const txt = await r.text();
+  let doc = null;
+  try { doc = txt ? JSON.parse(txt) : null; } catch { doc = { raw: txt }; }
+  if (!r.ok) {
+    const e = new Error(doc && doc.message ? `${doc.message} (${doc.error})` : `HTTP ${r.status}`);
+    e.status = r.status; e.code = doc && doc.error; throw e;
+  }
+  return doc;
+}
+// a command carries a fresh request id and the epoch from the last status; a stale epoch means the
+// renderer restarted, so refresh once and retry with the same id (the runtime deduplicates by id)
+async function command(method, path, makeBody, contentType, makeQuery) {
+  const id = rid();
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const epoch = STATUS ? STATUS.epoch : 0;
+    const q = makeQuery ? `?${makeQuery(id, epoch)}` : '';
+    try {
+      const res = await call(method, path + q, makeBody(id, epoch), contentType);
+      refreshStatus(true);
+      return res;
+    } catch (e) {
+      if (e.code === 'stale_epoch' && attempt === 0) { await refreshStatus(true); continue; }
+      throw e;
+    }
+  }
+}
+
+/* ---------- status polling and the now card ---------- */
+const NOW_ROWS = [
+  ['base', s => `${s.base}${s.base === 'art' ? ' · ' + s.generator : ''}`, 'base · generator'],
+  ['overlay', s => s.overlay, 'overlay'],
+  ['brightness', s => `${s.brightness}%`, 'brightness'],
+  ['fps', s => s.fps == null ? '—' : String(s.fps), 'fps · art only'],
+  ['presented', s => String(s.presented), 'frames presented'],
+  ['uptime', s => `${Math.floor(s.uptime_s / 3600)}h ${Math.floor(s.uptime_s / 60) % 60}m`, 'uptime_s'],
+  ['ip', s => (s.network && s.network.ip) || 'none', 'network.ip'],
+  ['memory', s => `${s.memory_available_kb} kB`, 'memory_available_kb'],
+  ['cpu', s => s.cpu_pct == null ? '—' : `${s.cpu_pct}%`, 'cpu_pct'],
+  ['time', s => s.time ? s.time.state : '—', 'time.state'],
+  ['transport', s => s.transport, 'transport'],
+  ['settings', s => `revision ${s.config_revision} · saved ${s.saved_revision}`, 'config_revision · saved_revision'],
+  ['restarts', s => String(s.restarts), 'renderer restarts'],
+];
+function renderNow(s) {
+  const box = $('now'); box.innerHTML = '';
+  for (const [label, fn, key] of NOW_ROWS) {
+    const row = document.createElement('div'); row.className = 'field';
+    const lab = document.createElement('span'); lab.className = 'lab'; lab.textContent = label;
+    const k = document.createElement('span'); k.className = 'key'; k.textContent = key; lab.append(k);
+    const val = document.createElement('span'); val.className = 'val'; val.textContent = fn(s);
+    row.append(lab, val); box.append(row);
+  }
+  const r = $('renderer'); r.textContent = s.renderer;
+  r.className = 'pill ' + (s.renderer === 'running' ? 'on' : s.renderer === 'none' ? 'off' : 'warn');
+}
+function onStatus(prev) {
+  const s = STATUS;
+  renderNow(s);
+  segSet('base', s.base);
+  if (s.base === 'art') {
+    if (!local.art || !prev || prev.generator !== s.generator || prev.revision !== s.revision || prev.base !== 'art') {
+      // any change while art is up is either a reseed or a generator change: start a fresh local animation
+      local.art = new S.Art(s.generator, (Math.random() * 0xffffffff) >>> 0);
+    }
+    $('gen').value = s.generator;
+  }
+  if (s.overlay === 'none') { local.notify = null; local.frame = null; }
+  if (!prev || prev.brightness !== s.brightness) setRange('bright', s.brightness);
+}
+async function refreshStatus(quiet) {
+  if (!host()) return;
+  try {
+    const prev = STATUS;
+    STATUS = await call('GET', 'status');
+    onStatus(prev);
+    setConn('on', 'connected');
+  } catch (e) {
+    setConn('off', 'unreachable');
+    stopPolling();
+    if (!quiet) toast(e.message, true);
+  }
+}
+function startPolling() { stopPolling(); pollTimer = setInterval(() => refreshStatus(true), 2000); }
+function stopPolling() { clearInterval(pollTimer); pollTimer = null; }
+
+/* ---------- the preview ---------- */
+const ctx = $('matrix').getContext('2d');
+const LED_OFF = '#12151d';
+let lut = S.buildLut(100), lutBrightness = 100, lastStepMs = Date.now(), nextDrawAt = 0;
+function paint(rgb, brightness) {
+  if (brightness !== lutBrightness) { lut = S.buildLut(brightness); lutBrightness = brightness; }
+  ctx.fillStyle = '#07080c'; ctx.fillRect(0, 0, 520, 160);
+  for (let y = 0; y < 16; y++) for (let x = 0; x < 52; x++) {
+    const o = (y * 52 + x) * 3;
+    const r = lut[rgb[o]], g = lut[rgb[o + 1]], b = lut[rgb[o + 2]];
+    ctx.fillStyle = (r | g | b) ? `rgb(${r},${g},${b})` : LED_OFF;
+    ctx.fillRect(x * 10 + 1, y * 10 + 1, 8, 8);
+  }
+}
+function draw() {
+  const nowMs = Date.now();
+  if (nowMs >= nextDrawAt) {
+    if (!STATUS) {
+      paint(S.black(), 100);
+      $('cap').textContent = 'simulated from /status · not connected';
+      nextDrawAt = nowMs + 500;
+    } else {
+      const showingArt = STATUS.base === 'art' && STATUS.overlay === 'none' && !local.pending;
+      if (showingArt && local.art) local.art.step((nowMs - lastStepMs) / 1000);
+      lastStepMs = nowMs;
+      const c = S.compose(STATUS, local, nowMs);
+      paint(c.rgb, local.pending ? 100 : STATUS.brightness);
+      $('cap').textContent = `simulated from /status · epoch ${STATUS.epoch} · revision ${STATUS.revision} · ${c.label}`;
+      nextDrawAt = nowMs + (c.cadenceMs == null ? 250 : c.cadenceMs);
+    }
+  }
+  requestAnimationFrame(draw);
+}
+
+/* ---------- controls plumbing (as in the stock panel) ---------- */
+function syncRange(r) {
+  const p = (r.value - r.min) / (r.max - r.min) * 100;
+  r.style.setProperty('--pct', p + '%');
+  const out = r.nextElementSibling;
+  if (out) out.textContent = r.value + (r.dataset.unit || '');
+}
+function setRange(id, v) { const r = $(id); r.value = v; syncRange(r); }
+function segSet(id, v) { $(id).querySelectorAll('button').forEach(b => b.setAttribute('aria-checked', String(b.dataset.v === v))); }
+document.querySelectorAll('input[type=range]').forEach(r => { syncRange(r); r.addEventListener('input', () => syncRange(r)); });
+const hexColour = v => v.replace('#', '');
+const colourBytes = v => [0, 2, 4].map(i => parseInt(v.replace('#', '').slice(i, i + 2), 16));
+function fillSelect(sel, names, current) {
+  sel.innerHTML = '';
+  for (const n of names) { const o = document.createElement('option'); o.value = n; o.textContent = n; sel.append(o); }
+  if (current) sel.value = current;
+}
+
+/* ---------- scene ---------- */
+async function setScene(base) {
+  try {
+    await command('PUT', 'scene', (id, epoch) => ({ base, generator: base === 'art' ? $('gen').value : undefined, request_id: id, epoch }));
+    toast(`scene: ${base}`);
+  } catch (e) { toast(e.message, true); }
+}
+$('base').addEventListener('click', e => { const b = e.target.closest('button'); if (b) setScene(b.dataset.v); });
+$('gen').addEventListener('change', () => { if (STATUS && STATUS.base === 'art') setScene('art'); });
+$('reseed').addEventListener('click', async () => {
+  const seedText = $('seed').value.trim();
+  try {
+    await command('POST', 'action', (id, epoch) => ({ action: 'reseed', seed: seedText === '' ? undefined : +seedText, request_id: id, epoch }));
+    toast('reseeded');
+  } catch (e) { toast(e.message, true); }
+});
+$('bright').addEventListener('change', async () => {
+  const value = +$('bright').value;
+  try { await command('POST', 'action', (id, epoch) => ({ action: 'brightness', brightness: value, request_id: id, epoch })); toast(`brightness ${value}%`); }
+  catch (e) { toast(e.message, true); }
+});
+
+/* ---------- notification ---------- */
+$('ntext').addEventListener('input', () => $('ncount').textContent = `${$('ntext').value.length}/128`);
+$('nsend').addEventListener('click', async () => {
+  const text = $('ntext').value, duration = +$('ndur').value, colour = hexColour($('ncolour').value);
+  if (!/^[\x20-\x7e]{1,128}$/.test(text)) return toast('text must be 1 to 128 printable ascii characters', true);
+  if (!(duration >= 1 && duration <= 300)) return toast('duration must be 1 to 300 seconds', true);
+  try {
+    await command('POST', 'notify', (id, epoch) => ({ text, colour, duration_s: duration, request_id: id, epoch }));
+    local.notify = { text, colour: colourBytes(colour), sinceMs: Date.now() };
+    toast('notification sent');
+  } catch (e) { toast(e.message, true); }
+});
+
+/* ---------- frame ---------- */
+let stagedImage = null;
+function solidFrame(colour) {
+  const [r, g, b] = colourBytes(colour);
+  const rgb = new Uint8Array(S.RGB_BYTES);
+  for (let i = 0; i < S.RGB_BYTES; i += 3) { rgb[i] = r; rgb[i + 1] = g; rgb[i + 2] = b; }
+  return rgb;
+}
+async function sendFrame(rgb) {
+  const duration = +$('fdur').value;
+  if (!(duration >= 1 && duration <= 300)) return toast('duration must be 1 to 300 seconds', true);
+  try {
+    await command('POST', 'frame', () => rgb, 'application/octet-stream', (id, epoch) => `duration_s=${duration}&request_id=${id}&epoch=${epoch}`);
+    local.frame = rgb; local.pending = null;
+    toast('frame sent');
+  } catch (e) { toast(e.message, true); }
+}
+$('fsendcolour').addEventListener('click', () => sendFrame(solidFrame($('fcolour').value)));
+$('fimage').addEventListener('change', async () => {
+  const file = $('fimage').files[0];
+  if (!file) return;
+  try {
+    const bmp = await createImageBitmap(file);
+    const c = document.createElement('canvas'); c.width = 52; c.height = 16;
+    const g = c.getContext('2d');
+    g.imageSmoothingEnabled = true; g.imageSmoothingQuality = 'high';
+    const scale = Math.max(52 / bmp.width, 16 / bmp.height);   // cover: fill the panel, crop the rest
+    const dw = bmp.width * scale, dh = bmp.height * scale;
+    g.drawImage(bmp, (52 - dw) / 2, (16 - dh) / 2, dw, dh);
+    const data = g.getImageData(0, 0, 52, 16).data;
+    const rgb = new Uint8Array(S.RGB_BYTES);
+    for (let i = 0, j = 0; i < data.length; i += 4, j += 3) { rgb[j] = data[i]; rgb[j + 1] = data[i + 1]; rgb[j + 2] = data[i + 2]; }
+    stagedImage = rgb; local.pending = rgb;
+    $('fsendimage').disabled = false; $('fclear').disabled = false;
+    toast('image staged on the preview');
+  } catch (e) { toast(`cannot read that image: ${e.message}`, true); }
+});
+$('fsendimage').addEventListener('click', () => { if (stagedImage) sendFrame(stagedImage); });
+$('fclear').addEventListener('click', () => {
+  stagedImage = null; local.pending = null; $('fimage').value = '';
+  $('fsendimage').disabled = true; $('fclear').disabled = true;
+});
+
+/* ---------- settings (admin) ---------- */
+function showConfig(c) {
+  CONFIG = c;
+  $('cbright').value = c.brightness; $('cbase').value = c.base;
+  fillSelect($('cgen'), SCENES ? SCENES.generators.map(g => g.name) : S.GENERATORS, c.generator);
+  $('ctz').value = c.timezone; $('cntp').value = c.ntp.server || ''; $('cntpi').value = String(c.ntp.interval_s);
+  $('cft').value = c.frame_timeout_ms; $('cmi').value = c.metrics_interval_s;
+  $('cdisc').checked = !!c.discovery.enabled; $('cdp').value = c.discovery.prefix;
+  const unsaved = c.revision !== c.saved_revision;
+  $('crev').innerHTML = `revision ${c.revision} · saved ${c.saved_revision}${unsaved ? ' · <b>unsaved</b>' : ''}`;
+  try { local.tz = S.tzParse(c.timezone); } catch { local.tz = S.TZ_UTC; }
+}
+async function loadConfig() { showConfig(await call('GET', 'config')); }
+$('capply').addEventListener('click', async () => {
+  if (!CONFIG) return;
+  const patch = { expected_revision: CONFIG.revision };
+  const b = +$('cbright').value; if (b !== CONFIG.brightness) patch.brightness = b;
+  if ($('cbase').value !== CONFIG.base) patch.base = $('cbase').value;
+  if ($('cgen').value !== CONFIG.generator) patch.generator = $('cgen').value;
+  const tz = $('ctz').value.trim(); if (tz !== CONFIG.timezone) patch.timezone = tz;
+  const ntp = $('cntp').value.trim(); if ((ntp || null) !== CONFIG.ntp.server) patch.ntp_server = ntp || null;
+  const ntpi = +$('cntpi').value; if (ntpi !== CONFIG.ntp.interval_s) patch.ntp_interval_s = ntpi;
+  const ft = +$('cft').value; if (ft !== CONFIG.frame_timeout_ms) patch.frame_timeout_ms = ft;
+  const mi = +$('cmi').value; if (mi !== CONFIG.metrics_interval_s) patch.metrics_interval_s = mi;
+  if ($('cdisc').checked !== !!CONFIG.discovery.enabled) patch.discovery = $('cdisc').checked;
+  const dp = $('cdp').value.trim(); if (dp !== CONFIG.discovery.prefix) patch.discovery_prefix = dp;
+  if (Object.keys(patch).length === 1) return toast('nothing changed');
+  try {
+    showConfig(await call('PATCH', 'config', patch));
+    toast('settings applied (not yet saved)');
+    refreshStatus(true);
+  } catch (e) {
+    if (e.code === 'revision_conflict') { toast('settings changed elsewhere; reloaded', true); loadConfig().catch(() => {}); }
+    else toast(e.message, true);
+  }
+});
+$('csave').addEventListener('click', async () => {
+  if (!CONFIG) return;
+  try {
+    const r = await call('POST', 'config/save', { revision: CONFIG.revision });
+    toast(`saved revision ${r.saved_revision}`);
+    await loadConfig(); refreshStatus(true);
+  } catch (e) { toast(e.message, true); }
+});
+
+/* ---------- mqtt (admin) ---------- */
+function showMqtt(m) {
+  MQTT = m;
+  $('menabled').checked = !!m.enabled; $('mhost').value = m.host; $('mport').value = m.port;
+  $('muser').value = m.username; $('mpwd').value = ''; $('mpwd').placeholder = m.password_set ? 'set (unchanged)' : 'not set';
+  $('mcid').value = m.client_id; $('mprefix').value = m.prefix; $('mtls').checked = !!m.tls;
+}
+async function mqttStatus() {
+  try {
+    const s = await call('GET', 'mqtt/status');
+    const el = $('mqttstate');
+    el.textContent = s.connected ? 'connected' : (s.enabled ? s.state : 'disabled');
+    el.className = 'pill ' + (s.connected ? 'on' : (s.enabled ? 'off' : ''));
+    const bits = [];
+    if (s.reconnects) bits.push(`${s.reconnects} reconnects`);
+    if (s.reconnect_delay_s) bits.push(`retry in ${s.reconnect_delay_s}s`);
+    if (s.last_error) bits.push(s.last_error);
+    $('mdetail').textContent = bits.join(' · ');
+  } catch (e) { $('mqttstate').textContent = 'unknown'; $('mqttstate').className = 'pill'; }
+}
+$('mapply').addEventListener('click', async () => {
+  const body = {
+    enabled: $('menabled').checked, host: $('mhost').value.trim(), port: +$('mport').value || 1883,
+    username: $('muser').value, client_id: $('mcid').value.trim(), prefix: $('mprefix').value.trim(), tls: $('mtls').checked,
+  };
+  if ($('mpwd').value) body.password = $('mpwd').value;
+  if (body.enabled && !body.host) return toast('a broker address is needed to enable mqtt', true);
+  try {
+    showMqtt(await call('PUT', 'mqtt', body));
+    toast('broker settings applied (not yet saved)');
+    setTimeout(mqttStatus, 1500);
+    loadConfig().catch(() => {}); refreshStatus(true);
+  } catch (e) { toast(e.message, true); }
+});
+$('mcheck').addEventListener('click', mqttStatus);
+
+/* ---------- load ---------- */
+function lock(cardId, locked) { $(cardId).classList.toggle('locked', locked); }
+async function loadTokens() {
+  try { TOKENS = await (await fetch('/tokens', { cache: 'no-store' })).json(); }
+  catch { TOKENS = { control: false, admin: false }; }
+  lock('settingsCard', !TOKENS.admin); lock('mqttCard', !TOKENS.admin);
+}
+async function loadAll() {
+  if (!host()) { setConn('off', 'no device'); return; }
+  await loadTokens();
+  if (!TOKENS.control) { setConn('off', 'no tokens'); toast('serve.py has no tokens: restart it with --token-file or --adb-pull', true); return; }
+  setConn('', 'connecting…');
+  try {
+    STATUS = null;
+    STATUS = await call('GET', 'status'); onStatus(null);
+    SCENES = await call('GET', 'scenes');
+    fillSelect($('gen'), SCENES.generators.map(g => g.name), STATUS.generator);
+    await loadConfig();
+    if (TOKENS.admin) { try { showMqtt(await call('GET', 'mqtt')); } catch (e) { toast(e.message, true); } }
+    await mqttStatus();
+    setConn('on', 'connected');
+    startPolling();
+    try { localStorage.setItem('tc002host-v2', host()); } catch {}
+    toast('connected to the runtime');
+  } catch (e) {
+    setConn('off', 'unreachable'); stopPolling();
+    toast(e.message, true);
+  }
+}
+$('reload').addEventListener('click', loadAll);
+$('host').addEventListener('keydown', e => { if (e.key === 'Enter') loadAll(); });
+
+/* ---------- boot ---------- */
+requestAnimationFrame(draw);
+(() => {
+  const q = new URLSearchParams(location.search).get('host');
+  if (q) $('host').value = q; else { try { const h = localStorage.getItem('tc002host-v2'); if (h) $('host').value = h; } catch {} }
+  loadAll();
+})();
+</script>
+</body>
+</html>

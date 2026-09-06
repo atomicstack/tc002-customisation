@@ -1,3 +1,4 @@
 *.pkg
 *.dmg
 .DS_Store
+panel-v2/mock-tokens
