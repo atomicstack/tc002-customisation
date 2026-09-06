@@ -2,4 +2,5 @@
 test {
     _ = @import("panel/geometry.zig");
     _ = @import("panel/pack.zig");
+    _ = @import("panel/presenter.zig");
 }
