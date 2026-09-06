@@ -6,4 +6,8 @@ test {
     _ = @import("scene/scene.zig");
     _ = @import("scene/popsquares.zig");
     _ = @import("scene/plasma.zig");
+    _ = @import("scene/font.zig");
+    _ = @import("scene/tz.zig");
+    _ = @import("scene/clock.zig");
+    _ = @import("scene/ip.zig");
 }
