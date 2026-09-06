@@ -21,4 +21,6 @@ test {
     _ = @import("tc002d/cli.zig");
     _ = @import("tc002d/sched.zig");
     _ = @import("supervisor/cli.zig");
+    _ = @import("net/json.zig");
+    _ = @import("net/http.zig");
 }
