@@ -152,5 +152,175 @@
     return lut;
   }
 
-  return { WIDTH, HEIGHT, PIXELS, RGB_BYTES, WHITE, black, pixelOffset, glyph, textWidth, blit, remap, buildLut };
+  /* ---------- posix tz rules (runtime/src/scene/tz.zig); offsets are utc offsets in seconds ---------- */
+  const divFloor = (a, b) => Math.floor(a / b);
+  const mod = (a, b) => ((a % b) + b) % b;
+  const invalid = () => new Error('invalid tz rule');
+
+  class TzParser {
+    constructor(s) { this.s = s; this.i = 0; }
+    atEnd() { return this.i >= this.s.length; }
+    peek() { return this.atEnd() ? null : this.s[this.i]; }
+    expect(c) { if (this.peek() !== c) throw invalid(); this.i++; }
+    name() {
+      if (this.peek() === '<') {
+        while (!this.atEnd()) { if (this.s[this.i++] === '>') return; }
+        throw invalid();
+      }
+      const start = this.i;
+      while (this.peek() !== null && /[A-Za-z]/.test(this.peek())) this.i++;
+      if (this.i - start < 3) throw invalid();
+    }
+    number(maxDigits) {
+      let v = 0, n = 0;
+      while (this.peek() !== null && /[0-9]/.test(this.peek())) {
+        if (n === maxDigits) throw invalid();
+        v = v * 10 + (this.s.charCodeAt(this.i) - 48);
+        n++; this.i++;
+      }
+      if (n === 0) throw invalid();
+      return v;
+    }
+    signedTime(maxH) {
+      let neg = false;
+      if (this.peek() === '+') this.i++;
+      else if (this.peek() === '-') { neg = true; this.i++; }
+      const h = this.number(3);
+      if (h > maxH) throw invalid();
+      let s = h * 3600;
+      if (this.peek() === ':') {
+        this.i++;
+        const m = this.number(2);
+        if (m > 59) throw invalid();
+        s += m * 60;
+        if (this.peek() === ':') {
+          this.i++;
+          const sec = this.number(2);
+          if (sec > 59) throw invalid();
+          s += sec;
+        }
+      }
+      return neg ? -s : s;
+    }
+    transition() {
+      this.expect('M');
+      const month = this.number(2);
+      this.expect('.');
+      const week = this.number(1);
+      this.expect('.');
+      const wd = this.number(1);
+      if (month < 1 || month > 12 || week < 1 || week > 5 || wd > 6) throw invalid();
+      const t = { month, week, weekday: wd, time: 2 * 3600 };
+      if (this.peek() === '/') { this.i++; t.time = this.signedTime(167); }
+      return t;
+    }
+  }
+  function tzParse(text) {
+    const p = new TzParser(text);
+    p.name();
+    const stdPosix = p.signedTime(24);
+    const rule = { stdOffset: -stdPosix + 0, dst: null };
+    if (p.atEnd()) return rule;
+    if (p.peek() === ',') throw invalid();
+    p.name();
+    let dstPosix = stdPosix - 3600;
+    if (p.peek() !== null && p.peek() !== ',') dstPosix = p.signedTime(24);
+    if (p.atEnd()) throw invalid();
+    p.expect(',');
+    const start = p.transition();
+    p.expect(',');
+    const end = p.transition();
+    if (!p.atEnd()) throw invalid();
+    rule.dst = { offset: -dstPosix + 0, start, end };
+    return rule;
+  }
+  function daysFromCivil(year, month, day) {
+    const y = month <= 2 ? year - 1 : year;
+    const era = divFloor(y, 400);
+    const yoe = y - era * 400;
+    const mp = month > 2 ? month - 3 : month + 9;
+    const doy = divFloor(153 * mp + 2, 5) + day - 1;
+    const doe = yoe * 365 + divFloor(yoe, 4) - divFloor(yoe, 100) + doy;
+    return era * 146097 + doe - 719468;
+  }
+  function civilFromDays(days) {
+    const z = days + 719468;
+    const era = divFloor(z, 146097);
+    const doe = z - era * 146097;
+    const yoe = divFloor(doe - divFloor(doe, 1460) + divFloor(doe, 36524) - divFloor(doe, 146096), 365);
+    const y = yoe + era * 400;
+    const doy = doe - (365 * yoe + divFloor(yoe, 4) - divFloor(yoe, 100));
+    const mp = divFloor(5 * doy + 2, 153);
+    const day = doy - divFloor(153 * mp + 2, 5) + 1;
+    const month = mp < 10 ? mp + 3 : mp - 9;
+    return { year: month <= 2 ? y + 1 : y, month, day };
+  }
+  const weekday = days => mod(days + 4, 7);
+  const isLeap = y => y % 4 === 0 && (y % 100 !== 0 || y % 400 === 0);
+  const daysInMonth = (y, m) => [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31][m - 1] + (m === 2 && isLeap(y) ? 1 : 0);
+  function transitionUtc(t, year, offsetBefore) {
+    const first = daysFromCivil(year, t.month, 1);
+    let day = 1 + mod(t.weekday + 7 - weekday(first), 7) + (t.week - 1) * 7;
+    while (day > daysInMonth(year, t.month)) day -= 7;
+    return (first + day - 1) * 86400 + t.time - offsetBefore;
+  }
+  function utcOffsetAt(rule, utcS) {
+    if (!rule.dst) return rule.stdOffset;
+    const year = civilFromDays(divFloor(utcS + rule.stdOffset, 86400)).year;
+    const start = transitionUtc(rule.dst.start, year, rule.stdOffset);
+    const end = transitionUtc(rule.dst.end, year, rule.dst.offset);
+    const inDst = start < end ? (utcS >= start && utcS < end) : (utcS >= start || utcS < end);
+    return inDst ? rule.dst.offset : rule.stdOffset;
+  }
+  const localFromUtc = (rule, utcS) => utcS + utcOffsetAt(rule, utcS);
+  const TZ_UTC = { stdOffset: 0, dst: null };
+
+  /* ---------- clock, ip, notification (clock.zig, ip.zig, arbiter.zig) ---------- */
+  const CLOCK_X = 2, CLOCK_Y = 4;
+  const pad2 = n => String(n).padStart(2, '0');
+  function formatTime(localS) {
+    const sod = mod(localS, 86400);
+    return `${pad2(Math.floor(sod / 3600))}:${pad2(Math.floor(sod / 60) % 60)}:${pad2(sod % 60)}`;
+  }
+  function renderClock(rgb, wallMs, rule) {
+    const utcS = Math.floor(wallMs / 1000);
+    blit(rgb, CLOCK_X, CLOCK_Y, formatTime(localFromUtc(rule, utcS)), WHITE);
+  }
+  const nextSecondMs = wallMs => (Math.floor(wallMs / 1000) + 1) * 1000;
+  function ipFromString(s) {
+    if (typeof s !== 'string') return null;
+    const parts = s.split('.');
+    if (parts.length !== 4) return null;
+    const out = [];
+    for (const p of parts) {
+      if (!/^[0-9]{1,3}$/.test(p)) return null;
+      const v = parseInt(p, 10);
+      if (v > 255) return null;
+      out.push(v);
+    }
+    return out;
+  }
+  function renderIp(rgb, addr) {
+    if (addr) {
+      blit(rgb, 1, 0, `${addr[0]}.${addr[1]}.`, WHITE);
+      blit(rgb, 1, 8, `${addr[2]}.${addr[3]}`, WHITE);
+    } else {
+      blit(rgb, 11, 4, 'no ip', WHITE);
+    }
+  }
+  const SCROLL_MS = 100 / 3; // 33.333 ms per pixel, scroll_period_ns in arbiter.zig
+  function renderNotify(rgb, text, colour, elapsedMs) {
+    const w = textWidth(text);
+    if (w <= WIDTH) {
+      blit(rgb, Math.floor((WIDTH - w) / 2), 4, text, colour);
+    } else {
+      const span = w + WIDTH;
+      const steps = Math.floor(Math.max(elapsedMs, 0) / SCROLL_MS);
+      blit(rgb, WIDTH - (steps % span), 4, text, colour);
+    }
+  }
+
+  return { WIDTH, HEIGHT, PIXELS, RGB_BYTES, WHITE, black, pixelOffset, glyph, textWidth, blit, remap, buildLut,
+    tzParse, utcOffsetAt, localFromUtc, daysFromCivil, civilFromDays, weekday, TZ_UTC,
+    CLOCK_X, CLOCK_Y, formatTime, renderClock, nextSecondMs, ipFromString, renderIp, SCROLL_MS, renderNotify };
 });
