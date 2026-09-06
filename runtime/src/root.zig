@@ -20,4 +20,5 @@ test {
     _ = @import("supervisor/maintenance.zig");
     _ = @import("tc002d/cli.zig");
     _ = @import("tc002d/sched.zig");
+    _ = @import("supervisor/cli.zig");
 }
