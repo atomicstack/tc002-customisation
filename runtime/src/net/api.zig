@@ -67,7 +67,7 @@ pub const ConfigPatch = struct {
     base: ?Base = null,
     generator: ?scene.Generator = null,
     timezone: ?[]const u8 = null,
-    ntp_server: ?[]const u8 = null,
+    ntp_server: ?[4]u8 = null,
     ntp_interval_s: ?u32 = null,
     frame_timeout_ms: ?u16 = null,
     metrics_interval_s: ?u32 = null,
@@ -302,13 +302,13 @@ pub fn route(req: http.Request, body: []const u8, creds: *const Credentials, ori
         if (b.frame_timeout_ms) |v| if (v < 100 or v > 2000) return bad("invalid_frame_timeout", "frame_timeout_ms must be 100..2000");
         if (b.metrics_interval_s) |v| if (v != 0 and (v < 10 or v > 3600)) return bad("invalid_metrics_interval", "metrics_interval_s must be 0 (off) or 10..3600");
         if (b.discovery_prefix) |p| if (p.len == 0 or p.len > 64) return bad("invalid_discovery_prefix", "discovery_prefix must be 1..64 characters");
-        if (b.ntp_server) |s| if (parseIpv4(s) == null) return bad("invalid_ntp_server", "ntp_server must be a dotted ipv4 address");
+        const ntp: ?[4]u8 = if (b.ntp_server) |s| (parseIpv4(s) orelse return bad("invalid_ntp_server", "ntp_server must be a dotted ipv4 address")) else null;
         return .{ .op = .{ .config_patch = .{
             .brightness = b.brightness,
             .base = if (b.base) |t| (parseBase(t) orelse return bad("invalid_base", "base must be art, clock or ip")) else null,
             .generator = if (b.generator) |g| (parseGenerator(g) orelse return bad("invalid_generator", "unknown generator")) else null,
             .timezone = b.timezone,
-            .ntp_server = b.ntp_server,
+            .ntp_server = ntp,
             .ntp_interval_s = b.ntp_interval_s,
             .frame_timeout_ms = b.frame_timeout_ms,
             .metrics_interval_s = b.metrics_interval_s,
@@ -443,7 +443,7 @@ test "config, mqtt and streams routes" {
     const origins = OriginPolicy{};
     const p = route(testReq(.PATCH, "/api/v1/config", "", admin_header, "application/json", null), "{\"brightness\":30,\"timezone\":\"AEST-10AEDT,M10.1.0,M4.1.0/3\",\"ntp_server\":\"10.0.0.5\",\"ntp_interval_s\":300,\"expected_revision\":4}", &c, &origins, &arena);
     try std.testing.expectEqual(@as(?u8, 30), p.op.config_patch.brightness);
-    try std.testing.expectEqualStrings("10.0.0.5", p.op.config_patch.ntp_server.?);
+    try std.testing.expectEqual([4]u8{ 10, 0, 0, 5 }, p.op.config_patch.ntp_server.?);
     try std.testing.expectEqual(@as(?u32, 4), p.op.config_patch.expected_revision);
     try expectReject(route(testReq(.PATCH, "/api/v1/config", "", admin_header, "application/json", null), "{\"ntp_server\":\"time.example\"}", &c, &origins, &arena), 400, "invalid_ntp_server");
     try std.testing.expect(route(testReq(.POST, "/api/v1/config/save", "", admin_header, "application/json", null), "", &c, &origins, &arena).op == .config_save);

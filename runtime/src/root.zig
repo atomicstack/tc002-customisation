@@ -25,4 +25,5 @@ test {
     _ = @import("net/http.zig");
     _ = @import("net/api.zig");
     _ = @import("net/mqtt.zig");
+    _ = @import("supervisor/config.zig");
 }
