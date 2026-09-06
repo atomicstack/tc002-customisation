@@ -10,4 +10,6 @@ test {
     _ = @import("scene/tz.zig");
     _ = @import("scene/clock.zig");
     _ = @import("scene/ip.zig");
+    _ = @import("input/evdev.zig");
+    _ = @import("input/actions.zig");
 }
