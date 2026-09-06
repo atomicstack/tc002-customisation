@@ -577,6 +577,9 @@ all on a warm device that had been up for days, under the lock, on
 | discovery | 13 retained configs published one per second, cleared exactly on disable |
 | netd restart | `SIGTERM` to netd → respawned 1 s later with fresh credentials; the renderer never noticed |
 | memory | the table above; the whole runtime leaves 2 mb more available than the stock app |
+| screen, input, logs (2026-09-07) | `/screen` json and raw (2,496 bytes) match the panel; injected clicks, rotary steps and a knob long press produce the same scene changes and the same outward events as the mapper would (30 events over mqtt in one run, none retained); `/logs` pages both children's lines through the pipe while `supervisor.log` stays complete |
+| power and fades (2026-09-07) | power off ramps the mean level 29 → 0 in ~600 ms, then a 5 s window shows `transfers=1 redraws=0`; power on ramps 0 → 127 in ~600 ms; a plasma → clock cross-fade runs 127 → 29 in ~500 ms; cpu 2 % overall with mqtt, discovery and fades active |
+| discovery (2026-09-07) | 30 retained configs (24 sensors, 1 binary sensor, 5 event entities), one per second; `cmd/screen` answered with 2,502 bytes on `screen` |
 
 ## what is not there yet
 
