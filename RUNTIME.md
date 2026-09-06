@@ -167,6 +167,31 @@ every static process (it is wrong; use `tc002-memdump`), and the values are
 reported as-is with a `sample_age_ms`. `wlan0`'s address is polled every
 `--ip-poll` seconds through `SIOCGIFADDR` and pushed to the renderer on change.
 
+### time (sntp)
+
+with `ntp_server` set, the supervisor runs a minimal sntp client (rfc 4330)
+on one udp socket connected to that ipv4 address on port 123: no dns, no
+thread, no rtc. it sends a 48-byte ntpv4 request as soon as wlan0 has an
+address and then every `ntp_interval_s` (300 or 600). a reply is accepted only
+when it echoes the request's transmit timestamp, comes from a synchronised
+server with stratum 1..15, carries nonzero server timestamps, a date within
+twenty years of the client's build date (the era reference: a 1970 clock after
+a cold boot still resolves the 32-bit ntp seconds to the right era) and a round
+trip under one second. offset and delay are computed from all four timestamps.
+an offset of 128 ms or more is stepped with `clock_settime` and the renderer
+receives `time_corrected` so the clock scene rearms its wall-clock deadline; a
+smaller one is slewed by the kernel (`adjtimex` single-shot at 500 ppm, so
+128 ms takes about four minutes). failures back off 2, 4, 8 … seconds up to the
+interval; a kiss-o'-death `RATE` doubles the wait and `DENY`/`RSTR` stop
+polling until the settings change. the status `time.state` is `unsynced`
+until the first success, `synced` after it and `stale` when no success arrived
+within one hour (or three intervals, whichever is longer); `time.age_s` counts
+seconds since the last success. there is no frequency discipline: between polls
+the ~70 ppm oscillator drift accumulates (about 21 ms per 300 s) and is taken
+out at the next exchange. measured on 2026-09-07 against the home assistant
+host's chrony (stratum 3): first exchange −187 ms offset at 25 ms round trip,
+stepped; the following exchanges within ±10 ms at 2 ms round trip, slewed.
+
 ## the renderer (`tc002d`)
 
 ```
@@ -404,8 +429,9 @@ lowercase code:
 `null` (there is no frame rate to report for a clock). `renderer` is `none`,
 `starting`, `running` or `stopping`. `power` (after `brightness`) is the
 display power switch. `boot_id` is random per supervisor start
-and is what groups the mqtt discovery entities. `time.state` is always
-`unsynced` in this build because there is no sntp client yet.
+and is what groups the mqtt discovery entities. `time` is the sntp client's
+view: `state` and seconds since the last accepted reply (see
+[time](#time-sntp)).
 
 ### settings
 
@@ -417,7 +443,7 @@ and is what groups the mqtt discovery entities. `time.state` is always
 | `base` | `art`, `clock`, `ip` | applied at once |
 | `generator` | `popsquares`, `plasma` | applied at once |
 | `timezone` | a posix tz rule, ≤ 64 characters | applied at once |
-| `ntp.server`, `ntp.interval_s` (patch as `ntp_server`, `ntp_interval_s`) | dotted ipv4; 300 or 600 | stored and reported only: no sntp client exists yet |
+| `ntp.server`, `ntp.interval_s` (patch as `ntp_server`, `ntp_interval_s`) | dotted ipv4 or null; 300 or 600 | the sntp client restarts at once and syncs promptly; null disables it |
 | `frame_timeout_ms` | 100–2000 | stored only: belongs to the unimplemented streaming feature |
 | `metrics_interval_s` | 0 (off) or 10–3600 | mqtt `metrics` cadence |
 | `discovery`, `discovery_prefix` | bool; ≤ 64 characters | home-assistant discovery on the next mqtt connection |
@@ -587,11 +613,11 @@ all on a warm device that had been up for days, under the lock, on
   tls library is vendored. only the plaintext `isolated-lan` profile exists,
   and `/status` says so (`transport: plaintext`). the tokens are readable by
   anyone on the network path.
-- **time.** no sntp client: the clock scene shows whatever the system clock
-  says, `time.state` is always `unsynced`, and the `ntp_*` settings are inert.
-  the stock app's own sync is gone while the runtime runs, so the ~70 ppm
-  drift described in [`DEVICE.md`](DEVICE.md#time) accumulates; `adb shell
-  date -s` still works.
+- **time.** the sntp client trusts one unauthenticated local server, steps
+  or slews only when a poll succeeds, and has no drift estimator, so the
+  ~70 ppm oscillator error described in [`DEVICE.md`](DEVICE.md#time) is
+  corrected every poll rather than continuously. nothing survives a reboot:
+  `ntp_server` must be in the saved settings or set again.
 - **streaming.** the stream routes answer `503 not_implemented`;
   `arm_stream` and `frame_timeout_ms` exist for it.
 - **network bring-up.** the runtime relies on the wifi and address the stock

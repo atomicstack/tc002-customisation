@@ -206,6 +206,7 @@ const SntpLink = struct {
         }
         self.client.configure(s.cfg.ntp_server, s.cfg.ntp_interval_s, now);
         self.client.setNetwork(s.last_ip != null, now);
+        self.consecutive_failures = 0; // a new server gets its own first warning
         const addr = s.cfg.ntp_server orelse {
             log.info("sntp disabled: no ntp_server configured", .{});
             return;

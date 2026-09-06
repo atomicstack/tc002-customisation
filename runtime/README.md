@@ -176,3 +176,12 @@ report, `10` power off, `11` version, `13` led register. the battery reply is on
 usb every `--mcu-poll` seconds, one outstanding request, 500 ms timeout); it never sends the
 power-off, register or firmware-upload commands. the mcu also streams unsolicited mic reports that the
 synchroniser discards.
+
+### time sync (sntp)
+
+the supervisor keeps the clock in sync with one local ntp server once `ntp_server` is set (a dotted
+ipv4; `ntp_interval_s` 300 or 600): `tc002ctl.py -s <ip> --token-file FILE config-set ntp_server=10.0.0.136`,
+then `config-save` to keep it across restarts. `/status` reports `time.state` (`unsynced` / `synced` /
+`stale`) and `time.age_s`; the supervisor log shows every exchange as `sntp: offset N ms, delay N ms,
+stratum N, stepped|slewing`. the client, its validation rules and the step/slew thresholds are described
+in [RUNTIME.md](../RUNTIME.md#time-sntp).
