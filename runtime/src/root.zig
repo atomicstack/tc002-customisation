@@ -29,4 +29,5 @@ test {
     _ = @import("supervisor/config.zig");
     _ = @import("supervisor/mcu.zig");
     _ = @import("supervisor/logring.zig");
+    _ = @import("supervisor/sntp.zig");
 }

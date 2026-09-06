@@ -498,3 +498,71 @@ pub fn uartOpen(path: [*:0]const u8, baud: u32) Error!Fd {
     _ = linux.ioctl(fd, tcflsh, 2); // TCIOFLUSH
     return fd;
 }
+
+// udp and the wall clock (the sntp client)
+
+/// a nonblocking udp socket connected to one peer: the kernel then delivers only that peer's
+/// datagrams and reports icmp unreachable as an error on the next send or receive.
+pub fn udpConnect(addr: [4]u8, port: u16) Error!Fd {
+    const fd: Fd = @intCast(try check(linux.socket(linux.AF.INET, linux.SOCK.DGRAM | linux.SOCK.CLOEXEC | linux.SOCK.NONBLOCK, 0)));
+    errdefer close(fd);
+    const sa = inetAddr(addr, port);
+    _ = try check(linux.connect(fd, &sa, @sizeOf(linux.sockaddr.in)));
+    return fd;
+}
+
+pub fn udpSend(fd: Fd, bytes: []const u8) Error!void {
+    const n = try check(linux.sendto(fd, bytes.ptr, bytes.len, linux.MSG.NOSIGNAL | linux.MSG.DONTWAIT, null, 0));
+    if (n != bytes.len) return error.Truncated;
+}
+
+/// one datagram, or null when none is waiting; `Closed` when the peer answered with icmp unreachable.
+pub fn udpRecv(fd: Fd, buf: []u8) Error!?[]u8 {
+    const rc = linux.recvfrom(fd, buf.ptr, buf.len, linux.MSG.DONTWAIT, null, null);
+    return switch (errno(rc)) {
+        .SUCCESS => buf[0..rc],
+        .AGAIN, .INTR => null,
+        .CONNREFUSED => error.Closed,
+        else => error.Unexpected,
+    };
+}
+
+pub fn clockSetRealtime(unix_ns: u64) Error!void {
+    const ts = nsToTimespec(unix_ns);
+    _ = try check(linux.clock_settime(.REALTIME, &ts));
+}
+
+/// the kernel's `struct timex` for a 32-bit-long target (kernel 4.9 arm has no time64 adjtimex).
+pub const Timex = extern struct {
+    modes: c_uint = 0,
+    offset: c_long = 0,
+    freq: c_long = 0,
+    maxerror: c_long = 0,
+    esterror: c_long = 0,
+    status: c_int = 0,
+    constant: c_long = 0,
+    precision: c_long = 0,
+    tolerance: c_long = 0,
+    time_sec: c_long = 0,
+    time_usec: c_long = 0,
+    tick: c_long = 0,
+    ppsfreq: c_long = 0,
+    jitter: c_long = 0,
+    shift: c_int = 0,
+    stabil: c_long = 0,
+    jitcnt: c_long = 0,
+    calcnt: c_long = 0,
+    errcnt: c_long = 0,
+    stbcnt: c_long = 0,
+    tai: c_int = 0,
+    pad: [11]c_int = [_]c_int{0} ** 11,
+};
+
+const adj_offset_singleshot: c_uint = 0x8001;
+
+/// slew the clock by `offset_us` at the kernel's 500 ppm rate (adjtime semantics); a new call
+/// replaces any remaining adjustment.
+pub fn adjtimeOffset(offset_us: i32) Error!void {
+    var tx = Timex{ .modes = adj_offset_singleshot, .offset = offset_us };
+    _ = try check(linux.syscall1(.adjtimex, @intFromPtr(&tx)));
+}
