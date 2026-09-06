@@ -21,32 +21,20 @@ pub fn build(b: *std.Build) void {
     });
     b.installArtifact(exe);
 
-    const frame_tests = b.addTest(.{
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("src/frame.zig"),
-            .target = b.graph.host,
-            .optimize = .Debug,
-        }),
-    });
-    const run_frame_tests = b.addRunArtifact(frame_tests);
-    const popsquares_tests = b.addTest(.{
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("src/popsquares.zig"),
-            .target = b.graph.host,
-            .optimize = .Debug,
-        }),
-    });
-    const run_popsquares_tests = b.addRunArtifact(popsquares_tests);
-    const cli_tests = b.addTest(.{
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("src/cli.zig"),
-            .target = b.graph.host,
-            .optimize = .Debug,
-        }),
-    });
-    const run_cli_tests = b.addRunArtifact(cli_tests);
     const test_step = b.step("test", "run host tests");
-    test_step.dependOn(&run_frame_tests.step);
-    test_step.dependOn(&run_popsquares_tests.step);
-    test_step.dependOn(&run_cli_tests.step);
+    for ([_][]const u8{
+        "src/frame.zig",
+        "src/popsquares.zig",
+        "src/cli.zig",
+        "src/device.zig",
+    }) |test_path| {
+        const tests = b.addTest(.{
+            .root_module = b.createModule(.{
+                .root_source_file = b.path(test_path),
+                .target = b.graph.host,
+                .optimize = .Debug,
+            }),
+        });
+        test_step.dependOn(&b.addRunArtifact(tests).step);
+    }
 }
