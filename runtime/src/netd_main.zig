@@ -62,6 +62,24 @@ const Conn = struct {
     out: [out_buf_len]u8 = undefined,
     out_len: usize = 0,
     out_off: usize = 0,
+
+    /// reset the bookkeeping only: assigning a whole `Conn` copies its 12 kib of buffers and makes
+    /// every page of the table resident for nothing (measured: 48 kib for 16 useful bytes).
+    fn reset(c: *Conn) void {
+        c.fd = -1;
+        c.state = .free;
+        c.in_len = 0;
+        c.head_len = 0;
+        c.body_len = 0;
+        c.have_head = false;
+        c.started_ns = 0;
+        c.last_ns = 0;
+        c.awaiting = .none;
+        c.pending_id = 0;
+        c.client_id = 0;
+        c.out_len = 0;
+        c.out_off = 0;
+    }
 };
 
 const MqttPending = struct { used: bool = false, id: u64 = 0, since_ns: u64 = 0 };
@@ -172,7 +190,7 @@ const Netd = struct {
     fn closeConn(self: *Netd, c: *Conn) void {
         _ = self;
         if (c.fd >= 0) sys.close(c.fd);
-        c.* = .{};
+        c.reset();
     }
 
     fn respond(self: *Netd, c: *Conn, status: u16, content_type: []const u8, body: []const u8) void {
@@ -235,7 +253,11 @@ const Netd = struct {
                 self.http_rejected += 1;
                 continue;
             };
-            c.* = .{ .fd = fd, .state = .reading, .started_ns = now, .last_ns = now };
+            c.reset();
+            c.fd = fd;
+            c.state = .reading;
+            c.started_ns = now;
+            c.last_ns = now;
             sys.setTcpNodelay(fd);
             sys.epollAdd(self.ep, fd, linux.EPOLL.IN, self.connTag(c)) catch {
                 self.closeConn(c);
@@ -1089,7 +1111,7 @@ const Netd = struct {
 };
 
 fn run(stats: bool) !u8 {
-    for (&conns) |*c| c.* = .{};
+    for (&conns) |*c| c.reset();
     const ep = try sys.epollCreate();
     const timer = try sys.timerfdCreate();
     try sys.epollAdd(ep, timer, linux.EPOLL.IN, @intFromEnum(Tag.timer));
