@@ -16,4 +16,6 @@ test {
     _ = @import("ipc/codec.zig");
     _ = @import("ipc/messages.zig");
     _ = @import("ipc/dedup.zig");
+    _ = @import("supervisor/child.zig");
+    _ = @import("supervisor/maintenance.zig");
 }
