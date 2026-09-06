@@ -7,6 +7,7 @@ const json = @import("json.zig");
 const geometry = @import("../panel/geometry.zig");
 const arbiter = @import("../scene/arbiter.zig");
 const scene = @import("../scene/scene.zig");
+const actions = @import("../input/actions.zig");
 
 pub const token_len = 32;
 pub const Token = [token_len]u8;
@@ -42,13 +43,19 @@ pub const OriginPolicy = struct {
 
 pub const Base = arbiter.Base;
 
-pub const ActionKind = enum { brightness, reseed, arm_stream };
+pub const ActionKind = enum { brightness, reseed, arm_stream, power };
 
 pub const Op = union(enum) {
     status,
     scenes,
     set_scene: struct { base: Base, generator: ?scene.Generator, seed: ?u32, request_id: u64, epoch: ?u32 },
-    action: struct { kind: ActionKind, brightness: ?u8, seed: ?u32, request_id: u64, epoch: u32 },
+    action: struct { kind: ActionKind, brightness: ?u8, seed: ?u32, power: ?bool, request_id: u64, epoch: u32 },
+    /// the framebuffer as shown; `raw` = octets instead of the json document
+    screen: struct { raw: bool },
+    /// a page of the supervisor's log ring after this sequence number
+    logs: struct { after: u32 },
+    /// a remote control event: the same paths as a physical press
+    input: struct { control: actions.Control, event: actions.EdgeEvent, steps: u8, request_id: u64, epoch: u32 },
     notify: struct { text: []const u8, colour: [3]u8, duration_s: u16, request_id: u64, epoch: u32 },
     frame: struct { rgb: *const geometry.Rgb, duration_s: u16, request_id: u64, epoch: u32 },
     config_get,
@@ -99,7 +106,8 @@ pub const Arena = [json.arena_size]u8;
 
 // json wire schemas (request bodies)
 const SceneBody = struct { base: []const u8, generator: ?[]const u8 = null, seed: ?u32 = null, request_id: []const u8, epoch: ?u32 = null };
-const ActionBody = struct { action: []const u8, brightness: ?u8 = null, seed: ?u32 = null, request_id: []const u8, epoch: u32 };
+const ActionBody = struct { action: []const u8, brightness: ?u8 = null, seed: ?u32 = null, power: ?bool = null, request_id: []const u8, epoch: u32 };
+const InputBody = struct { control: []const u8, event: []const u8, steps: u8 = 1, request_id: []const u8, epoch: u32 };
 const NotifyBody = struct { text: []const u8, colour: ?[]const u8 = null, duration_s: u16 = 5, request_id: []const u8, epoch: u32 };
 const ConfigBody = struct {
     brightness: ?u8 = null,
@@ -207,6 +215,9 @@ const endpoints = [_]Endpoint{
     .{ .method = .PUT, .path = "/api/v1/mqtt", .authority = .admin },
     .{ .method = .GET, .path = "/api/v1/mqtt/status", .authority = .control },
     .{ .method = .POST, .path = "/api/v1/streams", .authority = .control },
+    .{ .method = .GET, .path = "/api/v1/screen", .authority = .control },
+    .{ .method = .GET, .path = "/api/v1/logs", .authority = .control },
+    .{ .method = .POST, .path = "/api/v1/input", .authority = .control },
 };
 
 fn sufficient(have: Authority, need: Authority) bool {
@@ -249,6 +260,17 @@ pub fn route(req: http.Request, body: []const u8, creds: *const Credentials, ori
     if (std.mem.eql(u8, ep.path, "/api/v1/config") and req.method == .GET) return .{ .op = .config_get };
     if (std.mem.eql(u8, ep.path, "/api/v1/mqtt") and req.method == .GET) return .{ .op = .mqtt_get };
     if (std.mem.eql(u8, ep.path, "/api/v1/mqtt/status")) return .{ .op = .mqtt_status };
+    if (std.mem.eql(u8, ep.path, "/api/v1/screen")) {
+        const format = queryValue(req.query, "format") orelse "json";
+        if (std.mem.eql(u8, format, "raw")) return .{ .op = .{ .screen = .{ .raw = true } } };
+        if (std.mem.eql(u8, format, "json")) return .{ .op = .{ .screen = .{ .raw = false } } };
+        return bad("invalid_format", "format must be json or raw");
+    }
+    if (std.mem.eql(u8, ep.path, "/api/v1/logs")) {
+        const after_text = queryValue(req.query, "after") orelse "0";
+        const after = std.fmt.parseInt(u32, after_text, 10) catch return bad("invalid_after", "after must be a sequence number");
+        return .{ .op = .{ .logs = .{ .after = after } } };
+    }
     if (std.mem.startsWith(u8, ep.path, "/api/v1/streams")) return .{ .op = if (req.method == .DELETE) .streams_delete else if (req.method == .PUT) .streams_palette else .streams_create };
 
     if (std.mem.eql(u8, ep.path, "/api/v1/frame")) {
@@ -263,11 +285,17 @@ pub fn route(req: http.Request, body: []const u8, creds: *const Credentials, ori
     if (std.mem.eql(u8, ep.path, "/api/v1/config")) return parseBody(.config_patch, body, arena);
     if (std.mem.eql(u8, ep.path, "/api/v1/config/save")) return parseBody(.config_save, body, arena);
     if (std.mem.eql(u8, ep.path, "/api/v1/mqtt")) return parseBody(.mqtt_put, body, arena);
+    if (std.mem.eql(u8, ep.path, "/api/v1/input")) return parseBody(.input, body, arena);
     return .{ .reject = .{ .status = 404, .code = "not_found", .message = "no such route" } };
 }
 
 
-pub const BodyKind = enum { scene, action, notify, config_patch, config_save, mqtt_put };
+pub const BodyKind = enum { scene, action, notify, config_patch, config_save, mqtt_put, input };
+
+fn enumByName(comptime E: type, text: []const u8) ?E {
+    inline for (@typeInfo(E).@"enum".fields) |f| if (std.mem.eql(u8, text, f.name)) return @enumFromInt(f.value);
+    return null;
+}
 
 /// a raw frame: exactly 2,496 rgb bytes, with duration, request id and epoch in the query.
 pub fn parseFrame(query: []const u8, body: []const u8) Route {
@@ -303,7 +331,21 @@ pub fn parseBody(kind: BodyKind, body: []const u8, arena: *Arena) Route {
                 const v = b.brightness orelse return bad("missing_brightness", "brightness is required for that action");
                 if (v < 1 or v > 100) return bad("invalid_brightness", "brightness must be 1..100");
             }
-            return .{ .op = .{ .action = .{ .kind = k, .brightness = b.brightness, .seed = b.seed, .request_id = rid, .epoch = b.epoch } } };
+            if (k == .power and b.power == null) return bad("missing_power", "power (true or false) is required for that action");
+            return .{ .op = .{ .action = .{ .kind = k, .brightness = b.brightness, .seed = b.seed, .power = b.power, .request_id = rid, .epoch = b.epoch } } };
+        },
+        .input => {
+            const b = json.parse(InputBody, body, arena) catch |e| return jsonError(e);
+            const control = enumByName(actions.Control, b.control) orelse return bad("invalid_control", "control must be left, middle, right, knob or rotary");
+            const event = enumByName(actions.EdgeEvent, b.event) orelse return bad("invalid_event", "event must be press, release, click, long, cw or ccw");
+            const rotary = control == .rotary;
+            const turning = event == .cw or event == .ccw;
+            if (rotary != turning) return bad("invalid_event", "cw and ccw belong to the rotary; buttons take press, release, click or long");
+            if (event == .long and control != .knob) return bad("invalid_event", "only the knob has a long press");
+            if (b.steps < 1 or b.steps > 16) return bad("invalid_steps", "steps must be 1..16");
+            if (b.steps != 1 and !turning) return bad("invalid_steps", "steps applies to cw and ccw only");
+            const rid = parseRequestId(b.request_id) orelse return bad("invalid_request_id", "request_id must be 1..16 hex digits");
+            return .{ .op = .{ .input = .{ .control = control, .event = event, .steps = b.steps, .request_id = rid, .epoch = b.epoch } } };
         },
         .notify => {
             const b = json.parse(NotifyBody, body, arena) catch |e| return jsonError(e);
@@ -439,6 +481,10 @@ test "notify and scene bodies become typed operations with validation" {
     try std.testing.expectEqual(@as(?u32, null), s.op.set_scene.epoch);
     const a = route(testReq(.POST, "/api/v1/action", "", control_header, "application/json", null), "{\"action\":\"brightness\",\"brightness\":40,\"request_id\":\"8\",\"epoch\":2}", &c, &origins, &arena);
     try std.testing.expectEqual(ActionKind.brightness, a.op.action.kind);
+    const pw = route(testReq(.POST, "/api/v1/action", "", control_header, "application/json", null), "{\"action\":\"power\",\"power\":false,\"request_id\":\"9\",\"epoch\":2}", &c, &origins, &arena);
+    try std.testing.expectEqual(ActionKind.power, pw.op.action.kind);
+    try std.testing.expectEqual(@as(?bool, false), pw.op.action.power);
+    try expectReject(route(testReq(.POST, "/api/v1/action", "", control_header, "application/json", null), "{\"action\":\"power\",\"request_id\":\"9\",\"epoch\":2}", &c, &origins, &arena), 400, "missing_power");
     try expectReject(route(testReq(.POST, "/api/v1/action", "", control_header, "application/json", null), "{\"action\":\"brightness\",\"brightness\":0,\"request_id\":\"8\",\"epoch\":2}", &c, &origins, &arena), 400, "invalid_brightness");
 }
 
@@ -477,4 +523,30 @@ test "config, mqtt and streams routes" {
     try std.testing.expectEqual([4]u8{ 10, 0, 0, 111 }, parseIpv4("10.0.0.111").?);
     try std.testing.expect(parseIpv4("10.0.0") == null);
     try std.testing.expect(parseIpv4("256.0.0.1") == null);
+}
+
+test "screen, logs and input routes" {
+    const c = testCreds();
+    var arena: Arena = undefined;
+    const origins = OriginPolicy{};
+    try std.testing.expect(!route(testReq(.GET, "/api/v1/screen", "", control_header, null, null), "", &c, &origins, &arena).op.screen.raw);
+    try std.testing.expect(route(testReq(.GET, "/api/v1/screen", "format=raw", control_header, null, null), "", &c, &origins, &arena).op.screen.raw);
+    try expectReject(route(testReq(.GET, "/api/v1/screen", "format=png", control_header, null, null), "", &c, &origins, &arena), 400, "invalid_format");
+    try std.testing.expectEqual(@as(u32, 0), route(testReq(.GET, "/api/v1/logs", "", control_header, null, null), "", &c, &origins, &arena).op.logs.after);
+    try std.testing.expectEqual(@as(u32, 41), route(testReq(.GET, "/api/v1/logs", "after=41", control_header, null, null), "", &c, &origins, &arena).op.logs.after);
+    try expectReject(route(testReq(.GET, "/api/v1/logs", "after=x", control_header, null, null), "", &c, &origins, &arena), 400, "invalid_after");
+    try expectReject(route(testReq(.GET, "/api/v1/logs", "", null, null, null), "", &c, &origins, &arena), 401, "unauthorized");
+    const i = route(testReq(.POST, "/api/v1/input", "", control_header, "application/json", null), "{\"control\":\"rotary\",\"event\":\"ccw\",\"steps\":3,\"request_id\":\"c\",\"epoch\":1}", &c, &origins, &arena);
+    try std.testing.expectEqual(actions.Control.rotary, i.op.input.control);
+    try std.testing.expectEqual(actions.EdgeEvent.ccw, i.op.input.event);
+    try std.testing.expectEqual(@as(u8, 3), i.op.input.steps);
+    const k = route(testReq(.POST, "/api/v1/input", "", control_header, "application/json", null), "{\"control\":\"knob\",\"event\":\"long\",\"request_id\":\"c\",\"epoch\":1}", &c, &origins, &arena);
+    try std.testing.expectEqual(actions.EdgeEvent.long, k.op.input.event);
+    try std.testing.expectEqual(@as(u8, 1), k.op.input.steps);
+    try expectReject(route(testReq(.POST, "/api/v1/input", "", control_header, "application/json", null), "{\"control\":\"left\",\"event\":\"cw\",\"request_id\":\"c\",\"epoch\":1}", &c, &origins, &arena), 400, "invalid_event");
+    try expectReject(route(testReq(.POST, "/api/v1/input", "", control_header, "application/json", null), "{\"control\":\"left\",\"event\":\"long\",\"request_id\":\"c\",\"epoch\":1}", &c, &origins, &arena), 400, "invalid_event");
+    try expectReject(route(testReq(.POST, "/api/v1/input", "", control_header, "application/json", null), "{\"control\":\"rotary\",\"event\":\"click\",\"request_id\":\"c\",\"epoch\":1}", &c, &origins, &arena), 400, "invalid_event");
+    try expectReject(route(testReq(.POST, "/api/v1/input", "", control_header, "application/json", null), "{\"control\":\"middle\",\"event\":\"click\",\"steps\":2,\"request_id\":\"c\",\"epoch\":1}", &c, &origins, &arena), 400, "invalid_steps");
+    try expectReject(route(testReq(.POST, "/api/v1/input", "", control_header, "application/json", null), "{\"control\":\"rotary\",\"event\":\"cw\",\"steps\":17,\"request_id\":\"c\",\"epoch\":1}", &c, &origins, &arena), 400, "invalid_steps");
+    try expectReject(route(testReq(.POST, "/api/v1/input", "", control_header, "application/json", null), "{\"control\":\"pedal\",\"event\":\"click\",\"request_id\":\"c\",\"epoch\":1}", &c, &origins, &arena), 400, "invalid_control");
 }

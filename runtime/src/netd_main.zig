@@ -15,6 +15,7 @@ const codec = @import("ipc/codec.zig");
 const config = @import("supervisor/config.zig");
 const geometry = @import("panel/geometry.zig");
 const scene = @import("scene/scene.zig");
+const actions = @import("input/actions.zig");
 
 const linux = std.os.linux;
 
@@ -43,7 +44,7 @@ const mqtt_frame_envelope = 8 + 4 + 2 + geometry.rgb_bytes;
 const Tag = enum(u64) { timer = 1, supervisor = 2, listener = 3, mqtt = 4, conn_base = 16 };
 
 const ConnState = enum { free, reading, relaying, writing };
-const Awaiting = enum { none, renderer_result, status, config, save_result };
+const Awaiting = enum { none, renderer_result, status, config, save_result, screen, logs };
 
 const Conn = struct {
     fd: sys.Fd = -1,
@@ -59,6 +60,8 @@ const Conn = struct {
     awaiting: Awaiting = .none,
     pending_id: u64 = 0,
     client_id: u64 = 0,
+    /// a screen read wants octets rather than the json document
+    screen_raw: bool = false,
     out: [out_buf_len]u8 = undefined,
     out_len: usize = 0,
     out_off: usize = 0,
@@ -77,6 +80,7 @@ const Conn = struct {
         c.awaiting = .none;
         c.pending_id = 0;
         c.client_id = 0;
+        c.screen_raw = false;
         c.out_len = 0;
         c.out_off = 0;
     }
@@ -127,7 +131,8 @@ var conns: [max_conns]Conn = undefined;
 var packet_buf: [codec.max_message]u8 = undefined;
 var send_buf: [codec.max_message]u8 = undefined;
 var arena: api.Arena = undefined;
-var json_buf: [2048]u8 = undefined;
+/// sized for the base64 screen document (3,328 characters plus its fields) and a log page
+var json_buf: [3584]u8 = undefined;
 
 const Netd = struct {
     ep: sys.Fd,
@@ -379,7 +384,14 @@ const Netd = struct {
                 .brightness => self.relay(c, .{ .brightness = .{ .value = a.brightness.? } }, a.request_id, a.epoch, now),
                 .reseed => self.relay(c, .{ .reseed = .{ .seed = a.seed orelse @truncate(now ^ a.request_id) } }, a.request_id, a.epoch, now),
                 .arm_stream => self.relay(c, .arm_stream, a.request_id, a.epoch, now),
+                .power => self.relay(c, .{ .power = .{ .on = @intFromBool(a.power.?) } }, a.request_id, a.epoch, now),
             },
+            .screen => |s| {
+                c.screen_raw = s.raw;
+                self.ask(c, .screen_get, .screen, now);
+            },
+            .logs => |l| self.ask(c, .{ .log_get = .{ .after = l.after } }, .logs, now),
+            .input => |i| self.relay(c, .{ .inject_input = .{ .control = @intFromEnum(i.control), .event = @intFromEnum(i.event), .steps = i.steps } }, i.request_id, i.epoch, now),
             .notify => |n| self.relay(c, .{ .notify = messages.Notify.init(n.text, n.colour, n.duration_s) }, n.request_id, n.epoch, now),
             .frame => |f| {
                 if (!self.frameAllowed(now)) {
@@ -462,7 +474,7 @@ const Netd = struct {
     }
 
     fn onResult(self: *Netd, request_id: u64, r: messages.Result, now: u64) void {
-        if (self.findConn(false, request_id)) |c| {
+        if (self.findConn(true, request_id)) |c| if (c.awaiting == .renderer_result or c.awaiting == .screen) {
             switch (r.status) {
                 .applied => {
                     var o = Out{ .buf = &json_buf };
@@ -479,7 +491,7 @@ const Netd = struct {
             }
             self.flushConn(c, now);
             return;
-        }
+        };
         for (&self.m_pending) |*p| if (p.used and p.id == request_id) {
             p.used = false;
             self.publishResult(request_id, r.status, r.revision);
@@ -487,8 +499,66 @@ const Netd = struct {
         };
     }
 
+    fn onScreen(self: *Netd, request_id: u64, sc: *const messages.Screen, now: u64) void {
+        if (self.findConn(true, request_id)) |c| {
+            if (c.awaiting != .screen) return;
+            if (c.screen_raw) {
+                self.respond(c, 200, "application/octet-stream", &sc.rgb);
+            } else {
+                var o = Out{ .buf = &json_buf };
+                self.screenJson(&o, sc);
+                if (o.overflow) self.respondError(c, 500, "internal", "the screen document did not fit") else self.respond(c, 200, "application/json", o.slice());
+            }
+            self.flushConn(c, now);
+            return;
+        }
+        for (&self.m_pending) |*p| if (p.used and p.id == request_id) {
+            p.used = false;
+            // binary: u32 revision, u8 brightness, u8 power, then the 2,496 rgb bytes
+            var payload: [6 + geometry.rgb_bytes]u8 = undefined;
+            std.mem.writeInt(u32, payload[0..4], sc.revision, .big);
+            payload[4] = sc.brightness;
+            payload[5] = sc.power;
+            @memcpy(payload[6..], &sc.rgb);
+            self.mqttPublish("screen", &payload, 0, false);
+            return;
+        };
+    }
+
+    fn onLogs(self: *Netd, request_id: u64, l: *const messages.LogLines, now: u64) void {
+        const c = self.findConn(true, request_id) orelse return;
+        if (c.awaiting != .logs) return;
+        var o = Out{ .buf = &json_buf };
+        o.fmt("{{\"next\":{d},\"lines\":[", .{l.next});
+        var it = l.iterator();
+        var first = true;
+        while (it.next()) |r| {
+            if (!first) o.add(",");
+            first = false;
+            o.fmt("{{\"seq\":{d},\"text\":", .{r.seq});
+            o.str(r.text);
+            o.add("}");
+        }
+        o.add("]}");
+        if (o.overflow) self.respondError(c, 500, "internal", "the log page did not fit") else self.respond(c, 200, "application/json", o.slice());
+        self.flushConn(c, now);
+    }
+
+    /// a control event from the renderer: published as a momentary mqtt event, never retained,
+    /// so a consumer that reconnects later cannot act on a stale press.
+    fn onInput(self: *Netd, i: messages.Input) void {
+        const control = messages.enumFromInt(actions.Control, i.control) orelse return;
+        const event = messages.enumFromInt(actions.EdgeEvent, i.event) orelse return;
+        if (!self.m_connected) return;
+        var tb: [32]u8 = undefined;
+        const suffix = std.fmt.bufPrint(&tb, "input/{s}", .{@tagName(control)}) catch return;
+        var o = Out{ .buf = json_buf[0..128] };
+        o.fmt("{{\"event_type\":\"{s}\",\"position\":{d}}}", .{ @tagName(event), i.position });
+        self.mqttPublish(suffix, o.slice(), 0, false);
+    }
+
     fn onStatus(self: *Netd, request_id: u64, st: messages.StatusSnapshot, now: u64) void {
-        const changed = st.revision != self.status.revision or st.epoch != self.status.epoch or st.renderer_state != self.status.renderer_state or st.base != self.status.base or st.brightness != self.status.brightness or st.overlay != self.status.overlay;
+        const changed = st.revision != self.status.revision or st.epoch != self.status.epoch or st.renderer_state != self.status.renderer_state or st.base != self.status.base or st.brightness != self.status.brightness or st.overlay != self.status.overlay or st.power != self.status.power;
         self.status = st;
         self.status_at_ns = now;
         if (changed) self.state_dirty = true;
@@ -565,6 +635,9 @@ const Netd = struct {
                 .status => |st| self.onStatus(p.request_id, st, now),
                 .result => |r| self.onResult(p.request_id, r, now),
                 .save_result => |r| self.onSaveResult(p.request_id, r, now),
+                .screen => |*sc| self.onScreen(p.request_id, sc, now),
+                .log_lines => |*l| self.onLogs(p.request_id, l, now),
+                .input => |i| self.onInput(i),
                 else => log.warn("unexpected {s} from supervisor", .{@tagName(p.message)}),
             }
         }
@@ -623,7 +696,7 @@ const Netd = struct {
     fn statusJson(self: *Netd, o: *Out, now: u64) void {
         const st = self.status;
         o.add("{");
-        o.fmt("\"epoch\":{d},\"revision\":{d},\"renderer\":\"{s}\",\"base\":\"{s}\",\"generator\":\"{s}\",\"overlay\":\"{s}\",\"brightness\":{d},\"presented\":{d},", .{ st.epoch, st.revision, rendererName(st.renderer_state), baseName(st.base), generatorName(st.generator), overlayName(st.overlay), st.brightness, st.presented });
+        o.fmt("\"epoch\":{d},\"revision\":{d},\"renderer\":\"{s}\",\"base\":\"{s}\",\"generator\":\"{s}\",\"overlay\":\"{s}\",\"brightness\":{d},\"power\":{},\"presented\":{d},", .{ st.epoch, st.revision, rendererName(st.renderer_state), baseName(st.base), generatorName(st.generator), overlayName(st.overlay), st.brightness, st.power != 0, st.presented });
         self.fpsJson(o);
         o.fmt("\"uptime_s\":{d},\"memory_available_kb\":{d},", .{ st.uptime_s, st.mem_available_kb });
         if (st.cpu_pct == 255) o.add("\"cpu_pct\":null,") else o.fmt("\"cpu_pct\":{d},", .{st.cpu_pct});
@@ -636,6 +709,20 @@ const Netd = struct {
         o.fmt(",\"boot_id\":\"{x:0>8}\",\"sample_age_ms\":{d},", .{ st.boot_id, st.sample_age_ms + @as(u32, @intCast(@min((now -| self.status_at_ns) / 1_000_000, 0xffffffff))) });
         self.telemetryJson(o);
         o.add("}");
+    }
+
+    /// the framebuffer document: base64 keeps it usable from curl and jq; `?format=raw` is octets.
+    fn screenJson(self: *Netd, o: *Out, sc: *const messages.Screen) void {
+        o.fmt("{{\"width\":{d},\"height\":{d},\"epoch\":{d},\"revision\":{d},\"brightness\":{d},\"power\":{},\"rgb_base64\":\"", .{ geometry.width, geometry.height, self.currentEpoch(), sc.revision, sc.brightness, sc.power != 0 });
+        const enc = std.base64.standard.Encoder;
+        const need = enc.calcSize(sc.rgb.len);
+        if (o.len + need + 2 > o.buf.len) {
+            o.overflow = true;
+            return;
+        }
+        _ = enc.encode(o.buf[o.len .. o.len + need], &sc.rgb);
+        o.len += need;
+        o.add("\"}");
     }
 
     fn configJson(self: *Netd, o: *Out) void {
@@ -677,7 +764,7 @@ const Netd = struct {
         const st = self.status;
         o.fmt("{{\"v\":1,\"boot_id\":\"{x:0>8}\",\"epoch\":{d},\"sample_age_ms\":{d},\"uptime_s\":{d},\"memory_available_kb\":{d},", .{ st.boot_id, st.epoch, st.sample_age_ms + @as(u32, @intCast(@min((now -| self.status_at_ns) / 1_000_000, 0xffffffff))), st.uptime_s, st.mem_available_kb });
         if (st.cpu_pct == 255) o.add("\"cpu_pct\":null,") else o.fmt("\"cpu_pct\":{d},", .{st.cpu_pct});
-        o.fmt("\"rss_kb\":{{\"supervisor\":{d},\"renderer\":{d},\"netd\":{d}}},\"renderer_restarts\":{d},\"mqtt_reconnects\":{d},\"scene\":\"{s}\",\"brightness\":{d},", .{ st.rss_supervisor_kb, st.rss_renderer_kb, st.rss_netd_kb, st.restarts, self.client.reconnects, baseName(st.base), st.brightness });
+        o.fmt("\"rss_kb\":{{\"supervisor\":{d},\"renderer\":{d},\"netd\":{d}}},\"renderer_restarts\":{d},\"mqtt_reconnects\":{d},\"scene\":\"{s}\",\"brightness\":{d},\"power\":{},", .{ st.rss_supervisor_kb, st.rss_renderer_kb, st.rss_netd_kb, st.restarts, self.client.reconnects, baseName(st.base), st.brightness, st.power != 0 });
         self.fpsJson(o);
         o.fmt("\"presented\":{d},\"http_requests\":{d},\"http_rejected\":{d},\"mqtt_commands\":{d},\"mqtt_dropped\":{d},\"time\":{{\"state\":\"{s}\"}},", .{ st.presented, self.http_requests, self.http_rejected, self.mqtt_commands, self.mqtt_dropped, timeStateName(st.time_state) });
         self.telemetryJson(o);
@@ -843,17 +930,17 @@ const Netd = struct {
                 self.mqttFlush();
             },
             .send_subscribe => {
-                var tb: [5][96]u8 = undefined;
-                var topics: [5][]const u8 = undefined;
-                const names = [_][]const u8{ "cmd/scene", "cmd/action", "cmd/notify", "cmd/frame", "cmd/config" };
+                var tb: [7][96]u8 = undefined;
+                var topics: [7][]const u8 = undefined;
+                const names = [_][]const u8{ "cmd/scene", "cmd/action", "cmd/notify", "cmd/frame", "cmd/config", "cmd/screen", "cmd/input" };
                 for (names, 0..) |n, i| topics[i] = self.topic(&tb[i], n);
                 var birth_buf: [96]u8 = undefined;
                 const birth = std.fmt.bufPrint(&birth_buf, "{s}/status", .{self.cfg.discovery_prefix.slice()}) catch "homeassistant/status";
-                var all: [6][]const u8 = undefined;
+                var all: [8][]const u8 = undefined;
                 for (topics, 0..) |t, i| all[i] = t;
-                all[5] = birth;
+                all[7] = birth;
                 const space = self.mqttSpace();
-                const n = mqtt.encodeSubscribe(space, self.client.packetId(), if (self.cfg.discovery) all[0..6] else all[0..5], 1) catch return;
+                const n = mqtt.encodeSubscribe(space, self.client.packetId(), if (self.cfg.discovery) all[0..8] else all[0..7], 1) catch return;
                 self.mqttQueue(n);
                 self.m_connected = true;
                 log.info("mqtt connected", .{});
@@ -989,7 +1076,12 @@ const Netd = struct {
             self.mqttRelay(.{ .frame = .{ .duration_s = duration, .rgb = p.payload[14..][0..geometry.rgb_bytes].* } }, rid, epoch, now);
             return;
         }
-        const kind: api.BodyKind = if (std.mem.eql(u8, suffix, "scene")) .scene else if (std.mem.eql(u8, suffix, "action")) .action else if (std.mem.eql(u8, suffix, "notify")) .notify else if (std.mem.eql(u8, suffix, "config")) .config_patch else return;
+        if (std.mem.eql(u8, suffix, "screen")) {
+            // any payload: the reply goes to `<prefix>/screen`, not retained
+            self.mqttRelay(.screen_get, self.newId(), 0, now);
+            return;
+        }
+        const kind: api.BodyKind = if (std.mem.eql(u8, suffix, "scene")) .scene else if (std.mem.eql(u8, suffix, "action")) .action else if (std.mem.eql(u8, suffix, "notify")) .notify else if (std.mem.eql(u8, suffix, "config")) .config_patch else if (std.mem.eql(u8, suffix, "input")) .input else return;
         switch (api.parseBody(kind, p.payload, &arena)) {
             .reject => |j| {
                 var o = Out{ .buf = &json_buf };
@@ -1002,7 +1094,9 @@ const Netd = struct {
                     .brightness => self.mqttRelay(.{ .brightness = .{ .value = a.brightness.? } }, a.request_id, a.epoch, now),
                     .reseed => self.mqttRelay(.{ .reseed = .{ .seed = a.seed orelse @truncate(now ^ a.request_id) } }, a.request_id, a.epoch, now),
                     .arm_stream => self.mqttRelay(.arm_stream, a.request_id, a.epoch, now),
+                    .power => self.mqttRelay(.{ .power = .{ .on = @intFromBool(a.power.?) } }, a.request_id, a.epoch, now),
                 },
+                .input => |i| self.mqttRelay(.{ .inject_input = .{ .control = @intFromEnum(i.control), .event = @intFromEnum(i.event), .steps = i.steps } }, i.request_id, i.epoch, now),
                 .notify => |n| self.mqttRelay(.{ .notify = messages.Notify.init(n.text, n.colour, n.duration_s) }, n.request_id, n.epoch, now),
                 .config_patch => |cp| {
                     // the control subset only: transient brightness and scene parameters
@@ -1049,10 +1143,31 @@ const Netd = struct {
         }
     }
 
-    // home-assistant mqtt discovery (read-only diagnostic sensors over the metrics topic)
+    // home-assistant mqtt discovery: read-only diagnostic sensors over the metrics topic, the
+    // display power over the state topic, and the physical controls as momentary event entities
 
-    const Entity = struct { key: []const u8, name: []const u8, template: []const u8, unit: []const u8, device_class: []const u8, state_class: []const u8 };
+    const Component = enum { sensor, binary_sensor, event };
+    const Entity = struct {
+        key: []const u8,
+        name: []const u8,
+        template: []const u8 = "",
+        unit: []const u8 = "",
+        device_class: []const u8 = "",
+        state_class: []const u8 = "",
+        component: Component = .sensor,
+        /// topic under the prefix that carries the state or the events
+        topic: []const u8 = "metrics",
+        /// json array body for an event entity's `event_types`
+        event_types: []const u8 = "",
+        diagnostic: bool = true,
+    };
     const entities = [_]Entity{
+        .{ .key = "power", .name = "display power", .component = .binary_sensor, .topic = "state", .template = "{{ 'ON' if value_json.power else 'OFF' }}", .device_class = "power" },
+        .{ .key = "button_left", .name = "left button", .component = .event, .topic = "input/left", .event_types = "\"press\",\"release\"", .device_class = "button", .diagnostic = false },
+        .{ .key = "button_middle", .name = "middle button", .component = .event, .topic = "input/middle", .event_types = "\"press\",\"release\"", .device_class = "button", .diagnostic = false },
+        .{ .key = "button_right", .name = "right button", .component = .event, .topic = "input/right", .event_types = "\"press\",\"release\"", .device_class = "button", .diagnostic = false },
+        .{ .key = "knob", .name = "knob", .component = .event, .topic = "input/knob", .event_types = "\"press\",\"release\",\"long\"", .device_class = "button", .diagnostic = false },
+        .{ .key = "rotary", .name = "rotary", .component = .event, .topic = "input/rotary", .event_types = "\"cw\",\"ccw\"", .diagnostic = false },
         .{ .key = "uptime", .name = "uptime", .template = "{{ value_json.uptime_s }}", .unit = "s", .device_class = "duration", .state_class = "" },
         .{ .key = "memory_available", .name = "memory available", .template = "{{ value_json.memory_available_kb }}", .unit = "kB", .device_class = "data_size", .state_class = "measurement" },
         .{ .key = "cpu", .name = "cpu utilization", .template = "{{ value_json.cpu_pct }}", .unit = "%", .device_class = "", .state_class = "measurement" },
@@ -1086,9 +1201,9 @@ const Netd = struct {
         return std.fmt.bufPrint(buf, "tc002-boot{x:0>8}", .{st.boot_id}) catch buf[0..0];
     }
 
-    fn discoveryTopic(self: *Netd, buf: []u8, key: []const u8) []const u8 {
+    fn discoveryTopic(self: *Netd, buf: []u8, e: Entity) []const u8 {
         var id: [24]u8 = undefined;
-        return std.fmt.bufPrint(buf, "{s}/sensor/{s}/{s}/config", .{ self.disc_prefix_used.slice(), self.deviceId(&id), key }) catch buf[0..0];
+        return std.fmt.bufPrint(buf, "{s}/{s}/{s}/{s}/config", .{ self.disc_prefix_used.slice(), @tagName(e.component), self.deviceId(&id), e.key }) catch buf[0..0];
     }
 
     /// start a discovery pass: publish (or, when removing, clear) every entity, one per second.
@@ -1114,7 +1229,7 @@ const Netd = struct {
         }
         const e = entities[self.disc_index];
         var tb: [160]u8 = undefined;
-        const t = self.discoveryTopic(&tb, e.key);
+        const t = self.discoveryTopic(&tb, e);
         if (self.disc_remove) {
             self.mqttPublishTopic(t, "", 1, true);
         } else {
@@ -1122,7 +1237,13 @@ const Netd = struct {
             const interval: u64 = if (self.cfg.metrics_interval_s != 0) self.cfg.metrics_interval_s else 30;
             var id: [24]u8 = undefined;
             const dev = self.deviceId(&id);
-            o.fmt("{{\"name\":\"{s}\",\"unique_id\":\"{s}_{s}\",\"state_topic\":\"{s}/metrics\",\"value_template\":\"{s}\",\"availability_topic\":\"{s}/availability\",\"expire_after\":{d},\"entity_category\":\"diagnostic\"", .{ e.name, dev, e.key, self.prefix(), e.template, self.prefix(), interval * 3 });
+            o.fmt("{{\"name\":\"{s}\",\"unique_id\":\"{s}_{s}\",\"state_topic\":\"{s}/{s}\",\"availability_topic\":\"{s}/availability\"", .{ e.name, dev, e.key, self.prefix(), e.topic, self.prefix() });
+            switch (e.component) {
+                .sensor => o.fmt(",\"value_template\":\"{s}\",\"expire_after\":{d}", .{ e.template, interval * 3 }),
+                .binary_sensor => o.fmt(",\"value_template\":\"{s}\",\"payload_on\":\"ON\",\"payload_off\":\"OFF\"", .{e.template}),
+                .event => o.fmt(",\"event_types\":[{s}]", .{e.event_types}),
+            }
+            if (e.diagnostic) o.add(",\"entity_category\":\"diagnostic\"");
             if (e.unit.len > 0) o.fmt(",\"unit_of_measurement\":\"{s}\"", .{e.unit});
             if (e.device_class.len > 0) o.fmt(",\"device_class\":\"{s}\"", .{e.device_class});
             if (e.state_class.len > 0) o.fmt(",\"state_class\":\"{s}\"", .{e.state_class});

@@ -104,6 +104,14 @@ pub fn chdir(path: [*:0]const u8) Error!void {
     _ = try check(linux.chdir(path));
 }
 
+/// a pipe whose write end is non-blocking: a child that logs faster than the supervisor drains
+/// drops lines instead of blocking in write(2). both ends are close-on-exec; dup2 clears that.
+pub fn pipeNonblock() Error![2]Fd {
+    var fds: [2]Fd = undefined;
+    _ = try check(linux.pipe2(&fds, .{ .NONBLOCK = true, .CLOEXEC = true }));
+    return fds;
+}
+
 pub fn dup2(old: Fd, new: Fd) Error!void {
     _ = try check(linux.dup2(old, new));
 }

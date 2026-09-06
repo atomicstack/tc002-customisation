@@ -5,6 +5,10 @@ const builtin = @import("builtin");
 
 pub var program: []const u8 = "tc002";
 
+/// an optional in-process consumer of every emitted line (without its newline), used by the
+/// supervisor to feed its ring; the line is still written to stderr first.
+pub var sink: ?*const fn ([]const u8) void = null;
+
 fn nowMs() u64 {
     if (builtin.os.tag != .linux) return 0;
     const linux = std.os.linux;
@@ -37,6 +41,7 @@ fn emit(level: []const u8, comptime fmt: []const u8, args: anytype) void {
         break :blk buf[head.len..];
     };
     writeAll(buf[0 .. head.len + body.len]);
+    if (sink) |s| s(buf[0 .. head.len + body.len - 1]);
 }
 
 pub fn info(comptime fmt: []const u8, args: anytype) void {

@@ -14,6 +14,7 @@ const maintenance = @import("supervisor/maintenance.zig");
 const cli = @import("supervisor/cli.zig");
 const config = @import("supervisor/config.zig");
 const mcu = @import("supervisor/mcu.zig");
+const logring = @import("supervisor/logring.zig");
 const api = @import("net/api.zig");
 
 const linux = std.os.linux;
@@ -26,7 +27,7 @@ pub const std_options: std.Options = .{ .enable_segfault_handler = false };
 
 const ns_per_s = std.time.ns_per_s;
 
-const Tag = enum(u64) { timer = 1, signals = 2, ipc = 3, keys = 4, netd = 5, mcu = 6 };
+const Tag = enum(u64) { timer = 1, signals = 2, ipc = 3, keys = 4, netd = 5, mcu = 6, logs = 7 };
 
 const tick_ns: u64 = 100_000_000;
 const property_timeout_ns: u64 = 2 * ns_per_s;
@@ -48,6 +49,14 @@ var netd_packet_buf: [codec.max_message]u8 = undefined;
 var config_buf: [config.file_max]u8 = undefined;
 var config_arena: [4096]u8 = undefined;
 var proc_buf: [4096]u8 = undefined;
+var log_buf: [1024]u8 = undefined;
+/// every process's recent log lines, served to netd in pages
+var ring = logring.Ring{};
+var assembler = logring.Assembler{};
+
+fn ringSink(line: []const u8) void {
+    ring.push(line);
+}
 
 const Relay = struct { used: bool = false, id: u64 = 0, deadline_ns: u64 = 0 };
 
@@ -207,6 +216,8 @@ const Supervisor = struct {
     proc_cpu_prev: [3]u64 = .{ 0, 0, 0 },
     proc_cpu_prev_ns: u64 = 0,
     mcu_link: McuLink = .{},
+    /// the children's stdout and stderr: drained into the ring and echoed to our own stderr
+    log_pipe: ?[2]sys.Fd = null,
 
     fn send(self: *Supervisor, msg: messages.Message) void {
         self.request_id += 1;
@@ -326,6 +337,10 @@ const Supervisor = struct {
             sys.setSignalDisposition(.TERM, linux.SIG.DFL);
             sys.setSignalDisposition(.INT, linux.SIG.DFL);
             sys.setSignalDisposition(.PIPE, linux.SIG.DFL);
+            if (self.log_pipe) |lp| {
+                sys.dup2(lp[1], 1) catch sys.exit(126);
+                sys.dup2(lp[1], 2) catch sys.exit(126);
+            }
             // park both descriptors high first so neither dup2 can clobber the other's source
             sys.dup2(fds[1], 60) catch sys.exit(126);
             sys.dup2(listener, 61) catch sys.exit(126);
@@ -388,7 +403,12 @@ const Supervisor = struct {
                 continue;
             };
             switch (p.message) {
-                .set_base, .notify, .frame, .brightness, .reseed, .arm_stream => {
+                .log_get => |g| {
+                    var page = messages.LogLines{ .next = g.after };
+                    ring.page(g.after, &page);
+                    self.sendNetd(.{ .log_lines = page }, p.request_id);
+                },
+                .set_base, .notify, .frame, .brightness, .reseed, .arm_stream, .screen_get, .inject_input, .power => {
                     if (self.child_fd == null or lifecycle.state != .running) {
                         self.relayResult(p.request_id, .unavailable, self.snapshot.revision);
                         continue;
@@ -585,8 +605,9 @@ const Supervisor = struct {
     }
 
     fn onHeartbeat(self: *Supervisor, h: messages.Heartbeat, now: u64) void {
-        const changed = h.revision != self.snapshot.revision or h.base != self.snapshot.base or h.brightness != self.snapshot.brightness or h.overlay != self.snapshot.overlay or h.generator != self.snapshot.generator;
+        const changed = h.revision != self.snapshot.revision or h.base != self.snapshot.base or h.brightness != self.snapshot.brightness or h.overlay != self.snapshot.overlay or h.generator != self.snapshot.generator or h.power != self.snapshot.power;
         self.snapshot.revision = h.revision;
+        self.snapshot.power = h.power;
         self.snapshot.presented = h.presented;
         self.snapshot.base = h.base;
         self.snapshot.generator = h.generator;
@@ -645,6 +666,10 @@ const Supervisor = struct {
             sys.setSignalDisposition(.TERM, linux.SIG.DFL);
             sys.setSignalDisposition(.INT, linux.SIG.DFL);
             sys.setSignalDisposition(.PIPE, linux.SIG.DFL);
+            if (self.log_pipe) |lp| {
+                sys.dup2(lp[1], 1) catch sys.exit(126);
+                sys.dup2(lp[1], 2) catch sys.exit(126);
+            }
             sys.dup2(fds[1], 3) catch sys.exit(126);
             if (fds[0] != 3) sys.close(fds[0]);
             if (fds[1] != 3) sys.close(fds[1]);
@@ -744,8 +769,37 @@ const Supervisor = struct {
                         break;
                     };
                 },
+                .screen => |sc| {
+                    for (&self.relays) |*rel| if (rel.used and rel.id == p.request_id) {
+                        rel.used = false;
+                        self.sendNetd(.{ .screen = sc }, p.request_id);
+                        break;
+                    };
+                },
+                .input => |i| self.sendNetd(.{ .input = i }, 0),
                 else => log.warn("unexpected {s} from renderer", .{@tagName(p.message)}),
             }
+        }
+    }
+
+    fn onChildLine(self: *Supervisor, line: []const u8) void {
+        _ = self;
+        ring.push(line);
+        // the file stays complete: the children used to write to it directly
+        var b: [logring.Assembler.carry_max + 1]u8 = undefined;
+        @memcpy(b[0..line.len], line);
+        b[line.len] = '\n';
+        sys.writeAll(2, b[0 .. line.len + 1]) catch {};
+    }
+
+    fn drainLogs(self: *Supervisor) void {
+        const lp = self.log_pipe orelse return;
+        var rounds: u32 = 0;
+        while (rounds < 16) : (rounds += 1) {
+            const n = sys.read(lp[0], &log_buf) catch return;
+            if (n == 0) return;
+            assembler.feed(log_buf[0..n], self, Supervisor.onChildLine);
+            if (n < log_buf.len) return;
         }
     }
 
@@ -874,6 +928,7 @@ fn redirectLog(cfg: cli.Config) void {
 
 fn run(cfg: cli.Config, environ: anytype, args: []const [:0]const u8) !u8 {
     const t0 = sys.monotonicNs();
+    log.sink = ringSink;
     // 1. the anti-brick flag, before anything that could block or fail
     var property_ms: ?u64 = null;
     if (!cfg.no_property) {
@@ -937,6 +992,11 @@ fn run(cfg: cli.Config, environ: anytype, args: []const [:0]const u8) !u8 {
     if (keys) |fd| try sys.epollAdd(ep, fd, linux.EPOLL.IN, @intFromEnum(Tag.keys));
 
     var s = Supervisor{ .cfg_cli = cfg, .cfg_dir_text = cfg.dir, .cfg_stats = cfg.stats, .ep = ep, .timer = timer, .sigfd = sigfd, .keys = keys, .self_pid = sys.getpid() };
+    // the children's log lines come through a pipe so the ring sees them; the file still gets them
+    if (sys.pipeNonblock()) |lp| {
+        s.log_pipe = lp;
+        try sys.epollAdd(ep, lp[0], linux.EPOLL.IN, @intFromEnum(Tag.logs));
+    } else |e| log.warn("no log pipe ({s}); the log ring holds only the supervisor's lines", .{sys.errText(e)});
     log.info("supervising {s} (fallback {s}) profile {s} pid {d}", .{ cfg.renderer, cfg.fallbackPath(), @tagName(cfg.profile), s.self_pid });
     var netd_path_buf: [160]u8 = undefined;
     s.netd_path = std.fmt.bufPrintZ(&netd_path_buf, "{s}/tc002-netd", .{cfg.dir}) catch unreachable;
@@ -973,6 +1033,7 @@ fn run(cfg: cli.Config, environ: anytype, args: []const [:0]const u8) !u8 {
     while (true) {
         const now = sys.monotonicNs();
         s.drainSignals(now);
+        s.drainLogs();
         s.drainIpc(now);
         s.drainKeys(now);
         s.pollGesture(now);
