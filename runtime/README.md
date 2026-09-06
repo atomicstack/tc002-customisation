@@ -108,3 +108,18 @@ tools/tc002-boot-experiment.sh restore
 
 not measured: cold boot against zkdaemon's 15 s check, upgrade-hook ordering, mtd3, physical input,
 the hardened profile's adbd toggling, battery. full tables are in the vault plan note.
+
+## memory audits (`tc002-memdump`)
+
+`tc002-memdump <pid> hex` (root, over adb) streams a sparse snapshot of a process: procfs text, every
+readable mapping's *present* pages, and the raw `pagemap` entries, hex-encoded so it survives
+`adb shell` (this adbd has no `exec-out`). nothing is written to the device and the process keeps
+running. `zig build -Dstrip=false --prefix <dir>` produces the same code with symbols kept for
+attribution of `.data`/`.bss` objects (the section start differs by a constant per binary; subtract
+it). this kernel reports `VmRSS` = 4 kB for the static processes; the pagemap present bits are the
+trustworthy residency signal.
+
+```bash
+adb push zig-out/bin/tc002-memdump /tmp/tc002-memdump
+adb shell "/tmp/tc002-memdump $(pid) hex" | tr -d '\r\n' | xxd -r -p > snapshot.tcmd
+```
