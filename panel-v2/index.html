@@ -127,9 +127,10 @@ input.sw:checked::after{left:19px;background:var(--accent-ink)}
 }
 @media (prefers-reduced-motion:reduce){*{transition:none!important}}
 
-/* v2 additions (the block above is the stock panel's style block, not verbatim: .found, .knob,
-   .knobwrap, .longpress, .gain and .gainrow are dropped — discovery and button emulation are
-   explicit non-goals of this page, and no markup here ever used them) */
+/* v2 additions (the block above is the stock panel's style block, not verbatim: .found and .gain /
+   .gainrow are dropped — discovery and analog-gain controls are explicit non-goals of this page,
+   and no markup here ever used them. .knob, .knobwrap and .longpress are restored below, verbatim
+   from the stock panel, for the remote controls card) */
 .screen canvas{width:100%;max-width:560px;aspect-ratio:52/16;display:block}
 .card.locked .field,.card.locked .actions{opacity:.45;pointer-events:none}
 .lockmsg{display:none;font-size:12px;color:var(--warn);margin:-4px 0 10px}
@@ -140,6 +141,14 @@ input[type=file]{font:12px var(--body);color:var(--muted);max-width:220px}
 .inline{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
 .rev{font-family:var(--data);font-size:12px;color:var(--muted)}
 .rev b{color:var(--warn);font-weight:600}
+.knob{width:52px;height:52px;border-radius:50%;background:var(--surface-2);border:1px solid var(--line-2);position:relative;flex:none;cursor:pointer;padding:0}
+.knob::after{content:"";position:absolute;left:50%;top:6px;width:4px;height:13px;margin-left:-2px;border-radius:2px;background:var(--accent-text)}
+.knob:active{background:var(--line)}
+.knobwrap{display:flex;align-items:center;gap:6px}
+.longpress{display:inline-flex;align-items:center;gap:8px;font-size:12px;color:var(--muted);margin-left:auto}
+#logtext{font-family:var(--data);font-size:12px;line-height:1.5;color:var(--ink);background:var(--surface-2);
+  border:1px solid var(--line-2);border-radius:var(--radius-s);max-height:260px;overflow:auto;margin:10px 0 0;
+  padding:8px 10px;white-space:pre-wrap;word-break:break-all}
 
 /* v2 narrow-layout fixes: override the copied stock rules below 560/860px rather than editing them above */
 @container (max-width:860px){
@@ -177,10 +186,34 @@ input[type=file]{font:12px var(--body);color:var(--muted);max-width:220px}
   </section>
 
   <div class="grid">
+    <section class="card s5" id="controlsCard">
+      <h2>Controls</h2>
+      <div class="lockmsg">the proxy has no control token: start serve.py with --token-file or --adb-pull</div>
+      <div class="rows">
+        <div class="field"><span class="lab">Buttons<span class="key">POST /input · click</span></span>
+          <div class="controls">
+            <button class="btn ghost sm" id="ctlLeft">◀ left</button>
+            <button class="btn ghost sm" id="ctlMiddle">● middle</button>
+            <button class="btn ghost sm" id="ctlRight">right ▶</button>
+          </div></div>
+        <div class="field"><span class="lab">Knob<span class="key">rotary cw/ccw · knob click/long</span></span>
+          <div class="controls">
+            <span class="knobwrap">
+              <button class="btn ghost sm" id="knobCcw" title="turn knob anticlockwise">↺</button>
+              <button class="knob" id="knobPress" title="press knob" aria-label="press knob"></button>
+              <button class="btn ghost sm" id="knobCw" title="turn knob clockwise">↻</button>
+            </span>
+            <label class="longpress"><input type="checkbox" class="sw" id="knobLong"> long</label>
+          </div></div>
+        <div class="field"><label for="ksteps">Steps<span class="key">rotary steps · 1–16</span></label><input type="number" id="ksteps" min="1" max="16" value="1"></div>
+      </div>
+    </section>
+
     <section class="card s7" id="sceneCard">
       <h2>Scene</h2>
       <div class="lockmsg">the proxy has no control token: start serve.py with --token-file or --adb-pull</div>
       <div class="rows">
+        <div class="field"><label for="power">Display power<span class="key">POST /action power · fades 600 ms</span></label><input type="checkbox" class="sw" id="power"></div>
         <div class="field"><span class="lab">Base scene<span class="key">PUT /scene</span></span>
           <div class="seg" id="base" role="radiogroup" aria-label="base scene">
             <button type="button" data-v="art" role="radio" aria-checked="false">Art</button>
@@ -232,7 +265,7 @@ input[type=file]{font:12px var(--body);color:var(--muted);max-width:220px}
           <select id="cbase"><option value="art">art</option><option value="clock">clock</option><option value="ip">ip</option></select></div>
         <div class="field"><label for="cgen">Generator at start<span class="key">generator</span></label><select id="cgen"></select></div>
         <div class="field"><label for="ctz">Timezone<span class="key">timezone · posix rule, e.g. AEST-10AEDT,M10.1.0,M4.1.0/3</span></label><input type="text" id="ctz" placeholder="UTC0" spellcheck="false"></div>
-        <div class="field"><label for="cntp">NTP server<span class="key">ntp_server · ipv4, stored only in this build</span></label><input type="text" id="cntp" placeholder="none"></div>
+        <div class="field"><label for="cntp">NTP server<span class="key">ntp_server · ipv4, null disables the sntp client</span></label><input type="text" id="cntp" placeholder="none"></div>
         <div class="field"><label for="cntpi">NTP interval<span class="key">ntp_interval_s</span></label>
           <select id="cntpi"><option value="300">300 s</option><option value="600">600 s</option></select></div>
         <div class="field"><label for="cft">Frame timeout<span class="key">frame_timeout_ms · 100–2000, for streaming</span></label><input type="number" id="cft" min="100" max="2000"></div>
@@ -267,6 +300,16 @@ input[type=file]{font:12px var(--body);color:var(--muted);max-width:220px}
       </div>
       <div class="actions"><span class="note">broker changes bump the settings revision; use <b>save to device</b> above to keep them.</span></div>
     </section>
+
+    <section class="card s12" id="logsCard">
+      <h2>Logs</h2>
+      <div class="lockmsg">the proxy has no control token: start serve.py with --token-file or --adb-pull</div>
+      <div class="actions">
+        <label class="longpress" style="margin-left:0"><input type="checkbox" class="sw" id="follow" checked> follow</label>
+        <button class="btn ghost sm" id="logclear">Clear</button>
+      </div>
+      <pre id="logtext"></pre>
+    </section>
   </div>
 </div>
 <div id="toast" role="status" aria-live="polite"></div>
@@ -277,10 +320,11 @@ const S = window.TC002Sim;
 const host = () => $('host').value.trim();
 const api = p => `/api/${host()}/v1/${p}`;
 let STATUS = null, SCENES = null, CONFIG = null, MQTT = null, TOKENS = { control: false, admin: false };
-let pollTimer = null;
+let pollTimer = null, screenTimer = null, screenInFlight = false, liveUnavailable = false;
 // what this page knows that /status does not report: the art it animates locally, the tz rule,
-// the notification text and frame bytes it sent, and a frame staged but not yet sent
-const local = { art: null, tz: S.TZ_UTC, notify: null, frame: null, pending: null };
+// the notification text and frame bytes it sent, a frame staged but not yet sent, and the last
+// live frame read from /screen (null when the device does not offer that route)
+const local = { art: null, tz: S.TZ_UTC, notify: null, frame: null, pending: null, live: null };
 
 function toast(msg, isErr) {
   const t = $('toast'); t.textContent = msg;
@@ -331,13 +375,18 @@ const NOW_ROWS = [
   ['base', s => `${s.base}${s.base === 'art' ? ' · ' + s.generator : ''}`, 'base · generator'],
   ['overlay', s => s.overlay, 'overlay'],
   ['brightness', s => `${s.brightness}%`, 'brightness'],
+  ['power', s => s.power === undefined ? '—' : (s.power ? 'on' : 'off'), 'power'],
   ['fps', s => s.fps == null ? '—' : String(s.fps), 'fps · art only'],
   ['presented', s => String(s.presented), 'frames presented'],
   ['uptime', s => `${Math.floor(s.uptime_s / 3600)}h ${Math.floor(s.uptime_s / 60) % 60}m`, 'uptime_s'],
   ['ip', s => (s.network && s.network.ip) || 'none', 'network.ip'],
   ['memory', s => `${s.memory_available_kb} kB`, 'memory_available_kb'],
   ['cpu', s => s.cpu_pct == null ? '—' : `${s.cpu_pct}%`, 'cpu_pct'],
-  ['time', s => s.time ? s.time.state : '—', 'time.state'],
+  ['time', s => {
+    if (!s.time) return '—';
+    const age = typeof s.time.age_s === 'number' ? ` · ${s.time.age_s} s` : '';
+    return `${s.time.state}${age}`;
+  }, 'time.state · age_s'],
   ['transport', s => s.transport, 'transport'],
   ['settings', s => `revision ${s.config_revision} · saved ${s.saved_revision}`, 'config_revision · saved_revision'],
   ['restarts', s => String(s.restarts), 'renderer restarts'],
@@ -368,6 +417,7 @@ function onStatus(prev) {
   }
   if (s.overlay === 'none') { local.notify = null; local.frame = null; }
   if (!prev || prev.brightness !== s.brightness) setRange('bright', s.brightness);
+  if (s.power !== undefined) $('power').checked = s.power;
 }
 async function refreshStatus(quiet) {
   if (!host()) return;
@@ -376,14 +426,42 @@ async function refreshStatus(quiet) {
     STATUS = await call('GET', 'status');
     onStatus(prev);
     setConn('on', 'connected');
+    pollLogs();
   } catch (e) {
     setConn('off', 'unreachable');
     stopPolling();
     if (!quiet) toast(e.message, true);
   }
 }
-function startPolling() { stopPolling(); pollTimer = setInterval(() => refreshStatus(true), 2000); }
-function stopPolling() { clearInterval(pollTimer); pollTimer = null; }
+function startPolling() {
+  stopPolling();
+  pollTimer = setInterval(() => refreshStatus(true), 2000);
+  screenTimer = setInterval(pollScreen, 500);
+}
+function stopPolling() {
+  clearInterval(pollTimer); pollTimer = null;
+  clearInterval(screenTimer); screenTimer = null;
+}
+
+/* ---------- the live preview from /screen ---------- */
+async function pollScreen() {
+  if (liveUnavailable || screenInFlight) return;
+  screenInFlight = true;
+  try {
+    const r = await fetch(api('screen'), { cache: 'no-store' });
+    if (r.status === 404) { local.live = null; liveUnavailable = true; return; }
+    if (!r.ok) return;   // a transient error: keep the last known live frame, retry next tick
+    const doc = await r.json();
+    const bin = atob(doc.rgb_base64);
+    const rgb = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) rgb[i] = bin.charCodeAt(i);
+    local.live = { rgb, revision: doc.revision, power: doc.power, epoch: doc.epoch };
+  } catch (e) {
+    // network hiccup: keep the last known live frame, retry next tick
+  } finally {
+    screenInFlight = false;
+  }
+}
 
 /* ---------- the preview ---------- */
 const ctx = $('matrix').getContext('2d');
@@ -406,13 +484,20 @@ function draw() {
       paint(S.black(), 100);
       $('cap').textContent = 'simulated from /status · not connected';
       nextDrawAt = nowMs + 500;
+    } else if (local.live) {
+      const live = local.live;
+      if (live.power === false) paint(S.black(), 100);
+      else paint(live.rgb, STATUS.brightness);
+      $('cap').textContent = `live frame from /screen · epoch ${live.epoch} · revision ${live.revision} · power ${live.power ? 'on' : 'off'}`;
+      nextDrawAt = nowMs + 100;
     } else {
       const showingArt = STATUS.base === 'art' && STATUS.overlay === 'none' && !local.pending;
       if (showingArt && local.art) local.art.step((nowMs - lastStepMs) / 1000);
       lastStepMs = nowMs;
       const c = S.compose(STATUS, local, nowMs);
-      paint(c.rgb, local.pending ? 100 : STATUS.brightness);
-      $('cap').textContent = `simulated from /status · epoch ${STATUS.epoch} · revision ${STATUS.revision} · ${c.label}`;
+      const powerOff = STATUS.power === false;
+      paint(powerOff ? S.black() : c.rgb, powerOff ? 100 : (local.pending ? 100 : STATUS.brightness));
+      $('cap').textContent = `simulated from /status · epoch ${STATUS.epoch} · revision ${STATUS.revision} · ${c.label}${powerOff ? ' · power off' : ''}`;
       nextDrawAt = nowMs + (c.cadenceMs == null ? 250 : c.cadenceMs);
     }
   }
@@ -462,6 +547,31 @@ $('bright').addEventListener('change', async () => {
   try { await command('POST', 'action', (id, epoch) => ({ action: 'brightness', brightness: value, request_id: id, epoch })); toast(`brightness ${value}%`); }
   catch (e) { toast(e.message, true); }
 });
+$('power').addEventListener('change', async () => {
+  const checked = $('power').checked;
+  try {
+    await command('POST', 'action', (id, epoch) => ({ action: 'power', power: checked, request_id: id, epoch }));
+    toast(`display power ${checked ? 'on' : 'off'}`);
+  } catch (e) { toast(e.message, true); }
+});
+
+/* ---------- remote controls (physical buttons, knob and rotary, over /input) ---------- */
+async function sendInput(control, event, steps) {
+  try {
+    await command('POST', 'input', (id, epoch) => {
+      const body = { control, event, request_id: id, epoch };
+      if (steps !== undefined) body.steps = steps;
+      return body;
+    });
+    toast(steps !== undefined ? `${control} ${event} ×${steps}` : `${control} ${event}`);
+  } catch (e) { toast(e.message, true); }
+}
+$('ctlLeft').addEventListener('click', () => sendInput('left', 'click'));
+$('ctlMiddle').addEventListener('click', () => sendInput('middle', 'click'));
+$('ctlRight').addEventListener('click', () => sendInput('right', 'click'));
+$('knobCcw').addEventListener('click', () => sendInput('rotary', 'ccw', +$('ksteps').value || 1));
+$('knobCw').addEventListener('click', () => sendInput('rotary', 'cw', +$('ksteps').value || 1));
+$('knobPress').addEventListener('click', () => sendInput('knob', $('knobLong').checked ? 'long' : 'click'));
 
 /* ---------- notification ---------- */
 $('ntext').addEventListener('input', () => $('ncount').textContent = `${$('ntext').value.length}/128`);
@@ -607,6 +717,35 @@ $('mapply').addEventListener('click', async () => {
 });
 $('mcheck').addEventListener('click', mqttStatus);
 
+/* ---------- logs (the log ring, GET /logs?after=N) ---------- */
+let logNext = 0, logLines = [], logInFlight = false;
+function renderLogs() {
+  const pre = $('logtext');
+  pre.textContent = '';
+  for (const line of logLines) pre.appendChild(document.createTextNode(line + '\n'));
+  if ($('follow').checked) pre.scrollTop = pre.scrollHeight;
+}
+async function pollLogs() {
+  if (!TOKENS.control || !$('follow').checked || logInFlight) return;
+  logInFlight = true;
+  try {
+    const doc = await call('GET', `logs?after=${logNext}`);
+    if (doc.lines.length) {
+      if (logNext > 0 && doc.lines[0].seq > logNext + 1) logLines.push('… lines evicted …');
+      for (const line of doc.lines) logLines.push(`${line.seq} ${line.text}`);
+      while (logLines.length > 64) logLines.shift();
+      logNext = doc.next;
+      renderLogs();
+    }
+  } catch (e) {
+    toast(e.message, true);
+    $('follow').checked = false;
+  } finally {
+    logInFlight = false;
+  }
+}
+$('logclear').addEventListener('click', () => { logLines = []; renderLogs(); });
+
 /* ---------- load ---------- */
 // a locked card also gets `disabled` on every input/select/button: pointer-events:none (the css
 // rule) does not stop a keyboard user tabbing in and activating a control
@@ -622,6 +761,7 @@ async function loadTokens() {
   catch { TOKENS = { control: false, admin: false }; }
   const noControl = !TOKENS.control;
   lock('sceneCard', noControl); lock('notificationCard', noControl); lock('frameCard', noControl);
+  lock('controlsCard', noControl); lock('logsCard', noControl);
   lock('settingsCard', noControl || !TOKENS.admin); lock('mqttCard', noControl || !TOKENS.admin);
 }
 async function loadAll() {
@@ -631,6 +771,8 @@ async function loadAll() {
   setConn('', 'connecting…');
   try {
     STATUS = null;
+    liveUnavailable = false; local.live = null;
+    logNext = 0; logLines = []; renderLogs();
     STATUS = await call('GET', 'status'); onStatus(null);
     SCENES = await call('GET', 'scenes');
     fillSelect($('gen'), SCENES.generators.map(g => g.name), STATUS.generator);
@@ -638,6 +780,7 @@ async function loadAll() {
     if (TOKENS.admin) { try { showMqtt(await call('GET', 'mqtt')); } catch (e) { toast(e.message, true); } }
     await mqttStatus();
     setConn('on', 'connected');
+    pollScreen();
     startPolling();
     try { localStorage.setItem('tc002host-v2', host()); } catch {}
     toast('connected to the runtime');
