@@ -228,7 +228,7 @@ the visible output is one **base** scene plus at most one temporary
 | base | what it shows | redraw cadence |
 |------|---------------|----------------|
 | `art` | a generator: `popsquares` (the same cell simulation as [`led/`](LED-SPI.md#led-native-popsquares-at-60-fps)) or `plasma` (integer sum-of-sines) | continuous, 60 hz |
-| `clock` | `hh:mm:ss` in the built-in 5×7 font, local time from a posix tz rule (`AEST-10AEDT,M10.1.0,M4.1.0/3` style, with `Mm.w.d` transitions) | once per wall-second boundary |
+| `clock` | local time from a posix tz rule (`AEST-10AEDT,M10.1.0,M4.1.0/3` style, with `Mm.w.d` transitions) in one of four fonts and a solid or gradient colour; see [clock styles](#clock-styles) | once per wall-second boundary |
 | `ip` | the ipv4 address on two lines, or `no ip` | on change only |
 
 | overlay | bounds | behaviour |
@@ -252,6 +252,35 @@ shows the current state when it comes back. **cross-fades** blend the frame
 that was on the panel into the new output over 500 ms whenever the base, the
 generator or a notification changes (start or end); raw frames, reseeds and
 brightness switch at once. both durations are renderer options; 0 disables.
+
+### clock styles
+
+a clock style is `{font, colour_mode, colour, colour2, gradient}`:
+
+| font | digits | what is shown | width |
+|------|--------|---------------|------:|
+| `classic` | the built-in 5×7 font | `hh:mm:ss` | 47 px |
+| `mini` | 3×5 | `hh:mm:ss` on rows 2–6 and the date `dd/mm` on rows 9–13 | 27 px |
+| `segment` | seven-segment 5×9, generated from a segment table | `hh:mm:ss` | 39 px |
+| `big` | the classic digits scaled to 10×14 | `hh:mm` (no seconds) | 52 px, edge to edge |
+
+everything is centred. `colour_mode` is `solid` (`colour` only) or `gradient`:
+a linear ramp from `colour` to `colour2` across the text's bounding box,
+`horizontal`, `vertical` or `diagonal`. the **subtlety rule** keeps a
+gradient a shade shift rather than colour bands on 52 columns: the end
+colour is pulled towards the start so that no channel differs by more than
+96 of 255 (`max_spread` in `/scenes`); a wider request is accepted and
+clamped, and the status reports the requested `colour2`. a style change
+while the clock is showing cross-fades like a scene change.
+
+the style has two homes. the settings (`clock_font`, `clock_colour_mode`,
+`clock_colour`, `clock_colour2`, `clock_gradient`, admin over `PATCH /config`)
+are the durable defaults, applied live and restored on every renderer start.
+`PUT /scene` and `cmd/scene` take a transient `clock` object with any subset
+of the five fields (`font`, `colour_mode`, `colour`, `colour2`, `gradient`)
+for automations, exactly like a transient generator choice for art; the next
+settings change or renderer restart returns to the defaults. `/status` and
+the retained `state` report the effective style under `clock`.
 
 ### physical controls
 
@@ -375,7 +404,7 @@ api is for programs, not pages. `allowed_origins` can only be set by editing
 |--------|------|-------|------|-------|
 | `GET` | `/status` | control | | the [status document](#the-status-document) |
 | `GET` | `/scenes` | control | | the static catalogue: bases, generators, notification and frame bounds |
-| `PUT` | `/scene` | control | `{"base":"art\|clock\|ip","generator":"popsquares\|plasma"?,"seed":u32?,"request_id":hex,"epoch":u32?}` | `{"status":"applied","revision":n,"epoch":n,"request_id":…}` |
+| `PUT` | `/scene` | control | `{"base":"art\|clock\|ip","generator":"popsquares\|plasma"?,"seed":u32?,"clock":{"font","colour_mode","colour","colour2","gradient"}?,"request_id":hex,"epoch":u32?}` | `{"status":"applied","revision":n,"epoch":n,"request_id":…}` |
 | `POST` | `/action` | control | `{"action":"brightness\|reseed\|arm_stream","brightness":1..100?,"seed":u32?,"request_id":hex,"epoch":u32}` | as above |
 | `POST` | `/notify` | control | `{"text":"…","colour":"rrggbb"?,"duration_s":1..300?,"request_id":hex,"epoch":u32}` (`duration_s` optional, defaults to 5) | as above |
 | `POST` | `/frame?duration_s=&request_id=&epoch=` | control | `application/octet-stream`, exactly 2,496 bytes | as above |
@@ -428,7 +457,7 @@ lowercase code:
 `fps` is a number only while art is running with no overlay, otherwise
 `null` (there is no frame rate to report for a clock). `renderer` is `none`,
 `starting`, `running` or `stopping`. `power` (after `brightness`) is the
-display power switch. `boot_id` is random per supervisor start
+display power switch; `clock` is the effective [clock style](#clock-styles). `boot_id` is random per supervisor start
 and is what groups the mqtt discovery entities. `time` is the sntp client's
 view: `state` and seconds since the last accepted reply (see
 [time](#time-sntp)).
@@ -440,6 +469,7 @@ view: `state` and seconds since the last accepted reply (see
 | field | range | live effect |
 |-------|-------|-------------|
 | `brightness` | 1–100 | applied to the renderer at once |
+| `clock_font`, `clock_colour_mode`, `clock_colour`, `clock_colour2`, `clock_gradient` | `classic\|mini\|segment\|big`; `solid\|gradient`; `rrggbb`; `rrggbb`; `horizontal\|vertical\|diagonal` | applied at once; reported as a `clock` object in `/config` |
 | `base` | `art`, `clock`, `ip` | applied at once |
 | `generator` | `popsquares`, `plasma` | applied at once |
 | `timezone` | a posix tz rule, ≤ 64 characters | applied at once |
@@ -532,7 +562,7 @@ publishes. nothing writable is exposed through discovery; control goes through
 
 | tool | what it does |
 |------|--------------|
-| `tc002ctl.py` | a client for every route: `status`, `scenes`, `scene`, `brightness`, `reseed`, `arm-stream`, `notify`, `frame`, `power`, `input`, `screen` (`--ascii` draws the panel in the terminal, `--out` saves the raw rgb), `logs` (`--follow`), `config`, `config-set`, `config-save`, `mqtt`, `mqtt-set`, `mqtt-status`. takes the pulled token file (`--token-file`) or a hex token, picks the admin token for admin commands, generates request ids and fetches the epoch for you |
+| `tc002ctl.py` | a client for every route: `status`, `scenes`, `scene` (with `--font`, `--colour-mode`, `--colour`, `--colour2`, `--gradient` for the clock), `brightness`, `reseed`, `arm-stream`, `notify`, `frame`, `power`, `input`, `screen` (`--ascii` draws the panel in the terminal, `--out` saves the raw rgb), `logs` (`--follow`), `config`, `config-set`, `config-save`, `mqtt`, `mqtt-set`, `mqtt-status`. takes the pulled token file (`--token-file`) or a hex token, picks the admin token for admin commands, generates request ids and fetches the epoch for you |
 | `tc002-run.sh` | `push` (build, elf check, push to `/tmp/tc002/`), `start [supervisor options]` (under the lock: stop `zkswe`, start the supervisor detached with its log in `/tmp/tc002/`), `status`, `stop` (sigterm, restart the stock app, release the lock), `restore` (stop and remove everything under `/tmp`) |
 | `tc002-boot-experiment.sh` | `baseline` (time the stock `ctl.start` to the property), `start` (rewrite `startupLibPath` into `/tmp/EasyUI.cfg`, restart `zkswe` through the bootstrap, show the audit), `status`, `restore` |
 | `tc002-lock.sh` | the append-only advisory lock in `/tmp/tc002-lock.txt` on the host, for two agents sharing one device: `acquire <intent> [timeout]`, `release`, `status`, `note`. every device-mutating step in the scripts above runs under it |
