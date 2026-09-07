@@ -377,7 +377,7 @@ api is for programs, not pages. `allowed_origins` can only be set by editing
 | `GET` | `/scenes` | control | | the static catalogue: bases, generators, notification and frame bounds |
 | `PUT` | `/scene` | control | `{"base":"art\|clock\|ip","generator":"popsquares\|plasma"?,"seed":u32?,"request_id":hex,"epoch":u32?}` | `{"status":"applied","revision":n,"epoch":n,"request_id":…}` |
 | `POST` | `/action` | control | `{"action":"brightness\|reseed\|arm_stream","brightness":1..100?,"seed":u32?,"request_id":hex,"epoch":u32}` | as above |
-| `POST` | `/notify` | control | `{"text":"…","colour":"rrggbb"?,"duration_s":1..300,"request_id":hex,"epoch":u32}` | as above |
+| `POST` | `/notify` | control | `{"text":"…","colour":"rrggbb"?,"duration_s":1..300?,"request_id":hex,"epoch":u32}` (`duration_s` optional, defaults to 5) | as above |
 | `POST` | `/frame?duration_s=&request_id=&epoch=` | control | `application/octet-stream`, exactly 2,496 bytes | as above |
 | `POST` | `/action` (`"action":"power"`) | control | `{"action":"power","power":true\|false,"request_id":hex,"epoch":u32}` | as above; fades over 600 ms |
 | `POST` | `/input` | control | `{"control":"left\|middle\|right\|knob\|rotary","event":"press\|release\|click\|long\|cw\|ccw","steps":1..16?,"request_id":hex,"epoch":u32}` | as above. `long` is the knob only; `cw`/`ccw` are the rotary only and take `steps` |
@@ -385,7 +385,7 @@ api is for programs, not pages. `allowed_origins` can only be set by editing
 | `GET` | `/logs?after=N` | control | | `{"next":seq,"lines":[{"seq":n,"text":"…"}…]}`: up to 16 lines of the [log ring](#the-log-ring) after sequence number `after` (0 = oldest kept); pass `next` back to continue. a jump in `seq` means lines were evicted |
 | `GET` | `/config` | control | | the [settings document](#settings) |
 | `PATCH` | `/config` | admin | any subset of the settings fields plus `expected_revision`? | the settings document after the patch |
-| `POST` | `/config/save` | admin | `{"revision":u32}` or empty | `{"status":"saved","saved_revision":n}` |
+| `POST` | `/config/save` | admin | `{"revision":u32}` or an empty body, `application/json` either way | `{"status":"saved","saved_revision":n}` |
 | `GET` | `/mqtt` | admin | | broker settings; `password_set` instead of the password |
 | `PUT` | `/mqtt` | admin | `{"enabled","host","port","username","password","client_id","prefix","tls"}`, any subset | the broker settings |
 | `GET` | `/mqtt/status` | control | | `{"enabled","connected","state","reconnect_delay_s","reconnects","last_error"}` |
@@ -553,7 +553,8 @@ tools/tc002-run.sh stop
 ```
 
 the english web control panel in [`panel/`](panel/) talks to the **stock**
-api and does not work against this one.
+api; [`panel-v2/`](panel-v2/) is the same idea for this api, with a local
+proxy that holds the tokens and a simulated preview.
 
 ## memory audits
 
@@ -638,8 +639,8 @@ all on a warm device that had been up for days, under the lock, on
 - **physical input** has not been exercised on the device: the keymap is a
   guess, and the maintenance gesture and hardened profile are host-tested
   only.
-- the browser-facing panel, cors headers and an api field for
-  `allowed_origins`.
+- cors headers and an api field for `allowed_origins` (browser clients go
+  through `panel-v2/serve.py`).
 - **input on hardware.** the outward events and remote injection are tested
   through the api; nobody has pressed the physical buttons under this runtime
   yet, so the keymap is still the working guess above.

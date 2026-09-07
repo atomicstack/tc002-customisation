@@ -35,6 +35,7 @@ tools:
 | [`led/`](led/) | popsquares generative art running on the device at 60 fps, straight to the panel over spi — static armv7 binary built with zig, plus an adb start/stop wrapper |
 | [`led-zig/`](led-zig/) | full-parity idiomatic zig renderer with typed modules, colocated tests, native dry-run, static armv7 build, and adb wrapper |
 | [`runtime/`](runtime/) | the custom runtime: a supervisor, a renderer (popsquares, plasma, clock, ip, notifications, raw frames, buttons and knob) and an unprivileged network daemon with a bearer-authenticated `/api/v1` and an mqtt client with home-assistant discovery, plus the bootstrap the vendor loader runs and a memory-audit tool. zig 0.16, static armv7, no libc, volatile under `/tmp`. reference in [`RUNTIME.md`](RUNTIME.md) |
+| [`panel-v2/`](panel-v2/) | the same idea for the custom runtime in [`RUNTIME.md`](RUNTIME.md): a local proxy that holds the api tokens and a page that drives scenes, notifications, frames, settings and mqtt, with a simulated 52×16 preview of what the runtime draws |
 
 related: [pixdeck](https://github.com/cailurus/PixDeck) is a working stock-firmware
 client for the custom-app protocol over both http and mqtt — its `pixbar_core.py`
@@ -89,6 +90,29 @@ talks to its own origin: the device only returns cors headers on preflights
 and 404s, never on real 200 responses, so a browser can't read from it directly
 and a plain `http.server` will not work (see the
 [cors note](HTTP-API.md#http-api)).
+
+**control the custom runtime**
+
+```bash
+adb pull /tmp/tc002/credentials/tokens tokens        # or let serve.py do it with --adb-pull
+cd panel-v2 && /usr/bin/python3 serve.py 8777 --token-file ../tokens
+# open http://127.0.0.1:8777/?host=<device-ip>
+```
+
+only for a device running the runtime in [`RUNTIME.md`](RUNTIME.md); the stock
+app's console is `panel/`. the address is typed or given as `?host=`: the
+runtime does not broadcast on udp/55555. the preview is simulated from the
+runtime's status (its own font, layout and generators ported to javascript),
+so the clock, ip, notifications and frames are exact and the art shows the
+same algorithm with a local seed. `mock-device.py` is a stand-in for
+developing without a device.
+
+![the panel-v2 console: a simulated clock preview above cards for status, scene, notifications, frames, settings and mqtt](panel-v2/screenshots/console.png)
+
+<img src="panel-v2/screenshots/console-narrow.png" width="330" alt="the panel-v2 console at phone width, stacked into a single column">
+
+(screenshots are against `mock-device.py` in the clock scene with timezone
+`AEST-10AEDT,M10.1.0,M4.1.0/3` applied, not a real device.)
 
 **adopt a factory-fresh device**
 
