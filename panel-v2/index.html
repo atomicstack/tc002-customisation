@@ -523,7 +523,12 @@ function showConfig(c) {
   $('cft').value = c.frame_timeout_ms; $('cmi').value = c.metrics_interval_s;
   $('cdisc').checked = !!c.discovery.enabled; $('cdp').value = c.discovery.prefix;
   const unsaved = c.revision !== c.saved_revision;
-  $('crev').innerHTML = `revision ${c.revision} · saved ${c.saved_revision}${unsaved ? ' · <b>unsaved</b>' : ''}`;
+  const crev = $('crev'); crev.textContent = '';
+  crev.append(`revision ${c.revision} · saved ${c.saved_revision}`);
+  if (unsaved) {
+    const b = document.createElement('b'); b.textContent = 'unsaved';
+    crev.append(' · ', b);
+  }
   try { local.tz = S.tzParse(c.timezone); } catch { local.tz = S.TZ_UTC; }
 }
 async function loadConfig() { showConfig(await call('GET', 'config')); }

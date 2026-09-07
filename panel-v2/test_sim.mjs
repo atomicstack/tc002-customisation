@@ -225,6 +225,9 @@ test('compose picks the right layer and cadence', () => {
   assert.deepEqual(ip.rgb, e2);
   assert.equal(ip.cadenceMs, null);
 
+  const ipFromNetwork = S.compose({ ...base, base: 'ip', ip: undefined, network: { ip: '10.0.0.5' } }, local, 0);
+  assert.deepEqual(ipFromNetwork.rgb, e2);
+
   const art = S.compose({ ...base, base: 'art', generator: 'plasma' }, local, 0);
   assert.notDeepEqual(art.rgb, S.black());
   assert.equal(art.cadenceMs, 1000 / 60);

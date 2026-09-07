@@ -435,9 +435,11 @@
       case 'clock':
         renderClock(rgb, nowMs, local.tz || TZ_UTC);
         return { rgb, cadenceMs: nextSecondMs(nowMs) - nowMs, label: 'clock' };
-      case 'ip':
-        renderIp(rgb, ipFromString(status.ip));
+      case 'ip': {
+        const ip = status.network && status.network.ip != null ? status.network.ip : status.ip;
+        renderIp(rgb, ipFromString(ip));
         return { rgb, cadenceMs: null, label: 'ip' };
+      }
       default:
         if (local.art) local.art.render(rgb);
         return { rgb, cadenceMs: FRAME_MS, label: `art: ${status.generator}, same algorithm, local seed` };
