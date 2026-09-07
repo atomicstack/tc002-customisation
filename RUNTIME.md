@@ -623,8 +623,11 @@ all on a warm device that had been up for days, under the lock, on
 - **network bring-up.** the runtime relies on the wifi and address the stock
   stack established before it took over. dhcp renewal after the takeover and
   the setup-ap flow are not handled and were not measured.
-- **the mcu.** nothing reads the battery, usb state or microphone, and
-  nothing sets the led current gain. run on usb power.
+- **the mcu.** the supervisor queries the version, battery and usb state
+  every 30 s (see [the pixel mcu link](runtime/README.md#the-pixel-mcu-link))
+  and reports them; nothing reads the microphone, sets the led current gain
+  or uses the power-off command, and the low-battery behaviour is not
+  reproduced. run on usb power.
 - **persistence.** everything is under `/tmp`; the paired-slot durable
   install, the vendor image builder and the recovery rehearsal the design
   calls for do not exist. cold boot against zkdaemon's 15 s check, the
