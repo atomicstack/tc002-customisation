@@ -22,6 +22,40 @@ SCENES = {"bases": BASES,
 PRINTABLE = re.compile(r"^[\x20-\x7e]{1,128}$")
 HEX_ID = re.compile(r"^[0-9a-fA-F]{1,16}$")
 
+# physical controls (RUNTIME.md "physical controls"): which events each control accepts
+CONTROL_EVENTS = {
+    "left": {"press", "release", "click"},
+    "middle": {"press", "release", "click"},
+    "right": {"press", "release", "click"},
+    "knob": {"press", "release", "click", "long"},
+    "rotary": {"cw", "ccw"},
+}
+STEPPED_EVENTS = {"cw", "ccw"}
+
+# a plausible seeded boot history for the log ring, oldest first
+SEED_LOG_LINES = [
+    "tc002-supervisor 1000 info profile: isolated-lan",
+    "tc002-supervisor 1004 info credentials written",
+    "tc002-supervisor 1012 info netd listening on 0.0.0.0:80",
+    "tc002-supervisor 1015 info spawned renderer pid 5 epoch 1",
+    "tc002d 1020 info dry-run: modelling the panel only",
+    "tc002d 1022 info scene: art",
+    "tc002-supervisor 1500 info wlan0 address 10.0.0.111",
+    "tc002-supervisor 2000 info metrics sample: mem 16084kb cpu 4%",
+    "tc002-supervisor 5000 info discovery disabled",
+    "tc002-supervisor 7000 info metrics sample: mem 16072kb cpu 5%",
+    "tc002-supervisor 12000 info metrics sample: mem 16068kb cpu 5%",
+    "tc002-supervisor 17000 info metrics sample: mem 16064kb cpu 4%",
+    "tc002-supervisor 22000 info metrics sample: mem 16060kb cpu 5%",
+    "tc002-supervisor 27000 info metrics sample: mem 16058kb cpu 5%",
+    "tc002-supervisor 32000 info metrics sample: mem 16055kb cpu 4%",
+    "tc002-supervisor 37000 info metrics sample: mem 16050kb cpu 5%",
+    "tc002-supervisor 42000 info metrics sample: mem 16049kb cpu 5%",
+    "tc002-supervisor 47000 info metrics sample: mem 16047kb cpu 4%",
+    "tc002-supervisor 52000 info metrics sample: mem 16044kb cpu 5%",
+    "tc002-supervisor 57000 info metrics sample: mem 16040kb cpu 5%",
+]
+
 
 class Reject(Exception):
     def __init__(self, status, code, message):
@@ -64,9 +98,14 @@ class Device:
         self.boot_id = secrets.token_hex(4)
         self.epoch, self.revision = 1, 0
         self.base, self.generator, self.brightness = "art", "popsquares", 100
+        self.power = True
         self.overlay, self.overlay_until = "none", 0.0
         self.presented_base, self.presented_at = 0, self.started
         self.restarts = 0
+        self.log_seq = 0
+        self.log_lines = []
+        for line in SEED_LOG_LINES:
+            self._append_log(line)
         self.config = {"revision": 0, "saved_revision": 0, "brightness": 100, "base": "art", "generator": "popsquares",
                        "timezone": "UTC0", "ntp_server": None, "ntp_interval_s": 300, "frame_timeout_ms": 500,
                        "metrics_interval_s": 30, "discovery": False, "discovery_prefix": "homeassistant", "origins": []}
@@ -102,6 +141,16 @@ class Device:
         self.overlay_until = time.monotonic() + duration_s
         return self.bump()
 
+    def _append_log(self, text):
+        self.log_seq += 1
+        self.log_lines.append((self.log_seq, text))
+        if len(self.log_lines) > 64:
+            self.log_lines.pop(0)
+
+    def log(self, text):
+        ms = int((time.monotonic() - self.started) * 1000)
+        self._append_log(f"tc002d {ms} info {text}")
+
     # documents
 
     def status(self):
@@ -109,11 +158,17 @@ class Device:
         fps = 59.9 if self.base == "art" and self.overlay == "none" else None
         return {"epoch": self.epoch, "revision": self.revision, "renderer": "running", "base": self.base,
                 "generator": self.generator, "overlay": self.overlay, "brightness": self.brightness,
+                "power": self.power,
                 "presented": self.presented(), "fps": fps, "uptime_s": int(time.monotonic() - self.started),
                 "memory_available_kb": 16084, "cpu_pct": 5, "restarts": self.restarts,
                 "network": {"ip": "10.0.0.111"}, "time": {"state": "unsynced", "age_s": None},
                 "config_revision": self.config["revision"], "saved_revision": self.config["saved_revision"],
                 "transport": "plaintext", "mqtt": self.mqtt_status(), "boot_id": self.boot_id, "sample_age_ms": 200}
+
+    def logs(self, after):
+        lines = [{"seq": s, "text": t} for s, t in self.log_lines if s > after][:16]
+        next_seq = lines[-1]["seq"] if lines else after
+        return {"next": next_seq, "lines": lines}
 
     def config_doc(self):
         c = self.config
@@ -157,6 +212,7 @@ class Device:
         self.base, self.overlay = base, "none"
         if base == "art" and gen:
             self.generator = gen
+        self.log(f"scene: {base}")
         return self.bump()
 
     def action(self, body):
@@ -169,11 +225,21 @@ class Device:
             if not isinstance(v, int) or v < 1 or v > 100:
                 raise Reject(400, "invalid_brightness", "brightness must be 1..100")
             self.brightness = v
+            self.log(f"brightness: {v}")
             return self.bump()
         if kind == "reseed":
+            self.log("reseed")
             return self.bump()
         if kind == "arm_stream":
+            self.log("stream arming")
             return self.set_overlay("stream_arming", 2)
+        if kind == "power":
+            v = body.get("power")
+            if not isinstance(v, bool):
+                raise Reject(400, "invalid_power", "power must be true or false")
+            self.power = v
+            self.log(f"power: {'on' if v else 'off'}")
+            return self.bump()
         raise Reject(400, "invalid_action", "unknown action")
 
     def notify(self, body):
@@ -186,7 +252,41 @@ class Device:
         if body.get("colour") is not None and parse_colour(body["colour"]) is None:
             raise Reject(400, "invalid_colour", "colour must be rrggbb hex")
         self.check_epoch(body.get("epoch"), True)
+        self.log("notification")
         return self.set_overlay("notify", d)
+
+    def input(self, body):
+        control = body.get("control")
+        if control not in CONTROL_EVENTS:
+            raise Reject(400, "invalid_control", "control must be left, middle, right, knob or rotary")
+        event = body.get("event")
+        if event not in CONTROL_EVENTS[control]:
+            raise Reject(400, "invalid_event", "that event is not valid for this control")
+        steps = body.get("steps", 1)
+        if event in STEPPED_EVENTS:
+            if not isinstance(steps, int) or isinstance(steps, bool) or not 1 <= steps <= 16:
+                raise Reject(400, "invalid_steps", "steps must be 1..16")
+        self.check_epoch(body.get("epoch"), True)
+        self.log(f"input: {control} {event}")
+        if event == "long":
+            # knob long press: arm streaming, as a physical hold would
+            return self.set_overlay("stream_arming", 2)
+        if event in ("click", "release"):
+            if control in ("left", "middle", "right"):
+                self.base = {"left": "art", "middle": "clock", "right": "ip"}[control]
+                self.overlay = "none"
+            elif control == "knob" and self.base == "art":
+                pass  # reseed the art; the mock does not track a seed to change
+        elif event in STEPPED_EVENTS:
+            if self.base == "art":
+                idx = GENERATORS.index(self.generator)
+                idx = (idx + steps) % len(GENERATORS) if event == "cw" else (idx - steps) % len(GENERATORS)
+                self.generator = GENERATORS[idx]
+            else:
+                delta = 5 * steps if event == "cw" else -5 * steps
+                self.brightness = max(1, min(100, self.brightness + delta))
+        # event == "press": no effect, still an accepted input
+        return self.bump()
 
     def frame(self, query, body):
         if len(body) != 2496:
@@ -301,7 +401,8 @@ class Device:
 # request schemas: allowed and required keys, as the runtime's strict json enforces
 SCHEMAS = {
     "scene": ({"base", "generator", "seed", "request_id", "epoch"}, {"base", "request_id"}),
-    "action": ({"action", "brightness", "seed", "request_id", "epoch"}, {"action", "request_id", "epoch"}),
+    "action": ({"action", "brightness", "seed", "power", "request_id", "epoch"}, {"action", "request_id", "epoch"}),
+    "input": ({"control", "event", "steps", "request_id", "epoch"}, {"control", "event", "request_id", "epoch"}),
     "notify": ({"text", "colour", "duration_s", "request_id", "epoch"}, {"text", "request_id", "epoch"}),
     "config": ({"brightness", "base", "generator", "timezone", "ntp_server", "ntp_interval_s", "frame_timeout_ms",
                 "metrics_interval_s", "discovery", "discovery_prefix", "expected_revision"}, set()),
@@ -310,7 +411,8 @@ SCHEMAS = {
 }
 
 ROUTES = {("GET", "status"): "control", ("GET", "scenes"): "control", ("PUT", "scene"): "control",
-          ("POST", "action"): "control", ("GET", "config"): "control", ("PATCH", "config"): "admin",
+          ("POST", "action"): "control", ("POST", "input"): "control", ("GET", "logs"): "control",
+          ("GET", "config"): "control", ("PATCH", "config"): "admin",
           ("POST", "config/save"): "admin", ("POST", "notify"): "control", ("POST", "frame"): "control",
           ("GET", "mqtt"): "admin", ("PUT", "mqtt"): "admin", ("GET", "mqtt/status"): "control"}
 
@@ -415,6 +517,14 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 if endpoint == "action":
                     body = self._json_body("action"); rid = self._rid(body)
                     return self._applied(d.action(body), rid)
+                if endpoint == "input":
+                    body = self._json_body("input"); rid = self._rid(body)
+                    return self._applied(d.input(body), rid)
+                if endpoint == "logs":
+                    raw = query.get("after", [None])[0]
+                    if raw is None or not raw.isdigit():
+                        raise Reject(400, "invalid_after", "after must be a non-negative integer")
+                    return self._send(200, d.logs(int(raw)))
                 if endpoint == "notify":
                     body = self._json_body("notify"); rid = self._rid(body)
                     return self._applied(d.notify(body), rid)

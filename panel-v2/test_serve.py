@@ -190,6 +190,55 @@ class EndToEndTests(unittest.TestCase):
             self.assertEqual(e.code, 502)
             self.assertEqual(json.loads(e.read())["error"], "proxy")
 
+    def test_power_action_toggles_status(self):
+        _, st = self.call("GET", "status")
+        status, doc = self.call("POST", "action", {"action": "power", "power": False, "request_id": "d1", "epoch": st["epoch"]})
+        self.assertEqual((status, doc["status"]), (200, "applied"))
+        _, st2 = self.call("GET", "status")
+        self.assertEqual(st2["power"], False)
+        status, doc = self.call("POST", "action", {"action": "power", "power": True, "request_id": "d2", "epoch": st2["epoch"]})
+        self.assertEqual((status, doc["status"]), (200, "applied"))
+        _, st3 = self.call("GET", "status")
+        self.assertEqual(st3["power"], True)
+
+    def test_input_is_validated_and_applied(self):
+        _, st = self.call("GET", "status")
+        status, doc = self.call("POST", "input", {"control": "middle", "event": "click", "request_id": "e1", "epoch": st["epoch"]})
+        self.assertEqual((status, doc["status"]), (200, "applied"))
+        _, st2 = self.call("GET", "status")
+        self.assertEqual(st2["base"], "clock")
+        status, doc = self.call("POST", "input", {"control": "rotary", "event": "cw", "steps": 2, "request_id": "e2", "epoch": st2["epoch"]})
+        self.assertEqual((status, doc["status"]), (200, "applied"))
+        _, st3 = self.call("GET", "status")
+        status, doc = self.call("POST", "input", {"control": "left", "event": "long", "request_id": "e3", "epoch": st3["epoch"]})
+        self.assertEqual((status, doc["error"]), (400, "invalid_event"))
+        status, doc = self.call("POST", "input", {"control": "rotary", "event": "cw", "steps": 17, "request_id": "e4", "epoch": st3["epoch"]})
+        self.assertEqual((status, doc["error"]), (400, "invalid_steps"))
+        status, doc = self.call("POST", "input", {"control": "nope", "event": "click", "request_id": "e5", "epoch": st3["epoch"]})
+        self.assertEqual((status, doc["error"]), (400, "invalid_control"))
+
+    def test_logs_page_through_the_ring(self):
+        status, doc = self.call("GET", "logs?after=0")
+        self.assertEqual(status, 200)
+        self.assertIn("next", doc)
+        self.assertLessEqual(len(doc["lines"]), 16)
+        for line in doc["lines"]:
+            self.assertIn("seq", line)
+            self.assertIn("text", line)
+        status2, doc2 = self.call("GET", f"logs?after={doc['next']}")
+        self.assertEqual(status2, 200)
+        if doc["lines"]:
+            last_seq = doc["lines"][-1]["seq"]
+            self.assertTrue(all(l["seq"] > last_seq for l in doc2["lines"]))
+        status3, doc3 = self.call("GET", "logs")
+        self.assertEqual((status3, doc3["error"]), (400, "invalid_after"))
+        status4, doc4 = self.call("GET", "logs?after=abc")
+        self.assertEqual((status4, doc4["error"]), (400, "invalid_after"))
+
+    def test_screen_is_not_served_by_the_mock(self):
+        status, doc = self.call("GET", "screen")
+        self.assertEqual((status, doc["error"]), (404, "not_found"))
+
     def test_stream_route_authenticates_before_503(self):
         # talks to the mock directly: the proxy always adds a token, so this is the only way to
         # exercise the mock's own auth check ahead of its 503 not_implemented answer.
