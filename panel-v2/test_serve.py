@@ -56,6 +56,10 @@ class EndToEndTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.mock_mod = load_mock()
+        # both servers log every request to stderr; keep test output pristine, restored below
+        cls._serve_log, cls._mock_log = serve.Handler.log_message, cls.mock_mod.Handler.log_message
+        serve.Handler.log_message = lambda *a, **k: None
+        cls.mock_mod.Handler.log_message = lambda *a, **k: None
         cls.control, cls.admin = secrets.token_hex(32), secrets.token_hex(32)
         cls.device = cls.mock_mod.Device(cls.control, cls.admin)
         cls.mock = cls.mock_mod.make_server(0, cls.device)
@@ -72,6 +76,8 @@ class EndToEndTests(unittest.TestCase):
     def tearDownClass(cls):
         for s in (cls.mock, cls.proxy, cls.bare):
             s.shutdown(); s.server_close()
+        serve.Handler.log_message = cls._serve_log
+        cls.mock_mod.Handler.log_message = cls._mock_log
 
     def call(self, method, path, body=None, ctype="application/json", port=None, headers=None):
         port = port or self.proxy_port
@@ -93,6 +99,39 @@ class EndToEndTests(unittest.TestCase):
             self.assertEqual(json.loads(r.read()), {"control": True, "admin": True})
         with urllib.request.urlopen(f"http://127.0.0.1:{self.bare_port}/tokens") as r:
             self.assertEqual(json.loads(r.read()), {"control": False, "admin": False})
+
+    def test_static_serving_is_allow_listed(self):
+        # the proxy must never hand back its own source, or another file that happens to sit
+        # beside it (like the mock's default token file), even though SimpleHTTPRequestHandler
+        # would otherwise serve anything under `directory`
+        req = urllib.request.Request(f"http://127.0.0.1:{self.proxy_port}/serve.py")
+        try:
+            urllib.request.urlopen(req, timeout=5)
+            self.fail("expected an http error")
+        except urllib.error.HTTPError as e:
+            self.assertEqual(e.code, 404)
+            self.assertEqual(json.loads(e.read())["error"], "not_found")
+        with urllib.request.urlopen(f"http://127.0.0.1:{self.proxy_port}/sim.js", timeout=5) as r:
+            self.assertEqual(r.status, 200)
+            self.assertIn(r.headers.get("Content-Type", "").split(";")[0].strip(),
+                          ("application/javascript", "text/javascript"))
+        # mock-tokens is not the real proxy's problem to guard (it lives in HERE only incidentally,
+        # created by mock-device.py), but the same allow-list must block it too; prove that against
+        # a throwaway directory so the test does not depend on the real file existing or not
+        with tempfile.TemporaryDirectory() as d:
+            with open(os.path.join(d, "mock-tokens"), "wb") as f:
+                f.write(b"not a real token file")
+            srv = serve.make_server(0, {"control": None, "admin": None}, d)
+            threading.Thread(target=srv.serve_forever, daemon=True).start()
+            try:
+                req = urllib.request.Request(f"http://127.0.0.1:{srv.server_address[1]}/mock-tokens")
+                try:
+                    urllib.request.urlopen(req, timeout=5)
+                    self.fail("expected an http error")
+                except urllib.error.HTTPError as e:
+                    self.assertEqual(e.code, 404)
+            finally:
+                srv.shutdown(); srv.server_close()
 
     def test_status_through_the_proxy(self):
         status, doc = self.call("GET", "status")

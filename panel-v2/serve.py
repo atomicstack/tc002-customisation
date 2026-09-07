@@ -16,7 +16,7 @@ usage: serve.py [port] [--token-file FILE | --adb-pull [--serial S]]     default
 run with apple's python3 (/usr/bin/python3): homebrew binaries are denied lan access by macos
 local network privacy. binds 127.0.0.1 only.
 """
-import functools, http.server, json, os, re, socketserver, subprocess, sys, tempfile, urllib.error, urllib.request
+import argparse, functools, http.server, json, os, re, socketserver, subprocess, sys, tempfile, urllib.error, urllib.request
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 TOKENS = {"control": None, "admin": None}
@@ -25,6 +25,8 @@ ADMIN_ROUTES = {("PATCH", "config"), ("POST", "config/save"), ("GET", "mqtt"), (
 # host may carry a port (host:1234) so the mock or a device behind a forward works
 PATH_RE = re.compile(r"^/api/([0-9a-zA-Z.\-]+(?::\d+)?)/v1/([A-Za-z0-9_\-]+(?:/[A-Za-z0-9_\-]+)*)(?:\?(.*))?$")
 DEVICE_TIMEOUT_S = 10
+# the only static files this server will hand back; everything else not under /api/ or /tokens is 404
+STATIC_ALLOW = {"/", "/index.html", "/sim.js"}
 
 
 def parse_tokens(data):
@@ -111,9 +113,12 @@ class Handler(http.server.SimpleHTTPRequestHandler):
     def do_GET(self):
         if self.path.startswith("/api/"):
             return self._proxy("GET")
-        if self.path.split("?")[0] == "/tokens":
+        path = self.path.split("?")[0]
+        if path == "/tokens":
             return self._tokens()
-        return super().do_GET()
+        if path in STATIC_ALLOW:
+            return super().do_GET()
+        return self._json(404, {"error": "not_found", "message": f"no such route: {path}"})
 
     def do_POST(self):
         if self.path.startswith("/api/"):
@@ -146,17 +151,25 @@ def make_server(port, tokens, directory=HERE):
     return server
 
 
+def parse_args(argv):
+    p = argparse.ArgumentParser(prog="serve.py", description="local server for the tc002 custom-runtime console")
+    p.add_argument("port", nargs="?", type=int, default=8777)
+    p.add_argument("--token-file", metavar="FILE")
+    p.add_argument("--adb-pull", action="store_true")
+    p.add_argument("--serial", metavar="S")
+    return p.parse_args(argv)
+
+
 def main(argv):
-    port = next((int(a) for a in argv if a.isdigit()), 8777)
+    args = parse_args(argv)
     tokens = dict(TOKENS)
-    if "--token-file" in argv:
-        tokens = load_token_file(argv[argv.index("--token-file") + 1])
-    elif "--adb-pull" in argv:
-        serial = argv[argv.index("--serial") + 1] if "--serial" in argv else None
-        tokens = adb_pull(serial)
-    with make_server(port, tokens) as httpd:
+    if args.token_file:
+        tokens = load_token_file(args.token_file)
+    elif args.adb_pull:
+        tokens = adb_pull(args.serial)
+    with make_server(args.port, tokens) as httpd:
         have = ", ".join(k for k in ("control", "admin") if tokens[k]) or "none"
-        print(f"panel-v2 on http://127.0.0.1:{port}  (proxying /api/<device-ip>/v1/<endpoint>; tokens: {have})", flush=True)
+        print(f"panel-v2 on http://127.0.0.1:{args.port}  (proxying /api/<device-ip>/v1/<endpoint>; tokens: {have})", flush=True)
         httpd.serve_forever()
 
 
