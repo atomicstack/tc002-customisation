@@ -107,8 +107,9 @@ adding the bearer token the route needs, so the browser never holds a token
 and only talks to its own origin. `--adb-pull` takes `--serial <adb-serial>`
 to pick the device when several are attached. the preview is simulated from the
 runtime's status (its own font, layout and generators ported to javascript),
-so the clock, ip, notifications and frames are exact and the art shows the
-same algorithm with a local seed. `mock-device.py` is a stand-in for
+so the clock and ip are exact, notifications and frames are exact only when
+this page sent them (otherwise they are shown as unknown), and the art shows
+the same algorithm with a local seed. `mock-device.py` is a stand-in for
 developing without a device.
 
 ![the panel-v2 console: a simulated clock preview above cards for status, scene, notifications, frames, settings and mqtt](panel-v2/screenshots/console.png)

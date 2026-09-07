@@ -446,7 +446,7 @@ view: `state` and seconds since the last accepted reply (see
 | `ntp.server`, `ntp.interval_s` (patch as `ntp_server`, `ntp_interval_s`) | dotted ipv4 or null; 300 or 600 | the sntp client restarts at once and syncs promptly; null disables it |
 | `frame_timeout_ms` | 100–2000 | stored only: belongs to the unimplemented streaming feature |
 | `metrics_interval_s` | 0 (off) or 10–3600 | mqtt `metrics` cadence |
-| `discovery`, `discovery_prefix` | bool; ≤ 64 characters | home-assistant discovery on the next mqtt connection |
+| `discovery.enabled`, `discovery.prefix` (patch as `discovery`, `discovery_prefix`) | bool; ≤ 64 characters | home-assistant discovery on the next mqtt connection |
 | `allowed_origins` | up to four exact origins | read from the file only |
 | `expected_revision` (patch only) | | the patch is refused with `409 revision_conflict` unless the current revision matches |
 

@@ -229,10 +229,13 @@ class Device:
             if not isinstance(body["timezone"], str) or not 1 <= len(body["timezone"]) <= 64:
                 raise Reject(400, "invalid_timezone", "timezone must be 1..64 characters")
             nxt["timezone"] = body["timezone"]
-        if "ntp_server" in body:
-            if body["ntp_server"] is not None and parse_ipv4(str(body["ntp_server"])) is None:
+        if "ntp_server" in body and body["ntp_server"] is not None:
+            if parse_ipv4(str(body["ntp_server"])) is None:
                 raise Reject(400, "invalid_ntp_server", "ntp_server must be a dotted ipv4 address")
             nxt["ntp_server"] = body["ntp_server"]
+        # a null ntp_server is silently ignored, not stored: the device's patch struct has a plain
+        # optional string field, so it cannot tell an explicit null from an absent field and keeps
+        # the old value either way; the mock matches that instead of clearing it to none
         if "ntp_interval_s" in body:
             if body["ntp_interval_s"] not in (300, 600):
                 raise Reject(400, "invalid_ntp_interval", "ntp_interval_s must be 300 or 600")
