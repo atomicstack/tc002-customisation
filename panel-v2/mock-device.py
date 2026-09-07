@@ -147,9 +147,9 @@ class Device:
         if len(self.log_lines) > 64:
             self.log_lines.pop(0)
 
-    def log(self, text):
+    def log(self, text, proc="tc002d"):
         ms = int((time.monotonic() - self.started) * 1000)
-        self._append_log(f"tc002d {ms} info {text}")
+        self._append_log(f"{proc} {ms} info {text}")
 
     # documents
 
@@ -263,9 +263,10 @@ class Device:
         if event not in CONTROL_EVENTS[control]:
             raise Reject(400, "invalid_event", "that event is not valid for this control")
         steps = body.get("steps", 1)
-        if event in STEPPED_EVENTS:
-            if not isinstance(steps, int) or isinstance(steps, bool) or not 1 <= steps <= 16:
-                raise Reject(400, "invalid_steps", "steps must be 1..16")
+        if not isinstance(steps, int) or isinstance(steps, bool) or not 1 <= steps <= 16:
+            raise Reject(400, "invalid_steps", "steps must be 1..16")
+        if steps != 1 and event not in STEPPED_EVENTS:
+            raise Reject(400, "invalid_steps", "steps applies to cw and ccw only")
         self.check_epoch(body.get("epoch"), True)
         self.log(f"input: {control} {event}")
         if event == "long":
@@ -305,6 +306,7 @@ class Device:
         except (KeyError, ValueError):
             raise Reject(400, "missing_epoch", "epoch is required in the query")
         self.check_epoch(epoch, True)
+        self.log(f"frame {d} s")
         return self.set_overlay("frame", d), rid
 
     def patch_config(self, body):
@@ -364,12 +366,14 @@ class Device:
             self.brightness = nxt["brightness"]; self.bump()
         if nxt["base"] != c["base"] or nxt["generator"] != c["generator"]:
             self.base, self.generator, self.overlay = nxt["base"], nxt["generator"], "none"; self.bump()
+        self.log(f"configuration applied, revision {nxt['revision']}", proc="tc002-supervisor")
 
     def save_config(self, body):
         want = body.get("revision")
         if want is not None and want != self.config["revision"]:
             raise Reject(409, "revision_conflict", "the expected revision does not match")
         self.config["saved_revision"] = self.config["revision"]
+        self.log(f"configuration saved, revision {self.config['saved_revision']}", proc="tc002-supervisor")
         return self.config["saved_revision"]
 
     def put_mqtt(self, body):
@@ -396,6 +400,7 @@ class Device:
             raise Reject(400, "rejected", "the settings were rejected")
         self.mqtt = m
         self.config["revision"] += 1
+        self.log("mqtt settings applied", proc="tc002-netd")
 
 
 # request schemas: allowed and required keys, as the runtime's strict json enforces
@@ -521,8 +526,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
                     body = self._json_body("input"); rid = self._rid(body)
                     return self._applied(d.input(body), rid)
                 if endpoint == "logs":
-                    raw = query.get("after", [None])[0]
-                    if raw is None or not raw.isdigit():
+                    raw = query.get("after", ["0"])[0]
+                    if not raw.isdigit():
                         raise Reject(400, "invalid_after", "after must be a non-negative integer")
                     return self._send(200, d.logs(int(raw)))
                 if endpoint == "notify":

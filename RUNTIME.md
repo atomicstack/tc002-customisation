@@ -417,7 +417,7 @@ lowercase code:
 
 ```json
 {"epoch":1,"revision":12,"renderer":"running","base":"art","generator":"popsquares",
- "overlay":"none","brightness":100,"presented":35990,"fps":59.9,
+ "overlay":"none","brightness":100,"power":true,"presented":35990,"fps":59.9,
  "uptime_s":600,"memory_available_kb":16084,"cpu_pct":5,"restarts":0,
  "network":{"ip":"10.0.0.111"},"time":{"state":"unsynced","age_s":null},
  "config_revision":1,"saved_revision":1,"transport":"plaintext",

@@ -52,6 +52,27 @@ def load_mock():
     return mod
 
 
+class MockDeviceTests(unittest.TestCase):
+    """pure tests on Device, no server: the log ring's capacity and sequence numbering."""
+
+    def test_log_ring_caps_at_64_and_keeps_the_sequence_counting(self):
+        mod = load_mock()
+        device = mod.Device(control="c" * 64, admin="a" * 64)
+        # start from an empty ring: Device.__init__ seeds 20 boot-history lines, which would make
+        # the expected starting sequence below depend on that seed count rather than only on this
+        # test's own 100 appends
+        device.log_lines = []
+        device.log_seq = 0
+        for i in range(100):
+            device._append_log(f"line {i}")
+        self.assertEqual(len(device.log_lines), 64)
+        self.assertEqual(device.log_seq, 100)
+        seqs = [seq for seq, _ in device.log_lines]
+        self.assertEqual(seqs, list(range(37, 101)))
+        doc = device.logs(0)
+        self.assertEqual(doc["lines"][0]["seq"], 37)
+
+
 class EndToEndTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -207,15 +228,33 @@ class EndToEndTests(unittest.TestCase):
         self.assertEqual((status, doc["status"]), (200, "applied"))
         _, st2 = self.call("GET", "status")
         self.assertEqual(st2["base"], "clock")
+        # pin brightness to a known value first, so the rotary assertion below actually proves the
+        # ±5-per-step math rather than clamping silently at the already-maxed-out 100
+        status, doc = self.call("POST", "action", {"action": "brightness", "brightness": 50, "request_id": "e6", "epoch": st2["epoch"]})
+        self.assertEqual((status, doc["status"]), (200, "applied"))
         status, doc = self.call("POST", "input", {"control": "rotary", "event": "cw", "steps": 2, "request_id": "e2", "epoch": st2["epoch"]})
         self.assertEqual((status, doc["status"]), (200, "applied"))
         _, st3 = self.call("GET", "status")
+        self.assertEqual(st3["brightness"], 60)
         status, doc = self.call("POST", "input", {"control": "left", "event": "long", "request_id": "e3", "epoch": st3["epoch"]})
         self.assertEqual((status, doc["error"]), (400, "invalid_event"))
         status, doc = self.call("POST", "input", {"control": "rotary", "event": "cw", "steps": 17, "request_id": "e4", "epoch": st3["epoch"]})
         self.assertEqual((status, doc["error"]), (400, "invalid_steps"))
         status, doc = self.call("POST", "input", {"control": "nope", "event": "click", "request_id": "e5", "epoch": st3["epoch"]})
         self.assertEqual((status, doc["error"]), (400, "invalid_control"))
+        status, doc = self.call("POST", "input", {"control": "middle", "event": "click", "steps": 2, "request_id": "e7", "epoch": st3["epoch"]})
+        self.assertEqual((status, doc["error"]), (400, "invalid_steps"))
+        # switch to art and confirm cw moves the generator there, not the brightness
+        status, doc = self.call("POST", "input", {"control": "left", "event": "click", "request_id": "e8", "epoch": st3["epoch"]})
+        self.assertEqual((status, doc["status"]), (200, "applied"))
+        _, st4 = self.call("GET", "status")
+        self.assertEqual(st4["base"], "art")
+        generator_before = st4["generator"]
+        status, doc = self.call("POST", "input", {"control": "rotary", "event": "cw", "request_id": "e9", "epoch": st4["epoch"]})
+        self.assertEqual((status, doc["status"]), (200, "applied"))
+        _, st5 = self.call("GET", "status")
+        self.assertNotEqual(st5["generator"], generator_before)
+        self.assertEqual(st5["brightness"], st4["brightness"])
 
     def test_logs_page_through_the_ring(self):
         status, doc = self.call("GET", "logs?after=0")
@@ -230,8 +269,10 @@ class EndToEndTests(unittest.TestCase):
         if doc["lines"]:
             last_seq = doc["lines"][-1]["seq"]
             self.assertTrue(all(l["seq"] > last_seq for l in doc2["lines"]))
+        # a missing after defaults to 0, per RUNTIME.md / api.zig, not a 400
         status3, doc3 = self.call("GET", "logs")
-        self.assertEqual((status3, doc3["error"]), (400, "invalid_after"))
+        self.assertEqual(status3, 200)
+        self.assertEqual(doc3["lines"], doc["lines"])
         status4, doc4 = self.call("GET", "logs?after=abc")
         self.assertEqual((status4, doc4["error"]), (400, "invalid_after"))
 

@@ -444,20 +444,22 @@ function stopPolling() {
 }
 
 /* ---------- the live preview from /screen ---------- */
+let screenFailStreak = 0;
 async function pollScreen() {
   if (liveUnavailable || screenInFlight) return;
   screenInFlight = true;
   try {
     const r = await fetch(api('screen'), { cache: 'no-store' });
     if (r.status === 404) { local.live = null; liveUnavailable = true; return; }
-    if (!r.ok) return;   // a transient error: keep the last known live frame, retry next tick
+    if (!r.ok) { screenFailStreak++; return; }   // a transient error: keep the last known live frame
     const doc = await r.json();
     const bin = atob(doc.rgb_base64);
     const rgb = new Uint8Array(bin.length);
     for (let i = 0; i < bin.length; i++) rgb[i] = bin.charCodeAt(i);
     local.live = { rgb, revision: doc.revision, power: doc.power, epoch: doc.epoch };
+    screenFailStreak = 0;
   } catch (e) {
-    // network hiccup: keep the last known live frame, retry next tick
+    screenFailStreak++;   // network hiccup: keep the last known live frame, retry next tick
   } finally {
     screenInFlight = false;
   }
@@ -484,11 +486,12 @@ function draw() {
       paint(S.black(), 100);
       $('cap').textContent = 'simulated from /status · not connected';
       nextDrawAt = nowMs + 500;
-    } else if (local.live) {
+    } else if (local.live && !local.pending) {
       const live = local.live;
       if (live.power === false) paint(S.black(), 100);
       else paint(live.rgb, STATUS.brightness);
-      $('cap').textContent = `live frame from /screen · epoch ${live.epoch} · revision ${live.revision} · power ${live.power ? 'on' : 'off'}`;
+      const stale = screenFailStreak >= 3 ? ' · stale' : '';
+      $('cap').textContent = `live frame from /screen · epoch ${live.epoch} · revision ${live.revision} · power ${live.power ? 'on' : 'off'}${stale}`;
       nextDrawAt = nowMs + 100;
     } else {
       const showingArt = STATUS.base === 'art' && STATUS.overlay === 'none' && !local.pending;
@@ -566,11 +569,16 @@ async function sendInput(control, event, steps) {
     toast(steps !== undefined ? `${control} ${event} ×${steps}` : `${control} ${event}`);
   } catch (e) { toast(e.message, true); }
 }
+function readSteps() {
+  const v = +$('ksteps').value;
+  if (!Number.isInteger(v) || v < 1 || v > 16) { toast('steps must be 1 to 16', true); return null; }
+  return v;
+}
 $('ctlLeft').addEventListener('click', () => sendInput('left', 'click'));
 $('ctlMiddle').addEventListener('click', () => sendInput('middle', 'click'));
 $('ctlRight').addEventListener('click', () => sendInput('right', 'click'));
-$('knobCcw').addEventListener('click', () => sendInput('rotary', 'ccw', +$('ksteps').value || 1));
-$('knobCw').addEventListener('click', () => sendInput('rotary', 'cw', +$('ksteps').value || 1));
+$('knobCcw').addEventListener('click', () => { const v = readSteps(); if (v !== null) sendInput('rotary', 'ccw', v); });
+$('knobCw').addEventListener('click', () => { const v = readSteps(); if (v !== null) sendInput('rotary', 'cw', v); });
 $('knobPress').addEventListener('click', () => sendInput('knob', $('knobLong').checked ? 'long' : 'click'));
 
 /* ---------- notification ---------- */
@@ -771,7 +779,7 @@ async function loadAll() {
   setConn('', 'connecting…');
   try {
     STATUS = null;
-    liveUnavailable = false; local.live = null;
+    liveUnavailable = false; local.live = null; screenFailStreak = 0;
     logNext = 0; logLines = []; renderLogs();
     STATUS = await call('GET', 'status'); onStatus(null);
     SCENES = await call('GET', 'scenes');
