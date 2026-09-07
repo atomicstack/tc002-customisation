@@ -153,6 +153,15 @@ input[type=file]{font:12px var(--body);color:var(--muted);max-width:220px}
 .inline{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
 .rev{font-family:var(--data);font-size:12px;color:var(--muted)}
 .rev b{color:var(--warn);font-weight:600}
+
+/* v2 narrow-layout fixes: override the copied stock rules below 560/860px rather than editing them above */
+@container (max-width:860px){
+  .hero{grid-template-columns:minmax(0,1fr)}
+}
+@container (max-width:560px){
+  #host{width:100%}
+  input[type=number],input[type=file]{width:100%}
+}
 </style>
 </head>
 <body>
