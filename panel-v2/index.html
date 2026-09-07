@@ -40,10 +40,6 @@ body{margin:0;background:var(--bg);color:var(--ink);font:14px/1.5 var(--body)}
 .pill.on{color:var(--ok);border-color:color-mix(in srgb,var(--ok) 45%,transparent)}
 .pill.off{color:var(--danger);border-color:color-mix(in srgb,var(--danger) 45%,transparent)}
 .pill.warn{color:var(--warn);border-color:color-mix(in srgb,var(--warn) 45%,transparent)}
-.found{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin:-4px 0 var(--gap);font-size:12px;color:var(--muted)}
-.found .eyebrow{margin-right:2px}
-.found .btn .k{font-family:var(--data);letter-spacing:0;text-transform:none;font-weight:400;color:var(--muted);margin-left:8px}
-
 /* hero */
 .hero{display:grid;grid-template-columns:minmax(0,7fr) minmax(0,5fr);gap:var(--gap);margin-bottom:var(--gap)}
 .screen{background:radial-gradient(1px 1px at 50% 50%,#1a1f2a 0,transparent 60%) 0 0/8px 8px,var(--screen);
@@ -77,12 +73,6 @@ body{margin:0;background:var(--bg);color:var(--ink);font:14px/1.5 var(--body)}
 .now-time{font-family:var(--display);font-size:30px;font-weight:600;letter-spacing:.06em;line-height:1.1;font-variant-numeric:tabular-nums}
 .now-meta{font-family:var(--data);font-size:12px;color:var(--muted);font-variant-numeric:tabular-nums}
 .controls{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
-.knob{width:52px;height:52px;border-radius:50%;background:var(--surface-2);border:1px solid var(--line-2);position:relative;flex:none;cursor:pointer;padding:0}
-.knob::after{content:"";position:absolute;left:50%;top:6px;width:4px;height:13px;margin-left:-2px;border-radius:2px;background:var(--accent-text)}
-.knob:active{background:var(--line)}
-.knobwrap{display:flex;align-items:center;gap:6px}
-.longpress{display:inline-flex;align-items:center;gap:8px;font-size:12px;color:var(--muted);margin-left:auto}
-
 /* inputs */
 input[type=text],input[type=number],input[type=password],select{
   background:var(--surface-2);color:var(--ink);border:1px solid var(--line-2);border-radius:var(--radius-s);
@@ -119,10 +109,6 @@ input.sw:checked::after{left:19px;background:var(--accent-ink)}
 .actions{display:flex;align-items:center;gap:10px;margin-top:12px;flex-wrap:wrap}
 .note{font-size:12.5px;color:var(--muted);line-height:1.45}
 .note b{color:var(--warn);font-weight:600}
-.gainrow{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:18px}
-.gain{display:flex;flex-direction:column;gap:6px}
-.gain .eyebrow{display:flex;justify-content:space-between}
-.gain input[type=range]{width:100%}
 .list-empty{color:var(--muted);font-size:13px;padding:6px 0}
 
 #toast{position:fixed;left:50%;bottom:26px;transform:translateX(-50%) translateY(140%);
@@ -138,11 +124,12 @@ input.sw:checked::after{left:19px;background:var(--accent-ink)}
 @container (max-width:560px){
   .field{flex-wrap:wrap}
   input[type=text],input[type=password],select,input[type=range],.rangewrap{width:100%}
-  .gainrow{grid-template-columns:1fr}
 }
 @media (prefers-reduced-motion:reduce){*{transition:none!important}}
 
-/* v2 additions */
+/* v2 additions (the block above is the stock panel's style block, not verbatim: .found, .knob,
+   .knobwrap, .longpress, .gain and .gainrow are dropped — discovery and button emulation are
+   explicit non-goals of this page, and no markup here ever used them) */
 .screen canvas{width:100%;max-width:560px;aspect-ratio:52/16;display:block}
 .card.locked .field,.card.locked .actions{opacity:.45;pointer-events:none}
 .lockmsg{display:none;font-size:12px;color:var(--warn);margin:-4px 0 10px}
@@ -190,8 +177,9 @@ input[type=file]{font:12px var(--body);color:var(--muted);max-width:220px}
   </section>
 
   <div class="grid">
-    <section class="card s7">
+    <section class="card s7" id="sceneCard">
       <h2>Scene</h2>
+      <div class="lockmsg">the proxy has no control token: start serve.py with --token-file or --adb-pull</div>
       <div class="rows">
         <div class="field"><span class="lab">Base scene<span class="key">PUT /scene</span></span>
           <div class="seg" id="base" role="radiogroup" aria-label="base scene">
@@ -208,8 +196,9 @@ input[type=file]{font:12px var(--body);color:var(--muted);max-width:220px}
       <div class="actions"><span class="note">live changes to the running renderer. the settings card below is what persists across restarts.</span></div>
     </section>
 
-    <section class="card s5">
+    <section class="card s5" id="notificationCard">
       <h2>Notification</h2>
+      <div class="lockmsg">the proxy has no control token: start serve.py with --token-file or --adb-pull</div>
       <div class="rows">
         <div class="field"><label for="ntext">Text<span class="key">1–128 printable ascii</span></label>
           <span class="inline"><input type="text" id="ntext" maxlength="128" placeholder="hello" autocomplete="off"><span class="counter" id="ncount">0/128</span></span></div>
@@ -219,8 +208,9 @@ input[type=file]{font:12px var(--body);color:var(--muted);max-width:220px}
       <div class="actions"><button class="btn" id="nsend">Send notification</button></div>
     </section>
 
-    <section class="card s5">
+    <section class="card s5" id="frameCard">
       <h2>Frame</h2>
+      <div class="lockmsg">the proxy has no control token: start serve.py with --token-file or --adb-pull</div>
       <div class="rows">
         <div class="field"><label for="fcolour">Solid colour</label><input type="color" id="fcolour" value="#ff0000"></div>
         <div class="field"><label for="fimage">Image<span class="key">scaled to 52×16, cropped to fit</span></label><input type="file" id="fimage" accept="image/*"></div>
@@ -312,6 +302,7 @@ async function call(method, path, body, contentType) {
   let doc = null;
   try { doc = txt ? JSON.parse(txt) : null; } catch { doc = { raw: txt }; }
   if (!r.ok) {
+    if (r.status === 403 && doc && doc.error === 'forbidden') { lock('settingsCard', true); lock('mqttCard', true); }
     const e = new Error(doc && doc.message ? `${doc.message} (${doc.error})` : `HTTP ${r.status}`);
     e.status = r.status; e.code = doc && doc.error; throw e;
   }
@@ -368,8 +359,9 @@ function onStatus(prev) {
   renderNow(s);
   segSet('base', s.base);
   if (s.base === 'art') {
-    if (!local.art || !prev || prev.generator !== s.generator || prev.revision !== s.revision || prev.base !== 'art') {
-      // any change while art is up is either a reseed or a generator change: start a fresh local animation
+    if (!local.art || !prev || prev.generator !== s.generator || prev.base !== 'art') {
+      // a generator change (or switching to art) starts a fresh local animation; a reseed alone
+      // does not bump this condition — the reseed button reseeds the local animation directly
       local.art = new S.Art(s.generator, (Math.random() * 0xffffffff) >>> 0);
     }
     $('gen').value = s.generator;
@@ -456,8 +448,12 @@ $('base').addEventListener('click', e => { const b = e.target.closest('button');
 $('gen').addEventListener('change', () => { if (STATUS && STATUS.base === 'art') setScene('art'); });
 $('reseed').addEventListener('click', async () => {
   const seedText = $('seed').value.trim();
+  const seed = seedText === '' ? undefined : +seedText;
   try {
-    await command('POST', 'action', (id, epoch) => ({ action: 'reseed', seed: seedText === '' ? undefined : +seedText, request_id: id, epoch }));
+    await command('POST', 'action', (id, epoch) => ({ action: 'reseed', seed, request_id: id, epoch }));
+    // /status carries no seed, and its revision bump is no longer a reseed signal (a notification
+    // or a brightness change bumps it too): reseed the local animation directly instead
+    if (local.art) local.art.reseed(seed !== undefined ? seed : (Math.random() * 0xffffffff) >>> 0);
     toast('reseeded');
   } catch (e) { toast(e.message, true); }
 });
@@ -594,12 +590,14 @@ async function mqttStatus() {
   } catch (e) { $('mqttstate').textContent = 'unknown'; $('mqttstate').className = 'pill'; }
 }
 $('mapply').addEventListener('click', async () => {
+  const host = $('mhost').value.trim();
   const body = {
-    enabled: $('menabled').checked, host: $('mhost').value.trim(), port: +$('mport').value || 1883,
+    enabled: $('menabled').checked, port: +$('mport').value || 1883,
     username: $('muser').value, client_id: $('mcid').value.trim(), prefix: $('mprefix').value.trim(), tls: $('mtls').checked,
   };
+  if (host) body.host = host;   // the runtime rejects an empty host outright, even on a field it would otherwise leave unchanged
   if ($('mpwd').value) body.password = $('mpwd').value;
-  if (body.enabled && !body.host) return toast('a broker address is needed to enable mqtt', true);
+  if (body.enabled && !host) return toast('a broker address is needed to enable mqtt', true);
   try {
     showMqtt(await call('PUT', 'mqtt', body));
     toast('broker settings applied (not yet saved)');
@@ -610,11 +608,21 @@ $('mapply').addEventListener('click', async () => {
 $('mcheck').addEventListener('click', mqttStatus);
 
 /* ---------- load ---------- */
-function lock(cardId, locked) { $(cardId).classList.toggle('locked', locked); }
+// a locked card also gets `disabled` on every input/select/button: pointer-events:none (the css
+// rule) does not stop a keyboard user tabbing in and activating a control
+function lock(cardId, locked) {
+  const card = $(cardId);
+  card.classList.toggle('locked', locked);
+  card.querySelectorAll('input,select,button').forEach(el => { el.disabled = locked; });
+  // unlocking the frame card must not re-enable send/clear ahead of an actually staged image
+  if (cardId === 'frameCard' && !locked) { $('fsendimage').disabled = !stagedImage; $('fclear').disabled = !stagedImage; }
+}
 async function loadTokens() {
   try { TOKENS = await (await fetch('/tokens', { cache: 'no-store' })).json(); }
   catch { TOKENS = { control: false, admin: false }; }
-  lock('settingsCard', !TOKENS.admin); lock('mqttCard', !TOKENS.admin);
+  const noControl = !TOKENS.control;
+  lock('sceneCard', noControl); lock('notificationCard', noControl); lock('frameCard', noControl);
+  lock('settingsCard', noControl || !TOKENS.admin); lock('mqttCard', noControl || !TOKENS.admin);
 }
 async function loadAll() {
   if (!host()) { setConn('off', 'no device'); return; }
