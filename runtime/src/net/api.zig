@@ -8,6 +8,7 @@ const geometry = @import("../panel/geometry.zig");
 const arbiter = @import("../scene/arbiter.zig");
 const scene = @import("../scene/scene.zig");
 const actions = @import("../input/actions.zig");
+const clock = @import("../scene/clock.zig");
 
 pub const token_len = 32;
 pub const Token = [token_len]u8;
@@ -48,7 +49,7 @@ pub const ActionKind = enum { brightness, reseed, arm_stream, power };
 pub const Op = union(enum) {
     status,
     scenes,
-    set_scene: struct { base: Base, generator: ?scene.Generator, seed: ?u32, request_id: u64, epoch: ?u32 },
+    set_scene: struct { base: Base, generator: ?scene.Generator, seed: ?u32, style: ?clock.StylePatch, request_id: u64, epoch: ?u32 },
     action: struct { kind: ActionKind, brightness: ?u8, seed: ?u32, power: ?bool, request_id: u64, epoch: u32 },
     /// the framebuffer as shown; `raw` = octets instead of the json document
     screen: struct { raw: bool },
@@ -81,6 +82,11 @@ pub const ConfigPatch = struct {
     discovery: ?bool = null,
     discovery_prefix: ?[]const u8 = null,
     expected_revision: ?u32 = null,
+    clock_font: ?clock.Font = null,
+    clock_colour_mode: ?clock.ColourMode = null,
+    clock_colour: ?[3]u8 = null,
+    clock_colour2: ?[3]u8 = null,
+    clock_gradient: ?clock.Gradient = null,
 };
 
 pub const MqttPut = struct {
@@ -105,7 +111,8 @@ pub const Reject = struct { status: u16, code: []const u8, message: []const u8 }
 pub const Arena = [json.arena_size]u8;
 
 // json wire schemas (request bodies)
-const SceneBody = struct { base: []const u8, generator: ?[]const u8 = null, seed: ?u32 = null, request_id: []const u8, epoch: ?u32 = null };
+const ClockBody = struct { font: ?[]const u8 = null, colour_mode: ?[]const u8 = null, colour: ?[]const u8 = null, colour2: ?[]const u8 = null, gradient: ?[]const u8 = null };
+const SceneBody = struct { base: []const u8, generator: ?[]const u8 = null, seed: ?u32 = null, clock: ?ClockBody = null, request_id: []const u8, epoch: ?u32 = null };
 const ActionBody = struct { action: []const u8, brightness: ?u8 = null, seed: ?u32 = null, power: ?bool = null, request_id: []const u8, epoch: u32 };
 const InputBody = struct { control: []const u8, event: []const u8, steps: u8 = 1, request_id: []const u8, epoch: u32 };
 const NotifyBody = struct { text: []const u8, colour: ?[]const u8 = null, duration_s: u16 = 5, request_id: []const u8, epoch: u32 };
@@ -121,6 +128,11 @@ const ConfigBody = struct {
     discovery: ?bool = null,
     discovery_prefix: ?[]const u8 = null,
     expected_revision: ?u32 = null,
+    clock_font: ?[]const u8 = null,
+    clock_colour_mode: ?[]const u8 = null,
+    clock_colour: ?[]const u8 = null,
+    clock_colour2: ?[]const u8 = null,
+    clock_gradient: ?[]const u8 = null,
 };
 const SaveBody = struct { revision: ?u32 = null };
 const MqttBody = struct {
@@ -292,7 +304,7 @@ pub fn route(req: http.Request, body: []const u8, creds: *const Credentials, ori
 
 pub const BodyKind = enum { scene, action, notify, config_patch, config_save, mqtt_put, input };
 
-fn enumByName(comptime E: type, text: []const u8) ?E {
+pub fn enumByName(comptime E: type, text: []const u8) ?E {
     inline for (@typeInfo(E).@"enum".fields) |f| if (std.mem.eql(u8, text, f.name)) return @enumFromInt(f.value);
     return null;
 }
@@ -317,7 +329,14 @@ pub fn parseBody(kind: BodyKind, body: []const u8, arena: *Arena) Route {
             const base = parseBase(b.base) orelse return bad("invalid_base", "base must be art, clock or ip");
             const generator: ?scene.Generator = if (b.generator) |g| (parseGenerator(g) orelse return bad("invalid_generator", "unknown generator")) else null;
             const rid = parseRequestId(b.request_id) orelse return bad("invalid_request_id", "request_id must be 1..16 hex digits");
-            return .{ .op = .{ .set_scene = .{ .base = base, .generator = generator, .seed = b.seed, .request_id = rid, .epoch = b.epoch } } };
+            var style: ?clock.StylePatch = null;
+            if (b.clock) |cb| {
+                switch (parseClockStyle(cb.font, cb.colour_mode, cb.colour, cb.colour2, cb.gradient)) {
+                    .reject => |j| return .{ .reject = j },
+                    .op => |op| style = op,
+                }
+            }
+            return .{ .op = .{ .set_scene = .{ .base = base, .generator = generator, .seed = b.seed, .style = style, .request_id = rid, .epoch = b.epoch } } };
         },
         .action => {
             const b = json.parse(ActionBody, body, arena) catch |e| return jsonError(e);
@@ -365,7 +384,16 @@ pub fn parseBody(kind: BodyKind, body: []const u8, arena: *Arena) Route {
             if (b.metrics_interval_s) |v| if (v != 0 and (v < 10 or v > 3600)) return bad("invalid_metrics_interval", "metrics_interval_s must be 0 (off) or 10..3600");
             if (b.discovery_prefix) |p| if (p.len == 0 or p.len > 64) return bad("invalid_discovery_prefix", "discovery_prefix must be 1..64 characters");
             const ntp: ?[4]u8 = if (b.ntp_server) |s| (parseIpv4(s) orelse return bad("invalid_ntp_server", "ntp_server must be a dotted ipv4 address")) else null;
+            const style = switch (parseClockStyle(b.clock_font, b.clock_colour_mode, b.clock_colour, b.clock_colour2, b.clock_gradient)) {
+                .reject => |j| return .{ .reject = j },
+                .op => |op| op,
+            };
             return .{ .op = .{ .config_patch = .{
+                .clock_font = style.font,
+                .clock_colour_mode = style.mode,
+                .clock_colour = style.colour,
+                .clock_colour2 = style.colour2,
+                .clock_gradient = style.gradient,
                 .brightness = b.brightness,
                 .base = if (b.base) |t| (parseBase(t) orelse return bad("invalid_base", "base must be art, clock or ip")) else null,
                 .generator = if (b.generator) |g| (parseGenerator(g) orelse return bad("invalid_generator", "unknown generator")) else null,
@@ -395,6 +423,18 @@ pub fn parseBody(kind: BodyKind, body: []const u8, arena: *Arena) Route {
     }
 }
 
+/// the five clock style strings, shared by `/scene` and the settings patch.
+const StyleRoute = union(enum) { op: clock.StylePatch, reject: Reject };
+fn parseClockStyle(font_text: ?[]const u8, mode_text: ?[]const u8, colour_text: ?[]const u8, colour2_text: ?[]const u8, gradient_text: ?[]const u8) StyleRoute {
+    var p = clock.StylePatch{};
+    if (font_text) |s| p.font = enumByName(clock.Font, s) orelse return .{ .reject = .{ .status = 400, .code = "invalid_font", .message = "font must be classic, mini, segment or big" } };
+    if (mode_text) |s| p.mode = enumByName(clock.ColourMode, s) orelse return .{ .reject = .{ .status = 400, .code = "invalid_colour_mode", .message = "colour_mode must be solid or gradient" } };
+    if (colour_text) |s| p.colour = parseColour(s) orelse return .{ .reject = .{ .status = 400, .code = "invalid_colour", .message = "colour must be rrggbb hex" } };
+    if (colour2_text) |s| p.colour2 = parseColour(s) orelse return .{ .reject = .{ .status = 400, .code = "invalid_colour2", .message = "colour2 must be rrggbb hex" } };
+    if (gradient_text) |s| p.gradient = enumByName(clock.Gradient, s) orelse return .{ .reject = .{ .status = 400, .code = "invalid_gradient", .message = "gradient must be horizontal, vertical or diagonal" } };
+    return .{ .op = p };
+}
+
 pub fn parseIpv4(text: []const u8) ?[4]u8 {
     var out: [4]u8 = undefined;
     var it = std.mem.splitScalar(u8, text, '.');
@@ -408,7 +448,7 @@ pub fn parseIpv4(text: []const u8) ?[4]u8 {
 }
 
 /// the `scenes` document is static.
-pub const scenes_body = "{\"bases\":[\"art\",\"clock\",\"ip\"],\"generators\":[{\"index\":0,\"name\":\"popsquares\",\"parameters\":{\"seed\":\"u32\"}},{\"index\":1,\"name\":\"plasma\",\"parameters\":{\"seed\":\"u32\"}}],\"notify\":{\"text_max\":128,\"duration_s\":[1,300]},\"frame\":{\"bytes\":2496,\"duration_s\":[1,300]}}";
+pub const scenes_body = "{\"bases\":[\"art\",\"clock\",\"ip\"],\"generators\":[{\"index\":0,\"name\":\"popsquares\",\"parameters\":{\"seed\":\"u32\"}},{\"index\":1,\"name\":\"plasma\",\"parameters\":{\"seed\":\"u32\"}}],\"clock\":{\"fonts\":[\"classic\",\"mini\",\"segment\",\"big\"],\"colour_modes\":[\"solid\",\"gradient\"],\"gradients\":[\"horizontal\",\"vertical\",\"diagonal\"],\"max_spread\":96},\"notify\":{\"text_max\":128,\"duration_s\":[1,300]},\"frame\":{\"bytes\":2496,\"duration_s\":[1,300]}}";
 
 // tests
 
@@ -479,6 +519,15 @@ test "notify and scene bodies become typed operations with validation" {
     try std.testing.expectEqual(Base.art, s.op.set_scene.base);
     try std.testing.expectEqual(scene.Generator.plasma, s.op.set_scene.generator.?);
     try std.testing.expectEqual(@as(?u32, null), s.op.set_scene.epoch);
+    try std.testing.expect(s.op.set_scene.style == null);
+    const cs = route(testReq(.PUT, "/api/v1/scene", "", control_header, "application/json", null), "{\"base\":\"clock\",\"clock\":{\"font\":\"big\",\"colour_mode\":\"gradient\",\"colour\":\"ff8000\",\"colour2\":\"#ffc000\"},\"request_id\":\"7\"}", &c, &origins, &arena);
+    try std.testing.expectEqual(clock.Font.big, cs.op.set_scene.style.?.font.?);
+    try std.testing.expectEqual(clock.ColourMode.gradient, cs.op.set_scene.style.?.mode.?);
+    try std.testing.expectEqual([3]u8{ 0xff, 0xc0, 0x00 }, cs.op.set_scene.style.?.colour2.?);
+    try std.testing.expect(cs.op.set_scene.style.?.gradient == null);
+    try expectReject(route(testReq(.PUT, "/api/v1/scene", "", control_header, "application/json", null), "{\"base\":\"clock\",\"clock\":{\"font\":\"comic\"},\"request_id\":\"7\"}", &c, &origins, &arena), 400, "invalid_font");
+    try expectReject(route(testReq(.PUT, "/api/v1/scene", "", control_header, "application/json", null), "{\"base\":\"clock\",\"clock\":{\"gradient\":\"radial\"},\"request_id\":\"7\"}", &c, &origins, &arena), 400, "invalid_gradient");
+    try expectReject(route(testReq(.PUT, "/api/v1/scene", "", control_header, "application/json", null), "{\"base\":\"clock\",\"clock\":{\"colour\":\"red\"},\"request_id\":\"7\"}", &c, &origins, &arena), 400, "invalid_colour");
     const a = route(testReq(.POST, "/api/v1/action", "", control_header, "application/json", null), "{\"action\":\"brightness\",\"brightness\":40,\"request_id\":\"8\",\"epoch\":2}", &c, &origins, &arena);
     try std.testing.expectEqual(ActionKind.brightness, a.op.action.kind);
     const pw = route(testReq(.POST, "/api/v1/action", "", control_header, "application/json", null), "{\"action\":\"power\",\"power\":false,\"request_id\":\"9\",\"epoch\":2}", &c, &origins, &arena);
@@ -512,6 +561,11 @@ test "config, mqtt and streams routes" {
     try std.testing.expectEqual([4]u8{ 10, 0, 0, 5 }, p.op.config_patch.ntp_server.?);
     try std.testing.expectEqual(@as(?u32, 4), p.op.config_patch.expected_revision);
     try expectReject(route(testReq(.PATCH, "/api/v1/config", "", admin_header, "application/json", null), "{\"ntp_server\":\"time.example\"}", &c, &origins, &arena), 400, "invalid_ntp_server");
+    const cp = route(testReq(.PATCH, "/api/v1/config", "", admin_header, "application/json", null), "{\"clock_font\":\"segment\",\"clock_colour_mode\":\"gradient\",\"clock_colour\":\"00ff80\",\"clock_gradient\":\"vertical\"}", &c, &origins, &arena);
+    try std.testing.expectEqual(clock.Font.segment, cp.op.config_patch.clock_font.?);
+    try std.testing.expectEqual(clock.Gradient.vertical, cp.op.config_patch.clock_gradient.?);
+    try std.testing.expect(cp.op.config_patch.clock_colour2 == null);
+    try expectReject(route(testReq(.PATCH, "/api/v1/config", "", admin_header, "application/json", null), "{\"clock_colour_mode\":\"rainbow\"}", &c, &origins, &arena), 400, "invalid_colour_mode");
     try std.testing.expect(route(testReq(.POST, "/api/v1/config/save", "", admin_header, "application/json", null), "", &c, &origins, &arena).op == .config_save);
     const m = route(testReq(.PUT, "/api/v1/mqtt", "", admin_header, "application/json", null), "{\"host\":\"10.0.0.2\",\"port\":1883,\"username\":\"tc002\",\"password\":\"Secret1\",\"enabled\":true}", &c, &origins, &arena);
     try std.testing.expectEqualStrings("Secret1", m.op.mqtt_put.password.?);

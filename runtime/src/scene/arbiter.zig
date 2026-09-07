@@ -163,6 +163,21 @@ test "transitions mark scene changes and notification edges, never raw frames or
     try std.testing.expect(!a.takeTransition());
 }
 
+test "a clock restyle merges fields, bumps only on change, and cross-fades while the clock shows" {
+    var a = fresh();
+    try std.testing.expectEqual(Result{ .applied = 0 }, a.apply(.{ .set_clock_style = .{} }, 0));
+    try std.testing.expectEqual(Result{ .applied = 1 }, a.apply(.{ .set_clock_style = .{ .font = .big } }, 0));
+    _ = a.takeTransition();
+    try std.testing.expect(!a.takeTransition()); // art is showing: no visible change, no fade
+    _ = a.apply(.{ .set_base = .clock }, 0);
+    _ = a.takeTransition();
+    try std.testing.expectEqual(Result{ .applied = 3 }, a.apply(.{ .set_clock_style = .{ .colour = .{ 1, 2, 3 } } }, 0));
+    try std.testing.expect(a.takeTransition());
+    try std.testing.expectEqual(clock.Font.big, a.clock.style.font);
+    try std.testing.expectEqual([3]u8{ 1, 2, 3 }, a.clock.style.colour);
+    try std.testing.expectEqual(Result{ .applied = 3 }, a.apply(.{ .set_clock_style = .{ .colour = .{ 1, 2, 3 } } }, 0));
+}
+
 test "power is a command that bumps the revision only when it changes" {
     var a = fresh();
     try std.testing.expect(a.power);
@@ -226,6 +241,8 @@ pub const Command = union(enum) {
     ip_changed: ?[4]u8,
     /// display power: off keeps every scene decision but the renderer shows black.
     power: bool,
+    /// a partial restyle of the clock (font, colours); a visible change cross-fades.
+    set_clock_style: clock.StylePatch,
 };
 
 pub const Reject = enum { invalid_text, invalid_duration, invalid_brightness };
@@ -299,6 +316,13 @@ pub const Arbiter = struct {
             .power => |on| {
                 if (on == self.power) return .{ .applied = self.revision };
                 self.power = on;
+                return .{ .applied = self.bump() };
+            },
+            .set_clock_style => |p| {
+                const before = self.clock.style;
+                self.clock.style.apply(p);
+                if (std.meta.eql(before, self.clock.style)) return .{ .applied = self.revision };
+                if (self.base == .clock and self.overlay == .none) self.transition = true;
                 return .{ .applied = self.bump() };
             },
             .raw => |r| {

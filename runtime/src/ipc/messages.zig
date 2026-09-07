@@ -5,6 +5,7 @@ const codec = @import("codec.zig");
 const geometry = @import("../panel/geometry.zig");
 const config = @import("../supervisor/config.zig");
 const api = @import("../net/api.zig");
+const clock = @import("../scene/clock.zig");
 
 test "every message kind round-trips through a packet" {
     var frame = Frame{ .duration_s = 9, .rgb = geometry.black_rgb };
@@ -14,6 +15,9 @@ test "every message kind round-trips through a packet" {
         .ready,
         .{ .result = .{ .status = .applied, .revision = 41 } },
         .{ .set_base = .{ .base = 1, .generator = 1, .seed = 0xdeadbeef } },
+        .{ .set_base = .{ .base = 1, .generator = 0, .seed = 0, .style = .{ .has = 0x1f, .font = 3, .mode = 1, .colour = .{ 1, 2, 3 }, .colour2 = .{ 4, 5, 6 }, .gradient = 2 } } },
+        .{ .clock_style = ClockStyle.fromPatch(.{ .font = .segment, .colour = .{ 9, 9, 9 } }) },
+        .{ .heartbeat = .{ .presented = 1, .revision = 2, .state = 1, .clock = ClockStyle.full(.{ .font = .mini, .mode = .gradient }) } },
         .{ .notify = Notify.init("hello, panel", .{ 1, 2, 3 }, 30) },
         .{ .frame = frame },
         .{ .brightness = .{ .value = 55 } },
@@ -43,11 +47,12 @@ test "every message kind round-trips through a packet" {
         } },
         .config_get,
         .{ .config_patch = try ConfigPatch.fromApi(.{ .brightness = 3, .timezone = "UTC0", .expected_revision = 5 }) },
+        .{ .config_patch = try ConfigPatch.fromApi(.{ .clock_font = .big, .clock_colour_mode = .gradient, .clock_colour = .{ 1, 2, 3 }, .clock_colour2 = .{ 7, 8, 9 }, .clock_gradient = .vertical }) },
         .{ .config_save = .{ .has_revision = 1, .revision = 6 } },
         .{ .save_result = .{ .status = .conflict, .saved_revision = 5 } },
         .{ .mqtt_put = try MqttPut.fromApi(.{ .host = "10.0.0.2", .password = "Pw", .enabled = true }) },
         .status_get,
-        .{ .status = .{ .renderer_state = 2, .epoch = 3, .revision = 4, .presented = 5, .base = 1, .brightness = 77, .uptime_s = 8, .mem_available_kb = 14000, .cpu_pct = 12, .fps_x10 = 599, .ip_present = 1, .ip = .{ 10, 0, 0, 111 }, .config_revision = 2, .saved_revision = 1, .boot_id = 0xabcd, .sample_age_ms = 40, .mac = .{ 1, 2, 3, 4, 5, 6 }, .mac_present = 1, .load_1m_x100 = 123, .mem_free_kb = 4000, .wifi_level_dbm = -61, .wifi_quality = 49, .cpu_renderer_pct_x10 = 87, .tmpfs_used_kb = 1300, .battery_mv = 3987, .battery_pct = 80, .usb_present = 1 } },
+        .{ .status = .{ .renderer_state = 2, .epoch = 3, .revision = 4, .presented = 5, .base = 1, .brightness = 77, .uptime_s = 8, .mem_available_kb = 14000, .cpu_pct = 12, .fps_x10 = 599, .ip_present = 1, .ip = .{ 10, 0, 0, 111 }, .config_revision = 2, .saved_revision = 1, .boot_id = 0xabcd, .sample_age_ms = 40, .mac = .{ 1, 2, 3, 4, 5, 6 }, .mac_present = 1, .load_1m_x100 = 123, .mem_free_kb = 4000, .wifi_level_dbm = -61, .wifi_quality = 49, .cpu_renderer_pct_x10 = 87, .tmpfs_used_kb = 1300, .battery_mv = 3987, .battery_pct = 80, .usb_present = 1, .clock = ClockStyle.full(.{ .font = .segment }) } },
     };
     var buf: [codec.max_message]u8 = undefined;
     for (all) |m| {
@@ -62,7 +67,7 @@ test "every message kind round-trips through a packet" {
 test "fixed hex vectors" {
     var buf: [codec.max_message]u8 = undefined;
     const hb = try encodePacket(.{ .heartbeat = .{ .presented = 0x1122334455667788, .revision = 7, .state = 2 } }, 1, 2, &buf);
-    try std.testing.expectEqualSlices(u8, &unhex("54434931" ++ "01" ++ "01" ++ "0000" ++ "0000000000000001" ++ "00000002" ++ "0012" ++ "0000" ++ "1122334455667788" ++ "00000007" ++ "02" ++ "00000000" ++ "01"), hb);
+    try std.testing.expectEqualSlices(u8, &unhex("54434931" ++ "01" ++ "01" ++ "0000" ++ "0000000000000001" ++ "00000002" ++ "001c" ++ "0000" ++ "1122334455667788" ++ "00000007" ++ "02" ++ "00000000" ++ "01" ++ "0000" ++ "00" ++ "ffffff" ++ "ffffff" ++ "00"), hb);
     const st = try encodePacket(.stop, 0, 9, &buf);
     try std.testing.expectEqualSlices(u8, &unhex("54434931" ++ "01" ++ "18" ++ "0000" ++ "0000000000000000" ++ "00000009" ++ "0000" ++ "0000"), st);
     const nt = try encodePacket(.{ .notify = Notify.init("hi", .{ 0xff, 0x80, 0x00 }, 300) }, 0, 0, &buf);
@@ -73,8 +78,16 @@ test "fixed hex vectors" {
 }
 
 test "patch wire forms map back to the api view" {
-    const w = try ConfigPatch.fromApi(.{ .brightness = 3, .timezone = "JST-9", .ntp_server = .{ 9, 9, 9, 9 } });
+    const w = try ConfigPatch.fromApi(.{ .brightness = 3, .timezone = "JST-9", .ntp_server = .{ 9, 9, 9, 9 }, .clock_font = .mini, .clock_colour = .{ 5, 6, 7 } });
     const a = w.toApi();
+    try std.testing.expectEqual(@as(?clock.Font, .mini), a.clock_font);
+    try std.testing.expectEqual([3]u8{ 5, 6, 7 }, a.clock_colour.?);
+    try std.testing.expectEqual(@as(?clock.Gradient, null), a.clock_gradient);
+    const sp = ClockStyle.fromPatch(.{ .mode = .gradient, .colour2 = .{ 1, 1, 1 } }).toPatch();
+    try std.testing.expectEqual(@as(?clock.Font, null), sp.font);
+    try std.testing.expectEqual(@as(?clock.ColourMode, .gradient), sp.mode);
+    try std.testing.expectEqual([3]u8{ 1, 1, 1 }, sp.colour2.?);
+    try std.testing.expectEqual(@as(u8, 0x1f), ClockStyle.full(.{}).has);
     try std.testing.expectEqual(@as(?u8, 3), a.brightness);
     try std.testing.expectEqualStrings("JST-9", a.timezone.?);
     try std.testing.expectEqual([4]u8{ 9, 9, 9, 9 }, a.ntp_server.?);
@@ -157,6 +170,7 @@ pub const Kind = enum(u8) {
     power = 30,
     log_get = 41,
     log_lines = 42,
+    clock_style = 43,
     // supervisor <-> netd
     credentials = 32,
     config = 33,
@@ -171,7 +185,82 @@ pub const Kind = enum(u8) {
 
 pub const Status = enum(u8) { applied = 0, rejected = 1, overload = 2, stale_epoch = 3, expired = 4, unavailable = 5, timeout = 6, conflict = 7 };
 
-pub const Heartbeat = struct { presented: u64, revision: u32, state: u8, base: u8 = 0, generator: u8 = 0, overlay: u8 = 0, brightness: u8 = 0, power: u8 = 1 };
+pub const Heartbeat = struct { presented: u64, revision: u32, state: u8, base: u8 = 0, generator: u8 = 0, overlay: u8 = 0, brightness: u8 = 0, power: u8 = 1, clock: ClockStyle = .{} };
+
+/// the clock's style on the wire: a presence mask (for partial updates) and the five fields.
+pub const ClockStyle = struct {
+    has: u8 = 0,
+    font: u8 = 0,
+    mode: u8 = 0,
+    colour: [3]u8 = .{ 255, 255, 255 },
+    colour2: [3]u8 = .{ 255, 255, 255 },
+    gradient: u8 = 0,
+
+    pub const F = struct {
+        pub const font: u8 = 1 << 0;
+        pub const mode: u8 = 1 << 1;
+        pub const colour: u8 = 1 << 2;
+        pub const colour2: u8 = 1 << 3;
+        pub const gradient: u8 = 1 << 4;
+        pub const all: u8 = 0x1f;
+    };
+
+    pub const wire_len = 10;
+
+    pub fn fromPatch(p: clock.StylePatch) ClockStyle {
+        var w = ClockStyle{};
+        if (p.font) |v| {
+            w.has |= F.font;
+            w.font = @intFromEnum(v);
+        }
+        if (p.mode) |v| {
+            w.has |= F.mode;
+            w.mode = @intFromEnum(v);
+        }
+        if (p.colour) |v| {
+            w.has |= F.colour;
+            w.colour = v;
+        }
+        if (p.colour2) |v| {
+            w.has |= F.colour2;
+            w.colour2 = v;
+        }
+        if (p.gradient) |v| {
+            w.has |= F.gradient;
+            w.gradient = @intFromEnum(v);
+        }
+        return w;
+    }
+
+    pub fn full(s: clock.Style) ClockStyle {
+        return .{ .has = F.all, .font = @intFromEnum(s.font), .mode = @intFromEnum(s.mode), .colour = s.colour, .colour2 = s.colour2, .gradient = @intFromEnum(s.gradient) };
+    }
+
+    /// the patch view; fields with an unknown enum value are dropped.
+    pub fn toPatch(self: ClockStyle) clock.StylePatch {
+        const h = self.has;
+        return .{
+            .font = if (h & F.font != 0) enumFromInt(clock.Font, self.font) else null,
+            .mode = if (h & F.mode != 0) enumFromInt(clock.ColourMode, self.mode) else null,
+            .colour = if (h & F.colour != 0) self.colour else null,
+            .colour2 = if (h & F.colour2 != 0) self.colour2 else null,
+            .gradient = if (h & F.gradient != 0) enumFromInt(clock.Gradient, self.gradient) else null,
+        };
+    }
+
+    fn put(self: ClockStyle, out: []u8) void {
+        out[0] = self.has;
+        out[1] = self.font;
+        out[2] = self.mode;
+        out[3..6].* = self.colour;
+        out[6..9].* = self.colour2;
+        out[9] = self.gradient;
+    }
+
+    fn get(b: []const u8) ClockStyle {
+        return .{ .has = b[0], .font = b[1], .mode = b[2], .colour = b[3..6].*, .colour2 = b[6..9].*, .gradient = b[9] };
+    }
+};
 pub const Result = struct { status: Status, revision: u32 };
 
 /// the renderer's output as shown (after fades, before brightness and the level curve).
@@ -225,7 +314,8 @@ pub const LogLines = struct {
         return .{ .lines = self };
     }
 };
-pub const SetBase = struct { base: u8, generator: u8, seed: u32 };
+/// a base selection; a present `style` (mask non-zero) also restyles the clock in the same command.
+pub const SetBase = struct { base: u8, generator: u8, seed: u32, style: ClockStyle = .{} };
 pub const Frame = struct { duration_s: u16, rgb: geometry.Rgb };
 pub const Brightness = struct { value: u8 };
 pub const Reseed = struct { seed: u32 };
@@ -252,7 +342,7 @@ pub const Credentials = api.Credentials;
 
 /// a config patch on the wire: presence flags plus fixed fields.
 pub const ConfigPatch = struct {
-    has: u16 = 0,
+    has: u32 = 0,
     brightness: u8 = 0,
     base: u8 = 0,
     generator: u8 = 0,
@@ -264,22 +354,32 @@ pub const ConfigPatch = struct {
     discovery: u8 = 0,
     discovery_prefix: config.Text = .{},
     expected_revision: u32 = 0,
+    clock_font: u8 = 0,
+    clock_colour_mode: u8 = 0,
+    clock_colour: [3]u8 = .{ 0, 0, 0 },
+    clock_colour2: [3]u8 = .{ 0, 0, 0 },
+    clock_gradient: u8 = 0,
 
     pub const F = struct {
-        pub const brightness: u16 = 1 << 0;
-        pub const base: u16 = 1 << 1;
-        pub const generator: u16 = 1 << 2;
-        pub const timezone: u16 = 1 << 3;
-        pub const ntp_server: u16 = 1 << 4;
-        pub const ntp_interval_s: u16 = 1 << 5;
-        pub const frame_timeout_ms: u16 = 1 << 6;
-        pub const metrics_interval_s: u16 = 1 << 7;
-        pub const discovery: u16 = 1 << 8;
-        pub const discovery_prefix: u16 = 1 << 9;
-        pub const expected_revision: u16 = 1 << 10;
+        pub const brightness: u32 = 1 << 0;
+        pub const base: u32 = 1 << 1;
+        pub const generator: u32 = 1 << 2;
+        pub const timezone: u32 = 1 << 3;
+        pub const ntp_server: u32 = 1 << 4;
+        pub const ntp_interval_s: u32 = 1 << 5;
+        pub const frame_timeout_ms: u32 = 1 << 6;
+        pub const metrics_interval_s: u32 = 1 << 7;
+        pub const discovery: u32 = 1 << 8;
+        pub const discovery_prefix: u32 = 1 << 9;
+        pub const expected_revision: u32 = 1 << 10;
+        pub const clock_font: u32 = 1 << 11;
+        pub const clock_colour_mode: u32 = 1 << 12;
+        pub const clock_colour: u32 = 1 << 13;
+        pub const clock_colour2: u32 = 1 << 14;
+        pub const clock_gradient: u32 = 1 << 15;
     };
 
-    pub const wire_len = 2 + 3 + 65 + 4 + 4 + 2 + 4 + 1 + 65 + 4;
+    pub const wire_len = 4 + 3 + 65 + 4 + 4 + 2 + 4 + 1 + 65 + 4 + 9;
 
     pub fn fromApi(p: api.ConfigPatch) error{TooLong}!ConfigPatch {
         var w = ConfigPatch{};
@@ -327,6 +427,26 @@ pub const ConfigPatch = struct {
             w.has |= F.expected_revision;
             w.expected_revision = v;
         }
+        if (p.clock_font) |v| {
+            w.has |= F.clock_font;
+            w.clock_font = @intFromEnum(v);
+        }
+        if (p.clock_colour_mode) |v| {
+            w.has |= F.clock_colour_mode;
+            w.clock_colour_mode = @intFromEnum(v);
+        }
+        if (p.clock_colour) |v| {
+            w.has |= F.clock_colour;
+            w.clock_colour = v;
+        }
+        if (p.clock_colour2) |v| {
+            w.has |= F.clock_colour2;
+            w.clock_colour2 = v;
+        }
+        if (p.clock_gradient) |v| {
+            w.has |= F.clock_gradient;
+            w.clock_gradient = @intFromEnum(v);
+        }
         return w;
     }
 
@@ -345,6 +465,11 @@ pub const ConfigPatch = struct {
             .discovery = if (h & F.discovery != 0) self.discovery != 0 else null,
             .discovery_prefix = if (h & F.discovery_prefix != 0) self.discovery_prefix.slice() else null,
             .expected_revision = if (h & F.expected_revision != 0) self.expected_revision else null,
+            .clock_font = if (h & F.clock_font != 0) (enumFromInt(clock.Font, self.clock_font) orelse null) else null,
+            .clock_colour_mode = if (h & F.clock_colour_mode != 0) (enumFromInt(clock.ColourMode, self.clock_colour_mode) orelse null) else null,
+            .clock_colour = if (h & F.clock_colour != 0) self.clock_colour else null,
+            .clock_colour2 = if (h & F.clock_colour2 != 0) self.clock_colour2 else null,
+            .clock_gradient = if (h & F.clock_gradient != 0) (enumFromInt(clock.Gradient, self.clock_gradient) orelse null) else null,
         };
     }
 };
@@ -470,8 +595,10 @@ pub const StatusSnapshot = struct {
     usb_present: u8 = 255,
     // v3: display power as the renderer reports it
     power: u8 = 1,
+    // v4: the clock style as the renderer reports it (mask ignored)
+    clock: ClockStyle = .{},
 
-    pub const wire_len = 1 + 4 + 4 + 8 + 4 + 4 + 4 + 1 + 4 + 4 + 4 + 4 + 2 + 1 + 4 + 1 + 4 + 4 + 4 + 4 + 4 + (6 + 1 + 2 + 4 + 2 + 1 + 2 + 2 + 2 + 4 + 2 + 1 + 1) + 1;
+    pub const wire_len = 1 + 4 + 4 + 8 + 4 + 4 + 4 + 1 + 4 + 4 + 4 + 4 + 2 + 1 + 4 + 1 + 4 + 4 + 4 + 4 + 4 + (6 + 1 + 2 + 4 + 2 + 1 + 2 + 2 + 2 + 4 + 2 + 1 + 1) + 1 + ClockStyle.wire_len;
 };
 
 pub const Message = union(Kind) {
@@ -495,6 +622,7 @@ pub const Message = union(Kind) {
     power: Power,
     log_get: LogGet,
     log_lines: LogLines,
+    clock_style: ClockStyle,
     credentials: Credentials,
     config: config.Config,
     config_get,
@@ -520,7 +648,12 @@ fn encodePayload(msg: Message, out: []u8) usize {
             out[15] = h.overlay;
             out[16] = h.brightness;
             out[17] = h.power;
-            return 18;
+            h.clock.put(out[18..28]);
+            return 28;
+        },
+        .clock_style => |s| {
+            s.put(out[0..10]);
+            return 10;
         },
         .ready, .arm_stream, .time_corrected, .stop, .config_get, .status_get, .screen_get => return 0,
         .screen => |s| {
@@ -568,8 +701,8 @@ fn encodePayload(msg: Message, out: []u8) usize {
         },
         .config_patch => |p| {
             var o: usize = 0;
-            std.mem.writeInt(u16, out[o..][0..2], p.has, .little);
-            o += 2;
+            std.mem.writeInt(u32, out[o..][0..4], p.has, .little);
+            o += 4;
             out[o] = p.brightness;
             out[o + 1] = p.base;
             out[o + 2] = p.generator;
@@ -588,6 +721,12 @@ fn encodePayload(msg: Message, out: []u8) usize {
             putText(out, &o, p.discovery_prefix);
             std.mem.writeInt(u32, out[o..][0..4], p.expected_revision, .little);
             o += 4;
+            out[o] = p.clock_font;
+            out[o + 1] = p.clock_colour_mode;
+            out[o + 2 ..][0..3].* = p.clock_colour;
+            out[o + 5 ..][0..3].* = p.clock_colour2;
+            out[o + 8] = p.clock_gradient;
+            o += 9;
             return o;
         },
         .config_save => |c| {
@@ -690,6 +829,8 @@ fn encodePayload(msg: Message, out: []u8) usize {
             o += 2;
             out[o] = st.power;
             o += 1;
+            st.clock.put(out[o .. o + 10]);
+            o += 10;
             return o;
         },
         .result => |r| {
@@ -701,7 +842,8 @@ fn encodePayload(msg: Message, out: []u8) usize {
             out[0] = s.base;
             out[1] = s.generator;
             std.mem.writeInt(u32, out[2..6], s.seed, .big);
-            return 6;
+            s.style.put(out[6..16]);
+            return 16;
         },
         .notify => |n| {
             out[0..3].* = n.colour;
@@ -769,8 +911,12 @@ pub fn decodePacket(bytes: []const u8) Error!Packet {
     const p = d.payload;
     const message: Message = switch (kind) {
         .heartbeat => blk: {
-            const b = try fixed(p, 18);
-            break :blk .{ .heartbeat = .{ .presented = std.mem.readInt(u64, b[0..8], .big), .revision = std.mem.readInt(u32, b[8..12], .big), .state = b[12], .base = b[13], .generator = b[14], .overlay = b[15], .brightness = b[16], .power = b[17] } };
+            const b = try fixed(p, 28);
+            break :blk .{ .heartbeat = .{ .presented = std.mem.readInt(u64, b[0..8], .big), .revision = std.mem.readInt(u32, b[8..12], .big), .state = b[12], .base = b[13], .generator = b[14], .overlay = b[15], .brightness = b[16], .power = b[17], .clock = ClockStyle.get(b[18..28]) } };
+        },
+        .clock_style => blk: {
+            const b = try fixed(p, 10);
+            break :blk .{ .clock_style = ClockStyle.get(b) };
         },
         .screen_get => blk: {
             _ = try fixed(p, 0);
@@ -835,8 +981,8 @@ pub fn decodePacket(bytes: []const u8) Error!Packet {
             const b = try fixed(p, ConfigPatch.wire_len);
             var w = ConfigPatch{};
             var o: usize = 0;
-            w.has = std.mem.readInt(u16, b[o..][0..2], .little);
-            o += 2;
+            w.has = std.mem.readInt(u32, b[o..][0..4], .little);
+            o += 4;
             w.brightness = b[o];
             w.base = b[o + 1];
             w.generator = b[o + 2];
@@ -854,6 +1000,12 @@ pub fn decodePacket(bytes: []const u8) Error!Packet {
             o += 1;
             w.discovery_prefix = try getText(b, &o);
             w.expected_revision = std.mem.readInt(u32, b[o..][0..4], .little);
+            o += 4;
+            w.clock_font = b[o];
+            w.clock_colour_mode = b[o + 1];
+            w.clock_colour = b[o + 2 ..][0..3].*;
+            w.clock_colour2 = b[o + 5 ..][0..3].*;
+            w.clock_gradient = b[o + 8];
             break :blk .{ .config_patch = w };
         },
         .config_save => blk: {
@@ -957,6 +1109,8 @@ pub fn decodePacket(bytes: []const u8) Error!Packet {
             st.usb_present = b[o + 1];
             o += 2;
             st.power = b[o];
+            o += 1;
+            st.clock = ClockStyle.get(b[o .. o + 10]);
             break :blk .{ .status = st };
         },
         .ready => blk: {
@@ -969,8 +1123,8 @@ pub fn decodePacket(bytes: []const u8) Error!Packet {
             break :blk .{ .result = .{ .status = status, .revision = std.mem.readInt(u32, b[1..5], .big) } };
         },
         .set_base => blk: {
-            const b = try fixed(p, 6);
-            break :blk .{ .set_base = .{ .base = b[0], .generator = b[1], .seed = std.mem.readInt(u32, b[2..6], .big) } };
+            const b = try fixed(p, 16);
+            break :blk .{ .set_base = .{ .base = b[0], .generator = b[1], .seed = std.mem.readInt(u32, b[2..6], .big), .style = ClockStyle.get(b[6..16]) } };
         },
         .notify => blk: {
             if (p.len < 6) return error.BadPayload;

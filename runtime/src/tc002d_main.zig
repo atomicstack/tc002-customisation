@@ -177,6 +177,7 @@ const Renderer = struct {
             .overlay = overlay,
             .brightness = arb.brightness,
             .power = @intFromBool(arb.power),
+            .clock = messages.ClockStyle.full(arb.clock.style),
         } }, 0);
     }
 
@@ -243,8 +244,10 @@ const Renderer = struct {
                     if (messages.enumFromInt(scene.Generator, s.generator)) |g| r = arb.apply(.{ .select_generator = g }, now);
                     if (s.seed != 0) r = arb.apply(.{ .reseed = s.seed }, now);
                 }
+                if (s.style.has != 0) r = arb.apply(.{ .set_clock_style = s.style.toPatch() }, now);
                 break :blk r;
             },
+            .clock_style => |cs| arb.apply(.{ .set_clock_style = cs.toPatch() }, now),
             .notify => |n| arb.apply(.{ .notify = .{ .text = n.slice(), .colour = n.colour, .duration_s = n.duration_s } }, now),
             .frame => |f| arb.apply(.{ .raw = .{ .rgb = &f.rgb, .duration_s = f.duration_s } }, now),
             .brightness => |b| arb.apply(.{ .brightness = b.value }, now),

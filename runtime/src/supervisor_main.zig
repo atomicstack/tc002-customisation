@@ -436,6 +436,7 @@ const Supervisor = struct {
         if (before.brightness != c.brightness) self.send(.{ .brightness = .{ .value = c.brightness } });
         if (before.base != c.base or before.generator != c.generator) self.send(.{ .set_base = .{ .base = c.base, .generator = c.generator, .seed = 0 } });
         if (!std.mem.eql(u8, before.timezone.slice(), c.timezone.slice())) self.send(.{ .set_timezone = c.timezone });
+        if (!std.meta.eql(before.clockStyle(), c.clockStyle())) self.send(.{ .clock_style = messages.ClockStyle.full(c.clockStyle()) });
         if (!std.meta.eql(before.ntp_server, c.ntp_server) or before.ntp_interval_s != c.ntp_interval_s) self.sntp_link.configure(self, sys.monotonicNs()); // sntp
         self.snapshot.config_revision = c.revision;
         self.snapshot.saved_revision = c.saved_revision;
@@ -538,7 +539,7 @@ const Supervisor = struct {
                     ring.page(g.after, &page);
                     self.sendNetd(.{ .log_lines = page }, p.request_id);
                 },
-                .set_base, .notify, .frame, .brightness, .reseed, .arm_stream, .screen_get, .inject_input, .power => {
+                .set_base, .notify, .frame, .brightness, .reseed, .arm_stream, .screen_get, .inject_input, .power, .clock_style => {
                     if (self.child_fd == null or lifecycle.state != .running) {
                         self.relayResult(p.request_id, .unavailable, self.snapshot.revision);
                         continue;
@@ -739,6 +740,7 @@ const Supervisor = struct {
         const changed = h.revision != self.snapshot.revision or h.base != self.snapshot.base or h.brightness != self.snapshot.brightness or h.overlay != self.snapshot.overlay or h.generator != self.snapshot.generator or h.power != self.snapshot.power;
         self.snapshot.revision = h.revision;
         self.snapshot.power = h.power;
+        self.snapshot.clock = h.clock;
         self.snapshot.presented = h.presented;
         self.snapshot.base = h.base;
         self.snapshot.generator = h.generator;
@@ -888,6 +890,7 @@ const Supervisor = struct {
                     self.send(.{ .brightness = .{ .value = self.cfg.brightness } });
                     self.send(.{ .set_base = .{ .base = self.cfg.base, .generator = self.cfg.generator, .seed = 0 } });
                     self.send(.{ .set_timezone = self.cfg.timezone });
+                    self.send(.{ .clock_style = messages.ClockStyle.full(self.cfg.clockStyle()) });
                     self.snapshot.epoch = lifecycle.epoch;
                     self.snapshot.renderer_state = 2;
                     for (&self.relays) |*r| r.used = false;

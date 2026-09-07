@@ -16,6 +16,7 @@ const config = @import("supervisor/config.zig");
 const geometry = @import("panel/geometry.zig");
 const scene = @import("scene/scene.zig");
 const actions = @import("input/actions.zig");
+const clock = @import("scene/clock.zig");
 
 const linux = std.os.linux;
 
@@ -379,7 +380,7 @@ const Netd = struct {
                 self.respond(c, 200, "application/json", api.scenes_body);
                 self.flushConn(c, now);
             },
-            .set_scene => |s| self.relay(c, .{ .set_base = .{ .base = @intFromEnum(s.base), .generator = if (s.generator) |g| @intFromEnum(g) else 0xff, .seed = s.seed orelse 0 } }, s.request_id, s.epoch orelse 0, now),
+            .set_scene => |s| self.relay(c, .{ .set_base = .{ .base = @intFromEnum(s.base), .generator = if (s.generator) |g| @intFromEnum(g) else 0xff, .seed = s.seed orelse 0, .style = if (s.style) |st| messages.ClockStyle.fromPatch(st) else .{} } }, s.request_id, s.epoch orelse 0, now),
             .action => |a| switch (a.kind) {
                 .brightness => self.relay(c, .{ .brightness = .{ .value = a.brightness.? } }, a.request_id, a.epoch, now),
                 .reseed => self.relay(c, .{ .reseed = .{ .seed = a.seed orelse @truncate(now ^ a.request_id) } }, a.request_id, a.epoch, now),
@@ -558,7 +559,7 @@ const Netd = struct {
     }
 
     fn onStatus(self: *Netd, request_id: u64, st: messages.StatusSnapshot, now: u64) void {
-        const changed = st.revision != self.status.revision or st.epoch != self.status.epoch or st.renderer_state != self.status.renderer_state or st.base != self.status.base or st.brightness != self.status.brightness or st.overlay != self.status.overlay or st.power != self.status.power;
+        const changed = st.revision != self.status.revision or st.epoch != self.status.epoch or st.renderer_state != self.status.renderer_state or st.base != self.status.base or st.brightness != self.status.brightness or st.overlay != self.status.overlay or st.power != self.status.power or !std.meta.eql(st.clock, self.status.clock);
         self.status = st;
         self.status_at_ns = now;
         if (changed) self.state_dirty = true;
@@ -687,6 +688,15 @@ const Netd = struct {
         };
     }
 
+    fn enumName(comptime E: type, value: u8) []const u8 {
+        return if (messages.enumFromInt(E, value)) |v| @tagName(v) else "unknown";
+    }
+
+    /// the clock style as `{"font","colour_mode","colour","colour2","gradient"}`.
+    fn clockJson(o: *Out, s: messages.ClockStyle) void {
+        o.fmt("{{\"font\":\"{s}\",\"colour_mode\":\"{s}\",\"colour\":\"{x:0>2}{x:0>2}{x:0>2}\",\"colour2\":\"{x:0>2}{x:0>2}{x:0>2}\",\"gradient\":\"{s}\"}}", .{ enumName(clock.Font, s.font), enumName(clock.ColourMode, s.mode), s.colour[0], s.colour[1], s.colour[2], s.colour2[0], s.colour2[1], s.colour2[2], enumName(clock.Gradient, s.gradient) });
+    }
+
     /// fps is only meaningful against a continuous cadence: art with no overlay. otherwise null.
     fn fpsJson(self: *Netd, o: *Out) void {
         const st = self.status;
@@ -704,7 +714,9 @@ const Netd = struct {
         if (st.ip_present != 0) o.fmt("\"{d}.{d}.{d}.{d}\"", .{ st.ip[0], st.ip[1], st.ip[2], st.ip[3] }) else o.add("null");
         o.fmt("}},\"time\":{{\"state\":\"{s}\",\"age_s\":", .{timeStateName(st.time_state)});
         if (st.time_age_s == 0xffffffff) o.add("null") else o.fmt("{d}", .{st.time_age_s});
-        o.fmt("}},\"config_revision\":{d},\"saved_revision\":{d},\"transport\":\"plaintext\",\"mqtt\":", .{ st.config_revision, st.saved_revision });
+        o.add("},\"clock\":");
+        clockJson(o, st.clock);
+        o.fmt(",\"config_revision\":{d},\"saved_revision\":{d},\"transport\":\"plaintext\",\"mqtt\":", .{ st.config_revision, st.saved_revision });
         self.mqttStatusJson(o, now);
         o.fmt(",\"boot_id\":\"{x:0>8}\",\"sample_age_ms\":{d},", .{ st.boot_id, st.sample_age_ms + @as(u32, @intCast(@min((now -| self.status_at_ns) / 1_000_000, 0xffffffff))) });
         self.telemetryJson(o);
@@ -733,7 +745,9 @@ const Netd = struct {
         if (c.ntp_server) |s| o.fmt("\"{d}.{d}.{d}.{d}\"", .{ s[0], s[1], s[2], s[3] }) else o.add("null");
         o.fmt(",\"interval_s\":{d}}},\"frame_timeout_ms\":{d},\"metrics_interval_s\":{d},\"discovery\":{{\"enabled\":{},\"prefix\":", .{ c.ntp_interval_s, c.frame_timeout_ms, c.metrics_interval_s, c.discovery });
         o.str(c.discovery_prefix.slice());
-        o.add("},\"allowed_origins\":[");
+        o.add("},\"clock\":");
+        clockJson(o, messages.ClockStyle.full(c.clockStyle()));
+        o.add(",\"allowed_origins\":[");
         for (c.origins[0..c.origin_count], 0..) |*org, i| {
             if (i > 0) o.add(",");
             o.str(org.slice());
@@ -1089,7 +1103,7 @@ const Netd = struct {
                 self.mqttPublish("result", o.slice(), 0, false);
             },
             .op => |op| switch (op) {
-                .set_scene => |s| self.mqttRelay(.{ .set_base = .{ .base = @intFromEnum(s.base), .generator = if (s.generator) |g| @intFromEnum(g) else 0xff, .seed = s.seed orelse 0 } }, s.request_id, s.epoch orelse 0, now),
+                .set_scene => |s| self.mqttRelay(.{ .set_base = .{ .base = @intFromEnum(s.base), .generator = if (s.generator) |g| @intFromEnum(g) else 0xff, .seed = s.seed orelse 0, .style = if (s.style) |st| messages.ClockStyle.fromPatch(st) else .{} } }, s.request_id, s.epoch orelse 0, now),
                 .action => |a| switch (a.kind) {
                     .brightness => self.mqttRelay(.{ .brightness = .{ .value = a.brightness.? } }, a.request_id, a.epoch, now),
                     .reseed => self.mqttRelay(.{ .reseed = .{ .seed = a.seed orelse @truncate(now ^ a.request_id) } }, a.request_id, a.epoch, now),
@@ -1100,7 +1114,7 @@ const Netd = struct {
                 .notify => |n| self.mqttRelay(.{ .notify = messages.Notify.init(n.text, n.colour, n.duration_s) }, n.request_id, n.epoch, now),
                 .config_patch => |cp| {
                     // the control subset only: transient brightness and scene parameters
-                    const admin_fields = cp.timezone != null or cp.ntp_server != null or cp.ntp_interval_s != null or cp.frame_timeout_ms != null or cp.metrics_interval_s != null or cp.discovery != null or cp.discovery_prefix != null;
+                    const admin_fields = cp.timezone != null or cp.ntp_server != null or cp.ntp_interval_s != null or cp.frame_timeout_ms != null or cp.metrics_interval_s != null or cp.discovery != null or cp.discovery_prefix != null or cp.clock_font != null or cp.clock_colour_mode != null or cp.clock_colour != null or cp.clock_colour2 != null or cp.clock_gradient != null;
                     if (admin_fields) {
                         var o = Out{ .buf = &json_buf };
                         o.add("{\"status\":\"rejected\",\"error\":\"admin_only\",\"message\":\"durable settings are administered over http\"}");

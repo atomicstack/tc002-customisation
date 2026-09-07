@@ -9,6 +9,7 @@ test {
     _ = @import("scene/plasma.zig");
     _ = @import("scene/font.zig");
     _ = @import("scene/tz.zig");
+    _ = @import("scene/clockfont.zig");
     _ = @import("scene/clock.zig");
     _ = @import("scene/ip.zig");
     _ = @import("input/evdev.zig");
