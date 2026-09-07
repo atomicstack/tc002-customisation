@@ -105,14 +105,20 @@ runtime does not broadcast on udp/55555. `serve.py` serves the page and
 proxies `/api/<device-ip>/v1/<endpoint>` to the device's `/api/v1/<endpoint>`,
 adding the bearer token the route needs, so the browser never holds a token
 and only talks to its own origin. `--adb-pull` takes `--serial <adb-serial>`
-to pick the device when several are attached. the preview is simulated from the
-runtime's status (its own font, layout and generators ported to javascript),
-so the clock and ip are exact, notifications and frames are exact only when
-this page sent them (otherwise they are shown as unknown), and the art shows
-the same algorithm with a local seed. `mock-device.py` is a stand-in for
-developing without a device.
+to pick the device when several are attached. the preview is the live frame
+from `/screen` when the runtime offers that route (exact, as shown after
+fades, before brightness); against `mock-device.py` and older builds without
+it, the page falls back to a simulation of the runtime's status (its own
+font, layout and generators ported to javascript), so the clock and ip are
+exact, notifications and frames are exact only when this page sent them
+(otherwise they are shown as unknown), and the art shows the same algorithm
+with a local seed. the controls card drives the physical buttons, knob and
+rotary remotely through `/input`; the scene card's power switch fades the
+display through `/action`; and the logs card follows the runtime's log ring
+through `/logs`. `mock-device.py` is a stand-in for developing without a
+device.
 
-![the panel-v2 console: a simulated clock preview above cards for status, scene, notifications, frames, settings and mqtt](panel-v2/screenshots/console.png)
+![the panel-v2 console: a simulated clock preview above cards for status, remote controls, scene, notifications, frames, settings, mqtt and the log ring](panel-v2/screenshots/console.png)
 
 <img src="panel-v2/screenshots/console-narrow.png" width="330" alt="the panel-v2 console at phone width, stacked into a single column">
 
