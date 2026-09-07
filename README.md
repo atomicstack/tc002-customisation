@@ -101,7 +101,11 @@ cd panel-v2 && /usr/bin/python3 serve.py 8777 --token-file ../tokens
 
 only for a device running the runtime in [`RUNTIME.md`](RUNTIME.md); the stock
 app's console is `panel/`. the address is typed or given as `?host=`: the
-runtime does not broadcast on udp/55555. the preview is simulated from the
+runtime does not broadcast on udp/55555. `serve.py` serves the page and
+proxies `/api/<device-ip>/v1/<endpoint>` to the device's `/api/v1/<endpoint>`,
+adding the bearer token the route needs, so the browser never holds a token
+and only talks to its own origin. `--adb-pull` takes `--serial <adb-serial>`
+to pick the device when several are attached. the preview is simulated from the
 runtime's status (its own font, layout and generators ported to javascript),
 so the clock, ip, notifications and frames are exact and the art shows the
 same algorithm with a local seed. `mock-device.py` is a stand-in for
