@@ -7,15 +7,16 @@ the reel ends by putting back the scene that was showing; durable settings are n
   tc002-demo.py -s <device-ip> [--token-file FILE | --token HEX] [options]
 
   --ms N          transition duration in ms, 0..5000 (default 800)
-  --exit MODE     how each notification leaves: reverse (the paired effect backing out the way it
-                  came, default), same (the paired effect continuing the same way), none (a cut),
-                  or all: play each effect three times, once per exit mode
-  --direction D   left, right, up or down for every step, instead of the reel's own choices
   --hold S        seconds each notification stays before it leaves, 1..300 (default 2)
-  --only LIST     a comma-separated subset of effects, played in that order
+  --only STEPS    a comma-separated subset of effects, played in that order; each may carry its own
+                  direction and exit after colons in any order, e.g. swipe_in:same:up,flip:none
   --loop          play the reel again until interrupted (ctrl-c restores the scene)
   --no-scenes     notifications only: leave the base scene alone
-  --list          print the reel (effect, direction, label) and exit
+  --list          print the reel (effect, direction, exit, label) and exit
+
+each step of the reel has its own direction and its own exit (how its notification leaves): reverse
+is the paired effect backing out the way it came, same is the paired effect continuing the same way,
+none is a cut. edit the REEL table below to change them, or override a step with --only.
 
 labels are at most 8 characters so they sit still in the notification font (52 px wide, 6 px per
 character); the terminal prints the full effect name as each step plays.
@@ -25,24 +26,26 @@ import argparse, json, os, secrets, sys, time
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import tc002ctl  # noqa: e402  (the request and token helpers of the host client)
 
-# effect, direction (none = the effect's natural one), panel label, notification colour
+# effect, direction (none = the effect's natural one), exit, panel label, notification colour
 REEL = [
-    ("fade", None, "fade", "ffffff"),
-    ("cut", None, "cut", "ffc000"),
-    ("slide", "left", "slide", "00ff80"),
-    ("swipe_out", "up", "swipeout", "20a0ff"),
-    ("swipe_in", "right", "swipe in", "ff40a0"),
-    ("collapse", None, "collapse", "ff4000"),
-    ("expand", None, "expand", "40ff40"),
-    ("wipe", "down", "wipe", "c040ff"),
-    ("dissolve", None, "dissolve", "ffff40"),
-    ("split_out", "left", "splitout", "40c0ff"),
-    ("split_in", "up", "split in", "ff8040"),
-    ("blinds", "down", "blinds", "80ff80"),
-    ("flip", "left", "flip", "ff60ff"),
-    ("rain", "down", "rain", "60c0ff"),
-    ("rain_random", "down", "rain rnd", "ffa0ff"),
+    ("fade", None, "reverse", "fade", "ffffff"),
+    ("cut", None, "none", "cut", "ffc000"),
+    ("slide", "left", "same", "slide", "00ff80"),
+    ("swipe_out", "up", "reverse", "swipeout", "20a0ff"),
+    ("swipe_in", "right", "same", "swipe in", "ff40a0"),
+    ("collapse", None, "reverse", "collapse", "ff4000"),
+    ("expand", None, "reverse", "expand", "40ff40"),
+    ("wipe", "down", "same", "wipe", "c040ff"),
+    ("dissolve", None, "reverse", "dissolve", "ffff40"),
+    ("split_out", "left", "reverse", "splitout", "40c0ff"),
+    ("split_in", "up", "same", "split in", "ff8040"),
+    ("blinds", "down", "same", "blinds", "80ff80"),
+    ("flip", "left", "reverse", "flip", "ff60ff"),
+    ("rain", "down", "none", "rain", "60c0ff"),
+    ("rain_random", "down", "same", "rain rnd", "ffa0ff"),
 ]
+DIRECTIONS = ("left", "right", "up", "down")
+EXITS = {"reverse": "leaves the other way", "same": "leaves the same way", "none": "cuts away"}
 OTHER_BASE = {"clock": "art", "art": "clock", "ip": "clock"}
 
 
@@ -86,24 +89,39 @@ def notify(args, token, text, colour, hold, effect, direction, ms, exit_mode):
     request(args, token, "POST", "/notify", body)
 
 
-LEAVES = {"reverse": "leaves the other way", "same": "leaves the same way", "none": "cuts away"}
+def parse_steps(text):
+    """--only: effect[:direction][:exit] items, the extras in any order, over the reel's entry."""
+    by_name = {e[0]: e for e in REEL}
+    steps = []
+    for item in text.split(","):
+        parts = [x.strip() for x in item.split(":") if x.strip()]
+        if not parts:
+            continue
+        if parts[0] not in by_name:
+            die(f"unknown effect {parts[0]!r}; the reel knows {', '.join(by_name)}")
+        effect, direction, exit_mode, label, colour = by_name[parts[0]]
+        for extra in parts[1:]:
+            if extra in DIRECTIONS:
+                direction = extra
+            elif extra in EXITS:
+                exit_mode = extra
+            else:
+                die(f"{item!r}: {extra!r} is neither a direction ({', '.join(DIRECTIONS)}) nor an exit ({', '.join(EXITS)})")
+        steps.append((effect, direction, exit_mode, label, colour))
+    return steps
 
 
 def play(args, token, reel, start_base, generator):
     base = start_base
-    exits = list(LEAVES) if args.exit == "all" else [args.exit]
-    for effect, direction, label, colour in reel:
-        if args.direction:
-            direction = args.direction
+    for effect, direction, exit_mode, label, colour in reel:
         if not args.no_scenes:
             base = OTHER_BASE[base]
             print(f"  scene -> {base:5s}  {describe(effect, direction, args.ms)}")
             set_scene(args, token, base, generator, effect, direction, args.ms)
             time.sleep(args.ms / 1000 + 0.7)
-        for exit_mode in exits:
-            print(f"  notify {label!r:11s} {describe(effect, direction, args.ms)}; exit {exit_mode}: {LEAVES[exit_mode]}")
-            notify(args, token, label, colour, args.hold, effect, direction, args.ms, exit_mode)
-            time.sleep(args.hold + args.ms / 1000 + 0.4)
+        print(f"  notify {label!r:11s} {describe(effect, direction, args.ms)}; exit {exit_mode}: {EXITS[exit_mode]}")
+        notify(args, token, label, colour, args.hold, effect, direction, args.ms, exit_mode)
+        time.sleep(args.hold + args.ms / 1000 + 0.4)
     return base
 
 
@@ -114,8 +132,6 @@ def main():
     ap.add_argument("--token-file")
     ap.add_argument("--ms", type=int, default=800)
     ap.add_argument("--hold", type=int, default=2)
-    ap.add_argument("--exit", default="reverse", choices=["reverse", "same", "none", "all"])
-    ap.add_argument("--direction", choices=["left", "right", "up", "down"])
     ap.add_argument("--only")
     ap.add_argument("--loop", action="store_true")
     ap.add_argument("--no-scenes", action="store_true")
@@ -126,21 +142,16 @@ def main():
         print(__doc__.strip())
         return 0
     if a.list:
-        for effect, direction, label, colour in REEL:
-            print(f"{effect:12s} {direction or '(natural)':10s} {label!r:11s} #{colour}")
+        for effect, direction, exit_mode, label, colour in REEL:
+            print(f"{effect:12s} {direction or '(natural)':10s} {exit_mode:8s} {label!r:11s} #{colour}")
         return 0
     if not 0 <= a.ms <= 5000:
         die("--ms must be 0..5000")
     if not 1 <= a.hold <= 300:
         die("--hold must be 1..300")
-    reel = REEL
-    if a.only:
-        by_name = {e[0]: e for e in REEL}
-        wanted = [w.strip() for w in a.only.split(",") if w.strip()]
-        unknown = [w for w in wanted if w not in by_name]
-        if unknown:
-            die(f"unknown effect(s) {', '.join(unknown)}; the reel knows {', '.join(by_name)}")
-        reel = [by_name[w] for w in wanted]
+    reel = parse_steps(a.only) if a.only else REEL
+    if not reel:
+        die("--only names no steps")
 
     token = tc002ctl.load_token(a, False)
     catalogue = request(a, token, "GET", "/scenes").get("transitions", {}).get("effects")
@@ -153,7 +164,7 @@ def main():
     start_base, generator = status.get("base", "clock"), status.get("generator") or "plasma"
     if status.get("power") is False:
         print("note: display power is off; the reel will play unseen (tc002ctl.py power on)")
-    print(f"demo reel: {len(reel)} effects, {a.ms} ms each, notifications hold {a.hold} s and exit {a.exit}; starting from {start_base}")
+    print(f"demo reel: {len(reel)} steps, {a.ms} ms each, notifications hold {a.hold} s; starting from {start_base}")
     base = start_base
     try:
         while True:
