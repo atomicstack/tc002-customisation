@@ -214,7 +214,7 @@ usage: tc002d [options]
   --seed N            art seed, 0 = from the clock (0)
   --brightness N      1..100 (100)
   --seconds S         stop after s seconds, 0 = run until stopped (0)
-  --crossfade-ms N    cross-fade between scenes, 0..5000, 0 = none (500)
+  --crossfade-ms N    default transition, a cross-fade, 0..5000 ms, 0 = none (500)
   --power-fade-ms N   fade to and from black on power changes, 0..5000 (600)
   --dry-run           never open spidev/gpio; model the panel only
   --stats             log achieved cadence every 5 s
@@ -238,7 +238,7 @@ the visible output is one **base** scene plus at most one temporary
 | overlay | bounds | behaviour |
 |---------|--------|-----------|
 | notification | 1–128 printable ascii characters, a colour, 1–300 s | centred if it fits; otherwise scrolls in from the right one pixel per 33 ms and wraps |
-| raw frame | exactly 2,496 rgb888 bytes (52×16×3), 1–300 s | shown as-is |
+| raw frame | exactly 2,496 rgb888 bytes (52×16×3), 1–300 s | shown as-is; switches at once unless the request names a [transition](#transitions) |
 | stream arming | 2 s | a placeholder for the streaming feature; falls back to the base when nothing arrives |
 
 a new notification or frame replaces the current overlay; expiry reveals the
@@ -252,10 +252,61 @@ land on 50..255.
 fades the output to black over 600 ms and then stops redrawing altogether (no
 art stepping, no transfers, no cpu); on fades back in. scene selection,
 notifications and brightness keep applying while the panel is dark, so it
-shows the current state when it comes back. **cross-fades** blend the frame
-that was on the panel into the new output over 500 ms whenever the base, the
-generator or a notification changes (start or end); raw frames, reseeds and
-brightness switch at once. both durations are renderer options; 0 disables.
+shows the current state when it comes back. every visible change of scene
+runs a [transition](#transitions): by default a 500 ms cross-fade whenever
+the base, the generator or a notification changes (start or end); raw frames,
+reseeds and brightness switch at once. both durations are renderer options;
+0 disables.
+
+### transitions
+
+a scene change, a notification or a pushed frame may name how it arrives.
+`PUT /scene`, `POST /notify` and `POST /frame` (in the query, the body being
+the image) and their mqtt twins `cmd/scene`, `cmd/notify`, `cmd/frame` take
+three optional fields:
+
+| field | values | default |
+|---|---|---|
+| `transition` | one of the effects below | `fade` for scenes and notifications, `cut` for frames |
+| `direction` | `left`, `right`, `up`, `down` | the effect's natural direction: `down` for the rains, `left` otherwise |
+| `transition_ms` | 0..5000 | 500 |
+
+**direction is the way the moving content travels.** slide left moves
+everything left with the new content entering from the right; swipe in left
+pulls the new content in from the right edge over the old; swipe out left
+pushes the old content off the left edge, revealing the new underneath.
+
+| effect | what moves |
+|---|---|
+| `fade` | a cross-fade of the whole frame |
+| `cut` | nothing: the new content at once |
+| `slide` | old and new content move in tandem, the new following the old in |
+| `swipe_out` | the old content slides away; the new content sits still underneath |
+| `swipe_in` | the new content slides in over the old, which sits still |
+| `collapse` | the old content is kept inside a rectangle shrinking to the centre, both axes meeting there together; the new shows outside it |
+| `expand` | the new content grows out of the centre over the old (the reverse) |
+| `wipe` | a hard edge sweeps that way; nothing moves |
+| `dissolve` | pixels switch from old to new in a fixed pseudo-random order |
+| `split_out` | the old content parts at the centre line and both halves slide off; left/right part sideways, up/down part vertically |
+| `split_in` | both halves of the new content slide in from the edges and meet at the centre |
+| `blinds` | four slats perpendicular to the direction each wipe that way at once |
+| `flip` | the old content squashes to the centre line of the axis, then the new grows out of it; a flat card flip |
+| `rain` | columns (rows for left/right) fall that way one after another with an accelerating drop, revealing the new |
+| `rain_random` | the same with the lines starting in a pseudo-random order |
+
+a notification or pushed frame **leaves with the paired effect travelling the
+opposite way**: swipe in ↔ swipe out, split in ↔ split out, expand ↔
+collapse; the others repeat themselves. so a notification that swiped in from
+the right slides back out to the right, and one that expanded from the centre
+collapses into it. omitting the fields keeps the defaults; a request with
+`direction` or `transition_ms` alone applies them to the default effect. a
+change from the buttons or the knob always uses the default fade. the effects
+are composited in the renderer from the frame that was on the panel and the
+scene's new output; `GET /scenes` lists them under `transitions`. the mqtt
+`cmd/frame` envelope grows from 14 to 18 bytes when it carries one: `u8
+effect` (the index in that list), `u8 direction` (left 0, right 1, up 2,
+down 3), `u16 duration_ms` before the rgb bytes; over ipc the same block,
+prefixed with a presence byte, rides on `set_base`, `notify` and `frame`.
 
 ### clock styles
 
@@ -532,7 +583,7 @@ never falls back to plaintext silently. the client id defaults to
 | `result` | out | `{"request_id","status","revision","epoch"}` for every command received on `cmd/*`, or `{"status":"rejected","error","message"}` for a body that did not parse |
 | `metrics` | out, every `metrics_interval_s` | the [metrics document](#the-metrics-document) |
 | `cmd/scene`, `cmd/action`, `cmd/notify` | in, qos 1 | exactly the http json bodies |
-| `cmd/frame` | in, qos 1 | binary, 2,510 bytes big-endian: `u64 request_id`, `u32 epoch`, `u16 duration_s`, 2,496 rgb bytes |
+| `cmd/frame` | in, qos 1 | binary, 2,510 bytes big-endian: `u64 request_id`, `u32 epoch`, `u16 duration_s`, 2,496 rgb bytes; or 2,514 bytes with `u8 effect`, `u8 direction`, `u16 duration_ms` before the rgb (see [transitions](#transitions)) |
 | `cmd/config` | in, qos 1 | the control subset only: `brightness`, `base`, `generator` (transient, like `/action` and `/scene`). any durable field is answered `admin_only`; those are administered over http |
 | `cmd/input` | in, qos 1 | the `/input` json body; answered on `result` |
 | `cmd/screen` | in, qos 1 | any payload; answered on `screen` |

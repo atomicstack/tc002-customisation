@@ -21,7 +21,7 @@ pub const usage =
     \\  --seed N            art seed, 0 = from the clock (0)
     \\  --brightness N      1..100 (100)
     \\  --seconds S         stop after s seconds, 0 = run until stopped (0)
-    \\  --crossfade-ms N    cross-fade between scenes, 0..5000, 0 = none (500)
+    \\  --crossfade-ms N    default transition, a cross-fade, 0..5000 ms, 0 = none (500)
     \\  --power-fade-ms N   fade to and from black on power changes, 0..5000 (600)
     \\  --dry-run           never open spidev/gpio; model the panel only
     \\  --stats             log achieved cadence every 5 s

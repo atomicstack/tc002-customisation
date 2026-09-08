@@ -445,6 +445,8 @@ fn run(cfg: cli.Config) !u8 {
             if (r.render_deadline) |d| {
                 if (now >= d) r.redraw(now, d);
             }
+            // an idle overlay (a raw frame, a notification that fits) has no deadline: expire it here
+            if (sched.expiryNeedsRedraw(arb.nextExpiryNs(), r.render_deadline, now)) r.forceRedraw();
             if (arb.takeDirty() or (r.render_deadline == null and !r.idle)) {
                 // an isolated change: redraw immediately; keep a continuous phase if one is running
                 const base = if (r.render_deadline) |d| (if (d <= now) d else d - scene.frame_period_ns) else now;

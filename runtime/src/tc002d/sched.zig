@@ -38,6 +38,14 @@ test "a fade that starts from an isolated scene schedules the next frame one per
     try std.testing.expectEqual(@as(?u64, 1_000_000_000 + scene.frame_period_ns), afterRedraw(true, .idle, 0, 1_000_000_000, 0));
 }
 
+/// an overlay expiry is a wake-up, not a render deadline: when the scene is idle nothing else
+/// would tick the arbiter at that moment, so the loop has to force a redraw. a scene with a
+/// deadline of its own (continuous art, a scrolling notification) ticks on the next frame anyway.
+pub fn expiryNeedsRedraw(expiry: ?u64, render_deadline: ?u64, now_mono: u64) bool {
+    const e = expiry orelse return false;
+    return now_mono >= e and render_deadline == null;
+}
+
 /// the earliest of up to four optional monotonic instants (timer arming).
 pub fn earliest(a: ?u64, b: ?u64, c: ?u64, d: ?u64) ?u64 {
     var best: ?u64 = null;
@@ -63,4 +71,12 @@ test "wall targets map onto the monotonic clock in both directions" {
 test "earliest picks the minimum of the present values" {
     try std.testing.expectEqual(@as(?u64, 3), earliest(null, 7, 3, null));
     try std.testing.expectEqual(@as(?u64, null), earliest(null, null, null, null));
+}
+
+test "an expiry with no render deadline forces a redraw; a scheduled scene handles its own" {
+    try std.testing.expect(expiryNeedsRedraw(100, null, 100));
+    try std.testing.expect(expiryNeedsRedraw(100, null, 150));
+    try std.testing.expect(!expiryNeedsRedraw(100, null, 99));
+    try std.testing.expect(!expiryNeedsRedraw(100, 120, 100));
+    try std.testing.expect(!expiryNeedsRedraw(null, null, 100));
 }

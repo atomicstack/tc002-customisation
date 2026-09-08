@@ -54,6 +54,7 @@ adb pull /tmp/tc002/credentials/tokens tokens          # root over adb; keep the
 tools/tc002ctl.py -s <device-ip> --token-file tokens status
 tools/tc002ctl.py -s <device-ip> --token-file tokens scene art --generator plasma --seed 5
 tools/tc002ctl.py -s <device-ip> --token-file tokens notify hello --colour 00ff80 --duration 4
+tools/tc002ctl.py -s <device-ip> --token-file tokens notify hello --transition swipe_in --direction left   # leaves as swipe_out right
 tools/tc002ctl.py -s <device-ip> --token-file tokens frame --colour ff0000 --duration 3
 tools/tc002ctl.py -s <device-ip> --token-file tokens power off               # fades to black; `power on` fades back
 tools/tc002ctl.py -s <device-ip> --token-file tokens scene clock --font big --colour-mode gradient --colour 2060ff --colour2 60c0ff --gradient vertical
@@ -92,8 +93,11 @@ controls. the full reference is [`RUNTIME.md`](../RUNTIME.md).
   ReleaseSmall; on the volatile path that is about 0.7 mb of tmpfs ram. `-Doptimize=ReleaseSmall`
   is available; a simple panic handler and no segfault handler already keep the dwarf unwinder out.
 - **procfs rss on this kernel reads 4 kb for every static process** and is reported as-is.
-- **fades in the renderer** cost one more 2,496-byte frame buffer and a per-pixel multiply-add at 60 hz
-  for at most 600 ms per transition; a dark panel costs nothing (no redraws at all).
+- **transitions in the renderer** cost one more 2,496-byte frame buffer and a per-pixel source lookup
+  (or multiply-add for the fade) at 60 hz for the duration of the effect, 500 ms unless the request
+  says otherwise; a dark panel costs nothing (no redraws at all). fifteen effects are compiled in
+  (`panel/transition.zig`); a request names one, a direction and a duration, and an overlay leaves
+  with the paired effect the other way.
 - **the screen document is base64 in json** (3,328 characters) so `curl` and `jq` can use it without
   a binary path; `?format=raw` and the mqtt `screen` topic carry the bytes instead. netd's json buffer
   grew from 2 kb to 3.5 kb for it.

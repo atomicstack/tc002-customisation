@@ -221,6 +221,8 @@ input[type=file]{font:12px var(--body);color:var(--muted);max-width:220px}
             <button type="button" data-v="ip" role="radio" aria-checked="false">IP</button>
           </div></div>
         <div class="field"><label for="gen">Generator<span class="key">art only</span></label><select id="gen"></select></div>
+        <div class="field"><label for="strans">Transition<span class="key">transition · direction · for the next scene change</span></label>
+          <span class="inline"><select id="strans"></select><select id="sdir"></select></span></div>
         <div class="field"><label for="kfont">Clock font<span class="key">clock only · PUT /scene clock.font · transient</span></label><select id="kfont"></select></div>
         <div class="field"><span class="lab">Clock colour<span class="key">clock.colour_mode · colour · colour2 · gradient</span></span>
           <span class="inline">
@@ -248,6 +250,8 @@ input[type=file]{font:12px var(--body);color:var(--muted);max-width:220px}
           <span class="inline"><input type="text" id="ntext" maxlength="128" placeholder="hello" autocomplete="off"><span class="counter" id="ncount">0/128</span></span></div>
         <div class="field"><label for="ncolour">Colour</label><input type="color" id="ncolour" value="#ffffff"></div>
         <div class="field"><label for="ndur">Duration<span class="key">seconds, 1–300</span></label><input type="number" id="ndur" min="1" max="300" value="5"></div>
+        <div class="field"><label for="ntrans">Transition<span class="key">transition · direction · leaves with the paired effect the other way</span></label>
+          <span class="inline"><select id="ntrans"></select><select id="ndir"></select></span></div>
       </div>
       <div class="actions"><button class="btn" id="nsend">Send notification</button></div>
     </section>
@@ -259,6 +263,8 @@ input[type=file]{font:12px var(--body);color:var(--muted);max-width:220px}
         <div class="field"><label for="fcolour">Solid colour</label><input type="color" id="fcolour" value="#ff0000"></div>
         <div class="field"><label for="fimage">Image<span class="key">scaled to 52×16, cropped to fit</span></label><input type="file" id="fimage" accept="image/*"></div>
         <div class="field"><label for="fdur">Duration<span class="key">seconds, 1–300</span></label><input type="number" id="fdur" min="1" max="300" value="5"></div>
+        <div class="field"><label for="ftrans">Transition<span class="key">transition · direction · frames cut unless asked</span></label>
+          <span class="inline"><select id="ftrans"></select><select id="fdir"></select></span></div>
       </div>
       <div class="actions">
         <button class="btn" id="fsendcolour">Send colour</button>
@@ -551,10 +557,34 @@ function fillSelect(sel, names, current) {
   if (current) sel.value = current;
 }
 
+/* ---------- transitions ---------- */
+// the effect and direction selects on the scene, notification and frame cards; "default" and
+// "auto" omit the field so the device picks (fade for scenes and notifications, cut for frames;
+// the effect's natural direction)
+const TRANSITION_EFFECTS = ['fade', 'cut', 'slide', 'swipe_out', 'swipe_in', 'collapse', 'expand', 'wipe', 'dissolve', 'split_out', 'split_in', 'blinds', 'flip', 'rain', 'rain_random'];
+const TRANSITION_DIRECTIONS = ['left', 'right', 'up', 'down'];
+function fillTransitionSelects() {
+  const t = SCENES && SCENES.transitions;
+  const effects = ['default', ...(t ? t.effects : TRANSITION_EFFECTS)];
+  const dirs = ['auto', ...(t ? t.directions : TRANSITION_DIRECTIONS)];
+  for (const [e, d] of [['strans', 'sdir'], ['ntrans', 'ndir'], ['ftrans', 'fdir']]) {
+    const ke = $(e).value, kd = $(d).value;
+    fillSelect($(e), effects, effects.includes(ke) ? ke : 'default');
+    fillSelect($(d), dirs, dirs.includes(kd) ? kd : 'auto');
+  }
+}
+function transitionFields(effectId, dirId) {
+  const out = {};
+  if ($(effectId).value !== 'default') out.transition = $(effectId).value;
+  if ($(dirId).value !== 'auto') out.direction = $(dirId).value;
+  return out;
+}
+fillTransitionSelects();
+
 /* ---------- scene ---------- */
 async function setScene(base) {
   try {
-    await command('PUT', 'scene', (id, epoch) => ({ base, generator: base === 'art' ? $('gen').value : undefined, request_id: id, epoch }));
+    await command('PUT', 'scene', (id, epoch) => ({ base, generator: base === 'art' ? $('gen').value : undefined, ...transitionFields('strans', 'sdir'), request_id: id, epoch }));
     toast(`scene: ${base}`);
   } catch (e) { toast(e.message, true); }
 }
@@ -640,7 +670,7 @@ $('nsend').addEventListener('click', async () => {
   if (!/^[\x20-\x7e]{1,128}$/.test(text)) return toast('text must be 1 to 128 printable ascii characters', true);
   if (!(duration >= 1 && duration <= 300)) return toast('duration must be 1 to 300 seconds', true);
   try {
-    await command('POST', 'notify', (id, epoch) => ({ text, colour, duration_s: duration, request_id: id, epoch }));
+    await command('POST', 'notify', (id, epoch) => ({ text, colour, duration_s: duration, ...transitionFields('ntrans', 'ndir'), request_id: id, epoch }));
     local.notify = { text, colour: colourBytes(colour), sinceMs: Date.now() };
     toast('notification sent');
   } catch (e) { toast(e.message, true); }
@@ -658,7 +688,8 @@ async function sendFrame(rgb) {
   const duration = +$('fdur').value;
   if (!(duration >= 1 && duration <= 300)) return toast('duration must be 1 to 300 seconds', true);
   try {
-    await command('POST', 'frame', () => rgb, 'application/octet-stream', (id, epoch) => `duration_s=${duration}&request_id=${id}&epoch=${epoch}`);
+    const extra = Object.entries(transitionFields('ftrans', 'fdir')).map(([k, v]) => `&${k}=${v}`).join('');
+    await command('POST', 'frame', () => rgb, 'application/octet-stream', (id, epoch) => `duration_s=${duration}&request_id=${id}&epoch=${epoch}${extra}`);
     local.frame = rgb; local.pending = null;
     toast('frame sent');
   } catch (e) { toast(e.message, true); }
@@ -847,6 +878,7 @@ async function loadAll() {
     SCENES = await call('GET', 'scenes');
     fillSelect($('gen'), SCENES.generators.map(g => g.name), STATUS.generator);
     fillClockSelects();
+    fillTransitionSelects();
     if (STATUS.clock) showClockStyle(STATUS.clock);
     await loadConfig();
     if (TOKENS.admin) { try { showMqtt(await call('GET', 'mqtt')); } catch (e) { toast(e.message, true); } }
