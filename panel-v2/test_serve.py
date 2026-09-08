@@ -300,6 +300,67 @@ class EndToEndTests(unittest.TestCase):
             self.assertEqual(e.code, 503)
             self.assertEqual(json.loads(e.read())["error"], "not_implemented")
 
+    DEFAULT_CLOCK = {"font": "classic", "colour_mode": "solid", "colour": "ffffff", "colour2": "ffffff", "gradient": "horizontal"}
+
+    def test_scenes_status_and_config_carry_the_clock_style(self):
+        _, scenes = self.call("GET", "scenes")
+        self.assertEqual(scenes["clock"], {"fonts": ["classic", "mini", "segment", "big"], "colour_modes": ["solid", "gradient"],
+                                           "gradients": ["horizontal", "vertical", "diagonal"], "max_spread": 96})
+        self.device.config["clock"] = dict(self.DEFAULT_CLOCK); self.device.clock = dict(self.DEFAULT_CLOCK)
+        _, st = self.call("GET", "status")
+        self.assertEqual(st["clock"], self.DEFAULT_CLOCK)
+        _, cfg = self.call("GET", "config")
+        self.assertEqual(cfg["clock"], self.DEFAULT_CLOCK)
+
+    def test_scene_clock_block_is_transient_and_validated(self):
+        self.device.config["clock"] = dict(self.DEFAULT_CLOCK); self.device.clock = dict(self.DEFAULT_CLOCK)
+        _, st = self.call("GET", "status")
+        status, doc = self.call("PUT", "scene", {"base": "clock", "clock": {"font": "big", "colour_mode": "gradient", "colour": "ff8000", "colour2": "#ffc000"},
+                                                 "request_id": "f1", "epoch": st["epoch"]})
+        self.assertEqual((status, doc["status"]), (200, "applied"))
+        _, st2 = self.call("GET", "status")
+        self.assertEqual(st2["base"], "clock")
+        # a partial block merges over the current style; colour2 is reported as requested, before the spread clamp
+        self.assertEqual(st2["clock"], {"font": "big", "colour_mode": "gradient", "colour": "ff8000", "colour2": "ffc000", "gradient": "horizontal"})
+        _, cfg = self.call("GET", "config")
+        self.assertEqual(cfg["clock"], self.DEFAULT_CLOCK)   # the durable defaults are untouched
+        for block, code in (({"font": "comic"}, "invalid_font"), ({"colour_mode": "rainbow"}, "invalid_colour_mode"),
+                            ({"colour": "red"}, "invalid_colour"), ({"colour2": "12345"}, "invalid_colour2"),
+                            ({"gradient": "radial"}, "invalid_gradient"), ({"bogus": 1}, "unknown_field")):
+            status, doc = self.call("PUT", "scene", {"base": "clock", "clock": block, "request_id": "f2", "epoch": st2["epoch"]})
+            self.assertEqual((status, doc["error"]), (400, code), block)
+        # a settings change re-applies the full durable style, replacing the transient one
+        status, doc = self.call("PATCH", "config", {"clock_font": "segment"})
+        self.assertEqual(status, 200)
+        _, st3 = self.call("GET", "status")
+        self.assertEqual(st3["clock"], {**self.DEFAULT_CLOCK, "font": "segment"})
+        # so does a renderer restart
+        status, doc = self.call("PUT", "scene", {"base": "clock", "clock": {"font": "mini"}, "request_id": "f3", "epoch": st3["epoch"]})
+        self.assertEqual(status, 200)
+        with self.device.lock:
+            self.device.restart()
+        _, st4 = self.call("GET", "status")
+        self.assertEqual(st4["clock"]["font"], "segment")
+
+    def test_clock_settings_patch_applies_live_and_is_validated(self):
+        self.device.config["clock"] = dict(self.DEFAULT_CLOCK); self.device.clock = dict(self.DEFAULT_CLOCK)
+        _, cfg = self.call("GET", "config")
+        status, doc = self.call("PATCH", "config", {"expected_revision": cfg["revision"], "clock_font": "segment", "clock_colour_mode": "gradient",
+                                                    "clock_colour": "00ff80", "clock_gradient": "vertical"})
+        self.assertEqual(status, 200)
+        want = {"font": "segment", "colour_mode": "gradient", "colour": "00ff80", "colour2": "ffffff", "gradient": "vertical"}
+        self.assertEqual(doc["clock"], want)
+        self.assertEqual(doc["revision"], cfg["revision"] + 1)
+        _, st = self.call("GET", "status")
+        self.assertEqual(st["clock"], want)
+        for body, code in (({"clock_colour_mode": "rainbow"}, "invalid_colour_mode"), ({"clock_colour2": "red"}, "invalid_colour2"),
+                           ({"clock_font": "comic"}, "invalid_font"), ({"clock_gradient": "radial"}, "invalid_gradient"),
+                           ({"clock_colour": "#12345g"}, "invalid_colour")):
+            status, doc = self.call("PATCH", "config", body)
+            self.assertEqual((status, doc["error"]), (400, code), body)
+        _, cfg2 = self.call("GET", "config")
+        self.assertEqual(cfg2["clock"], want)   # a rejected patch changes nothing
+
 
 if __name__ == "__main__":
     unittest.main()

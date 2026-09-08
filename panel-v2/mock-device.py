@@ -1,7 +1,8 @@
 #!/usr/bin/python3
 """a stand-in for the tc002 custom runtime's /api/v1, for developing and screenshotting panel-v2
 without a device. bearer auth, epoch and revision bookkeeping, overlays that expire, settings with
-revisions and conflicts, mqtt settings; error bodies in the runtime's shape. not the runtime.
+revisions and conflicts, mqtt settings, the clock style (durable defaults and the transient scene block);
+error bodies in the runtime's shape. not the runtime.
 
 usage: mock-device.py [--port 8080] [--token-file FILE]
   --token-file   64 raw bytes (control token then admin token); created with random tokens when
@@ -15,9 +16,15 @@ from urllib.parse import urlsplit, parse_qs
 
 BASES = ["art", "clock", "ip"]
 GENERATORS = ["popsquares", "plasma"]
+CLOCK_FONTS = ["classic", "mini", "segment", "big"]
+CLOCK_COLOUR_MODES = ["solid", "gradient"]
+CLOCK_GRADIENTS = ["horizontal", "vertical", "diagonal"]
+CLOCK_MAX_SPREAD = 96
+DEFAULT_CLOCK = {"font": "classic", "colour_mode": "solid", "colour": "ffffff", "colour2": "ffffff", "gradient": "horizontal"}
 SCENES = {"bases": BASES,
           "generators": [{"index": 0, "name": "popsquares", "parameters": {"seed": "u32"}},
                          {"index": 1, "name": "plasma", "parameters": {"seed": "u32"}}],
+          "clock": {"fonts": CLOCK_FONTS, "colour_modes": CLOCK_COLOUR_MODES, "gradients": CLOCK_GRADIENTS, "max_spread": CLOCK_MAX_SPREAD},
           "notify": {"text_max": 128, "duration_s": [1, 300]}, "frame": {"bytes": 2496, "duration_s": [1, 300]}}
 PRINTABLE = re.compile(r"^[\x20-\x7e]{1,128}$")
 HEX_ID = re.compile(r"^[0-9a-fA-F]{1,16}$")
@@ -90,6 +97,32 @@ def parse_colour(s):
     return s.lower()
 
 
+def parse_clock_style(fields):
+    """the five clock style strings by their bare names (font, colour_mode, colour, colour2, gradient),
+    validated with the runtime's codes; shared by the scene block and the settings patch. the
+    caller strips the `clock_` prefix of the settings keys. unknown keys are the scene block's
+    strict schema."""
+    out = {}
+    for key, value in fields.items():
+        if key == "font":
+            if value not in CLOCK_FONTS:
+                raise Reject(400, "invalid_font", "font must be classic, mini, segment or big")
+        elif key == "colour_mode":
+            if value not in CLOCK_COLOUR_MODES:
+                raise Reject(400, "invalid_colour_mode", "colour_mode must be solid or gradient")
+        elif key in ("colour", "colour2"):
+            value = parse_colour(str(value))
+            if value is None:
+                raise Reject(400, "invalid_" + key, key + " must be rrggbb hex")
+        elif key == "gradient":
+            if value not in CLOCK_GRADIENTS:
+                raise Reject(400, "invalid_gradient", "gradient must be horizontal, vertical or diagonal")
+        else:
+            raise Reject(400, "unknown_field", "the body contains a field the schema does not define")
+        out[key] = value
+    return out
+
+
 class Device:
     def __init__(self, control, admin):
         self.control, self.admin = control, admin
@@ -99,6 +132,7 @@ class Device:
         self.epoch, self.revision = 1, 0
         self.base, self.generator, self.brightness = "art", "popsquares", 100
         self.power = True
+        self.clock = dict(DEFAULT_CLOCK)   # the effective style: the durable defaults, or a transient scene block over them
         self.overlay, self.overlay_until = "none", 0.0
         self.presented_base, self.presented_at = 0, self.started
         self.restarts = 0
@@ -108,7 +142,8 @@ class Device:
             self._append_log(line)
         self.config = {"revision": 0, "saved_revision": 0, "brightness": 100, "base": "art", "generator": "popsquares",
                        "timezone": "UTC0", "ntp_server": None, "ntp_interval_s": 300, "frame_timeout_ms": 500,
-                       "metrics_interval_s": 30, "discovery": False, "discovery_prefix": "homeassistant", "origins": []}
+                       "metrics_interval_s": 30, "discovery": False, "discovery_prefix": "homeassistant", "origins": [],
+                       "clock": dict(DEFAULT_CLOCK)}
         self.mqtt = {"enabled": False, "host": "", "port": 1883, "username": "", "password": "", "client_id": "", "prefix": "", "tls": False}
         self.reconnects = 0
 
@@ -134,6 +169,7 @@ class Device:
         self.epoch += 1
         self.revision = 0
         self.overlay = "none"
+        self.clock = dict(self.config["clock"])   # a fresh renderer gets the durable style
         self.restarts += 1
 
     def set_overlay(self, kind, duration_s):
@@ -159,6 +195,7 @@ class Device:
         return {"epoch": self.epoch, "revision": self.revision, "renderer": "running", "base": self.base,
                 "generator": self.generator, "overlay": self.overlay, "brightness": self.brightness,
                 "power": self.power,
+                "clock": dict(self.clock),
                 "presented": self.presented(), "fps": fps, "uptime_s": int(time.monotonic() - self.started),
                 "memory_available_kb": 16084, "cpu_pct": 5, "restarts": self.restarts,
                 "network": {"ip": "10.0.0.111"}, "time": {"state": "unsynced", "age_s": None},
@@ -176,7 +213,8 @@ class Device:
                 "base": c["base"], "generator": c["generator"], "timezone": c["timezone"],
                 "ntp": {"server": c["ntp_server"], "interval_s": c["ntp_interval_s"]},
                 "frame_timeout_ms": c["frame_timeout_ms"], "metrics_interval_s": c["metrics_interval_s"],
-                "discovery": {"enabled": c["discovery"], "prefix": c["discovery_prefix"]}, "allowed_origins": list(c["origins"])}
+                "discovery": {"enabled": c["discovery"], "prefix": c["discovery_prefix"]}, "clock": dict(c["clock"]),
+                "allowed_origins": list(c["origins"])}
 
     def mqtt_doc(self):
         m = self.mqtt
@@ -208,10 +246,16 @@ class Device:
         gen = body.get("generator")
         if gen is not None and gen not in GENERATORS:
             raise Reject(400, "invalid_generator", "unknown generator")
+        block = body.get("clock")
+        if block is not None and not isinstance(block, dict):
+            raise Reject(400, "invalid_json", "the body is not valid json for this schema")
+        style = parse_clock_style(block) if block else {}
         self.check_epoch(body.get("epoch"), False)
         self.base, self.overlay = base, "none"
         if base == "art" and gen:
             self.generator = gen
+        # a transient restyle merges field by field over the effective style, whatever the base is
+        self.clock.update(style)
         self.log(f"scene: {base}")
         return self.bump()
 
@@ -359,6 +403,9 @@ class Device:
             if not isinstance(body["discovery_prefix"], str) or not 1 <= len(body["discovery_prefix"]) <= 64:
                 raise Reject(400, "invalid_discovery_prefix", "discovery_prefix must be 1..64 characters")
             nxt["discovery_prefix"] = body["discovery_prefix"]
+        clock_keys = {k: v for k, v in body.items() if k.startswith("clock_")}
+        if clock_keys:
+            nxt["clock"] = {**c["clock"], **parse_clock_style({k[len("clock_"):]: v for k, v in clock_keys.items()})}
         nxt["revision"] = c["revision"] + 1
         self.config = nxt
         # live effects, as the supervisor applies them
@@ -366,6 +413,9 @@ class Device:
             self.brightness = nxt["brightness"]; self.bump()
         if nxt["base"] != c["base"] or nxt["generator"] != c["generator"]:
             self.base, self.generator, self.overlay = nxt["base"], nxt["generator"], "none"; self.bump()
+        if nxt["clock"] != c["clock"]:
+            # the supervisor sends the whole durable style, so a transient scene block is replaced
+            self.clock = dict(nxt["clock"]); self.bump()
         self.log(f"configuration applied, revision {nxt['revision']}", proc="tc002-supervisor")
 
     def save_config(self, body):
@@ -405,12 +455,13 @@ class Device:
 
 # request schemas: allowed and required keys, as the runtime's strict json enforces
 SCHEMAS = {
-    "scene": ({"base", "generator", "seed", "request_id", "epoch"}, {"base", "request_id"}),
+    "scene": ({"base", "generator", "seed", "clock", "request_id", "epoch"}, {"base", "request_id"}),
     "action": ({"action", "brightness", "seed", "power", "request_id", "epoch"}, {"action", "request_id", "epoch"}),
     "input": ({"control", "event", "steps", "request_id", "epoch"}, {"control", "event", "request_id", "epoch"}),
     "notify": ({"text", "colour", "duration_s", "request_id", "epoch"}, {"text", "request_id", "epoch"}),
     "config": ({"brightness", "base", "generator", "timezone", "ntp_server", "ntp_interval_s", "frame_timeout_ms",
-                "metrics_interval_s", "discovery", "discovery_prefix", "expected_revision"}, set()),
+                "metrics_interval_s", "discovery", "discovery_prefix", "expected_revision",
+                "clock_font", "clock_colour_mode", "clock_colour", "clock_colour2", "clock_gradient"}, set()),
     "config/save": ({"revision"}, set()),
     "mqtt": ({"enabled", "host", "port", "username", "password", "client_id", "prefix", "tls"}, set()),
 }
