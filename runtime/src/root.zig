@@ -6,6 +6,7 @@ test {
     _ = @import("panel/pack.zig");
     _ = @import("panel/presenter.zig");
     _ = @import("panel/fade.zig");
+    _ = @import("panel/transition.zig");
     _ = @import("scene/scene.zig");
     _ = @import("scene/popsquares.zig");
     _ = @import("scene/plasma.zig");
