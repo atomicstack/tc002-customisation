@@ -3,3 +3,4 @@
 .DS_Store
 /tokens
 panel-v2/mock-tokens
+__pycache__/

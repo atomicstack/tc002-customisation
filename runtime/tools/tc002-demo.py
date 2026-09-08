@@ -39,7 +39,7 @@ REEL = [
     ("blinds", "down", "blinds", "80ff80"),
     ("flip", "left", "flip", "ff60ff"),
     ("rain", "down", "rain", "60c0ff"),
-    ("rain_random", "up", "rain rnd", "ffa0ff"),
+    ("rain_random", "down", "rain rnd", "ffa0ff"),
 ]
 OTHER_BASE = {"clock": "art", "art": "clock", "ip": "clock"}
 
