@@ -71,8 +71,10 @@ pub const Fader = struct {
         }
         const level: u32 = self.level;
         if (t == 256 and level == 255) {
+            // identity output, but a ramp that has just started is still running: the caller
+            // must keep the frame cadence so the next frame actually advances it
             out.* = in.*;
-            return false;
+            return self.active();
         }
         // 255 maps to a full 256/256 so a lit panel is bit-exact; 0 maps to black
         const gain: u32 = level + (level >> 7);
@@ -167,4 +169,19 @@ test "a cross-fade during a power ramp multiplies both" {
     _ = f.apply(&new, &out, 250_000_000);
     // half blended (100) at a level around 149/255
     try std.testing.expect(out[0] > 50 and out[0] < 70);
+}
+
+test "a power-off ramp reports itself running from its very first frame" {
+    // the renderer applies the first frame at the instant the ramp starts. if that frame said
+    // "not fading", the scene's own cadence would rule and a clock would jump to black at its
+    // next second boundary instead of ramping down.
+    var f = Fader{};
+    const in = filled(255);
+    var out: geometry.Rgb = undefined;
+    try std.testing.expect(!f.apply(&in, &out, 0));
+    f.setPower(false, 1_000_000_000);
+    try std.testing.expect(f.apply(&in, &out, 1_000_000_000));
+    try std.testing.expectEqualSlices(u8, &in, &out); // still fully lit at elapsed 0
+    try std.testing.expect(f.apply(&in, &out, 1_300_000_000));
+    try std.testing.expect(out[0] > 100 and out[0] < 160);
 }
