@@ -1,6 +1,6 @@
 #!/usr/bin/python3
 """tests for the panel-v2 proxy. run: /usr/bin/python3 -m unittest test_serve -v"""
-import importlib.util, json, os, secrets, sys, tempfile, threading, unittest, urllib.error, urllib.request
+import importlib.util, json, os, secrets, socket, sys, tempfile, threading, unittest, urllib.error, urllib.request
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
@@ -360,6 +360,50 @@ class EndToEndTests(unittest.TestCase):
             self.assertEqual((status, doc["error"]), (400, code), body)
         _, cfg2 = self.call("GET", "config")
         self.assertEqual(cfg2["clock"], want)   # a rejected patch changes nothing
+
+
+class StartScriptTests(unittest.TestCase):
+    def test_mock_mode_brings_up_the_mock_and_the_proxy_with_shared_tokens(self):
+        import signal, subprocess, time
+        with tempfile.TemporaryDirectory() as d:
+            token_file = os.path.join(d, "tokens")
+            # two free ports, released before the script binds them
+            ports = []
+            for _ in range(2):
+                s = socket.socket(); s.bind(("127.0.0.1", 0)); ports.append(s.getsockname()[1]); s.close()
+            proxy_port, mock_port = ports
+            proc = subprocess.Popen(["/bin/bash", os.path.join(HERE, "start.sh"), "--mock", "--port", str(proxy_port),
+                                     "--mock-port", str(mock_port), "--token-file", token_file],
+                                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT, start_new_session=True, cwd=d)
+            try:
+                deadline = time.monotonic() + 15
+                tokens = None
+                while time.monotonic() < deadline:
+                    try:
+                        with urllib.request.urlopen(f"http://127.0.0.1:{proxy_port}/tokens", timeout=1) as r:
+                            tokens = json.loads(r.read())
+                        break
+                    except (urllib.error.URLError, ConnectionError, OSError):
+                        time.sleep(0.2)
+                self.assertEqual(tokens, {"control": True, "admin": True})
+                self.assertEqual(os.path.getsize(token_file), 64)
+                url = f"http://127.0.0.1:{proxy_port}/api/127.0.0.1:{mock_port}/v1/status"
+                with urllib.request.urlopen(url, timeout=5) as r:
+                    self.assertEqual(json.loads(r.read())["renderer"], "running")
+            finally:
+                os.killpg(proc.pid, signal.SIGTERM)
+                out = proc.communicate(timeout=10)[0].decode()
+            self.assertIn(f"console: http://127.0.0.1:{proxy_port}/?host=127.0.0.1:{mock_port}", out)
+            # the trap stopped the mock as well: nothing listens on its port any more
+            deadline = time.monotonic() + 5
+            while time.monotonic() < deadline:
+                try:
+                    socket.create_connection(("127.0.0.1", mock_port), timeout=1).close()
+                    time.sleep(0.1)
+                except ConnectionRefusedError:
+                    break
+            else:
+                self.fail("the mock is still listening after the launcher was stopped")
 
 
 if __name__ == "__main__":

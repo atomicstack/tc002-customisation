@@ -94,6 +94,16 @@ and a plain `http.server` will not work (see the
 **control the custom runtime**
 
 ```bash
+panel-v2/start.sh                  # device attached over adb: tokens pulled, address read from wlan0
+panel-v2/start.sh <device-ip> --open   # or name the device; --open launches the browser
+panel-v2/start.sh --mock           # no device: mock-device.py plus the proxy, for a look around
+```
+
+`start.sh` prints the console url (`http://127.0.0.1:8777/?host=<device-ip>`)
+and runs the proxy until ctrl-c; `--port`, `--token-file` and `--serial` cover
+the rest. by hand it is:
+
+```bash
 adb pull /tmp/tc002/credentials/tokens tokens        # or let serve.py do it with --adb-pull
 cd panel-v2 && /usr/bin/python3 serve.py 8777 --token-file ../tokens
 # open http://127.0.0.1:8777/?host=<device-ip>
