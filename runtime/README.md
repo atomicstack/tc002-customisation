@@ -97,7 +97,7 @@ controls. the full reference is [`RUNTIME.md`](../RUNTIME.md).
 - **the screen document is base64 in json** (3,328 characters) so `curl` and `jq` can use it without
   a binary path; `?format=raw` and the mqtt `screen` topic carry the bytes instead. netd's json buffer
   grew from 2 kb to 3.5 kb for it.
-- **the log ring is 64 lines of 127 bytes** (8 kb of static storage in the supervisor), served sixteen
+- **the log ring is 64 lines of 160 bytes** (10 kb of static storage in the supervisor), served sixteen
   lines a page; older lines are gone, and a flooding child drops lines rather than blocking.
 - **clock gradients show the whole requested ramp by default** (`spread` 255); a smaller `spread`
   bounds the per-channel distance between the two colours for a subtler shade shift. the first cut

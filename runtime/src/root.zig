@@ -1,5 +1,7 @@
 //! test aggregator: every pure module is listed here so `zig build test` covers it.
 test {
+    _ = @import("sys/civil.zig");
+    _ = @import("sys/log.zig");
     _ = @import("panel/geometry.zig");
     _ = @import("panel/pack.zig");
     _ = @import("panel/presenter.zig");

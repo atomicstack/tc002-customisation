@@ -128,20 +128,20 @@ test "malformed payloads are rejected" {
 test "log pages iterate their records and refuse to overfill" {
     var l = LogLines{ .next = 0 };
     var i: u32 = 0;
-    while (l.add(i, "x" ** 127)) : (i += 1) {}
+    while (l.add(i, "x" ** log_line_max)) : (i += 1) {}
     try std.testing.expectEqual(@as(u32, log_lines_per_reply), i);
     try std.testing.expectEqual(@as(u16, log_data_max), l.len);
     var it = l.iterator();
     var n: u32 = 0;
     while (it.next()) |r| : (n += 1) {
         try std.testing.expectEqual(n, r.seq);
-        try std.testing.expectEqual(@as(usize, 127), r.text.len);
+        try std.testing.expectEqual(@as(usize, log_line_max), r.text.len);
     }
     try std.testing.expectEqual(@as(u32, log_lines_per_reply), n);
     var short = LogLines{ .next = 0 };
     try std.testing.expect(short.add(7, "x" ** 200)); // truncated to the line maximum
     var sit = short.iterator();
-    try std.testing.expectEqual(@as(usize, 127), sit.next().?.text.len);
+    try std.testing.expectEqual(@as(usize, log_line_max), sit.next().?.text.len);
 }
 
 fn unhex(comptime hex: []const u8) [hex.len / 2]u8 {
@@ -280,7 +280,7 @@ pub const Input = struct { control: u8, event: u8, position: i32 = 0, steps: u8 
 pub const Power = struct { on: u8 };
 pub const LogGet = struct { after: u32 };
 
-pub const log_line_max = 127;
+pub const log_line_max = 160;
 pub const log_lines_per_reply = 16;
 pub const log_data_max = log_lines_per_reply * (5 + log_line_max);
 

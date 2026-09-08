@@ -74,7 +74,10 @@ pub const Rule = struct { std_offset_s: i32, dst: ?Dst = null };
 
 pub const utc: Rule = .{ .std_offset_s = 0 };
 
-pub const Civil = struct { year: i32, month: u8, day: u8 };
+const civil = @import("../sys/civil.zig");
+pub const Civil = civil.Civil;
+pub const daysFromCivil = civil.daysFromCivil;
+pub const civilFromDays = civil.civilFromDays;
 
 pub const ParseError = error{InvalidRule};
 
@@ -219,30 +222,6 @@ pub fn parse(text: []const u8) ParseError!Rule {
     if (!p.atEnd()) return error.InvalidRule;
     rule.dst = .{ .offset_s = -dst_posix, .start = start, .end = end };
     return rule;
-}
-
-// civil calendar helpers (howard hinnant's algorithms), days relative to 1970-01-01.
-pub fn daysFromCivil(year: i32, month: u8, day: u8) i64 {
-    const y: i64 = if (month <= 2) @as(i64, year) - 1 else year;
-    const era = @divFloor(y, 400);
-    const yoe = y - era * 400;
-    const mp: i64 = if (month > 2) @as(i64, month) - 3 else @as(i64, month) + 9;
-    const doy = @divFloor(153 * mp + 2, 5) + day - 1;
-    const doe = yoe * 365 + @divFloor(yoe, 4) - @divFloor(yoe, 100) + doy;
-    return era * 146097 + doe - 719468;
-}
-
-pub fn civilFromDays(days: i64) Civil {
-    const z = days + 719468;
-    const era = @divFloor(z, 146097);
-    const doe = z - era * 146097;
-    const yoe = @divFloor(doe - @divFloor(doe, 1460) + @divFloor(doe, 36524) - @divFloor(doe, 146096), 365);
-    const y = yoe + era * 400;
-    const doy = doe - (365 * yoe + @divFloor(yoe, 4) - @divFloor(yoe, 100));
-    const mp = @divFloor(5 * doy + 2, 153);
-    const d: u8 = @intCast(doy - @divFloor(153 * mp + 2, 5) + 1);
-    const m: u8 = @intCast(if (mp < 10) mp + 3 else mp - 9);
-    return .{ .year = @intCast(if (m <= 2) y + 1 else y), .month = m, .day = d };
 }
 
 /// 0 = sunday. 1970-01-01 was a thursday.

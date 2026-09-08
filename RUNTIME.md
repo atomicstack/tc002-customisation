@@ -147,10 +147,14 @@ exercised on the device (nobody has pressed the knob during a run).
 
 ### the log ring
 
-every runtime process logs one line per `write(2)` to its stderr. the
+every runtime process logs one line per `write(2)` to its stderr, prefixed
+with a utc timestamp of fixed width, the program and the level:
+`[2026-09-08 04:36:30.00001] tc002-supervisor info renderer ready 7 ms after
+spawn` (the fraction is tens of microseconds, zero-padded; before the first
+sntp sync the date is whatever the device clock says). the
 supervisor hands both children a non-blocking pipe as their stdout and stderr,
 drains it in its event loop, appends each line to `supervisor.log` as before,
-and keeps the last 64 lines (127 bytes each, 8 kib of static storage) in a
+and keeps the last 64 lines (160 bytes each, 10 kib of static storage) in a
 ring numbered from 1; its own lines join the ring through a hook in the
 logger. netd serves the ring through `GET /logs?after=N`, sixteen lines a
 page. a child that logs faster than the supervisor drains loses lines rather
