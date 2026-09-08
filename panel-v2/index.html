@@ -221,12 +221,23 @@ input[type=file]{font:12px var(--body);color:var(--muted);max-width:220px}
             <button type="button" data-v="ip" role="radio" aria-checked="false">IP</button>
           </div></div>
         <div class="field"><label for="gen">Generator<span class="key">art only</span></label><select id="gen"></select></div>
+        <div class="field"><label for="kfont">Clock font<span class="key">clock only · PUT /scene clock.font · transient</span></label><select id="kfont"></select></div>
+        <div class="field"><span class="lab">Clock colour<span class="key">clock.colour_mode · colour · colour2 · gradient</span></span>
+          <span class="inline">
+            <span class="seg" id="kmode" role="radiogroup" aria-label="clock colour mode">
+              <button type="button" data-v="solid" role="radio" aria-checked="false">Solid</button>
+              <button type="button" data-v="gradient" role="radio" aria-checked="false">Gradient</button>
+            </span>
+            <input type="color" id="kcolour" value="#ffffff" aria-label="clock colour" title="colour">
+            <input type="color" id="kcolour2" value="#ffffff" aria-label="gradient end colour" title="colour2 (gradient end)">
+            <select id="kgrad" aria-label="gradient direction" title="gradient direction"></select>
+          </span></div>
         <div class="field"><label for="seed">Seed<span class="key">POST /action reseed · empty = random</span></label>
           <span class="inline"><input type="number" id="seed" min="0" max="4294967295" placeholder="random"><button class="btn ghost sm" id="reseed">Reseed</button></span></div>
         <div class="field"><label for="bright">Brightness<span class="key">POST /action brightness · 1–100</span></label>
           <span class="rangewrap"><input type="range" id="bright" min="1" max="100" value="100" data-unit="%"><span class="val">100%</span></span></div>
       </div>
-      <div class="actions"><span class="note">live changes to the running renderer. the settings card below is what persists across restarts.</span></div>
+      <div class="actions"><span class="note">live changes to the running renderer. the settings card below is what persists across restarts. a clock style set here lasts until the next settings change or renderer restart; a gradient's end colour is kept within <span id="kspread">96</span> of 255 per channel of its start, so it reads as a shade shift on 52 columns.</span></div>
     </section>
 
     <section class="card s5" id="notificationCard">
@@ -264,6 +275,11 @@ input[type=file]{font:12px var(--body);color:var(--muted);max-width:220px}
         <div class="field"><label for="cbase">Base scene at start<span class="key">base</span></label>
           <select id="cbase"><option value="art">art</option><option value="clock">clock</option><option value="ip">ip</option></select></div>
         <div class="field"><label for="cgen">Generator at start<span class="key">generator</span></label><select id="cgen"></select></div>
+        <div class="field"><label for="cfont">Clock font<span class="key">clock_font · applied at once</span></label><select id="cfont"></select></div>
+        <div class="field"><label for="cmode">Clock colour mode<span class="key">clock_colour_mode</span></label><select id="cmode"></select></div>
+        <div class="field"><label for="ccolour">Clock colour<span class="key">clock_colour</span></label><input type="color" id="ccolour" value="#ffffff"></div>
+        <div class="field"><label for="ccolour2">Gradient end colour<span class="key">clock_colour2 · clamped to max_spread of clock_colour</span></label><input type="color" id="ccolour2" value="#ffffff"></div>
+        <div class="field"><label for="cgrad">Gradient direction<span class="key">clock_gradient</span></label><select id="cgrad"></select></div>
         <div class="field"><label for="ctz">Timezone<span class="key">timezone · posix rule, e.g. AEST-10AEDT,M10.1.0,M4.1.0/3</span></label><input type="text" id="ctz" placeholder="UTC0" spellcheck="false"></div>
         <div class="field"><label for="cntp">NTP server<span class="key">ntp_server · ipv4, null disables the sntp client</span></label><input type="text" id="cntp" placeholder="none"></div>
         <div class="field"><label for="cntpi">NTP interval<span class="key">ntp_interval_s</span></label>
@@ -376,6 +392,7 @@ const NOW_ROWS = [
   ['overlay', s => s.overlay, 'overlay'],
   ['brightness', s => `${s.brightness}%`, 'brightness'],
   ['power', s => s.power === undefined ? '—' : (s.power ? 'on' : 'off'), 'power'],
+  ['clock', s => describeClock(s.clock), 'clock · font · colour_mode · colours'],
   ['fps', s => s.fps == null ? '—' : String(s.fps), 'fps · art only'],
   ['presented', s => String(s.presented), 'frames presented'],
   ['uptime', s => `${Math.floor(s.uptime_s / 3600)}h ${Math.floor(s.uptime_s / 60) % 60}m`, 'uptime_s'],
@@ -391,6 +408,13 @@ const NOW_ROWS = [
   ['settings', s => `revision ${s.config_revision} · saved ${s.saved_revision}`, 'config_revision · saved_revision'],
   ['restarts', s => String(s.restarts), 'renderer restarts'],
 ];
+// "big · gradient ff8000 to ffc000 vertical" or "classic · solid ffffff"; the dash when the runtime predates styles
+function describeClock(c) {
+  if (!c) return '—';
+  const colours = c.colour_mode === 'gradient' ? `gradient ${c.colour} to ${c.colour2} ${c.gradient}` : `solid ${c.colour}`;
+  return `${c.font} · ${colours}`;
+}
+const sameClock = (a, b) => JSON.stringify(a || null) === JSON.stringify(b || null);
 function renderNow(s) {
   const box = $('now'); box.innerHTML = '';
   for (const [label, fn, key] of NOW_ROWS) {
@@ -416,6 +440,8 @@ function onStatus(prev) {
     $('gen').value = s.generator;
   }
   if (s.overlay === 'none') { local.notify = null; local.frame = null; }
+  // the effective style: mirrored only when it changed, so an open colour picker is not clobbered
+  if (s.clock && (!prev || !sameClock(prev.clock, s.clock))) showClockStyle(s.clock);
   if (!prev || prev.brightness !== s.brightness) setRange('bright', s.brightness);
   if (s.power !== undefined) $('power').checked = s.power;
 }
@@ -534,6 +560,32 @@ async function setScene(base) {
 }
 $('base').addEventListener('click', e => { const b = e.target.closest('button'); if (b) setScene(b.dataset.v); });
 $('gen').addEventListener('change', () => { if (STATUS && STATUS.base === 'art') setScene('art'); });
+// the transient clock style: one field per change, merged over the effective style by the runtime;
+// the scene put repeats the current base so it never switches scenes on its own
+function showClockStyle(c) {
+  $('kfont').value = c.font; segSet('kmode', c.colour_mode);
+  $('kcolour').value = '#' + c.colour; $('kcolour2').value = '#' + c.colour2; $('kgrad').value = c.gradient;
+}
+async function setClockStyle(patch, what) {
+  if (!STATUS) return;
+  const base = STATUS.base;
+  try {
+    await command('PUT', 'scene', (id, epoch) => ({ base, generator: base === 'art' ? $('gen').value : undefined, clock: patch, request_id: id, epoch }));
+    toast(`clock ${what}${base === 'clock' ? '' : ' (shown when the clock is the scene)'}`);
+  } catch (e) { toast(e.message, true); }
+}
+$('kfont').addEventListener('change', () => setClockStyle({ font: $('kfont').value }, `font: ${$('kfont').value}`));
+$('kmode').addEventListener('click', e => { const b = e.target.closest('button'); if (b) setClockStyle({ colour_mode: b.dataset.v }, `colour: ${b.dataset.v}`); });
+$('kcolour').addEventListener('change', () => setClockStyle({ colour: hexColour($('kcolour').value) }, `colour: ${hexColour($('kcolour').value)}`));
+$('kcolour2').addEventListener('change', () => setClockStyle({ colour2: hexColour($('kcolour2').value) }, `gradient end: ${hexColour($('kcolour2').value)}`));
+$('kgrad').addEventListener('change', () => setClockStyle({ gradient: $('kgrad').value }, `gradient: ${$('kgrad').value}`));
+function fillClockSelects() {
+  const cat = (SCENES && SCENES.clock) || {};
+  const fonts = cat.fonts || S.CLOCK_FONTS, modes = cat.colour_modes || ['solid', 'gradient'], grads = cat.gradients || ['horizontal', 'vertical', 'diagonal'];
+  fillSelect($('kfont'), fonts, $('kfont').value); fillSelect($('kgrad'), grads, $('kgrad').value);
+  fillSelect($('cfont'), fonts, $('cfont').value); fillSelect($('cmode'), modes, $('cmode').value); fillSelect($('cgrad'), grads, $('cgrad').value);
+  $('kspread').textContent = String(cat.max_spread == null ? S.CLOCK_MAX_SPREAD : cat.max_spread);
+}
 $('reseed').addEventListener('click', async () => {
   const seedText = $('seed').value.trim();
   const seed = seedText === '' ? undefined : +seedText;
@@ -645,6 +697,8 @@ function showConfig(c) {
   $('ctz').value = c.timezone; $('cntp').value = c.ntp.server || ''; $('cntpi').value = String(c.ntp.interval_s);
   $('cft').value = c.frame_timeout_ms; $('cmi').value = c.metrics_interval_s;
   $('cdisc').checked = !!c.discovery.enabled; $('cdp').value = c.discovery.prefix;
+  const k = c.clock || S.DEFAULT_CLOCK_STYLE;   // a runtime without clock styles: show the defaults, patch nothing
+  $('cfont').value = k.font; $('cmode').value = k.colour_mode; $('ccolour').value = '#' + k.colour; $('ccolour2').value = '#' + k.colour2; $('cgrad').value = k.gradient;
   const unsaved = c.revision !== c.saved_revision;
   const crev = $('crev'); crev.textContent = '';
   crev.append(`revision ${c.revision} · saved ${c.saved_revision}`);
@@ -668,6 +722,14 @@ $('capply').addEventListener('click', async () => {
   const mi = +$('cmi').value; if (mi !== CONFIG.metrics_interval_s) patch.metrics_interval_s = mi;
   if ($('cdisc').checked !== !!CONFIG.discovery.enabled) patch.discovery = $('cdisc').checked;
   const dp = $('cdp').value.trim(); if (dp !== CONFIG.discovery.prefix) patch.discovery_prefix = dp;
+  if (CONFIG.clock) {
+    const k = CONFIG.clock;
+    if ($('cfont').value !== k.font) patch.clock_font = $('cfont').value;
+    if ($('cmode').value !== k.colour_mode) patch.clock_colour_mode = $('cmode').value;
+    if (hexColour($('ccolour').value) !== k.colour) patch.clock_colour = hexColour($('ccolour').value);
+    if (hexColour($('ccolour2').value) !== k.colour2) patch.clock_colour2 = hexColour($('ccolour2').value);
+    if ($('cgrad').value !== k.gradient) patch.clock_gradient = $('cgrad').value;
+  }
   if (Object.keys(patch).length === 1) return toast('nothing changed');
   try {
     showConfig(await call('PATCH', 'config', patch));
@@ -784,6 +846,8 @@ async function loadAll() {
     STATUS = await call('GET', 'status'); onStatus(null);
     SCENES = await call('GET', 'scenes');
     fillSelect($('gen'), SCENES.generators.map(g => g.name), STATUS.generator);
+    fillClockSelects();
+    if (STATUS.clock) showClockStyle(STATUS.clock);
     await loadConfig();
     if (TOKENS.admin) { try { showMqtt(await call('GET', 'mqtt')); } catch (e) { toast(e.message, true); } }
     await mqttStatus();
