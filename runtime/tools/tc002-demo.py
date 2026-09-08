@@ -8,7 +8,9 @@ the reel ends by putting back the scene that was showing; durable settings are n
 
   --ms N          transition duration in ms, 0..5000 (default 800)
   --exit MODE     how each notification leaves: reverse (the paired effect backing out the way it
-                  came, default), same (the paired effect continuing the same way), none (a cut)
+                  came, default), same (the paired effect continuing the same way), none (a cut),
+                  or all: play each effect three times, once per exit mode
+  --direction D   left, right, up or down for every step, instead of the reel's own choices
   --hold S        seconds each notification stays before it leaves, 1..300 (default 2)
   --only LIST     a comma-separated subset of effects, played in that order
   --loop          play the reel again until interrupted (ctrl-c restores the scene)
@@ -84,18 +86,24 @@ def notify(args, token, text, colour, hold, effect, direction, ms, exit_mode):
     request(args, token, "POST", "/notify", body)
 
 
+LEAVES = {"reverse": "leaves the other way", "same": "leaves the same way", "none": "cuts away"}
+
+
 def play(args, token, reel, start_base, generator):
     base = start_base
+    exits = list(LEAVES) if args.exit == "all" else [args.exit]
     for effect, direction, label, colour in reel:
+        if args.direction:
+            direction = args.direction
         if not args.no_scenes:
             base = OTHER_BASE[base]
             print(f"  scene -> {base:5s}  {describe(effect, direction, args.ms)}")
             set_scene(args, token, base, generator, effect, direction, args.ms)
             time.sleep(args.ms / 1000 + 0.7)
-        leaves = {"reverse": "leaves the other way", "same": "leaves the same way", "none": "cuts away"}[args.exit]
-        print(f"  notify {label!r:11s} {describe(effect, direction, args.ms)}; {leaves}")
-        notify(args, token, label, colour, args.hold, effect, direction, args.ms, args.exit)
-        time.sleep(args.hold + args.ms / 1000 + 0.4)
+        for exit_mode in exits:
+            print(f"  notify {label!r:11s} {describe(effect, direction, args.ms)}; exit {exit_mode}: {LEAVES[exit_mode]}")
+            notify(args, token, label, colour, args.hold, effect, direction, args.ms, exit_mode)
+            time.sleep(args.hold + args.ms / 1000 + 0.4)
     return base
 
 
@@ -106,7 +114,8 @@ def main():
     ap.add_argument("--token-file")
     ap.add_argument("--ms", type=int, default=800)
     ap.add_argument("--hold", type=int, default=2)
-    ap.add_argument("--exit", default="reverse", choices=["reverse", "same", "none"])
+    ap.add_argument("--exit", default="reverse", choices=["reverse", "same", "none", "all"])
+    ap.add_argument("--direction", choices=["left", "right", "up", "down"])
     ap.add_argument("--only")
     ap.add_argument("--loop", action="store_true")
     ap.add_argument("--no-scenes", action="store_true")
