@@ -185,6 +185,16 @@ test "a request's transition is remembered and the exit pairs it in reverse" {
     try std.testing.expectEqual(transition.Effect.collapse, a.takeTransition().?.effect);
     _ = a.applyWith(.{ .set_base = .art }, transition.Spec.cut, 0);
     try std.testing.expectEqual(transition.Effect.cut, a.takeTransition().?.effect);
+    // exit modes: `same` keeps the direction, `none` cuts
+    const same = transition.Spec{ .effect = .slide, .direction = .up, .duration_ns = 3, .exit = .same };
+    _ = a.applyWith(.{ .notify = .{ .text = "hi", .colour = white, .duration_s = 1 } }, same, 6 * s_ns);
+    _ = a.takeTransition();
+    a.tick(7 * s_ns, 0);
+    try std.testing.expectEqual(same, a.takeTransition().?);
+    _ = a.applyWith(.{ .notify = .{ .text = "hi", .colour = white, .duration_s = 1 } }, .{ .effect = .expand, .exit = .none }, 8 * s_ns);
+    _ = a.takeTransition();
+    a.tick(9 * s_ns, 0);
+    try std.testing.expectEqual(transition.Effect.cut, a.takeTransition().?.effect);
 }
 
 test "a clock restyle merges fields, bumps only on change, and cross-fades while the clock shows" {
@@ -432,9 +442,9 @@ pub const Arbiter = struct {
         if (until) |u| if (now_ns >= u) {
             // an overlay leaves with the paired effect travelling the other way
             switch (self.overlay) {
-                .notify => |n| self.pending = n.transition.exit(),
+                .notify => |n| self.pending = n.transition.outgoing(),
                 .raw => |r| if (!r.transition.instant()) {
-                    self.pending = r.transition.exit();
+                    self.pending = r.transition.outgoing();
                 },
                 else => {},
             }

@@ -74,6 +74,14 @@ pub const Direction = enum(u8) {
     }
 };
 
+/// how an overlay (a notification, a pushed frame) leaves: the paired effect backing out the way
+/// it came, the paired effect continuing the same way, or no animation at all.
+pub const Exit = enum(u8) {
+    reverse = 0,
+    same,
+    none,
+};
+
 pub const default_duration_ns: u64 = 500 * ns_per_ms;
 pub const max_duration_ms: u32 = 5000;
 
@@ -81,12 +89,17 @@ pub const Spec = struct {
     effect: Effect = .fade,
     direction: Direction = .left,
     duration_ns: u64 = default_duration_ns,
+    exit: Exit = .reverse,
 
     pub const cut: Spec = .{ .effect = .cut, .duration_ns = 0 };
 
-    /// the transition that takes an overlay away: the paired effect, travelling the opposite way
-    pub fn exit(self: Spec) Spec {
-        return .{ .effect = self.effect.paired(), .direction = self.direction.opposite(), .duration_ns = self.duration_ns };
+    /// the transition that takes an overlay away, according to `exit`
+    pub fn outgoing(self: Spec) Spec {
+        return switch (self.exit) {
+            .reverse => .{ .effect = self.effect.paired(), .direction = self.direction.opposite(), .duration_ns = self.duration_ns, .exit = self.exit },
+            .same => .{ .effect = self.effect.paired(), .direction = self.direction, .duration_ns = self.duration_ns, .exit = self.exit },
+            .none => cut,
+        };
     }
 
     pub fn instant(self: Spec) bool {
@@ -493,12 +506,15 @@ test "dissolve switches pixels in a fixed order" {
     try std.testing.expect(countNew(&late) > 820);
 }
 
-test "exits pair the effect and reverse the direction" {
+test "exits pair the effect and reverse, continue or cut according to the exit mode" {
     const s = Spec{ .effect = .swipe_in, .direction = .left, .duration_ns = 7 };
-    try std.testing.expectEqual(Spec{ .effect = .swipe_out, .direction = .right, .duration_ns = 7 }, s.exit());
-    try std.testing.expectEqual(Effect.collapse, (Spec{ .effect = .expand }).exit().effect);
-    try std.testing.expectEqual(Direction.down, (Spec{ .direction = .up }).exit().direction);
-    try std.testing.expectEqual(Effect.fade, (Spec{}).exit().effect);
+    try std.testing.expectEqual(Spec{ .effect = .swipe_out, .direction = .right, .duration_ns = 7 }, s.outgoing());
+    const same = Spec{ .effect = .swipe_in, .direction = .left, .duration_ns = 7, .exit = .same };
+    try std.testing.expectEqual(Spec{ .effect = .swipe_out, .direction = .left, .duration_ns = 7, .exit = .same }, same.outgoing());
+    try std.testing.expect((Spec{ .effect = .expand, .exit = .none }).outgoing().instant());
+    try std.testing.expectEqual(Effect.collapse, (Spec{ .effect = .expand }).outgoing().effect);
+    try std.testing.expectEqual(Direction.down, (Spec{ .direction = .up }).outgoing().direction);
+    try std.testing.expectEqual(Effect.fade, (Spec{}).outgoing().effect);
     try std.testing.expect(Spec.cut.instant());
     try std.testing.expectEqual(Direction.down, Effect.rain.naturalDirection());
 }

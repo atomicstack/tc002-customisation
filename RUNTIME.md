@@ -270,6 +270,7 @@ three optional fields:
 | `transition` | one of the effects below | `fade` for scenes and notifications, `cut` for frames |
 | `direction` | `left`, `right`, `up`, `down` | the effect's natural direction: `down` for the rains, `left` otherwise |
 | `transition_ms` | 0..5000 | 500 |
+| `exit` | `reverse`, `same`, `none`: how a notification or pushed frame leaves (ignored on a base scene) | `reverse` |
 
 **direction is the way the moving content travels.** slide left moves
 everything left with the new content entering from the right; swipe in left
@@ -294,19 +295,23 @@ pushes the old content off the left edge, revealing the new underneath.
 | `rain` | columns (rows for left/right) fall that way one after another with an accelerating drop, revealing the new |
 | `rain_random` | the same with the lines starting in a pseudo-random order |
 
-a notification or pushed frame **leaves with the paired effect travelling the
-opposite way**: swipe in ↔ swipe out, split in ↔ split out, expand ↔
-collapse; the others repeat themselves. so a notification that swiped in from
-the right slides back out to the right, and one that expanded from the centre
-collapses into it. omitting the fields keeps the defaults; a request with
-`direction` or `transition_ms` alone applies them to the default effect. a
-change from the buttons or the knob always uses the default fade. the effects
-are composited in the renderer from the frame that was on the panel and the
-scene's new output; `GET /scenes` lists them under `transitions`. the mqtt
-`cmd/frame` envelope grows from 14 to 18 bytes when it carries one: `u8
-effect` (the index in that list), `u8 direction` (left 0, right 1, up 2,
-down 3), `u16 duration_ms` before the rgb bytes; over ipc the same block,
-prefixed with a presence byte, rides on `set_base`, `notify` and `frame`.
+a notification or pushed frame **leaves with the paired effect**: swipe in ↔
+swipe out, split in ↔ split out, expand ↔ collapse; the others repeat
+themselves. `exit` says which way: `reverse` (the default) backs out the way
+it came, so a notification that swiped in from the right slides back out to
+the right and one that expanded from the centre collapses into it; `same`
+keeps the direction, so the content carries on across the panel like a
+carousel and the base follows it in; `none` cuts. omitting the fields keeps
+the defaults; a request with `direction`, `transition_ms` or `exit` alone
+applies them to the default effect. a change from the buttons or the knob
+always uses the default fade. the effects are composited in the renderer from
+the frame that was on the panel and the scene's new output; `GET /scenes`
+lists them under `transitions`. the mqtt `cmd/frame` envelope grows from 14
+to 18 or 19 bytes when it carries one: `u8 effect` (the index in that list),
+`u8 direction` (left 0, right 1, up 2, down 3), `u16 duration_ms` and
+optionally `u8 exit` (reverse 0, same 1, none 2) before the rgb bytes; over
+ipc the same block, prefixed with a presence byte, rides on `set_base`,
+`notify` and `frame`.
 
 ### clock styles
 
@@ -583,7 +588,7 @@ never falls back to plaintext silently. the client id defaults to
 | `result` | out | `{"request_id","status","revision","epoch"}` for every command received on `cmd/*`, or `{"status":"rejected","error","message"}` for a body that did not parse |
 | `metrics` | out, every `metrics_interval_s` | the [metrics document](#the-metrics-document) |
 | `cmd/scene`, `cmd/action`, `cmd/notify` | in, qos 1 | exactly the http json bodies |
-| `cmd/frame` | in, qos 1 | binary, 2,510 bytes big-endian: `u64 request_id`, `u32 epoch`, `u16 duration_s`, 2,496 rgb bytes; or 2,514 bytes with `u8 effect`, `u8 direction`, `u16 duration_ms` before the rgb (see [transitions](#transitions)) |
+| `cmd/frame` | in, qos 1 | binary, 2,510 bytes big-endian: `u64 request_id`, `u32 epoch`, `u16 duration_s`, 2,496 rgb bytes; or 2,514 / 2,515 bytes with `u8 effect`, `u8 direction`, `u16 duration_ms` and optionally `u8 exit` before the rgb (see [transitions](#transitions)) |
 | `cmd/config` | in, qos 1 | the control subset only: `brightness`, `base`, `generator` (transient, like `/action` and `/scene`). any durable field is answered `admin_only`; those are administered over http |
 | `cmd/input` | in, qos 1 | the `/input` json body; answered on `result` |
 | `cmd/screen` | in, qos 1 | any payload; answered on `screen` |
@@ -634,7 +639,7 @@ publishes. nothing writable is exposed through discovery; control goes through
 |------|--------------|
 | `tc002ctl.py` | a client for every route: `status`, `scenes`, `scene` (with `--font`, `--colour-mode`, `--colour`, `--colour2`, `--gradient`, `--spread` for the clock), `brightness`, `reseed`, `arm-stream`, `notify`, `frame`, `power`, `input`, `screen` (`--ascii` draws the panel in the terminal, `--out` saves the raw rgb), `logs` (`--follow`), `config`, `config-set`, `config-save`, `mqtt`, `mqtt-set`, `mqtt-status`. takes the pulled token file (`--token-file`) or a hex token, picks the admin token for admin commands, generates request ids and fetches the epoch for you |
 | `tc002-up.sh` | the one-shot cold start for a person: connect adb, build and push (`--no-build` to skip the build), start the supervisor with `--tz`, apply and save the timezone, scene, clock font and sntp server, pull the tokens to the repo root for the console, print the status. after a reboot this is the way back |
-| `tc002-demo.py` | a demo reel of every transition, played from this machine over the api: for each effect a clock ↔ art scene change arrives with it, then a labelled notification arrives with it and leaves with the paired exit; `--only`, `--ms`, `--hold`, `--loop`, `--no-scenes`, `--list`; restores the scene it started from and leaves the settings alone |
+| `tc002-demo.py` | a demo reel of every transition, played from this machine over the api: for each effect a clock ↔ art scene change arrives with it, then a labelled notification arrives with it and leaves with the paired exit; `--only`, `--ms`, `--hold`, `--exit`, `--loop`, `--no-scenes`, `--list`; restores the scene it started from and leaves the settings alone |
 | `tc002-run.sh` | `push` (build, elf check, push to `/tmp/tc002/`; `TC002_NO_BUILD=1` skips the build), `start [supervisor options]` (under the lock: stop `zkswe`, start the supervisor detached with its log in `/tmp/tc002/`), `status`, `stop` (sigterm, restart the stock app, release the lock), `restore` (stop and remove everything under `/tmp`) |
 | `tc002-boot-experiment.sh` | `baseline` (time the stock `ctl.start` to the property), `start` (rewrite `startupLibPath` into `/tmp/EasyUI.cfg`, restart `zkswe` through the bootstrap, show the audit), `status`, `restore` |
 | `tc002-lock.sh` | the append-only advisory lock in `/tmp/tc002-lock.txt` on the host, for two agents sharing one device: `acquire <intent> [timeout]`, `release`, `status`, `note`. every device-mutating step in the scripts above runs under it |

@@ -96,8 +96,8 @@ controls. the full reference is [`RUNTIME.md`](../RUNTIME.md).
 - **transitions in the renderer** cost one more 2,496-byte frame buffer and a per-pixel source lookup
   (or multiply-add for the fade) at 60 hz for the duration of the effect, 500 ms unless the request
   says otherwise; a dark panel costs nothing (no redraws at all). fifteen effects are compiled in
-  (`panel/transition.zig`); a request names one, a direction and a duration, and an overlay leaves
-  with the paired effect the other way.
+  (`panel/transition.zig`); a request names one, a direction, a duration and an exit mode, and an
+  overlay leaves with the paired effect the other way, the same way, or a cut.
 - **the screen document is base64 in json** (3,328 characters) so `curl` and `jq` can use it without
   a binary path; `?format=raw` and the mqtt `screen` topic carry the bytes instead. netd's json buffer
   grew from 2 kb to 3.5 kb for it.

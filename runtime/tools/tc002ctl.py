@@ -15,12 +15,15 @@ commands:
   reseed [N]                          reseed the art
   arm-stream                          arm stream mode (two-second wait)
   notify <text> [--colour rrggbb] [--duration S] [--transition EFFECT] [--direction D] [--transition-ms N]
+        [--exit reverse|same|none]
   frame <file.rgb|--colour rrggbb> [--duration S] [--transition EFFECT] [--direction D] [--transition-ms N]
-                                      2496 raw rgb888 bytes
+        [--exit reverse|same|none]        2496 raw rgb888 bytes
   transition effects (scene, notify, frame): fade cut slide swipe_out swipe_in collapse expand wipe
                                       dissolve split_out split_in blinds flip rain rain_random; the
-                                      direction is the way the moving content travels; notifications
-                                      and frames leave with the paired effect the other way
+                                      direction is the way the moving content travels. --exit says how
+                                      a notification or frame leaves: reverse (the paired effect backing
+                                      out the way it came, default), same (the paired effect continuing
+                                      the same way), none (a cut)
   power <on|off>                      display power (fades to and from black)
   input <control> <event> [--steps N] press a control remotely: left|middle|right|knob with
                                       press|release|click (knob also long); rotary with cw|ccw
@@ -85,7 +88,7 @@ def epoch(args, token):
     return json.loads(raw)["epoch"]
 
 def transition_fields(a):
-    return {k: v for k, v in (("transition", a.transition), ("direction", a.direction), ("transition_ms", a.transition_ms)) if v is not None}
+    return {k: v for k, v in (("transition", a.transition), ("direction", a.direction), ("transition_ms", a.transition_ms), ("exit", a.exit)) if v is not None}
 
 def kv(pairs):
     out = {}
@@ -125,6 +128,7 @@ def main():
     ap.add_argument("--transition")
     ap.add_argument("--direction")
     ap.add_argument("--transition-ms", type=int, dest="transition_ms")
+    ap.add_argument("--exit")
     a = ap.parse_args()
     admin_commands = {"config-set", "config-save", "mqtt", "mqtt-set"}
     token = load_token(a, a.admin or a.command in admin_commands)

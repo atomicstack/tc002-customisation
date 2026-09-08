@@ -1076,13 +1076,15 @@ const Netd = struct {
         if (!std.mem.startsWith(u8, p.topic, cmd_prefix)) return;
         const suffix = p.topic[cmd_prefix.len..];
         if (std.mem.eql(u8, suffix, "frame")) {
-            // the 14-byte envelope, or 18 bytes with a transition (effect, direction, duration_ms) before the rgb
-            const extended = p.payload.len == mqtt_frame_envelope + 4;
+            // the 14-byte envelope, or 18 or 19 bytes with a transition (effect, direction, duration_ms,
+            // optionally exit) before the rgb
+            const extra = p.payload.len -| mqtt_frame_envelope;
+            const extended = extra == 4 or extra == 5;
             if (p.payload.len != mqtt_frame_envelope and !extended) return;
             const rid = std.mem.readInt(u64, p.payload[0..8], .big);
             const epoch = std.mem.readInt(u32, p.payload[8..12], .big);
             const duration = std.mem.readInt(u16, p.payload[12..14], .big);
-            const t: messages.Transition = if (extended) .{ .has = 1, .effect = p.payload[14], .direction = p.payload[15], .duration_ms = std.mem.readInt(u16, p.payload[16..18], .big) } else .{};
+            const t: messages.Transition = if (extended) .{ .has = 1, .effect = p.payload[14], .direction = p.payload[15], .duration_ms = std.mem.readInt(u16, p.payload[16..18], .big), .exit = if (extra == 5) p.payload[18] else 0 } else .{};
             const bad_transition = extended and (t.toSpec() == null or t.duration_ms > transition.max_duration_ms);
             if (duration < 1 or duration > 300 or bad_transition) {
                 self.publishResult(rid, .rejected, self.status.revision);
@@ -1092,7 +1094,7 @@ const Netd = struct {
                 self.publishResult(rid, .overload, self.status.revision);
                 return;
             }
-            const rgb_at: usize = if (extended) 18 else 14;
+            const rgb_at: usize = mqtt_frame_envelope - geometry.rgb_bytes + extra;
             self.mqttRelay(.{ .frame = .{ .duration_s = duration, .transition = t, .rgb = p.payload[rgb_at..][0..geometry.rgb_bytes].* } }, rid, epoch, now);
             return;
         }

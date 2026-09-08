@@ -250,8 +250,8 @@ input[type=file]{font:12px var(--body);color:var(--muted);max-width:220px}
           <span class="inline"><input type="text" id="ntext" maxlength="128" placeholder="hello" autocomplete="off"><span class="counter" id="ncount">0/128</span></span></div>
         <div class="field"><label for="ncolour">Colour</label><input type="color" id="ncolour" value="#ffffff"></div>
         <div class="field"><label for="ndur">Duration<span class="key">seconds, 1–300</span></label><input type="number" id="ndur" min="1" max="300" value="5"></div>
-        <div class="field"><label for="ntrans">Transition<span class="key">transition · direction · leaves with the paired effect the other way</span></label>
-          <span class="inline"><select id="ntrans"></select><select id="ndir"></select></span></div>
+        <div class="field"><label for="ntrans">Transition<span class="key">transition · direction · exit (how it leaves)</span></label>
+          <span class="inline"><select id="ntrans"></select><select id="ndir"></select><select id="nexit"></select></span></div>
       </div>
       <div class="actions"><button class="btn" id="nsend">Send notification</button></div>
     </section>
@@ -263,8 +263,8 @@ input[type=file]{font:12px var(--body);color:var(--muted);max-width:220px}
         <div class="field"><label for="fcolour">Solid colour</label><input type="color" id="fcolour" value="#ff0000"></div>
         <div class="field"><label for="fimage">Image<span class="key">scaled to 52×16, cropped to fit</span></label><input type="file" id="fimage" accept="image/*"></div>
         <div class="field"><label for="fdur">Duration<span class="key">seconds, 1–300</span></label><input type="number" id="fdur" min="1" max="300" value="5"></div>
-        <div class="field"><label for="ftrans">Transition<span class="key">transition · direction · frames cut unless asked</span></label>
-          <span class="inline"><select id="ftrans"></select><select id="fdir"></select></span></div>
+        <div class="field"><label for="ftrans">Transition<span class="key">transition · direction · exit · frames cut unless asked</span></label>
+          <span class="inline"><select id="ftrans"></select><select id="fdir"></select><select id="fexit"></select></span></div>
       </div>
       <div class="actions">
         <button class="btn" id="fsendcolour">Send colour</button>
@@ -558,25 +558,29 @@ function fillSelect(sel, names, current) {
 }
 
 /* ---------- transitions ---------- */
-// the effect and direction selects on the scene, notification and frame cards; "default" and
-// "auto" omit the field so the device picks (fade for scenes and notifications, cut for frames;
-// the effect's natural direction)
+// the effect, direction and exit selects on the scene, notification and frame cards; "default"
+// and "auto" omit the field so the device picks (fade for scenes and notifications, cut for
+// frames; the effect's natural direction; an exit that backs out the way it came)
 const TRANSITION_EFFECTS = ['fade', 'cut', 'slide', 'swipe_out', 'swipe_in', 'collapse', 'expand', 'wipe', 'dissolve', 'split_out', 'split_in', 'blinds', 'flip', 'rain', 'rain_random'];
 const TRANSITION_DIRECTIONS = ['left', 'right', 'up', 'down'];
+const TRANSITION_EXITS = ['reverse', 'same', 'none'];
 function fillTransitionSelects() {
   const t = SCENES && SCENES.transitions;
   const effects = ['default', ...(t ? t.effects : TRANSITION_EFFECTS)];
   const dirs = ['auto', ...(t ? t.directions : TRANSITION_DIRECTIONS)];
-  for (const [e, d] of [['strans', 'sdir'], ['ntrans', 'ndir'], ['ftrans', 'fdir']]) {
+  const exits = ['default', ...((t && t.exits) || TRANSITION_EXITS)];
+  for (const [e, d, x] of [['strans', 'sdir', null], ['ntrans', 'ndir', 'nexit'], ['ftrans', 'fdir', 'fexit']]) {
     const ke = $(e).value, kd = $(d).value;
     fillSelect($(e), effects, effects.includes(ke) ? ke : 'default');
     fillSelect($(d), dirs, dirs.includes(kd) ? kd : 'auto');
+    if (x) { const kx = $(x).value; fillSelect($(x), exits, exits.includes(kx) ? kx : 'default'); }
   }
 }
-function transitionFields(effectId, dirId) {
+function transitionFields(effectId, dirId, exitId) {
   const out = {};
   if ($(effectId).value !== 'default') out.transition = $(effectId).value;
   if ($(dirId).value !== 'auto') out.direction = $(dirId).value;
+  if (exitId && $(exitId).value !== 'default') out.exit = $(exitId).value;
   return out;
 }
 fillTransitionSelects();
@@ -670,7 +674,7 @@ $('nsend').addEventListener('click', async () => {
   if (!/^[\x20-\x7e]{1,128}$/.test(text)) return toast('text must be 1 to 128 printable ascii characters', true);
   if (!(duration >= 1 && duration <= 300)) return toast('duration must be 1 to 300 seconds', true);
   try {
-    await command('POST', 'notify', (id, epoch) => ({ text, colour, duration_s: duration, ...transitionFields('ntrans', 'ndir'), request_id: id, epoch }));
+    await command('POST', 'notify', (id, epoch) => ({ text, colour, duration_s: duration, ...transitionFields('ntrans', 'ndir', 'nexit'), request_id: id, epoch }));
     local.notify = { text, colour: colourBytes(colour), sinceMs: Date.now() };
     toast('notification sent');
   } catch (e) { toast(e.message, true); }
@@ -688,7 +692,7 @@ async function sendFrame(rgb) {
   const duration = +$('fdur').value;
   if (!(duration >= 1 && duration <= 300)) return toast('duration must be 1 to 300 seconds', true);
   try {
-    const extra = Object.entries(transitionFields('ftrans', 'fdir')).map(([k, v]) => `&${k}=${v}`).join('');
+    const extra = Object.entries(transitionFields('ftrans', 'fdir', 'fexit')).map(([k, v]) => `&${k}=${v}`).join('');
     await command('POST', 'frame', () => rgb, 'application/octet-stream', (id, epoch) => `duration_s=${duration}&request_id=${id}&epoch=${epoch}${extra}`);
     local.frame = rgb; local.pending = null;
     toast('frame sent');

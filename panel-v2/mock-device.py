@@ -28,7 +28,7 @@ SCENES = {"bases": BASES,
           "notify": {"text_max": 128, "duration_s": [1, 300]}, "frame": {"bytes": 2496, "duration_s": [1, 300]},
           "transitions": {"effects": ["fade", "cut", "slide", "swipe_out", "swipe_in", "collapse", "expand", "wipe", "dissolve",
                                       "split_out", "split_in", "blinds", "flip", "rain", "rain_random"],
-                          "directions": ["left", "right", "up", "down"], "duration_ms": [0, 5000]}}
+                          "directions": ["left", "right", "up", "down"], "exits": ["reverse", "same", "none"], "duration_ms": [0, 5000]}}
 PRINTABLE = re.compile(r"^[\x20-\x7e]{1,128}$")
 HEX_ID = re.compile(r"^[0-9a-fA-F]{1,16}$")
 
@@ -458,10 +458,10 @@ class Device:
 
 # request schemas: allowed and required keys, as the runtime's strict json enforces
 SCHEMAS = {
-    "scene": ({"base", "generator", "seed", "clock", "transition", "direction", "transition_ms", "request_id", "epoch"}, {"base", "request_id"}),
+    "scene": ({"base", "generator", "seed", "clock", "transition", "direction", "transition_ms", "exit", "request_id", "epoch"}, {"base", "request_id"}),
     "action": ({"action", "brightness", "seed", "power", "request_id", "epoch"}, {"action", "request_id", "epoch"}),
     "input": ({"control", "event", "steps", "request_id", "epoch"}, {"control", "event", "request_id", "epoch"}),
-    "notify": ({"text", "colour", "duration_s", "transition", "direction", "transition_ms", "request_id", "epoch"}, {"text", "request_id", "epoch"}),
+    "notify": ({"text", "colour", "duration_s", "transition", "direction", "transition_ms", "exit", "request_id", "epoch"}, {"text", "request_id", "epoch"}),
     "config": ({"brightness", "base", "generator", "timezone", "ntp_server", "ntp_interval_s", "frame_timeout_ms",
                 "metrics_interval_s", "discovery", "discovery_prefix", "expected_revision",
                 "clock_font", "clock_colour_mode", "clock_colour", "clock_colour2", "clock_gradient"}, set()),

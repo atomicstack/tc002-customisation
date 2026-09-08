@@ -7,6 +7,8 @@ the reel ends by putting back the scene that was showing; durable settings are n
   tc002-demo.py -s <device-ip> [--token-file FILE | --token HEX] [options]
 
   --ms N          transition duration in ms, 0..5000 (default 800)
+  --exit MODE     how each notification leaves: reverse (the paired effect backing out the way it
+                  came, default), same (the paired effect continuing the same way), none (a cut)
   --hold S        seconds each notification stays before it leaves, 1..300 (default 2)
   --only LIST     a comma-separated subset of effects, played in that order
   --loop          play the reel again until interrupted (ctrl-c restores the scene)
@@ -74,8 +76,8 @@ def set_scene(args, token, base, generator, effect=None, direction=None, ms=None
     request(args, token, "PUT", "/scene", body)
 
 
-def notify(args, token, text, colour, hold, effect, direction, ms):
-    body = {"text": text, "colour": colour, "duration_s": hold, "transition": effect, "transition_ms": ms,
+def notify(args, token, text, colour, hold, effect, direction, ms, exit_mode):
+    body = {"text": text, "colour": colour, "duration_s": hold, "transition": effect, "transition_ms": ms, "exit": exit_mode,
             "request_id": secrets.token_hex(8), "epoch": tc002ctl.epoch(args, token)}
     if direction:
         body["direction"] = direction
@@ -90,8 +92,9 @@ def play(args, token, reel, start_base, generator):
             print(f"  scene -> {base:5s}  {describe(effect, direction, args.ms)}")
             set_scene(args, token, base, generator, effect, direction, args.ms)
             time.sleep(args.ms / 1000 + 0.7)
-        print(f"  notify {label!r:11s} {describe(effect, direction, args.ms)}; leaves the other way")
-        notify(args, token, label, colour, args.hold, effect, direction, args.ms)
+        leaves = {"reverse": "leaves the other way", "same": "leaves the same way", "none": "cuts away"}[args.exit]
+        print(f"  notify {label!r:11s} {describe(effect, direction, args.ms)}; {leaves}")
+        notify(args, token, label, colour, args.hold, effect, direction, args.ms, args.exit)
         time.sleep(args.hold + args.ms / 1000 + 0.4)
     return base
 
@@ -103,6 +106,7 @@ def main():
     ap.add_argument("--token-file")
     ap.add_argument("--ms", type=int, default=800)
     ap.add_argument("--hold", type=int, default=2)
+    ap.add_argument("--exit", default="reverse", choices=["reverse", "same", "none"])
     ap.add_argument("--only")
     ap.add_argument("--loop", action="store_true")
     ap.add_argument("--no-scenes", action="store_true")
@@ -140,7 +144,7 @@ def main():
     start_base, generator = status.get("base", "clock"), status.get("generator") or "plasma"
     if status.get("power") is False:
         print("note: display power is off; the reel will play unseen (tc002ctl.py power on)")
-    print(f"demo reel: {len(reel)} effects, {a.ms} ms each, notifications hold {a.hold} s; starting from {start_base}")
+    print(f"demo reel: {len(reel)} effects, {a.ms} ms each, notifications hold {a.hold} s and exit {a.exit}; starting from {start_base}")
     base = start_base
     try:
         while True:
