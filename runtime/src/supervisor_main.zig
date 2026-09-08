@@ -15,6 +15,7 @@ const cli = @import("supervisor/cli.zig");
 const config = @import("supervisor/config.zig");
 const mcu = @import("supervisor/mcu.zig");
 const logring = @import("supervisor/logring.zig");
+const tz = @import("scene/tz.zig");
 const sntp = @import("supervisor/sntp.zig");
 const api = @import("net/api.zig");
 
@@ -435,7 +436,7 @@ const Supervisor = struct {
         const c = &self.cfg;
         if (before.brightness != c.brightness) self.send(.{ .brightness = .{ .value = c.brightness } });
         if (before.base != c.base or before.generator != c.generator) self.send(.{ .set_base = .{ .base = c.base, .generator = c.generator, .seed = 0 } });
-        if (!std.mem.eql(u8, before.timezone.slice(), c.timezone.slice())) self.send(.{ .set_timezone = c.timezone });
+        if (!std.mem.eql(u8, before.timezone.slice(), c.timezone.slice())) self.send(.{ .set_timezone = config.Text.init(c.tzRule()) });
         if (!std.meta.eql(before.clockStyle(), c.clockStyle())) self.send(.{ .clock_style = messages.ClockStyle.full(c.clockStyle()) });
         if (!std.meta.eql(before.ntp_server, c.ntp_server) or before.ntp_interval_s != c.ntp_interval_s) self.sntp_link.configure(self, sys.monotonicNs()); // sntp
         self.snapshot.config_revision = c.revision;
@@ -889,7 +890,7 @@ const Supervisor = struct {
                     // saved defaults become the renderer's state; the renderer's revision counts from here
                     self.send(.{ .brightness = .{ .value = self.cfg.brightness } });
                     self.send(.{ .set_base = .{ .base = self.cfg.base, .generator = self.cfg.generator, .seed = 0 } });
-                    self.send(.{ .set_timezone = self.cfg.timezone });
+                    self.send(.{ .set_timezone = config.Text.init(self.cfg.tzRule()) });
                     self.send(.{ .clock_style = messages.ClockStyle.full(self.cfg.clockStyle()) });
                     self.snapshot.epoch = lifecycle.epoch;
                     self.snapshot.renderer_state = 2;
@@ -1061,9 +1062,15 @@ fn redirectLog(cfg: cli.Config) void {
     sys.close(fd);
 }
 
-fn run(cfg: cli.Config, environ: anytype, args: []const [:0]const u8) !u8 {
+fn run(cfg_in: cli.Config, environ: anytype, args: []const [:0]const u8) !u8 {
     const t0 = sys.monotonicNs();
     log.sink = ringSink;
+    // --tz may be an iana zone name; the renderer only speaks posix rules
+    var cfg = cfg_in;
+    var tz_buf: [config.text_max + 1]u8 = undefined;
+    if (tz.resolve(cfg.tz_rule)) |rule| {
+        if (!std.mem.eql(u8, rule, cfg.tz_rule)) cfg.tz_rule = std.fmt.bufPrintZ(&tz_buf, "{s}", .{rule}) catch cfg.tz_rule;
+    } else log.warn("--tz {s} is neither a posix rule nor a zone name; the renderer will refuse it", .{cfg.tz_rule});
     // 1. the anti-brick flag, before anything that could block or fail
     var property_ms: ?u64 = null;
     if (!cfg.no_property) {

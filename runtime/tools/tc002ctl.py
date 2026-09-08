@@ -8,8 +8,8 @@ commands:
   status                              renderer, network, time, mqtt state
   scenes                              scene and generator catalogue
   scene <art|clock|ip> [--generator NAME] [--seed N]
-        [--font classic|mini|segment|big] [--colour-mode solid|gradient] [--colour rrggbb]
-        [--colour2 rrggbb] [--gradient horizontal|vertical|diagonal]     transient clock style
+        [--font classic|mini|segment|big|block] [--colour-mode solid|gradient] [--colour rrggbb]
+        [--colour2 rrggbb] [--gradient horizontal|vertical|diagonal] [--spread 0..255]   transient clock style
   brightness <1..100>                 transient brightness
   reseed [N]                          reseed the art
   arm-stream                          arm stream mode (two-second wait)
@@ -24,6 +24,7 @@ commands:
   config-set key=value ...            patch settings; keys: brightness base generator timezone ntp_server
                                       ntp_interval_s frame_timeout_ms metrics_interval_s discovery discovery_prefix
                                       clock_font clock_colour_mode clock_colour clock_colour2 clock_gradient
+                                      clock_spread; timezone takes a posix rule or an iana name (Europe/Amsterdam)
   config-save [revision]              write the settings file, optionally only at that revision
   mqtt                                broker settings (password never returned)
   mqtt-set key=value ...              keys: enabled host port username password client_id prefix tls
@@ -111,6 +112,7 @@ def main():
     ap.add_argument("--colour-mode")
     ap.add_argument("--colour2")
     ap.add_argument("--gradient")
+    ap.add_argument("--spread", type=int)
     a = ap.parse_args()
     admin_commands = {"config-set", "config-save", "mqtt", "mqtt-set"}
     token = load_token(a, a.admin or a.command in admin_commands)
@@ -124,7 +126,7 @@ def main():
         body = {"base": a.args[0], "request_id": rid}
         if a.generator: body["generator"] = a.generator
         if a.seed is not None: body["seed"] = a.seed
-        style = {k: v for k, v in (("font", a.font), ("colour_mode", a.colour_mode), ("colour", a.colour), ("colour2", a.colour2), ("gradient", a.gradient)) if v}
+        style = {k: v for k, v in (("font", a.font), ("colour_mode", a.colour_mode), ("colour", a.colour), ("colour2", a.colour2), ("gradient", a.gradient), ("spread", a.spread)) if v is not None}
         if style: body["clock"] = style
         return show(*call(a, "PUT", "/scene", body, token=token))
     if c in ("brightness", "reseed", "arm-stream"):

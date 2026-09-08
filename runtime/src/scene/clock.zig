@@ -12,9 +12,9 @@ pub const Font = clockfont.Font;
 pub const ColourMode = enum(u8) { solid = 0, gradient = 1 };
 pub const Gradient = enum(u8) { horizontal = 0, vertical = 1, diagonal = 2 };
 
-/// the subtlety rule: no channel of the gradient's end may differ from the start by more than
-/// this. a 39–52 px wide text then shows a shade shift, never colour bands.
-pub const max_spread: u8 = 96;
+/// the default `spread`: the whole requested gradient is shown. a smaller value bounds how far
+/// any channel of the end colour may sit from the start colour, for a subtler ramp.
+pub const default_spread: u8 = 255;
 
 pub const Style = struct {
     font: Font = .classic,
@@ -22,13 +22,14 @@ pub const Style = struct {
     colour: [3]u8 = .{ 255, 255, 255 },
     colour2: [3]u8 = .{ 255, 255, 255 },
     gradient: Gradient = .horizontal,
+    spread: u8 = default_spread,
 
-    /// the gradient end after the subtlety rule.
+    /// the gradient end after the spread bound.
     pub fn effectiveColour2(self: Style) [3]u8 {
         var out: [3]u8 = undefined;
         for (self.colour, self.colour2, &out) |a, b, *o| {
-            const lo: i32 = @as(i32, a) - max_spread;
-            const hi: i32 = @as(i32, a) + max_spread;
+            const lo: i32 = @as(i32, a) - self.spread;
+            const hi: i32 = @as(i32, a) + self.spread;
             o.* = @intCast(std.math.clamp(@as(i32, b), @max(lo, 0), @min(hi, 255)));
         }
         return out;
@@ -40,6 +41,7 @@ pub const Style = struct {
         if (p.colour) |v| self.colour = v;
         if (p.colour2) |v| self.colour2 = v;
         if (p.gradient) |v| self.gradient = v;
+        if (p.spread) |v| self.spread = v;
     }
 };
 
@@ -50,6 +52,7 @@ pub const StylePatch = struct {
     colour: ?[3]u8 = null,
     colour2: ?[3]u8 = null,
     gradient: ?Gradient = null,
+    spread: ?u8 = null,
 };
 
 /// "hh:mm:ss" in the classic font is 47 px wide and 7 px tall; centred on the 52x16 panel.
@@ -118,7 +121,7 @@ pub const State = struct {
     fn layout(self: *const State, time_text: []const u8, date_text: []const u8, lines: *[2]Line) []const Line {
         const f = self.style.font;
         switch (f) {
-            .classic, .segment => {
+            .classic, .segment, .block => {
                 lines[0] = .{ .x = centre(f, time_text), .y = @divFloor(geometry.height - @as(i32, clockfont.glyphHeight(f)), 2), .text = time_text };
                 return lines[0..1];
             },
@@ -233,6 +236,8 @@ test "every font renders centred within its box; big drops the seconds; mini add
 test "a gradient runs from the start colour to the clamped end colour across the text" {
     var c = State.init(tz.utc);
     c.style = .{ .font = .segment, .mode = .gradient, .colour = .{ 200, 0, 0 }, .colour2 = .{ 0, 255, 0 }, .gradient = .horizontal };
+    try std.testing.expectEqual([3]u8{ 0, 255, 0 }, c.style.effectiveColour2()); // the default spread shows the whole ramp
+    c.style.spread = 96;
     try std.testing.expectEqual([3]u8{ 104, 96, 0 }, c.style.effectiveColour2());
     const wall_ns: u64 = (8 * 3600 + 8 * 60 + 8) * std.time.ns_per_s;
     var rgb = geometry.black_rgb;
@@ -241,6 +246,11 @@ test "a gradient runs from the start colour to the clamped end colour across the
     const right = rgb[geometry.pixelOffset(44, 4)..][0..3].*; // the last 8's right bar
     try std.testing.expectEqual([3]u8{ 200, 0, 0 }, left);
     try std.testing.expect(right[0] < 120 and right[1] > 80);
+    c.style.spread = 255;
+    c.render(wall_ns, &rgb);
+    const far = rgb[geometry.pixelOffset(44, 4)..][0..3].*;
+    try std.testing.expect(far[0] < 20 and far[1] > 230); // unbounded: nearly the end colour itself
+    c.style.spread = 96;
     c.style.gradient = .vertical;
     c.render(wall_ns, &rgb);
     const top = rgb[geometry.pixelOffset(7, 3)..][0..3].*;
@@ -257,8 +267,19 @@ test "style patches merge field by field" {
     s.apply(.{ .font = .big, .colour = .{ 1, 2, 3 } });
     try std.testing.expectEqual(Font.big, s.font);
     try std.testing.expectEqual(ColourMode.solid, s.mode);
-    s.apply(.{ .mode = .gradient, .gradient = .diagonal });
+    s.apply(.{ .mode = .gradient, .gradient = .diagonal, .spread = 64 });
     try std.testing.expectEqual(Font.big, s.font);
     try std.testing.expectEqual(Gradient.diagonal, s.gradient);
     try std.testing.expectEqual([3]u8{ 1, 2, 3 }, s.colour);
+    try std.testing.expectEqual(@as(u8, 64), s.spread);
+}
+
+test "the block font fills 47 of the 52 columns and ten of the rows, centred" {
+    var c = State.init(tz.utc);
+    c.style.font = .block;
+    const wall_ns: u64 = (8 * 3600 + 8 * 60 + 8) * std.time.ns_per_s;
+    var rgb = geometry.black_rgb;
+    c.render(wall_ns, &rgb);
+    const b = litBox(&rgb);
+    try std.testing.expectEqual(Box{ .x0 = 2, .y0 = 3, .x1 = 48, .y1 = 12 }, b);
 }

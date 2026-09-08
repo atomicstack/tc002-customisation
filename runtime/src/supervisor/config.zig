@@ -4,6 +4,7 @@
 const std = @import("std");
 const api = @import("../net/api.zig");
 const clock = @import("../scene/clock.zig");
+const tz = @import("../scene/tz.zig");
 
 pub const text_max = 64;
 
@@ -61,6 +62,7 @@ pub const Config = struct {
     clock_colour: [3]u8 = .{ 255, 255, 255 },
     clock_colour2: [3]u8 = .{ 255, 255, 255 },
     clock_gradient: u8 = 0,
+    clock_spread: u8 = clock.default_spread,
 
     /// the clock style these settings describe (unknown stored values fall back to defaults).
     pub fn clockStyle(self: *const Config) clock.Style {
@@ -70,7 +72,14 @@ pub const Config = struct {
             .colour = self.clock_colour,
             .colour2 = self.clock_colour2,
             .gradient = enumOr(clock.Gradient, self.clock_gradient, .horizontal),
+            .spread = self.clock_spread,
         };
+    }
+
+    /// the posix rule the renderer gets: the timezone text itself if it is a rule, or the rule
+    /// behind an iana zone name; "UTC0" if the stored text is neither.
+    pub fn tzRule(self: *const Config) []const u8 {
+        return tz.resolve(self.timezone.slice()) orelse "UTC0";
     }
 
     pub const PatchError = error{ RevisionConflict, TooLong, Invalid };
@@ -82,7 +91,10 @@ pub const Config = struct {
         if (p.brightness) |v| next.brightness = v;
         if (p.base) |b| next.base = @intFromEnum(b);
         if (p.generator) |g| next.generator = @intFromEnum(g);
-        if (p.timezone) |t| try next.timezone.set(t);
+        if (p.timezone) |t| {
+            try next.timezone.set(t);
+            if (tz.resolve(t) == null) return error.Invalid;
+        }
         if (p.ntp_server) |s| next.ntp_server = s;
         if (p.ntp_interval_s) |v| next.ntp_interval_s = v;
         if (p.frame_timeout_ms) |v| next.frame_timeout_ms = v;
@@ -94,6 +106,7 @@ pub const Config = struct {
         if (p.clock_colour) |v| next.clock_colour = v;
         if (p.clock_colour2) |v| next.clock_colour2 = v;
         if (p.clock_gradient) |v| next.clock_gradient = @intFromEnum(v);
+        if (p.clock_spread) |v| next.clock_spread = v;
         next.revision = self.revision + 1;
         self.* = next;
     }
@@ -147,7 +160,7 @@ fn getText(in: []const u8, off: *usize) error{BadPayload}!Text {
 
 const text_wire = 1 + text_max;
 /// schema, revisions, brightness/base/generator, timezone, ntp, intervals, discovery, origins, mqtt
-pub const encoded_len = 1 + 4 + 4 + 3 + text_wire + 5 + 4 + 2 + 4 + 1 + text_wire + 1 + api.max_origins * text_wire + 1 + text_wire + 2 + 4 * text_wire + 1 + 9;
+pub const encoded_len = 1 + 4 + 4 + 3 + text_wire + 5 + 4 + 2 + 4 + 1 + text_wire + 1 + api.max_origins * text_wire + 1 + text_wire + 2 + 4 * text_wire + 1 + 10;
 
 pub fn encode(c: *const Config, out: *[encoded_len]u8) void {
     var o: usize = 0;
@@ -193,7 +206,8 @@ pub fn encode(c: *const Config, out: *[encoded_len]u8) void {
     out[o + 2 ..][0..3].* = c.clock_colour;
     out[o + 5 ..][0..3].* = c.clock_colour2;
     out[o + 8] = c.clock_gradient;
-    o += 9;
+    out[o + 9] = c.clock_spread;
+    o += 10;
     std.debug.assert(o == encoded_len);
 }
 
@@ -241,6 +255,7 @@ pub fn decode(in: []const u8) error{BadPayload}!Config {
     c.clock_colour = in[o + 2 ..][0..3].*;
     c.clock_colour2 = in[o + 5 ..][0..3].*;
     c.clock_gradient = in[o + 8];
+    c.clock_spread = in[o + 9];
     return c;
 }
 
@@ -265,6 +280,7 @@ const FileForm = struct {
     clock_colour: []const u8 = "ffffff",
     clock_colour2: []const u8 = "ffffff",
     clock_gradient: []const u8 = "horizontal",
+    clock_spread: u8 = clock.default_spread,
     mqtt: struct {
         enabled: bool = false,
         host: []const u8 = "",
@@ -302,6 +318,7 @@ pub fn toJson(c: *const Config, out: []u8) error{Overflow}![]u8 {
         .clock_colour = std.fmt.bufPrint(&colour_buf, "{x:0>2}{x:0>2}{x:0>2}", .{ c.clock_colour[0], c.clock_colour[1], c.clock_colour[2] }) catch unreachable,
         .clock_colour2 = std.fmt.bufPrint(&colour2_buf, "{x:0>2}{x:0>2}{x:0>2}", .{ c.clock_colour2[0], c.clock_colour2[1], c.clock_colour2[2] }) catch unreachable,
         .clock_gradient = @tagName(enumOr(clock.Gradient, c.clock_gradient, .horizontal)),
+        .clock_spread = c.clock_spread,
         .revision = c.revision,
         .brightness = c.brightness,
         .base = base_names[@min(c.base, base_names.len - 1)],
@@ -364,6 +381,8 @@ pub fn fromJson(bytes: []const u8, arena: []u8) error{ Invalid, TooLong }!Config
     c.clock_colour = api.parseColour(f.clock_colour) orelse return error.Invalid;
     c.clock_colour2 = api.parseColour(f.clock_colour2) orelse return error.Invalid;
     c.clock_gradient = @intFromEnum(api.enumByName(clock.Gradient, f.clock_gradient) orelse return error.Invalid);
+    c.clock_spread = f.clock_spread;
+    if (tz.resolve(f.timezone) == null) return error.Invalid;
     return c;
 }
 
@@ -380,16 +399,23 @@ test "patches validate, bump the revision, and honour the expected revision" {
     try std.testing.expectEqual(@as(u32, 2), c.revision);
     const long = [_]u8{'x'} ** 65;
     try std.testing.expectError(error.TooLong, c.patch(.{ .timezone = &long }));
+    try std.testing.expectError(error.Invalid, c.patch(.{ .timezone = "Mars/Olympus" }));
     try std.testing.expectEqual(@as(u32, 2), c.revision); // a failed patch changes nothing
+    try c.patch(.{ .timezone = "Europe/Amsterdam" });
+    try std.testing.expectEqualStrings("Europe/Amsterdam", c.timezone.slice());
+    try std.testing.expectEqualStrings("CET-1CEST,M3.5.0,M10.5.0/3", c.tzRule());
+    try c.patch(.{ .timezone = "JST-9", .clock_spread = 80 });
+    try std.testing.expectEqualStrings("JST-9", c.tzRule());
+    try std.testing.expectEqual(@as(u8, 80), c.clockStyle().spread);
     try std.testing.expectError(error.Invalid, c.patchMqtt(.{ .enabled = true }));
     try c.patchMqtt(.{ .enabled = true, .host = "10.0.0.2", .password = "S3cret" });
-    try std.testing.expectEqual(@as(u32, 3), c.revision);
+    try std.testing.expectEqual(@as(u32, 5), c.revision);
     try std.testing.expectEqualStrings("S3cret", c.mqtt.password.slice());
 }
 
 test "ipc encoding round-trips every field" {
     var c = Config{};
-    try c.patch(.{ .brightness = 7, .base = .clock, .generator = .plasma, .timezone = "EST5EDT,M3.2.0,M11.1.0", .ntp_server = .{ 1, 2, 3, 4 }, .ntp_interval_s = 600, .frame_timeout_ms = 250, .metrics_interval_s = 0, .discovery = true, .discovery_prefix = "ha", .clock_font = .segment, .clock_colour_mode = .gradient, .clock_colour = .{ 1, 2, 3 }, .clock_colour2 = .{ 4, 5, 6 }, .clock_gradient = .diagonal });
+    try c.patch(.{ .brightness = 7, .base = .clock, .generator = .plasma, .timezone = "EST5EDT,M3.2.0,M11.1.0", .ntp_server = .{ 1, 2, 3, 4 }, .ntp_interval_s = 600, .frame_timeout_ms = 250, .metrics_interval_s = 0, .discovery = true, .discovery_prefix = "ha", .clock_font = .segment, .clock_colour_mode = .gradient, .clock_colour = .{ 1, 2, 3 }, .clock_colour2 = .{ 4, 5, 6 }, .clock_gradient = .diagonal, .clock_spread = 12 });
     try c.patchMqtt(.{ .enabled = true, .host = "10.0.0.2", .port = 8883, .username = "u", .password = "p", .client_id = "cid", .prefix = "tc002/x", .tls = true });
     c.origins[0] = Text.init("http://panel.local");
     c.origin_count = 1;
@@ -425,6 +451,8 @@ test "json persistence round-trips and rejects junk" {
     try std.testing.expectEqual(clock.Font.big, back.clockStyle().font);
     try std.testing.expectEqual(clock.ColourMode.gradient, back.clockStyle().mode);
     try std.testing.expectEqual([3]u8{ 0xff, 0x80, 0x00 }, back.clockStyle().colour);
+    try std.testing.expectEqual(clock.default_spread, back.clockStyle().spread);
+    try std.testing.expectError(error.Invalid, fromJson("{\"schema\":1,\"timezone\":\"Nowhere/Land\"}", &arena));
     try std.testing.expect(std.mem.indexOf(u8, text, "\"clock_colour\":\"ff8000\"") != null);
     try std.testing.expectError(error.Invalid, fromJson("{\"schema\":1,\"clock_font\":\"comic\"}", &arena));
     try std.testing.expectError(error.Invalid, fromJson("{\"schema\":1,\"clock_colour\":\"red\"}", &arena));

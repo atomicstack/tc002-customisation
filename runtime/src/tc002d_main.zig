@@ -134,7 +134,7 @@ const Renderer = struct {
         const cadence: scene.Cadence = if (fading) .{ .continuous = scene.frame_period_ns } else if (fader.dark()) .idle else arb.cadence(wall);
         pres.submit(frame_version, if (cadence == .continuous) .continuous else .isolated);
         self.redraws += 1;
-        self.render_deadline = sched.nextDeadline(cadence, base_deadline, now, wall);
+        self.render_deadline = sched.afterRedraw(fading, cadence, base_deadline, now, wall);
         self.idle = cadence == .idle;
     }
 

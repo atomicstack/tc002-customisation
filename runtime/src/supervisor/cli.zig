@@ -9,7 +9,7 @@ pub const usage =
     \\  --fallback PATH         fallback renderer after three failures in sixty seconds (same as --renderer)
     \\  --dir PATH              runtime directory (/tmp/tc002)
     \\  --lock PATH             panel lock file (/tmp/tc002/panel.lock)
-    \\  --tz RULE               posix tz rule handed to the renderer (UTC0)
+    \\  --tz RULE               posix tz rule or iana zone name; the renderer gets the rule (UTC0)
     \\  --keymap L,M,R,K        keycodes for left, middle, right, knob (105,103,106,108)
     \\  --keys PATH             button evdev node (/dev/input/event67)
     \\  --knob PATH             rotary evdev node (/dev/input/event68)

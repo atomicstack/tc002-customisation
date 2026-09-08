@@ -694,7 +694,7 @@ const Netd = struct {
 
     /// the clock style as `{"font","colour_mode","colour","colour2","gradient"}`.
     fn clockJson(o: *Out, s: messages.ClockStyle) void {
-        o.fmt("{{\"font\":\"{s}\",\"colour_mode\":\"{s}\",\"colour\":\"{x:0>2}{x:0>2}{x:0>2}\",\"colour2\":\"{x:0>2}{x:0>2}{x:0>2}\",\"gradient\":\"{s}\"}}", .{ enumName(clock.Font, s.font), enumName(clock.ColourMode, s.mode), s.colour[0], s.colour[1], s.colour[2], s.colour2[0], s.colour2[1], s.colour2[2], enumName(clock.Gradient, s.gradient) });
+        o.fmt("{{\"font\":\"{s}\",\"colour_mode\":\"{s}\",\"colour\":\"{x:0>2}{x:0>2}{x:0>2}\",\"colour2\":\"{x:0>2}{x:0>2}{x:0>2}\",\"gradient\":\"{s}\",\"spread\":{d}}}", .{ enumName(clock.Font, s.font), enumName(clock.ColourMode, s.mode), s.colour[0], s.colour[1], s.colour[2], s.colour2[0], s.colour2[1], s.colour2[2], enumName(clock.Gradient, s.gradient), s.spread });
     }
 
     /// fps is only meaningful against a continuous cadence: art with no overlay. otherwise null.
@@ -1114,7 +1114,7 @@ const Netd = struct {
                 .notify => |n| self.mqttRelay(.{ .notify = messages.Notify.init(n.text, n.colour, n.duration_s) }, n.request_id, n.epoch, now),
                 .config_patch => |cp| {
                     // the control subset only: transient brightness and scene parameters
-                    const admin_fields = cp.timezone != null or cp.ntp_server != null or cp.ntp_interval_s != null or cp.frame_timeout_ms != null or cp.metrics_interval_s != null or cp.discovery != null or cp.discovery_prefix != null or cp.clock_font != null or cp.clock_colour_mode != null or cp.clock_colour != null or cp.clock_colour2 != null or cp.clock_gradient != null;
+                    const admin_fields = cp.timezone != null or cp.ntp_server != null or cp.ntp_interval_s != null or cp.frame_timeout_ms != null or cp.metrics_interval_s != null or cp.discovery != null or cp.discovery_prefix != null or cp.clock_font != null or cp.clock_colour_mode != null or cp.clock_colour != null or cp.clock_colour2 != null or cp.clock_gradient != null or cp.clock_spread != null;
                     if (admin_fields) {
                         var o = Out{ .buf = &json_buf };
                         o.add("{\"status\":\"rejected\",\"error\":\"admin_only\",\"message\":\"durable settings are administered over http\"}");

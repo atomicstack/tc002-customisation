@@ -158,6 +158,48 @@ const Parser = struct {
     }
 };
 
+const zones = @import("zones.zig");
+
+/// the posix rule for a timezone setting: the text itself when it parses as a rule, or the rule
+/// an iana zone name (matched case-insensitively) follows from now on; null when it is neither.
+/// zone rules come from the tzdata footers, so daylight saving follows each zone's current law.
+pub fn resolve(text: []const u8) ?[]const u8 {
+    if (parse(text)) |_| return text else |_| {}
+    var rest: []const u8 = zones.blob;
+    while (rest.len > 0) {
+        const n = std.mem.indexOfScalar(u8, rest, 0) orelse break;
+        const after_name = rest[n + 1 ..];
+        const m = std.mem.indexOfScalar(u8, after_name, 0) orelse break;
+        if (std.ascii.eqlIgnoreCase(rest[0..n], text)) return after_name[0..m];
+        rest = after_name[m + 1 ..];
+    }
+    return null;
+}
+
+test "zone names resolve to rules that parse and follow their daylight saving" {
+    try std.testing.expectEqualStrings("CET-1CEST,M3.5.0,M10.5.0/3", resolve("Europe/Amsterdam").?);
+    try std.testing.expectEqualStrings("AEST-10AEDT,M10.1.0,M4.1.0/3", resolve("australia/melbourne").?);
+    try std.testing.expectEqualStrings("JST-9", resolve("JST-9").?);
+    try std.testing.expect(resolve("Mars/Olympus") == null);
+    try std.testing.expect(resolve("") == null);
+    const ams = try parse(resolve("Europe/Amsterdam").?);
+    try std.testing.expectEqual(@as(i32, 2 * 3600), utcOffsetAt(ams, 1782950400)); // 2026-07-01
+    try std.testing.expectEqual(@as(i32, 1 * 3600), utcOffsetAt(ams, 1768435200)); // 2026-01-15
+    const kolkata = try parse(resolve("Asia/Kolkata").?);
+    try std.testing.expectEqual(@as(i32, 5 * 3600 + 30 * 60), utcOffsetAt(kolkata, 1782950400));
+    // every generated rule must be one this parser accepts
+    var rest: []const u8 = zones.blob;
+    var count: u32 = 0;
+    while (rest.len > 0) : (count += 1) {
+        const n = std.mem.indexOfScalar(u8, rest, 0) orelse break;
+        const after_name = rest[n + 1 ..];
+        const m = std.mem.indexOfScalar(u8, after_name, 0) orelse break;
+        _ = parse(after_name[0..m]) catch return error.TestUnexpectedResult;
+        rest = after_name[m + 1 ..];
+    }
+    try std.testing.expectEqual(@as(u32, zones.count), count);
+}
+
 /// parse a posix tz rule. dst requires explicit `,start,end` rules; implicit us rules are rejected.
 pub fn parse(text: []const u8) ParseError!Rule {
     var p = Parser{ .s = text };

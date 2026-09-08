@@ -57,7 +57,7 @@ tools/tc002ctl.py -s <device-ip> --token-file tokens notify hello --colour 00ff8
 tools/tc002ctl.py -s <device-ip> --token-file tokens frame --colour ff0000 --duration 3
 tools/tc002ctl.py -s <device-ip> --token-file tokens power off               # fades to black; `power on` fades back
 tools/tc002ctl.py -s <device-ip> --token-file tokens scene clock --font big --colour-mode gradient --colour 2060ff --colour2 60c0ff --gradient vertical
-tools/tc002ctl.py -s <device-ip> --token-file tokens config-set clock_font=segment clock_colour=ffc000   # durable defaults, admin token
+tools/tc002ctl.py -s <device-ip> --token-file tokens config-set clock_font=block timezone=Europe/Amsterdam   # durable defaults, admin token
 tools/tc002ctl.py -s <device-ip> --token-file tokens input middle click      # a remote press; rotary cw --steps 3
 tools/tc002ctl.py -s <device-ip> --token-file tokens screen --ascii          # the frame as shown, drawn in the terminal
 tools/tc002ctl.py -s <device-ip> --token-file tokens logs --follow           # the supervisor's log ring
@@ -99,9 +99,11 @@ controls. the full reference is [`RUNTIME.md`](../RUNTIME.md).
   grew from 2 kb to 3.5 kb for it.
 - **the log ring is 64 lines of 127 bytes** (8 kb of static storage in the supervisor), served sixteen
   lines a page; older lines are gone, and a flooding child drops lines rather than blocking.
-- **clock gradients are clamped** to a 96-of-255 spread per channel between the two colours: on 52
-  columns a wider ramp turns into visible bands, so the runtime keeps every gradient a shade shift and
-  says so in `/scenes` (`max_spread`) rather than rendering what would look wrong.
+- **clock gradients show the whole requested ramp by default** (`spread` 255); a smaller `spread`
+  bounds the per-channel distance between the two colours for a subtler shade shift. the first cut
+  clamped every gradient to 96 and was too timid on the panel.
+- **the zone table costs 22 kb in the supervisor**: 597 iana names with their current posix rules,
+  looked up by a linear scan when settings change. no tzdata on the device, no historical rules.
 - **input events are not retained** on mqtt, on purpose: a consumer that was offline must not replay
   a stale press. events raised while the broker is unreachable are lost.
 

@@ -22,6 +22,22 @@ pub fn nextDeadline(cadence: scene.Cadence, deadline: u64, now_mono: u64, wall_n
     };
 }
 
+/// the deadline after a redraw: a running fade wants the next frame one period from now
+/// whatever the scene's own cadence says (a clock's next wall-second boundary would freeze the
+/// fade until then); otherwise the scene decides.
+pub fn afterRedraw(fading: bool, cadence: scene.Cadence, deadline: u64, now_mono: u64, wall_now: u64) ?u64 {
+    if (fading) return now_mono + scene.frame_period_ns;
+    return nextDeadline(cadence, deadline, now_mono, wall_now);
+}
+
+test "a fade that starts from an isolated scene schedules the next frame one period from now" {
+    // the clock's next boundary is 900 ms away; a fade must not wait for it
+    const boundary: u64 = 2_000_000_000;
+    try std.testing.expectEqual(@as(?u64, 1_100_000_000 + scene.frame_period_ns), afterRedraw(true, .{ .at_wall_ns = boundary }, boundary, 1_100_000_000, 1_100_000_000));
+    try std.testing.expectEqual(@as(?u64, boundary), afterRedraw(false, .{ .at_wall_ns = boundary }, boundary, 1_100_000_000, 1_100_000_000));
+    try std.testing.expectEqual(@as(?u64, 1_000_000_000 + scene.frame_period_ns), afterRedraw(true, .idle, 0, 1_000_000_000, 0));
+}
+
 /// the earliest of up to four optional monotonic instants (timer arming).
 pub fn earliest(a: ?u64, b: ?u64, c: ?u64, d: ?u64) ?u64 {
     var best: ?u64 = null;

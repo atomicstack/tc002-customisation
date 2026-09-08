@@ -1,18 +1,22 @@
 //! digit fonts for the clock scene: the built-in 5x7 font, a 3x5 `mini`, a seven-segment 5x9
-//! `segment` generated from a segment table, and `big`, the 5x7 digits scaled to 10x14. glyphs
-//! are fixed-size bit rows; the blit takes a painter so a gradient is a colour function over the
+//! `segment` generated from a segment table, `big` (the 5x7 digits scaled to 10x14) and `block`,
+//! the stock clock's face: 6x10 digits with two-pixel strokes and a 2x2-dot colon. glyphs are
+//! fixed-size alpha maps; the blit takes a painter so a gradient is a colour function over the
 //! text, not a property of the font. pure.
 const std = @import("std");
 const geometry = @import("../panel/geometry.zig");
 const font = @import("font.zig");
 
-pub const Font = enum(u8) { classic = 0, mini = 1, segment = 2, big = 3 };
+pub const Font = enum(u8) { classic = 0, mini = 1, segment = 2, big = 3, block = 4 };
 pub const font_count: u8 = @typeInfo(Font).@"enum".fields.len;
 
 pub const max_h = 14;
+pub const max_w = 10;
 
-/// one glyph: `w` columns, `h` rows, row bits with bit (w - 1 - col) set for a lit pixel.
-pub const Glyph = struct { w: u8, h: u8, rows: [max_h]u16 };
+/// one glyph: `w` columns, `h` rows, an alpha level per pixel (255 = fully lit).
+pub const Glyph = struct { w: u8, h: u8, a: [max_h][max_w]u8 };
+
+const blank = Glyph{ .w = 0, .h = 0, .a = [_][max_w]u8{[_]u8{0} ** max_w} ** max_h };
 
 pub fn glyphHeight(f: Font) u8 {
     return switch (f) {
@@ -20,6 +24,7 @@ pub fn glyphHeight(f: Font) u8 {
         .mini => 5,
         .segment => 9,
         .big => 14,
+        .block => 10,
     };
 }
 
@@ -29,13 +34,13 @@ pub fn gap(f: Font) u8 {
 }
 
 fn fromArt(comptime w: u8, comptime h: u8, comptime art: [h]*const [w:0]u8) Glyph {
-    var g = Glyph{ .w = w, .h = h, .rows = [_]u16{0} ** max_h };
+    var g = blank;
+    g.w = w;
+    g.h = h;
     for (art, 0..) |row, r| {
-        var bits: u16 = 0;
         for (row, 0..) |ch, c| {
-            if (ch == '#') bits |= @as(u16, 1) << @intCast(w - 1 - c);
+            if (ch == '#') g.a[r][c] = 255;
         }
-        g.rows[r] = bits;
     }
     return g;
 }
@@ -73,20 +78,20 @@ const segment_table = [10]Segments{
 };
 
 fn segmentGlyph(s: Segments) Glyph {
-    var g = Glyph{ .w = 5, .h = 9, .rows = [_]u16{0} ** max_h };
-    const bar: u16 = 0b01110; // cols 1..3
-    const left: u16 = 0b10000;
-    const right: u16 = 0b00001;
-    if (s.a) g.rows[0] |= bar;
-    if (s.g) g.rows[4] |= bar;
-    if (s.d) g.rows[8] |= bar;
+    var g = blank;
+    g.w = 5;
+    g.h = 9;
+    const bar_rows = [_]struct { on: bool, r: usize }{ .{ .on = s.a, .r = 0 }, .{ .on = s.g, .r = 4 }, .{ .on = s.d, .r = 8 } };
+    for (bar_rows) |b| if (b.on) {
+        for (1..4) |c| g.a[b.r][c] = 255;
+    };
     for (1..4) |r| {
-        if (s.f) g.rows[r] |= left;
-        if (s.b) g.rows[r] |= right;
+        if (s.f) g.a[r][0] = 255;
+        if (s.b) g.a[r][4] = 255;
     }
     for (5..8) |r| {
-        if (s.e) g.rows[r] |= left;
-        if (s.c) g.rows[r] |= right;
+        if (s.e) g.a[r][0] = 255;
+        if (s.c) g.a[r][4] = 255;
     }
     return g;
 }
@@ -97,26 +102,61 @@ const segment_digits: [10]Glyph = blk: {
     break :blk out;
 };
 const segment_colon = fromArt(1, 9, .{ ".", ".", "#", ".", ".", ".", "#", ".", "." });
-const segment_space = Glyph{ .w = 5, .h = 9, .rows = [_]u16{0} ** max_h };
+const segment_space = fromArt(5, 9, .{ ".....", ".....", ".....", ".....", ".....", ".....", ".....", ".....", "....." });
 
 /// the built-in font's glyph as a `Glyph`, optionally scaled by two.
 fn classicGlyph(c: u8, comptime scale: u8) Glyph {
     const src = font.glyph(c);
-    var g = Glyph{ .w = font.glyph_w * scale, .h = font.glyph_h * scale, .rows = [_]u16{0} ** max_h };
+    var g = blank;
+    g.w = font.glyph_w * scale;
+    g.h = font.glyph_h * scale;
     for (src, 0..) |row, r| {
-        var bits: u16 = 0;
         for (0..font.glyph_w) |col| {
             if ((row >> @intCast(font.glyph_w - 1 - col)) & 1 != 0) {
-                for (0..scale) |k| bits |= @as(u16, 1) << @intCast(g.w - 1 - (col * scale + k));
+                for (0..scale) |ky| for (0..scale) |kx| {
+                    g.a[r * scale + ky][col * scale + kx] = 255;
+                };
             }
         }
-        for (0..scale) |k| g.rows[r * scale + k] = bits;
     }
     return g;
 }
 
 /// the big colon: four-by-four dots so "hh:mm" spans exactly the 52 columns.
 const big_colon = fromArt(4, 14, .{ "....", "....", "####", "####", "####", "####", "....", "....", "####", "####", "####", "####", "....", "...." });
+
+// block: the stock clock's face. seven segments with two-pixel strokes on a 6x10 cell, corners
+// filled where bars meet, a 1 with a flag and a base as the stock face draws it, a 2x2-dot colon.
+fn blockGlyph(s: Segments) Glyph {
+    var g = blank;
+    g.w = 6;
+    g.h = 10;
+    const bars = [_]struct { on: bool, r: usize }{ .{ .on = s.a, .r = 0 }, .{ .on = s.g, .r = 4 }, .{ .on = s.d, .r = 8 } };
+    for (bars) |b| if (b.on) {
+        for (0..6) |c| {
+            g.a[b.r][c] = 255;
+            g.a[b.r + 1][c] = 255;
+        }
+    };
+    for (0..6) |r| {
+        if (s.f) g.a[r][0..2].* = .{ 255, 255 };
+        if (s.b) g.a[r][4..6].* = .{ 255, 255 };
+    }
+    for (4..10) |r| {
+        if (s.e) g.a[r][0..2].* = .{ 255, 255 };
+        if (s.c) g.a[r][4..6].* = .{ 255, 255 };
+    }
+    return g;
+}
+
+const block_digits: [10]Glyph = blk: {
+    var out: [10]Glyph = undefined;
+    for (segment_table, 0..) |s, i| out[i] = blockGlyph(s);
+    out[1] = fromArt(6, 10, .{ "..##..", "..##..", "####..", "####..", "..##..", "..##..", "..##..", "..##..", "######", "######" });
+    break :blk out;
+};
+const block_colon = fromArt(2, 10, .{ "..", "..", "##", "##", "..", "..", "##", "##", "..", ".." });
+const block_space = fromArt(6, 10, .{ "......", "......", "......", "......", "......", "......", "......", "......", "......", "......" });
 
 /// the glyph for a character in a font; characters a font lacks draw as a blank cell.
 pub fn glyph(f: Font, c: u8) Glyph {
@@ -134,6 +174,11 @@ pub fn glyph(f: Font, c: u8) Glyph {
             if (c == ':') return segment_colon;
             return segment_space;
         },
+        .block => {
+            if (c >= '0' and c <= '9') return block_digits[c - '0'];
+            if (c == ':') return block_colon;
+            return block_space;
+        },
     }
 }
 
@@ -147,8 +192,16 @@ pub fn textWidth(f: Font, text: []const u8) u32 {
     return w;
 }
 
+/// a colour at an alpha level: 255 leaves it untouched, 0 is black.
+pub fn scaled(colour: [3]u8, alpha: u8) [3]u8 {
+    const gain: u32 = @as(u32, alpha) + (alpha >> 7);
+    var out: [3]u8 = undefined;
+    for (colour, &out) |c, *o| o.* = @intCast((@as(u32, c) * gain) >> 8);
+    return out;
+}
+
 /// draw text with its top-left at (x0, y0); every lit pixel takes its colour from
-/// `painter.at(x, y)`. pixels outside the panel are skipped.
+/// `painter.at(x, y)`, dimmed by the glyph's alpha. pixels outside the panel are skipped.
 pub fn blit(rgb: *geometry.Rgb, x0: i32, y0: i32, f: Font, text: []const u8, painter: anytype) void {
     var x = x0;
     for (text, 0..) |c, i| {
@@ -158,11 +211,12 @@ pub fn blit(rgb: *geometry.Rgb, x0: i32, y0: i32, f: Font, text: []const u8, pai
             const y = y0 + @as(i32, @intCast(r));
             if (y >= 0 and y < geometry.height) {
                 for (0..g.w) |col| {
-                    if ((g.rows[r] >> @intCast(g.w - 1 - col)) & 1 == 0) continue;
+                    const a = g.a[r][col];
+                    if (a == 0) continue;
                     const px = x + @as(i32, @intCast(col));
                     if (px < 0 or px >= geometry.width) continue;
                     const o = geometry.pixelOffset(@intCast(px), @intCast(y));
-                    rgb[o..][0..3].* = painter.at(px, y);
+                    rgb[o..][0..3].* = scaled(painter.at(px, y), a);
                 }
             }
         }
@@ -194,7 +248,7 @@ const Counting = struct {
         self.min_y = @min(self.min_y, y);
         self.max_y = @max(self.max_y, y);
         self.lit += 1;
-        return .{ 1, 2, 3 };
+        return .{ 255, 2, 3 };
     }
 };
 
@@ -206,15 +260,15 @@ test "every digit in every font lights something inside its cell and digits diff
             const g = glyph(fnt, d);
             try std.testing.expectEqual(glyphHeight(fnt), g.h);
             var any = false;
-            for (g.rows[0..g.h]) |row| {
-                try std.testing.expect(row >> @intCast(g.w) == 0);
-                any = any or row != 0;
+            for (g.a[0..g.h]) |row| {
+                for (row[g.w..]) |a| try std.testing.expectEqual(@as(u8, 0), a);
+                for (row[0..g.w]) |a| any = any or a != 0;
             }
             try std.testing.expect(any);
             var e: u8 = '0';
-            while (e < d) : (e += 1) try std.testing.expect(!std.mem.eql(u16, &glyph(fnt, d).rows, &glyph(fnt, e).rows));
+            while (e < d) : (e += 1) try std.testing.expect(!std.meta.eql(glyph(fnt, d).a, glyph(fnt, e).a));
         }
-        for (glyph(fnt, ':').rows) |row| try std.testing.expect(row != 0 or true);
+        try std.testing.expect(glyph(fnt, ':').w > 0);
     }
 }
 
@@ -224,33 +278,50 @@ test "text widths match the layouts the clock relies on" {
     try std.testing.expectEqual(@as(u32, 27), textWidth(.mini, "13:05:09"));
     try std.testing.expectEqual(@as(u32, 19), textWidth(.mini, "07/09"));
     try std.testing.expectEqual(@as(u32, 52), textWidth(.big, "13:05"));
+    try std.testing.expectEqual(@as(u32, 47), textWidth(.block, "13:05:09"));
     try std.testing.expectEqual(@as(u32, 0), textWidth(.big, ""));
 }
 
-test "big is the classic digit scaled by two and segment digits are the expected shapes" {
+test "big is the classic digit scaled by two; segment and block digits are the expected shapes" {
     const one = glyph(.classic, '1');
     const big_one = glyph(.big, '1');
     try std.testing.expectEqual(@as(u8, 10), big_one.w);
     try std.testing.expectEqual(@as(u8, 14), big_one.h);
-    for (0..7) |r| {
-        var expected: u16 = 0;
-        for (0..5) |col| if ((one.rows[r] >> @intCast(4 - col)) & 1 != 0) {
-            expected |= @as(u16, 0b11) << @intCast(8 - col * 2);
-        };
-        try std.testing.expectEqual(expected, big_one.rows[2 * r]);
-        try std.testing.expectEqual(expected, big_one.rows[2 * r + 1]);
-    }
+    for (0..7) |r| for (0..5) |c| {
+        try std.testing.expectEqual(one.a[r][c], big_one.a[2 * r][2 * c]);
+        try std.testing.expectEqual(one.a[r][c], big_one.a[2 * r + 1][2 * c + 1]);
+    };
     const eight = glyph(.segment, '8');
-    try std.testing.expectEqual(@as(u16, 0b01110), eight.rows[0]);
-    try std.testing.expectEqual(@as(u16, 0b10001), eight.rows[1]);
-    try std.testing.expectEqual(@as(u16, 0b01110), eight.rows[4]);
-    try std.testing.expectEqual(@as(u16, 0b01110), eight.rows[8]);
+    try std.testing.expectEqual([5]u8{ 0, 255, 255, 255, 0 }, eight.a[0][0..5].*);
+    try std.testing.expectEqual([5]u8{ 255, 0, 0, 0, 255 }, eight.a[1][0..5].*);
+    try std.testing.expectEqual([5]u8{ 0, 255, 255, 255, 0 }, eight.a[4][0..5].*);
     const seven = glyph(.segment, '7');
-    try std.testing.expectEqual(@as(u16, 0b00001), seven.rows[6]);
-    try std.testing.expectEqual(@as(u16, 0), seven.rows[8]);
+    try std.testing.expectEqual([5]u8{ 0, 0, 0, 0, 255 }, seven.a[6][0..5].*);
+    try std.testing.expectEqual([5]u8{ 0, 0, 0, 0, 0 }, seven.a[8][0..5].*);
+    // block: the stock face's 2 has a full top bar, a right upper stroke, a middle bar, a left
+    // lower stroke and a full bottom bar, all two pixels thick
+    const two = glyph(.block, '2');
+    try std.testing.expectEqual(@as(u8, 6), two.w);
+    try std.testing.expectEqual(@as(u8, 10), two.h);
+    const full = [6]u8{ 255, 255, 255, 255, 255, 255 };
+    try std.testing.expectEqual(full, two.a[0][0..6].*);
+    try std.testing.expectEqual(full, two.a[1][0..6].*);
+    try std.testing.expectEqual([6]u8{ 0, 0, 0, 0, 255, 255 }, two.a[2][0..6].*);
+    try std.testing.expectEqual(full, two.a[4][0..6].*);
+    try std.testing.expectEqual([6]u8{ 255, 255, 0, 0, 0, 0 }, two.a[7][0..6].*);
+    try std.testing.expectEqual(full, two.a[9][0..6].*);
+    const zero = glyph(.block, '0');
+    try std.testing.expectEqual([6]u8{ 255, 255, 0, 0, 255, 255 }, zero.a[5][0..6].*);
+    const block_one = glyph(.block, '1');
+    try std.testing.expectEqual([6]u8{ 255, 255, 255, 255, 0, 0 }, block_one.a[2][0..6].*);
+    try std.testing.expectEqual(full, block_one.a[9][0..6].*);
+    const colon = glyph(.block, ':');
+    try std.testing.expectEqual(@as(u8, 2), colon.w);
+    try std.testing.expectEqual([2]u8{ 255, 255 }, colon.a[2][0..2].*);
+    try std.testing.expectEqual([2]u8{ 0, 0 }, colon.a[4][0..2].*);
 }
 
-test "the blit stays inside the text box, clips at the panel edge and uses the painter" {
+test "the blit stays inside the text box, clips at the panel edge, uses the painter and the alpha" {
     var rgb = geometry.black_rgb;
     var p = Counting{};
     blit(&rgb, 6, 3, .segment, "83:05:09", &p); // an 8 lights the cell's left column; a 1 would not
@@ -258,7 +329,7 @@ test "the blit stays inside the text box, clips at the panel edge and uses the p
     try std.testing.expectEqual(@as(i32, 6 + 39 - 1), p.max_x);
     try std.testing.expectEqual(@as(i32, 3), p.min_y);
     try std.testing.expectEqual(@as(i32, 11), p.max_y);
-    try std.testing.expectEqual([3]u8{ 1, 2, 3 }, rgb[geometry.pixelOffset(7, 3)..][0..3].*);
+    try std.testing.expectEqual([3]u8{ 255, 2, 3 }, rgb[geometry.pixelOffset(7, 3)..][0..3].*);
     var q = Counting{};
     blit(&rgb, 44, 10, .big, "88", &q); // the first 8 is cut at the right edge, the second lies wholly outside
     try std.testing.expectEqual(@as(i32, 51), q.max_x);
@@ -268,4 +339,8 @@ test "the blit stays inside the text box, clips at the panel edge and uses the p
     var expected = geometry.black_rgb;
     font.blit(&expected, 2, 4, "13:05:06", .{ 9, 8, 7 });
     try std.testing.expectEqualSlices(u8, &expected, &solid);
+    // alpha scales the painter's colour: full alpha is exact, zero is black, half is half
+    try std.testing.expectEqual([3]u8{ 200, 100, 50 }, scaled(.{ 200, 100, 50 }, 255));
+    try std.testing.expectEqual([3]u8{ 0, 0, 0 }, scaled(.{ 200, 100, 50 }, 0));
+    try std.testing.expectEqual([3]u8{ 100, 50, 25 }, scaled(.{ 200, 100, 50 }, 128));
 }

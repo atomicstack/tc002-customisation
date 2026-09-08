@@ -15,7 +15,7 @@ test "every message kind round-trips through a packet" {
         .ready,
         .{ .result = .{ .status = .applied, .revision = 41 } },
         .{ .set_base = .{ .base = 1, .generator = 1, .seed = 0xdeadbeef } },
-        .{ .set_base = .{ .base = 1, .generator = 0, .seed = 0, .style = .{ .has = 0x1f, .font = 3, .mode = 1, .colour = .{ 1, 2, 3 }, .colour2 = .{ 4, 5, 6 }, .gradient = 2 } } },
+        .{ .set_base = .{ .base = 1, .generator = 0, .seed = 0, .style = .{ .has = 0x3f, .font = 3, .mode = 1, .colour = .{ 1, 2, 3 }, .colour2 = .{ 4, 5, 6 }, .gradient = 2, .spread = 90 } } },
         .{ .clock_style = ClockStyle.fromPatch(.{ .font = .segment, .colour = .{ 9, 9, 9 } }) },
         .{ .heartbeat = .{ .presented = 1, .revision = 2, .state = 1, .clock = ClockStyle.full(.{ .font = .mini, .mode = .gradient }) } },
         .{ .notify = Notify.init("hello, panel", .{ 1, 2, 3 }, 30) },
@@ -47,7 +47,7 @@ test "every message kind round-trips through a packet" {
         } },
         .config_get,
         .{ .config_patch = try ConfigPatch.fromApi(.{ .brightness = 3, .timezone = "UTC0", .expected_revision = 5 }) },
-        .{ .config_patch = try ConfigPatch.fromApi(.{ .clock_font = .big, .clock_colour_mode = .gradient, .clock_colour = .{ 1, 2, 3 }, .clock_colour2 = .{ 7, 8, 9 }, .clock_gradient = .vertical }) },
+        .{ .config_patch = try ConfigPatch.fromApi(.{ .clock_font = .big, .clock_colour_mode = .gradient, .clock_colour = .{ 1, 2, 3 }, .clock_colour2 = .{ 7, 8, 9 }, .clock_gradient = .vertical, .clock_spread = 128 }) },
         .{ .config_save = .{ .has_revision = 1, .revision = 6 } },
         .{ .save_result = .{ .status = .conflict, .saved_revision = 5 } },
         .{ .mqtt_put = try MqttPut.fromApi(.{ .host = "10.0.0.2", .password = "Pw", .enabled = true }) },
@@ -67,7 +67,7 @@ test "every message kind round-trips through a packet" {
 test "fixed hex vectors" {
     var buf: [codec.max_message]u8 = undefined;
     const hb = try encodePacket(.{ .heartbeat = .{ .presented = 0x1122334455667788, .revision = 7, .state = 2 } }, 1, 2, &buf);
-    try std.testing.expectEqualSlices(u8, &unhex("54434931" ++ "01" ++ "01" ++ "0000" ++ "0000000000000001" ++ "00000002" ++ "001c" ++ "0000" ++ "1122334455667788" ++ "00000007" ++ "02" ++ "00000000" ++ "01" ++ "0000" ++ "00" ++ "ffffff" ++ "ffffff" ++ "00"), hb);
+    try std.testing.expectEqualSlices(u8, &unhex("54434931" ++ "01" ++ "01" ++ "0000" ++ "0000000000000001" ++ "00000002" ++ "001d" ++ "0000" ++ "1122334455667788" ++ "00000007" ++ "02" ++ "00000000" ++ "01" ++ "0000" ++ "00" ++ "ffffff" ++ "ffffff" ++ "00" ++ "ff"), hb);
     const st = try encodePacket(.stop, 0, 9, &buf);
     try std.testing.expectEqualSlices(u8, &unhex("54434931" ++ "01" ++ "18" ++ "0000" ++ "0000000000000000" ++ "00000009" ++ "0000" ++ "0000"), st);
     const nt = try encodePacket(.{ .notify = Notify.init("hi", .{ 0xff, 0x80, 0x00 }, 300) }, 0, 0, &buf);
@@ -87,7 +87,8 @@ test "patch wire forms map back to the api view" {
     try std.testing.expectEqual(@as(?clock.Font, null), sp.font);
     try std.testing.expectEqual(@as(?clock.ColourMode, .gradient), sp.mode);
     try std.testing.expectEqual([3]u8{ 1, 1, 1 }, sp.colour2.?);
-    try std.testing.expectEqual(@as(u8, 0x1f), ClockStyle.full(.{}).has);
+    try std.testing.expectEqual(@as(u8, 0x3f), ClockStyle.full(.{}).has);
+    try std.testing.expectEqual(@as(?u8, 40), ClockStyle.fromPatch(.{ .spread = 40 }).toPatch().spread);
     try std.testing.expectEqual(@as(?u8, 3), a.brightness);
     try std.testing.expectEqualStrings("JST-9", a.timezone.?);
     try std.testing.expectEqual([4]u8{ 9, 9, 9, 9 }, a.ntp_server.?);
@@ -195,6 +196,7 @@ pub const ClockStyle = struct {
     colour: [3]u8 = .{ 255, 255, 255 },
     colour2: [3]u8 = .{ 255, 255, 255 },
     gradient: u8 = 0,
+    spread: u8 = 255,
 
     pub const F = struct {
         pub const font: u8 = 1 << 0;
@@ -202,10 +204,11 @@ pub const ClockStyle = struct {
         pub const colour: u8 = 1 << 2;
         pub const colour2: u8 = 1 << 3;
         pub const gradient: u8 = 1 << 4;
-        pub const all: u8 = 0x1f;
+        pub const spread: u8 = 1 << 5;
+        pub const all: u8 = 0x3f;
     };
 
-    pub const wire_len = 10;
+    pub const wire_len = 11;
 
     pub fn fromPatch(p: clock.StylePatch) ClockStyle {
         var w = ClockStyle{};
@@ -229,11 +232,15 @@ pub const ClockStyle = struct {
             w.has |= F.gradient;
             w.gradient = @intFromEnum(v);
         }
+        if (p.spread) |v| {
+            w.has |= F.spread;
+            w.spread = v;
+        }
         return w;
     }
 
     pub fn full(s: clock.Style) ClockStyle {
-        return .{ .has = F.all, .font = @intFromEnum(s.font), .mode = @intFromEnum(s.mode), .colour = s.colour, .colour2 = s.colour2, .gradient = @intFromEnum(s.gradient) };
+        return .{ .has = F.all, .font = @intFromEnum(s.font), .mode = @intFromEnum(s.mode), .colour = s.colour, .colour2 = s.colour2, .gradient = @intFromEnum(s.gradient), .spread = s.spread };
     }
 
     /// the patch view; fields with an unknown enum value are dropped.
@@ -245,6 +252,7 @@ pub const ClockStyle = struct {
             .colour = if (h & F.colour != 0) self.colour else null,
             .colour2 = if (h & F.colour2 != 0) self.colour2 else null,
             .gradient = if (h & F.gradient != 0) enumFromInt(clock.Gradient, self.gradient) else null,
+            .spread = if (h & F.spread != 0) self.spread else null,
         };
     }
 
@@ -255,10 +263,11 @@ pub const ClockStyle = struct {
         out[3..6].* = self.colour;
         out[6..9].* = self.colour2;
         out[9] = self.gradient;
+        out[10] = self.spread;
     }
 
     fn get(b: []const u8) ClockStyle {
-        return .{ .has = b[0], .font = b[1], .mode = b[2], .colour = b[3..6].*, .colour2 = b[6..9].*, .gradient = b[9] };
+        return .{ .has = b[0], .font = b[1], .mode = b[2], .colour = b[3..6].*, .colour2 = b[6..9].*, .gradient = b[9], .spread = b[10] };
     }
 };
 pub const Result = struct { status: Status, revision: u32 };
@@ -359,6 +368,7 @@ pub const ConfigPatch = struct {
     clock_colour: [3]u8 = .{ 0, 0, 0 },
     clock_colour2: [3]u8 = .{ 0, 0, 0 },
     clock_gradient: u8 = 0,
+    clock_spread: u8 = 0,
 
     pub const F = struct {
         pub const brightness: u32 = 1 << 0;
@@ -377,9 +387,10 @@ pub const ConfigPatch = struct {
         pub const clock_colour: u32 = 1 << 13;
         pub const clock_colour2: u32 = 1 << 14;
         pub const clock_gradient: u32 = 1 << 15;
+        pub const clock_spread: u32 = 1 << 16;
     };
 
-    pub const wire_len = 4 + 3 + 65 + 4 + 4 + 2 + 4 + 1 + 65 + 4 + 9;
+    pub const wire_len = 4 + 3 + 65 + 4 + 4 + 2 + 4 + 1 + 65 + 4 + 10;
 
     pub fn fromApi(p: api.ConfigPatch) error{TooLong}!ConfigPatch {
         var w = ConfigPatch{};
@@ -447,6 +458,10 @@ pub const ConfigPatch = struct {
             w.has |= F.clock_gradient;
             w.clock_gradient = @intFromEnum(v);
         }
+        if (p.clock_spread) |v| {
+            w.has |= F.clock_spread;
+            w.clock_spread = v;
+        }
         return w;
     }
 
@@ -470,6 +485,7 @@ pub const ConfigPatch = struct {
             .clock_colour = if (h & F.clock_colour != 0) self.clock_colour else null,
             .clock_colour2 = if (h & F.clock_colour2 != 0) self.clock_colour2 else null,
             .clock_gradient = if (h & F.clock_gradient != 0) (enumFromInt(clock.Gradient, self.clock_gradient) orelse null) else null,
+            .clock_spread = if (h & F.clock_spread != 0) self.clock_spread else null,
         };
     }
 };
@@ -648,12 +664,12 @@ fn encodePayload(msg: Message, out: []u8) usize {
             out[15] = h.overlay;
             out[16] = h.brightness;
             out[17] = h.power;
-            h.clock.put(out[18..28]);
-            return 28;
+            h.clock.put(out[18 .. 18 + ClockStyle.wire_len]);
+            return 18 + ClockStyle.wire_len;
         },
         .clock_style => |s| {
-            s.put(out[0..10]);
-            return 10;
+            s.put(out[0..ClockStyle.wire_len]);
+            return ClockStyle.wire_len;
         },
         .ready, .arm_stream, .time_corrected, .stop, .config_get, .status_get, .screen_get => return 0,
         .screen => |s| {
@@ -726,7 +742,8 @@ fn encodePayload(msg: Message, out: []u8) usize {
             out[o + 2 ..][0..3].* = p.clock_colour;
             out[o + 5 ..][0..3].* = p.clock_colour2;
             out[o + 8] = p.clock_gradient;
-            o += 9;
+            out[o + 9] = p.clock_spread;
+            o += 10;
             return o;
         },
         .config_save => |c| {
@@ -829,8 +846,8 @@ fn encodePayload(msg: Message, out: []u8) usize {
             o += 2;
             out[o] = st.power;
             o += 1;
-            st.clock.put(out[o .. o + 10]);
-            o += 10;
+            st.clock.put(out[o .. o + ClockStyle.wire_len]);
+            o += ClockStyle.wire_len;
             return o;
         },
         .result => |r| {
@@ -842,8 +859,8 @@ fn encodePayload(msg: Message, out: []u8) usize {
             out[0] = s.base;
             out[1] = s.generator;
             std.mem.writeInt(u32, out[2..6], s.seed, .big);
-            s.style.put(out[6..16]);
-            return 16;
+            s.style.put(out[6 .. 6 + ClockStyle.wire_len]);
+            return 6 + ClockStyle.wire_len;
         },
         .notify => |n| {
             out[0..3].* = n.colour;
@@ -911,11 +928,11 @@ pub fn decodePacket(bytes: []const u8) Error!Packet {
     const p = d.payload;
     const message: Message = switch (kind) {
         .heartbeat => blk: {
-            const b = try fixed(p, 28);
-            break :blk .{ .heartbeat = .{ .presented = std.mem.readInt(u64, b[0..8], .big), .revision = std.mem.readInt(u32, b[8..12], .big), .state = b[12], .base = b[13], .generator = b[14], .overlay = b[15], .brightness = b[16], .power = b[17], .clock = ClockStyle.get(b[18..28]) } };
+            const b = try fixed(p, 18 + ClockStyle.wire_len);
+            break :blk .{ .heartbeat = .{ .presented = std.mem.readInt(u64, b[0..8], .big), .revision = std.mem.readInt(u32, b[8..12], .big), .state = b[12], .base = b[13], .generator = b[14], .overlay = b[15], .brightness = b[16], .power = b[17], .clock = ClockStyle.get(b[18..]) } };
         },
         .clock_style => blk: {
-            const b = try fixed(p, 10);
+            const b = try fixed(p, ClockStyle.wire_len);
             break :blk .{ .clock_style = ClockStyle.get(b) };
         },
         .screen_get => blk: {
@@ -1006,6 +1023,7 @@ pub fn decodePacket(bytes: []const u8) Error!Packet {
             w.clock_colour = b[o + 2 ..][0..3].*;
             w.clock_colour2 = b[o + 5 ..][0..3].*;
             w.clock_gradient = b[o + 8];
+            w.clock_spread = b[o + 9];
             break :blk .{ .config_patch = w };
         },
         .config_save => blk: {
@@ -1110,7 +1128,7 @@ pub fn decodePacket(bytes: []const u8) Error!Packet {
             o += 2;
             st.power = b[o];
             o += 1;
-            st.clock = ClockStyle.get(b[o .. o + 10]);
+            st.clock = ClockStyle.get(b[o .. o + ClockStyle.wire_len]);
             break :blk .{ .status = st };
         },
         .ready => blk: {
@@ -1123,8 +1141,8 @@ pub fn decodePacket(bytes: []const u8) Error!Packet {
             break :blk .{ .result = .{ .status = status, .revision = std.mem.readInt(u32, b[1..5], .big) } };
         },
         .set_base => blk: {
-            const b = try fixed(p, 16);
-            break :blk .{ .set_base = .{ .base = b[0], .generator = b[1], .seed = std.mem.readInt(u32, b[2..6], .big), .style = ClockStyle.get(b[6..16]) } };
+            const b = try fixed(p, 6 + ClockStyle.wire_len);
+            break :blk .{ .set_base = .{ .base = b[0], .generator = b[1], .seed = std.mem.readInt(u32, b[2..6], .big), .style = ClockStyle.get(b[6..]) } };
         },
         .notify => blk: {
             if (p.len < 6) return error.BadPayload;
