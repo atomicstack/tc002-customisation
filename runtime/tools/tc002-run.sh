@@ -2,6 +2,7 @@
 # volatile device runs of the custom runtime, over adb, under the shared advisory lock.
 #
 #   tc002-run.sh push                 build and push tc002d, tc002-supervisor and the bootstrap to /tmp/tc002/
+#                                     (TC002_NO_BUILD=1 pushes what is in zig-out without building)
 #   tc002-run.sh start [sup-opts...]  lock, stop the stock app, start the supervisor detached (logs in /tmp/tc002/)
 #   tc002-run.sh status               processes, properties, tail of the logs (no lock needed)
 #   tc002-run.sh stop                 sigterm the supervisor, restart the stock app, release the lock
@@ -44,7 +45,10 @@ stock_start() {
 case "${1:-status}" in
   push)
     need_adb
-    (cd "$RUNTIME" && zig build && zig build check) || die "build failed"
+    if [ -z "${TC002_NO_BUILD:-}" ]; then
+        (cd "$RUNTIME" && zig build && zig build check) || die "build failed"
+    fi
+    [ -x "$RUNTIME/zig-out/bin/tc002-supervisor" ] || die "no binaries in $RUNTIME/zig-out; build first"
     # replacing the binaries under another agent's live run truncates mapped executables on tmpfs
     # (netd died that way on 2026-09-07), so the push itself runs under the lock
     "$LOCK" acquire "tc002-run.sh push: replacing binaries in $DEV" 120 || exit 1

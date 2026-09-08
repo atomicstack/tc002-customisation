@@ -109,6 +109,19 @@ controls. the full reference is [`RUNTIME.md`](../RUNTIME.md).
 
 ## running it on the device (volatile)
 
+after a reboot the stock app is back and nothing of the runtime is left on the device. one
+command brings it up again, with the settings applied and the console's tokens pulled:
+
+```bash
+runtime/tools/tc002-up.sh                          # adb connect, build, push, start, settings, tokens
+runtime/tools/tc002-up.sh --tz Australia/Melbourne --font classic --no-build
+panel-v2/start.sh --open                           # the console, once the runtime is up
+runtime/tools/tc002-run.sh stop                    # back to the stock app
+```
+
+the defaults (device `10.0.0.111:5555`, `Europe/Amsterdam`, sntp from `10.0.0.136`, the `block`
+clock) can be changed with options or the `TC002_*` environment variables listed in the script.
+
 ```bash
 tools/tc002-run.sh push                     # build, check, push to /tmp/tc002/
 tools/tc002-run.sh start --profile dev --stats --tz 'AEST-10AEDT,M10.1.0,M4.1.0/3'
