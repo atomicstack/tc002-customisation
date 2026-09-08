@@ -1,28 +1,33 @@
-//! presentation fades, pure: a cross-fade from the frame that was on the panel to the scene's new
-//! output, and a power ramp between the output and black. integer maths on the rgb bytes before
-//! brightness and the level curve are applied; no allocation. the renderer drives it with
-//! monotonic time and forces a continuous cadence while `apply` reports a fade in progress.
+//! presentation fades, pure: a transition from the frame that was on the panel to the scene's new
+//! output (any effect from `transition.zig`; the default is a cross-fade) and a power ramp between
+//! the output and black. integer maths on the rgb bytes before brightness and the level curve are
+//! applied; no allocation. the renderer drives it with monotonic time and forces a continuous
+//! cadence while `apply` reports a fade in progress.
 const std = @import("std");
 const geometry = @import("geometry.zig");
+const transition = @import("transition.zig");
 
 const ns_per_ms: u64 = 1_000_000;
 
 pub const Fader = struct {
+    /// the duration of the default cross-fade (`beginCross`)
     crossfade_ns: u64 = 500 * ns_per_ms,
     power_ns: u64 = 600 * ns_per_ms,
-    from: geometry.Rgb = geometry.black_rgb,
-    cross_start: ?u64 = null,
+    cross: transition.Transition = .{},
     power_on: bool = true,
     /// the output level right now, 255 = full, 0 = dark.
     level: u8 = 255,
     level_from: u8 = 255,
     power_start: ?u64 = null,
 
-    /// the scene changed: remember what is on the panel now and blend towards the new output.
+    /// the scene changed: cross-fade from what is on the panel now to the new output.
     pub fn beginCross(self: *Fader, current: *const geometry.Rgb, now_ns: u64) void {
-        if (self.crossfade_ns == 0) return;
-        self.from = current.*;
-        self.cross_start = now_ns;
+        self.begin(current, .{ .effect = .fade, .duration_ns = self.crossfade_ns }, now_ns);
+    }
+
+    /// the scene changed: run `spec` from what is on the panel now to the new output.
+    pub fn begin(self: *Fader, current: *const geometry.Rgb, spec: transition.Spec, now_ns: u64) void {
+        self.cross.begin(current, spec, now_ns);
     }
 
     pub fn setPower(self: *Fader, on: bool, now_ns: u64) void {
@@ -38,7 +43,7 @@ pub const Fader = struct {
     }
 
     pub fn active(self: *const Fader) bool {
-        return self.cross_start != null or self.power_start != null;
+        return self.cross.active() or self.power_start != null;
     }
 
     /// the panel is off and the ramp has finished: nothing needs redrawing until power returns.
@@ -46,18 +51,10 @@ pub const Fader = struct {
         return !self.power_on and self.level == 0 and self.power_start == null;
     }
 
-    /// blend `in` into `out` for `now`; returns true while a fade is still running. the frame
+    /// composite `in` into `out` for `now`; returns true while a fade is still running. the frame
     /// produced on the iteration that completes a fade is exact (the caller latches it).
     pub fn apply(self: *Fader, in: *const geometry.Rgb, out: *geometry.Rgb, now_ns: u64) bool {
-        var t: u32 = 256; // weight of `in` out of 256
-        if (self.cross_start) |s| {
-            const elapsed = now_ns -| s;
-            if (elapsed >= self.crossfade_ns) {
-                self.cross_start = null;
-            } else {
-                t = @intCast(elapsed * 256 / self.crossfade_ns);
-            }
-        }
+        _ = self.cross.apply(in, out, now_ns);
         if (self.power_start) |s| {
             const elapsed = now_ns -| s;
             const target: i64 = if (self.power_on) 255 else 0;
@@ -70,18 +67,12 @@ pub const Fader = struct {
             }
         }
         const level: u32 = self.level;
-        if (t == 256 and level == 255) {
-            // identity output, but a ramp that has just started is still running: the caller
-            // must keep the frame cadence so the next frame actually advances it
-            out.* = in.*;
-            return self.active();
-        }
+        // a ramp that has just started is still running at full level: the caller must keep the
+        // frame cadence so the next frame actually advances it
+        if (level == 255) return self.active();
         // 255 maps to a full 256/256 so a lit panel is bit-exact; 0 maps to black
         const gain: u32 = level + (level >> 7);
-        for (in, out, self.from) |i, *o, f| {
-            const blended: u32 = (@as(u32, f) * (256 - t) + @as(u32, i) * t) >> 8;
-            o.* = @intCast((blended * gain) >> 8);
-        }
+        for (out) |*o| o.* = @intCast((@as(u32, o.*) * gain) >> 8);
         return self.active();
     }
 };
@@ -157,6 +148,20 @@ test "reversing a ramp midway continues from the current level; zero durations a
     try std.testing.expect(g.dark());
     try std.testing.expect(!g.apply(&in, &out, 0));
     try std.testing.expectEqualSlices(u8, &geometry.black_rgb, &out);
+}
+
+test "a directional transition runs through the fader with the power ramp on top" {
+    var f = Fader{};
+    const old = filled(0);
+    const new = filled(200);
+    var out: geometry.Rgb = undefined;
+    f.begin(&old, .{ .effect = .wipe, .direction = .right, .duration_ns = 1_000_000_000 }, 0);
+    try std.testing.expect(f.apply(&new, &out, 500_000_000));
+    try std.testing.expectEqual(@as(u8, 200), out[0]); // left half wiped to the new frame
+    try std.testing.expectEqual(@as(u8, 0), out[geometry.pixelOffset(40, 0)]);
+    f.begin(&old, transition.Spec.cut, 600_000_000);
+    try std.testing.expect(!f.apply(&new, &out, 600_000_000));
+    try std.testing.expectEqualSlices(u8, &new, &out);
 }
 
 test "a cross-fade during a power ramp multiplies both" {

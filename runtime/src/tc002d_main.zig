@@ -120,7 +120,7 @@ const Renderer = struct {
     fn redraw(self: *Renderer, now: u64, base_deadline: u64) void {
         const wall = sys.realtimeNs();
         arb.tick(now, wall);
-        if (arb.takeTransition()) fader.beginCross(&out_rgb, now);
+        if (arb.takeTransition()) |spec| fader.begin(&out_rgb, spec, now);
         fader.setPower(arb.power, now);
         arb.render(wall, &rgb);
         const fading = fader.apply(&rgb, &out_rgb, now);
@@ -239,17 +239,18 @@ const Renderer = struct {
         const res: arbiter.Result = switch (p.message) {
             .set_base => |s| blk: {
                 const base = messages.enumFromInt(arbiter.Base, s.base) orelse break :blk arbiter.Result{ .rejected = .invalid_text };
-                var r = arb.apply(.{ .set_base = base }, now);
+                const spec = s.transition.toSpec();
+                var r = arb.applyWith(.{ .set_base = base }, spec, now);
                 if (base == .art) {
-                    if (messages.enumFromInt(scene.Generator, s.generator)) |g| r = arb.apply(.{ .select_generator = g }, now);
+                    if (messages.enumFromInt(scene.Generator, s.generator)) |g| r = arb.applyWith(.{ .select_generator = g }, spec, now);
                     if (s.seed != 0) r = arb.apply(.{ .reseed = s.seed }, now);
                 }
-                if (s.style.has != 0) r = arb.apply(.{ .set_clock_style = s.style.toPatch() }, now);
+                if (s.style.has != 0) r = arb.applyWith(.{ .set_clock_style = s.style.toPatch() }, spec, now);
                 break :blk r;
             },
             .clock_style => |cs| arb.apply(.{ .set_clock_style = cs.toPatch() }, now),
-            .notify => |n| arb.apply(.{ .notify = .{ .text = n.slice(), .colour = n.colour, .duration_s = n.duration_s } }, now),
-            .frame => |f| arb.apply(.{ .raw = .{ .rgb = &f.rgb, .duration_s = f.duration_s } }, now),
+            .notify => |n| arb.applyWith(.{ .notify = .{ .text = n.slice(), .colour = n.colour, .duration_s = n.duration_s } }, n.transition.toSpec(), now),
+            .frame => |f| arb.applyWith(.{ .raw = .{ .rgb = &f.rgb, .duration_s = f.duration_s } }, f.transition.toSpec(), now),
             .brightness => |b| arb.apply(.{ .brightness = b.value }, now),
             .reseed => |r| arb.apply(.{ .reseed = r.seed }, now),
             .arm_stream => arb.apply(.arm_stream, now),
@@ -409,6 +410,7 @@ fn run(cfg: cli.Config) !u8 {
     arb = arbiter.Arbiter.init(cfg.base, cfg.generator, seed, rule);
     arb.brightness = cfg.brightness;
     fader.crossfade_ns = @as(u64, cfg.crossfade_ms) * 1_000_000;
+    arb.default_transition = .{ .effect = .fade, .duration_ns = fader.crossfade_ns };
     fader.power_ns = @as(u64, cfg.power_fade_ms) * 1_000_000;
 
     const started = sys.monotonicNs();

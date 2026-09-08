@@ -7,6 +7,7 @@
 //! brightness in clock/ip; a short knob press reseeds art; a long one arms streaming.
 const std = @import("std");
 const geometry = @import("../panel/geometry.zig");
+const transition = @import("../panel/transition.zig");
 const scene = @import("scene.zig");
 const font = @import("font.zig");
 const tz = @import("tz.zig");
@@ -139,28 +140,51 @@ test "physical actions: buttons select the base, rotary and knob depend on the b
 
 test "transitions mark scene changes and notification edges, never raw frames or repeats" {
     var a = fresh();
-    try std.testing.expect(!a.takeTransition());
+    try std.testing.expect(a.takeTransition() == null);
     _ = a.apply(.{ .set_base = .art }, 0); // already art: no transition
-    try std.testing.expect(!a.takeTransition());
+    try std.testing.expect(a.takeTransition() == null);
     _ = a.apply(.{ .set_base = .clock }, 0);
-    try std.testing.expect(a.takeTransition());
-    try std.testing.expect(!a.takeTransition());
+    try std.testing.expect(a.takeTransition() != null);
+    try std.testing.expect(a.takeTransition() == null);
     _ = a.apply(.{ .notify = .{ .text = "hi", .colour = white, .duration_s = 1 } }, 0);
-    try std.testing.expect(a.takeTransition());
+    try std.testing.expect(a.takeTransition() != null);
     a.tick(1 * s_ns, 0); // expiry reveals the base
-    try std.testing.expect(a.takeTransition());
+    try std.testing.expect(a.takeTransition() != null);
     var frame = geometry.black_rgb;
     _ = a.apply(.{ .raw = .{ .rgb = &frame, .duration_s = 2 } }, 2 * s_ns);
-    try std.testing.expect(!a.takeTransition());
+    try std.testing.expect(a.takeTransition() == null);
     a.tick(4 * s_ns, 0); // a raw frame ends without a fade
-    try std.testing.expect(!a.takeTransition());
+    try std.testing.expect(a.takeTransition() == null);
     _ = a.apply(.{ .set_base = .art }, 0);
     _ = a.takeTransition();
     a.action(.rotate_cw, 0); // generator change in art
-    try std.testing.expect(a.takeTransition());
+    try std.testing.expect(a.takeTransition() != null);
     _ = a.apply(.{ .reseed = 5 }, 0);
     _ = a.apply(.{ .brightness = 50 }, 0);
-    try std.testing.expect(!a.takeTransition());
+    try std.testing.expect(a.takeTransition() == null);
+}
+
+test "a request's transition is remembered and the exit pairs it in reverse" {
+    var a = fresh();
+    a.default_transition = .{ .duration_ns = 7 };
+    _ = a.apply(.{ .set_base = .clock }, 0);
+    try std.testing.expectEqual(transition.Spec{ .effect = .fade, .direction = .left, .duration_ns = 7 }, a.takeTransition().?);
+    const swipe = transition.Spec{ .effect = .swipe_in, .direction = .left, .duration_ns = 3 };
+    _ = a.applyWith(.{ .notify = .{ .text = "hi", .colour = white, .duration_s = 1 } }, swipe, 0);
+    try std.testing.expectEqual(swipe, a.takeTransition().?);
+    a.tick(1 * s_ns, 0);
+    try std.testing.expectEqual(transition.Spec{ .effect = .swipe_out, .direction = .right, .duration_ns = 3 }, a.takeTransition().?);
+    var frame = geometry.black_rgb;
+    _ = a.apply(.{ .raw = .{ .rgb = &frame, .duration_s = 1 } }, 2 * s_ns); // no request effect: a cut
+    try std.testing.expect(a.takeTransition() == null);
+    a.tick(3 * s_ns, 0);
+    try std.testing.expect(a.takeTransition() == null);
+    _ = a.applyWith(.{ .raw = .{ .rgb = &frame, .duration_s = 1 } }, .{ .effect = .expand }, 4 * s_ns);
+    try std.testing.expectEqual(transition.Effect.expand, a.takeTransition().?.effect);
+    a.tick(5 * s_ns, 0);
+    try std.testing.expectEqual(transition.Effect.collapse, a.takeTransition().?.effect);
+    _ = a.applyWith(.{ .set_base = .art }, transition.Spec.cut, 0);
+    try std.testing.expectEqual(transition.Effect.cut, a.takeTransition().?.effect);
 }
 
 test "a clock restyle merges fields, bumps only on change, and cross-fades while the clock shows" {
@@ -168,11 +192,11 @@ test "a clock restyle merges fields, bumps only on change, and cross-fades while
     try std.testing.expectEqual(Result{ .applied = 0 }, a.apply(.{ .set_clock_style = .{} }, 0));
     try std.testing.expectEqual(Result{ .applied = 1 }, a.apply(.{ .set_clock_style = .{ .font = .big } }, 0));
     _ = a.takeTransition();
-    try std.testing.expect(!a.takeTransition()); // art is showing: no visible change, no fade
+    try std.testing.expect(a.takeTransition() == null); // art is showing: no visible change, no fade
     _ = a.apply(.{ .set_base = .clock }, 0);
     _ = a.takeTransition();
     try std.testing.expectEqual(Result{ .applied = 3 }, a.apply(.{ .set_clock_style = .{ .colour = .{ 1, 2, 3 } } }, 0));
-    try std.testing.expect(a.takeTransition());
+    try std.testing.expect(a.takeTransition() != null);
     try std.testing.expectEqual(clock.Font.big, a.clock.style.font);
     try std.testing.expectEqual([3]u8{ 1, 2, 3 }, a.clock.style.colour);
     try std.testing.expectEqual(Result{ .applied = 3 }, a.apply(.{ .set_clock_style = .{ .colour = .{ 1, 2, 3 } } }, 0));
@@ -188,7 +212,7 @@ test "power is a command that bumps the revision only when it changes" {
     try std.testing.expectEqual(Result{ .applied = 1 }, a.apply(.{ .power = false }, 0));
     try std.testing.expect(!a.takeDirty());
     try std.testing.expectEqual(Result{ .applied = 2 }, a.apply(.{ .power = true }, 0));
-    try std.testing.expect(!a.takeTransition());
+    try std.testing.expect(a.takeTransition() == null);
 }
 
 test "brightness and reseed commands" {
@@ -224,8 +248,8 @@ const brightness_step: u8 = 5;
 
 pub const Base = enum(u8) { art = 0, clock = 1, ip = 2 };
 
-pub const Notify = struct { text: [128]u8, len: u8, colour: [3]u8, since_ns: u64, until_ns: u64 };
-pub const Raw = struct { rgb: geometry.Rgb, until_ns: u64 };
+pub const Notify = struct { text: [128]u8, len: u8, colour: [3]u8, since_ns: u64, until_ns: u64, transition: transition.Spec };
+pub const Raw = struct { rgb: geometry.Rgb, until_ns: u64, transition: transition.Spec };
 
 pub const Overlay = union(enum) { none, notify: Notify, raw: Raw, stream_arming: u64 };
 
@@ -257,8 +281,11 @@ pub const Arbiter = struct {
     /// set whenever the visible output changed; the renderer takes it to redraw immediately.
     dirty: bool = true,
     /// set when what is shown changes to something else (base, generator, a notification
-    /// starting or ending); the renderer takes it to cross-fade. raw frames switch at once.
-    transition: bool = false,
+    /// starting or ending, a restyle of the showing clock); the renderer takes it to run the
+    /// effect. raw frames switch at once unless their request names an effect.
+    pending: ?transition.Spec = null,
+    /// the transition a change gets when the request names none (the renderer sets its duration)
+    default_transition: transition.Spec = .{},
     last_tick_ns: u64 = 0,
     art: scene.Art,
     clock: clock.State,
@@ -280,10 +307,14 @@ pub const Arbiter = struct {
         return d;
     }
 
-    pub fn takeTransition(self: *Arbiter) bool {
-        const t = self.transition;
-        self.transition = false;
+    pub fn takeTransition(self: *Arbiter) ?transition.Spec {
+        const t = self.pending;
+        self.pending = null;
         return t;
+    }
+
+    fn mark(self: *Arbiter, spec: ?transition.Spec) void {
+        self.pending = spec orelse self.default_transition;
     }
 
     fn validDuration(d: u16) bool {
@@ -291,15 +322,20 @@ pub const Arbiter = struct {
     }
 
     pub fn apply(self: *Arbiter, cmd: Command, now_ns: u64) Result {
+        return self.applyWith(cmd, null, now_ns);
+    }
+
+    /// apply a command whose request named a transition (`spec`), or none (the default).
+    pub fn applyWith(self: *Arbiter, cmd: Command, spec: ?transition.Spec, now_ns: u64) Result {
         switch (cmd) {
             .set_base => |b| {
-                if (b != self.base or self.overlay != .none) self.transition = true;
+                if (b != self.base or self.overlay != .none) self.mark(spec);
                 self.base = b;
                 self.overlay = .none;
                 return .{ .applied = self.bump() };
             },
             .select_generator => |g| {
-                if (g != self.art.generator) self.transition = true;
+                if (g != self.art.generator) self.mark(spec);
                 self.art.select(g);
                 return .{ .applied = self.bump() };
             },
@@ -307,10 +343,11 @@ pub const Arbiter = struct {
                 if (n.text.len == 0 or n.text.len > 128) return .{ .rejected = .invalid_text };
                 for (n.text) |c| if (c < 0x20 or c > 0x7e) return .{ .rejected = .invalid_text };
                 if (!validDuration(n.duration_s)) return .{ .rejected = .invalid_duration };
-                var o = Notify{ .text = undefined, .len = @intCast(n.text.len), .colour = n.colour, .since_ns = now_ns, .until_ns = now_ns + @as(u64, n.duration_s) * s_ns };
+                const t = spec orelse self.default_transition;
+                var o = Notify{ .text = undefined, .len = @intCast(n.text.len), .colour = n.colour, .since_ns = now_ns, .until_ns = now_ns + @as(u64, n.duration_s) * s_ns, .transition = t };
                 @memcpy(o.text[0..n.text.len], n.text);
                 self.overlay = .{ .notify = o };
-                self.transition = true;
+                self.pending = t;
                 return .{ .applied = self.bump() };
             },
             .power => |on| {
@@ -322,12 +359,14 @@ pub const Arbiter = struct {
                 const before = self.clock.style;
                 self.clock.style.apply(p);
                 if (std.meta.eql(before, self.clock.style)) return .{ .applied = self.revision };
-                if (self.base == .clock and self.overlay == .none) self.transition = true;
+                if (self.base == .clock and self.overlay == .none) self.mark(spec);
                 return .{ .applied = self.bump() };
             },
             .raw => |r| {
                 if (!validDuration(r.duration_s)) return .{ .rejected = .invalid_duration };
-                self.overlay = .{ .raw = .{ .rgb = r.rgb.*, .until_ns = now_ns + @as(u64, r.duration_s) * s_ns } };
+                const t = spec orelse transition.Spec.cut;
+                self.overlay = .{ .raw = .{ .rgb = r.rgb.*, .until_ns = now_ns + @as(u64, r.duration_s) * s_ns, .transition = t } };
+                if (!t.instant()) self.pending = t;
                 return .{ .applied = self.bump() };
             },
             .brightness => |b| {
@@ -362,7 +401,7 @@ pub const Arbiter = struct {
             .rotate_cw, .rotate_ccw => switch (self.base) {
                 .art => {
                     self.art.nextGenerator(a == .rotate_cw);
-                    self.transition = true;
+                    self.mark(null);
                     _ = self.bump();
                 },
                 .clock, .ip => {
@@ -391,7 +430,14 @@ pub const Arbiter = struct {
             .none => null,
         };
         if (until) |u| if (now_ns >= u) {
-            if (self.overlay == .notify) self.transition = true;
+            // an overlay leaves with the paired effect travelling the other way
+            switch (self.overlay) {
+                .notify => |n| self.pending = n.transition.exit(),
+                .raw => |r| if (!r.transition.instant()) {
+                    self.pending = r.transition.exit();
+                },
+                else => {},
+            }
             self.overlay = .none;
             _ = self.bump();
         };

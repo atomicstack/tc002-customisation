@@ -3,6 +3,7 @@
 const std = @import("std");
 const codec = @import("codec.zig");
 const geometry = @import("../panel/geometry.zig");
+const transition = @import("../panel/transition.zig");
 const config = @import("../supervisor/config.zig");
 const api = @import("../net/api.zig");
 const clock = @import("../scene/clock.zig");
@@ -18,8 +19,11 @@ test "every message kind round-trips through a packet" {
         .{ .set_base = .{ .base = 1, .generator = 0, .seed = 0, .style = .{ .has = 0x3f, .font = 3, .mode = 1, .colour = .{ 1, 2, 3 }, .colour2 = .{ 4, 5, 6 }, .gradient = 2, .spread = 90 } } },
         .{ .clock_style = ClockStyle.fromPatch(.{ .font = .segment, .colour = .{ 9, 9, 9 } }) },
         .{ .heartbeat = .{ .presented = 1, .revision = 2, .state = 1, .clock = ClockStyle.full(.{ .font = .mini, .mode = .gradient }) } },
-        .{ .notify = Notify.init("hello, panel", .{ 1, 2, 3 }, 30) },
+        .{ .notify = Notify.init("hello, panel", .{ 1, 2, 3 }, 30, .{}) },
+        .{ .notify = Notify.init("bye", .{ 1, 2, 3 }, 2, .{ .has = 1, .effect = 4, .direction = 1, .duration_ms = 250 }) },
         .{ .frame = frame },
+        .{ .frame = .{ .duration_s = 1, .transition = .{ .has = 1, .effect = 6, .direction = 3, .duration_ms = 5000 }, .rgb = geometry.black_rgb } },
+        .{ .set_base = .{ .base = 0, .generator = 1, .seed = 1, .transition = .{ .has = 1, .effect = 2, .direction = 2, .duration_ms = 40 } } },
         .{ .brightness = .{ .value = 55 } },
         .{ .reseed = .{ .seed = 12 } },
         .arm_stream,
@@ -70,10 +74,10 @@ test "fixed hex vectors" {
     try std.testing.expectEqualSlices(u8, &unhex("54434931" ++ "01" ++ "01" ++ "0000" ++ "0000000000000001" ++ "00000002" ++ "001d" ++ "0000" ++ "1122334455667788" ++ "00000007" ++ "02" ++ "00000000" ++ "01" ++ "0000" ++ "00" ++ "ffffff" ++ "ffffff" ++ "00" ++ "ff"), hb);
     const st = try encodePacket(.stop, 0, 9, &buf);
     try std.testing.expectEqualSlices(u8, &unhex("54434931" ++ "01" ++ "18" ++ "0000" ++ "0000000000000000" ++ "00000009" ++ "0000" ++ "0000"), st);
-    const nt = try encodePacket(.{ .notify = Notify.init("hi", .{ 0xff, 0x80, 0x00 }, 300) }, 0, 0, &buf);
-    try std.testing.expectEqualSlices(u8, &unhex("54434931" ++ "01" ++ "11" ++ "0000" ++ "0000000000000000" ++ "00000000" ++ "0008" ++ "0000" ++ "ff8000" ++ "012c" ++ "02" ++ "6869"), nt);
+    const nt = try encodePacket(.{ .notify = Notify.init("hi", .{ 0xff, 0x80, 0x00 }, 300, .{ .has = 1, .effect = 7, .direction = 3, .duration_ms = 300 }) }, 0, 0, &buf);
+    try std.testing.expectEqualSlices(u8, &unhex("54434931" ++ "01" ++ "11" ++ "0000" ++ "0000000000000000" ++ "00000000" ++ "000d" ++ "0000" ++ "ff8000" ++ "012c" ++ "0107030" ++ "12c" ++ "02" ++ "6869"), nt);
     const fr = try encodePacket(.{ .frame = .{ .duration_s = 1, .rgb = geometry.black_rgb } }, 0, 0, &buf);
-    try std.testing.expectEqual(@as(usize, codec.header_len + 2 + geometry.rgb_bytes), fr.len);
+    try std.testing.expectEqual(@as(usize, codec.header_len + 2 + Transition.wire_len + geometry.rgb_bytes), fr.len);
     try std.testing.expectEqual(@as(u8, @intFromEnum(Kind.frame)), fr[5]);
 }
 
@@ -99,6 +103,14 @@ test "patch wire forms map back to the api view" {
     try std.testing.expectEqualStrings("10.0.0.2", ma.host.?);
     try std.testing.expectEqual(@as(?bool, false), ma.tls);
     try std.testing.expectEqual(@as(?[]const u8, null), ma.password);
+}
+
+test "transition blocks map to specs and back, unknown values to the default" {
+    try std.testing.expect(Transition.fromSpec(null).toSpec() == null);
+    const spec = transition.Spec{ .effect = .split_in, .direction = .up, .duration_ns = 1_250_000_000 };
+    try std.testing.expectEqual(spec, Transition.fromSpec(spec).toSpec().?);
+    try std.testing.expect((Transition{ .has = 1, .effect = 200 }).toSpec() == null);
+    try std.testing.expectEqual(transition.Effect.cut, Transition.fromSpec(transition.Spec.cut).toSpec().?.effect);
 }
 
 test "malformed payloads are rejected" {
@@ -324,8 +336,43 @@ pub const LogLines = struct {
     }
 };
 /// a base selection; a present `style` (mask non-zero) also restyles the clock in the same command.
-pub const SetBase = struct { base: u8, generator: u8, seed: u32, style: ClockStyle = .{} };
-pub const Frame = struct { duration_s: u16, rgb: geometry.Rgb };
+/// an optional transition on a scene change, notification or frame; `has` = 0 means the
+/// renderer's default. 5 bytes on the wire: has, effect, direction, duration_ms (big-endian).
+pub const Transition = struct {
+    has: u8 = 0,
+    effect: u8 = 0,
+    direction: u8 = 0,
+    duration_ms: u16 = 0,
+
+    pub const wire_len = 5;
+
+    pub fn fromSpec(spec: ?transition.Spec) Transition {
+        const t = spec orelse return .{};
+        return .{ .has = 1, .effect = @intFromEnum(t.effect), .direction = @intFromEnum(t.direction), .duration_ms = @intCast(t.duration_ns / 1_000_000) };
+    }
+
+    /// null for the default and for values this build does not know
+    pub fn toSpec(self: Transition) ?transition.Spec {
+        if (self.has == 0) return null;
+        const effect = enumFromInt(transition.Effect, self.effect) orelse return null;
+        const direction = enumFromInt(transition.Direction, self.direction) orelse return null;
+        return .{ .effect = effect, .direction = direction, .duration_ns = @as(u64, self.duration_ms) * 1_000_000 };
+    }
+
+    fn put(self: Transition, out: []u8) void {
+        out[0] = self.has;
+        out[1] = self.effect;
+        out[2] = self.direction;
+        std.mem.writeInt(u16, out[3..5], self.duration_ms, .big);
+    }
+
+    fn get(b: []const u8) Transition {
+        return .{ .has = b[0], .effect = b[1], .direction = b[2], .duration_ms = std.mem.readInt(u16, b[3..5], .big) };
+    }
+};
+
+pub const SetBase = struct { base: u8, generator: u8, seed: u32, style: ClockStyle = .{}, transition: Transition = .{} };
+pub const Frame = struct { duration_s: u16, transition: Transition = .{}, rgb: geometry.Rgb };
 pub const Brightness = struct { value: u8 };
 pub const Reseed = struct { seed: u32 };
 pub const IpChanged = struct { present: u8, addr: [4]u8 };
@@ -335,9 +382,10 @@ pub const Notify = struct {
     duration_s: u16,
     len: u8,
     text: [128]u8,
+    transition: Transition = .{},
 
-    pub fn init(text: []const u8, colour: [3]u8, duration_s: u16) Notify {
-        var n = Notify{ .colour = colour, .duration_s = duration_s, .len = @intCast(text.len), .text = [_]u8{0} ** 128 };
+    pub fn init(text: []const u8, colour: [3]u8, duration_s: u16, t: Transition) Notify {
+        var n = Notify{ .colour = colour, .duration_s = duration_s, .len = @intCast(text.len), .text = [_]u8{0} ** 128, .transition = t };
         @memcpy(n.text[0..text.len], text);
         return n;
     }
@@ -860,19 +908,22 @@ fn encodePayload(msg: Message, out: []u8) usize {
             out[1] = s.generator;
             std.mem.writeInt(u32, out[2..6], s.seed, .big);
             s.style.put(out[6 .. 6 + ClockStyle.wire_len]);
-            return 6 + ClockStyle.wire_len;
+            s.transition.put(out[6 + ClockStyle.wire_len .. 6 + ClockStyle.wire_len + Transition.wire_len]);
+            return 6 + ClockStyle.wire_len + Transition.wire_len;
         },
         .notify => |n| {
             out[0..3].* = n.colour;
             std.mem.writeInt(u16, out[3..5], n.duration_s, .big);
-            out[5] = n.len;
-            @memcpy(out[6 .. 6 + @as(usize, n.len)], n.text[0..n.len]);
-            return 6 + @as(usize, n.len);
+            n.transition.put(out[5..10]);
+            out[10] = n.len;
+            @memcpy(out[11 .. 11 + @as(usize, n.len)], n.text[0..n.len]);
+            return 11 + @as(usize, n.len);
         },
         .frame => |f| {
             std.mem.writeInt(u16, out[0..2], f.duration_s, .big);
-            @memcpy(out[2 .. 2 + geometry.rgb_bytes], &f.rgb);
-            return 2 + geometry.rgb_bytes;
+            f.transition.put(out[2..7]);
+            @memcpy(out[7 .. 7 + geometry.rgb_bytes], &f.rgb);
+            return 7 + geometry.rgb_bytes;
         },
         .brightness => |b| {
             out[0] = b.value;
@@ -1141,18 +1192,18 @@ pub fn decodePacket(bytes: []const u8) Error!Packet {
             break :blk .{ .result = .{ .status = status, .revision = std.mem.readInt(u32, b[1..5], .big) } };
         },
         .set_base => blk: {
-            const b = try fixed(p, 6 + ClockStyle.wire_len);
-            break :blk .{ .set_base = .{ .base = b[0], .generator = b[1], .seed = std.mem.readInt(u32, b[2..6], .big), .style = ClockStyle.get(b[6..]) } };
+            const b = try fixed(p, 6 + ClockStyle.wire_len + Transition.wire_len);
+            break :blk .{ .set_base = .{ .base = b[0], .generator = b[1], .seed = std.mem.readInt(u32, b[2..6], .big), .style = ClockStyle.get(b[6..]), .transition = Transition.get(b[6 + ClockStyle.wire_len ..]) } };
         },
         .notify => blk: {
-            if (p.len < 6) return error.BadPayload;
-            const len = p[5];
-            if (len == 0 or len > 128 or p.len != 6 + @as(usize, len)) return error.BadPayload;
-            break :blk .{ .notify = Notify.init(p[6..], p[0..3].*, std.mem.readInt(u16, p[3..5], .big)) };
+            if (p.len < 11) return error.BadPayload;
+            const len = p[10];
+            if (len == 0 or len > 128 or p.len != 11 + @as(usize, len)) return error.BadPayload;
+            break :blk .{ .notify = Notify.init(p[11..], p[0..3].*, std.mem.readInt(u16, p[3..5], .big), Transition.get(p[5..10])) };
         },
         .frame => blk: {
-            const b = try fixed(p, 2 + geometry.rgb_bytes);
-            break :blk .{ .frame = .{ .duration_s = std.mem.readInt(u16, b[0..2], .big), .rgb = b[2..][0..geometry.rgb_bytes].* } };
+            const b = try fixed(p, 7 + geometry.rgb_bytes);
+            break :blk .{ .frame = .{ .duration_s = std.mem.readInt(u16, b[0..2], .big), .transition = Transition.get(b[2..7]), .rgb = b[7..][0..geometry.rgb_bytes].* } };
         },
         .brightness => blk: {
             const b = try fixed(p, 1);
