@@ -1,5 +1,5 @@
-/* tc002 preview simulation: ports of the runtime's 5x7 font, posix tz rules, clock/ip/notification
-   layout, the popsquares and plasma generators and the panel level curve, so the console can show
+/* tc002 preview simulation: ports of the runtime's 5x7 font, the clock fonts and colour styles, posix tz
+   rules, clock/ip/notification layout, the popsquares and plasma generators and the panel level curve, so the console can show
    what tc002d draws from a /status document. pure: no dom, no network. loads in a browser as
    window.TC002Sim and under node as a commonjs module. */
 (function (root, factory) {
@@ -276,15 +276,158 @@
   const TZ_UTC = { stdOffset: 0, dst: null };
 
   /* ---------- clock, ip, notification (clock.zig, ip.zig, arbiter.zig) ---------- */
-  const CLOCK_X = 2, CLOCK_Y = 4;
+  /* ---------- clock fonts (clockfont.zig): classic 5x7, mini 3x5, segment 5x9, big 10x14.
+     a glyph is {w, h, rows} with bit (w - 1 - col) set for a lit pixel; the blit takes a painter
+     (x, y) => [r, g, b] so a gradient is a colour function over the text, not a font property ---------- */
+  const CLOCK_FONTS = ['classic', 'mini', 'segment', 'big'];
+  const CLOCK_GLYPH_H = { classic: 7, mini: 5, segment: 9, big: 14 };
+  const clockGap = font => (font === 'big' ? 2 : 1);
+  function fromArt(w, art) {
+    return { w, h: art.length, rows: art.map(row => { let bits = 0; for (let c = 0; c < w; c++) if (row[c] === '#') bits |= 1 << (w - 1 - c); return bits; }) };
+  }
+  const MINI_DIGITS = [
+    ['###', '#.#', '#.#', '#.#', '###'], ['.#.', '##.', '.#.', '.#.', '###'], ['###', '..#', '###', '#..', '###'],
+    ['###', '..#', '###', '..#', '###'], ['#.#', '#.#', '###', '..#', '..#'], ['###', '#..', '###', '..#', '###'],
+    ['###', '#..', '###', '#.#', '###'], ['###', '..#', '..#', '..#', '..#'], ['###', '#.#', '###', '#.#', '###'],
+    ['###', '#.#', '###', '..#', '###'],
+  ].map(a => fromArt(3, a));
+  const MINI_COLON = fromArt(1, ['.', '#', '.', '#', '.']);
+  const MINI_SLASH = fromArt(3, ['..#', '..#', '.#.', '#..', '#..']);
+  const MINI_SPACE = fromArt(3, ['...', '...', '...', '...', '...']);
+  // seven segments a..g on a 5x9 cell: a top, g middle, d bottom bars over columns 1..3; f/b the
+  // upper left/right columns, e/c the lower ones
+  const SEGMENT_TABLE = ['abcdef', 'bc', 'abdeg', 'abcdg', 'bcfg', 'acdfg', 'acdefg', 'abc', 'abcdefg', 'abcdfg'];
+  function segmentGlyph(segs) {
+    const rows = new Array(9).fill(0);
+    const bar = 0b01110, left = 0b10000, right = 0b00001;
+    if (segs.includes('a')) rows[0] |= bar;
+    if (segs.includes('g')) rows[4] |= bar;
+    if (segs.includes('d')) rows[8] |= bar;
+    for (let r = 1; r < 4; r++) { if (segs.includes('f')) rows[r] |= left; if (segs.includes('b')) rows[r] |= right; }
+    for (let r = 5; r < 8; r++) { if (segs.includes('e')) rows[r] |= left; if (segs.includes('c')) rows[r] |= right; }
+    return { w: 5, h: 9, rows };
+  }
+  const SEGMENT_DIGITS = SEGMENT_TABLE.map(segmentGlyph);
+  const SEGMENT_COLON = fromArt(1, ['.', '.', '#', '.', '.', '.', '#', '.', '.']);
+  const SEGMENT_SPACE = { w: 5, h: 9, rows: new Array(9).fill(0) };
+  // the built-in font's glyph, optionally scaled by two
+  function classicGlyph(code, scale) {
+    const src = glyph(code);
+    const w = 5 * scale, rows = new Array(7 * scale).fill(0);
+    for (let r = 0; r < 7; r++) {
+      let bits = 0;
+      for (let col = 0; col < 5; col++) {
+        if (((src[r] >> (4 - col)) & 1) === 0) continue;
+        for (let k = 0; k < scale; k++) bits |= 1 << (w - 1 - (col * scale + k));
+      }
+      for (let k = 0; k < scale; k++) rows[r * scale + k] = bits;
+    }
+    return { w, h: 7 * scale, rows };
+  }
+  // the big colon: four-by-four dots so "hh:mm" spans exactly the 52 columns
+  const BIG_COLON = fromArt(4, ['....', '....', '####', '####', '####', '####', '....', '....', '####', '####', '####', '####', '....', '....']);
+  const isDigit = code => code >= 0x30 && code <= 0x39;
+  function clockGlyph(font, code) {
+    switch (font) {
+      case 'big': return code === 0x3a ? BIG_COLON : classicGlyph(code, 2);
+      case 'mini': return isDigit(code) ? MINI_DIGITS[code - 0x30] : code === 0x3a ? MINI_COLON : code === 0x2f ? MINI_SLASH : MINI_SPACE;
+      case 'segment': return isDigit(code) ? SEGMENT_DIGITS[code - 0x30] : code === 0x3a ? SEGMENT_COLON : SEGMENT_SPACE;
+      default: return classicGlyph(code, 1);
+    }
+  }
+  function clockTextWidth(font, text) {
+    let w = 0;
+    for (let i = 0; i < text.length; i++) { if (i > 0) w += clockGap(font); w += clockGlyph(font, text.charCodeAt(i)).w; }
+    return w;
+  }
+  function clockBlit(rgb, x0, y0, font, text, painter) {
+    let x = x0;
+    for (let i = 0; i < text.length; i++) {
+      if (i > 0) x += clockGap(font);
+      const g = clockGlyph(font, text.charCodeAt(i));
+      for (let r = 0; r < g.h; r++) {
+        const y = y0 + r;
+        if (y < 0 || y >= HEIGHT) continue;
+        for (let col = 0; col < g.w; col++) {
+          if (((g.rows[r] >> (g.w - 1 - col)) & 1) === 0) continue;
+          const px = x + col;
+          if (px < 0 || px >= WIDTH) continue;
+          const c = painter(px, y), o = pixelOffset(px, y);
+          rgb[o] = c[0]; rgb[o + 1] = c[1]; rgb[o + 2] = c[2];
+        }
+      }
+      x += g.w;
+    }
+  }
+
+  /* ---------- clock (clock.zig): local time in a font, solid or a subtle gradient ---------- */
+  const CLOCK_X = 2, CLOCK_Y = 4;   // where the classic "hh:mm:ss" lands once centred
+  const CLOCK_MAX_SPREAD = 96;      // the subtlety rule: no channel of the gradient's end may differ from the start by more
+  const DEFAULT_CLOCK_STYLE = { font: 'classic', colour_mode: 'solid', colour: 'ffffff', colour2: 'ffffff', gradient: 'horizontal' };
+  function hexBytes(h, fallback) {
+    const s = String(h == null ? '' : h).replace('#', '');
+    return /^[0-9a-fA-F]{6}$/.test(s) ? [0, 2, 4].map(i => parseInt(s.slice(i, i + 2), 16)) : fallback.slice();
+  }
+  // a status or config `clock` object (strings, any subset) -> a complete style with byte colours
+  function clockStyle(doc) {
+    const d = doc || {};
+    return {
+      font: CLOCK_FONTS.includes(d.font) ? d.font : 'classic',
+      mode: d.colour_mode === 'gradient' ? 'gradient' : 'solid',
+      colour: hexBytes(d.colour, WHITE),
+      colour2: hexBytes(d.colour2, WHITE),
+      gradient: ['horizontal', 'vertical', 'diagonal'].includes(d.gradient) ? d.gradient : 'horizontal',
+    };
+  }
+  // the gradient end after the subtlety rule
+  function effectiveColour2(doc) {
+    const s = clockStyle(doc);
+    return s.colour.map((a, i) => Math.min(Math.max(s.colour2[i], Math.max(a - CLOCK_MAX_SPREAD, 0)), Math.min(a + CLOCK_MAX_SPREAD, 255)));
+  }
   const pad2 = n => String(n).padStart(2, '0');
   function formatTime(localS) {
     const sod = mod(localS, 86400);
     return `${pad2(Math.floor(sod / 3600))}:${pad2(Math.floor(sod / 60) % 60)}:${pad2(sod % 60)}`;
   }
-  function renderClock(rgb, wallMs, rule) {
-    const utcS = Math.floor(wallMs / 1000);
-    blit(rgb, CLOCK_X, CLOCK_Y, formatTime(localFromUtc(rule, utcS)), WHITE);
+  function formatDate(localS) {
+    const civil = civilFromDays(divFloor(localS, 86400));
+    return `${pad2(civil.day)}/${pad2(civil.month)}`;
+  }
+  const clockCentre = (font, text) => Math.floor((WIDTH - clockTextWidth(font, text)) / 2);
+  // where each font puts its text: everything centred, mini adds the date underneath, big shows hours and minutes only
+  function clockLayout(font, timeText, dateText) {
+    switch (font) {
+      case 'big': { const t = timeText.slice(0, 5); return [{ x: clockCentre(font, t), y: 1, text: t }]; }
+      case 'mini': return [{ x: clockCentre(font, timeText), y: 2, text: timeText }, { x: clockCentre(font, dateText), y: 9, text: dateText }];
+      default: return [{ x: clockCentre(font, timeText), y: Math.floor((HEIGHT - CLOCK_GLYPH_H[font]) / 2), text: timeText }];
+    }
+  }
+  // colour as a function of position over the text box: start on one side, end on the other
+  function gradientPainter(c1, c2, box, dir) {
+    const w = Math.max(box.x1 - box.x0, 1), h = Math.max(box.y1 - box.y0, 1);
+    return (x, y) => {
+      const fx = Math.min(Math.max(Math.trunc((x - box.x0) * 256 / w), 0), 256);
+      const fy = Math.min(Math.max(Math.trunc((y - box.y0) * 256 / h), 0), 256);
+      const t = dir === 'horizontal' ? fx : dir === 'vertical' ? fy : Math.trunc((fx + fy) / 2);
+      return c1.map((a, i) => a + Math.trunc((c2[i] - a) * t / 256));
+    };
+  }
+  function renderClock(rgb, wallMs, rule, styleDoc) {
+    const s = clockStyle(styleDoc);
+    const localS = localFromUtc(rule, Math.floor(wallMs / 1000));
+    const lines = clockLayout(s.font, formatTime(localS), formatDate(localS));
+    rgb.fill(0);   // like the runtime's render: the clock owns the whole frame
+    let painter = () => s.colour;
+    if (s.mode === 'gradient') {
+      const box = { x0: WIDTH, y0: HEIGHT, x1: -1, y1: -1 };
+      for (const l of lines) {
+        box.x0 = Math.min(box.x0, l.x); box.y0 = Math.min(box.y0, l.y);
+        box.x1 = Math.max(box.x1, l.x + clockTextWidth(s.font, l.text) - 1);
+        box.y1 = Math.max(box.y1, l.y + CLOCK_GLYPH_H[s.font] - 1);
+      }
+      painter = gradientPainter(s.colour, effectiveColour2(styleDoc), box, s.gradient);
+    }
+    for (const l of lines) clockBlit(rgb, l.x, l.y, s.font, l.text, painter);
   }
   const nextSecondMs = wallMs => (Math.floor(wallMs / 1000) + 1) * 1000;
   function ipFromString(s) {
@@ -432,9 +575,11 @@
       return { rgb, cadenceMs: null, label: 'notification (text unknown: not sent from this page)' };
     }
     switch (status.base) {
-      case 'clock':
-        renderClock(rgb, nowMs, local.tz || TZ_UTC);
-        return { rgb, cadenceMs: nextSecondMs(nowMs) - nowMs, label: 'clock' };
+      case 'clock': {
+        renderClock(rgb, nowMs, local.tz || TZ_UTC, status.clock);
+        const st = status.clock ? clockStyle(status.clock) : null;
+        return { rgb, cadenceMs: nextSecondMs(nowMs) - nowMs, label: st ? `clock · ${st.font} · ${st.mode}` : 'clock' };
+      }
       case 'ip': {
         const ip = status.network && status.network.ip != null ? status.network.ip : status.ip;
         renderIp(rgb, ipFromString(ip));
@@ -448,6 +593,7 @@
 
   return { WIDTH, HEIGHT, PIXELS, RGB_BYTES, WHITE, black, pixelOffset, glyph, textWidth, blit, remap, buildLut,
     tzParse, utcOffsetAt, localFromUtc, daysFromCivil, civilFromDays, weekday, TZ_UTC,
-    CLOCK_X, CLOCK_Y, formatTime, renderClock, nextSecondMs, ipFromString, renderIp, SCROLL_MS, renderNotify,
+    CLOCK_FONTS, clockGlyph, clockTextWidth, clockBlit, CLOCK_MAX_SPREAD, DEFAULT_CLOCK_STYLE, clockStyle, effectiveColour2,
+    CLOCK_X, CLOCK_Y, formatTime, formatDate, renderClock, nextSecondMs, ipFromString, renderIp, SCROLL_MS, renderNotify,
     Rng, Popsquares, Plasma, Art, GENERATORS, FRAME_MS, compose };
 });

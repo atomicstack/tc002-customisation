@@ -248,3 +248,100 @@ test('compose picks the right layer and cadence', () => {
   assert.deepEqual(pdg.rgb, pend);
   assert.equal(pdg.label, 'pending frame');
 });
+
+/* ---------- clock fonts and colour styles (clockfont.zig, clock.zig) ---------- */
+const CLOCK_DEFAULT = { font: 'classic', colour_mode: 'solid', colour: 'ffffff', colour2: 'ffffff', gradient: 'horizontal' };
+// 2026-09-06 18:08:08 utc, as the zig fixtures use it
+const WALL_180808_MS = (1788739200 + 18 * 3600 + 8 * 60 + 8) * 1000;
+function litBox(rgb) {
+  const b = { x0: S.WIDTH, y0: S.HEIGHT, x1: -1, y1: -1 };
+  for (let y = 0; y < S.HEIGHT; y++) for (let x = 0; x < S.WIDTH; x++) {
+    const o = S.pixelOffset(x, y);
+    if (rgb[o] || rgb[o + 1] || rgb[o + 2]) { b.x0 = Math.min(b.x0, x); b.x1 = Math.max(b.x1, x); b.y0 = Math.min(b.y0, y); b.y1 = Math.max(b.y1, y); }
+  }
+  return b;
+}
+const px = (rgb, x, y) => [...rgb.slice(S.pixelOffset(x, y), S.pixelOffset(x, y) + 3)];
+
+test('clock fonts: text widths match the layouts the clock relies on', () => {
+  assert.deepEqual(S.CLOCK_FONTS, ['classic', 'mini', 'segment', 'big']);
+  assert.equal(S.clockTextWidth('classic', '13:05:09'), 47);
+  assert.equal(S.clockTextWidth('segment', '13:05:09'), 39);
+  assert.equal(S.clockTextWidth('mini', '13:05:09'), 27);
+  assert.equal(S.clockTextWidth('mini', '07/09'), 19);
+  assert.equal(S.clockTextWidth('big', '13:05'), 52);
+  assert.equal(S.clockTextWidth('big', ''), 0);
+  for (const f of S.CLOCK_FONTS) assert.equal(S.clockGlyph(f, '0'.charCodeAt(0)).h, { classic: 7, mini: 5, segment: 9, big: 14 }[f]);
+});
+
+test('clock fonts: big is the classic digit scaled by two and segment digits are the expected shapes', () => {
+  const one = S.glyph(49), bigOne = S.clockGlyph('big', 49);
+  assert.equal(bigOne.w, 10); assert.equal(bigOne.h, 14);
+  for (let r = 0; r < 7; r++) {
+    let expected = 0;
+    for (let col = 0; col < 5; col++) if ((one[r] >> (4 - col)) & 1) expected |= 0b11 << (8 - col * 2);
+    assert.equal(bigOne.rows[2 * r], expected); assert.equal(bigOne.rows[2 * r + 1], expected);
+  }
+  const eight = S.clockGlyph('segment', 56);
+  assert.equal(eight.rows[0], 0b01110); assert.equal(eight.rows[1], 0b10001); assert.equal(eight.rows[4], 0b01110); assert.equal(eight.rows[8], 0b01110);
+  const seven = S.clockGlyph('segment', 55);
+  assert.equal(seven.rows[6], 0b00001); assert.equal(seven.rows[8], 0);
+  for (const f of S.CLOCK_FONTS) for (let d = 48; d <= 57; d++) for (let e = 48; e < d; e++) assert.notDeepEqual(S.clockGlyph(f, d).rows, S.clockGlyph(f, e).rows);
+});
+
+test('clock: the date formats as dd/mm and the classic solid render equals a direct blit', () => {
+  assert.equal(S.formatDate(1788739200), '07/09');
+  assert.equal(S.formatDate(0), '01/01');
+  const rule = S.tzParse('JST-9');
+  const rgb = S.black();
+  S.renderClock(rgb, (4 * 3600 + 5 * 60 + 6) * 1000 + 700, rule, CLOCK_DEFAULT);
+  const expected = S.black();
+  S.blit(expected, 2, 4, '13:05:06', S.WHITE);
+  assert.deepEqual(rgb, expected);
+  const legacy = S.black();
+  S.renderClock(legacy, (4 * 3600 + 5 * 60 + 6) * 1000 + 700, rule);   // no style = the classic defaults
+  assert.deepEqual(legacy, expected);
+});
+
+test('clock: every font renders centred within its box; big drops the seconds; mini adds the date', () => {
+  const rgb = S.black();
+  S.renderClock(rgb, WALL_180808_MS, S.TZ_UTC, { ...CLOCK_DEFAULT, font: 'segment' });
+  assert.deepEqual(litBox(rgb), { x0: 10, y0: 3, x1: 44, y1: 11 });
+  S.renderClock(rgb, WALL_180808_MS, S.TZ_UTC, { ...CLOCK_DEFAULT, font: 'big' });
+  assert.deepEqual(litBox(rgb), { x0: 2, y0: 1, x1: 51, y1: 14 });
+  S.renderClock(rgb, WALL_180808_MS, S.TZ_UTC, { ...CLOCK_DEFAULT, font: 'mini' });
+  assert.deepEqual(litBox(rgb), { x0: 12, y0: 2, x1: 38, y1: 13 });
+  assert.notEqual(rgb[S.pixelOffset(16 + 3 + 1 + 3 + 1 + 2, 9)], 0);   // the slash of "06/09" on the date line
+});
+
+test('clock: a gradient runs from the start colour to the clamped end colour across the text', () => {
+  assert.equal(S.CLOCK_MAX_SPREAD, 96);
+  const style = { font: 'segment', colour_mode: 'gradient', colour: 'c80000', colour2: '00ff00', gradient: 'horizontal' };
+  assert.deepEqual(S.effectiveColour2(style), [104, 96, 0]);
+  const wall = (8 * 3600 + 8 * 60 + 8) * 1000;
+  const rgb = S.black();
+  S.renderClock(rgb, wall, S.TZ_UTC, style);
+  assert.deepEqual(px(rgb, 6, 4), [200, 0, 0]);
+  const right = px(rgb, 44, 4);
+  assert.ok(right[0] < 120 && right[1] > 80, `right ${right}`);
+  S.renderClock(rgb, wall, S.TZ_UTC, { ...style, gradient: 'vertical' });
+  assert.deepEqual(px(rgb, 7, 3), [200, 0, 0]);
+  assert.ok(px(rgb, 7, 11)[1] > 80);
+  S.renderClock(rgb, wall, S.TZ_UTC, { ...style, colour_mode: 'solid' });
+  assert.deepEqual(px(rgb, 44, 4), [200, 0, 0]);
+});
+
+test('compose: the clock takes its style from status.clock and falls back to the classic defaults', () => {
+  const local = { tz: S.TZ_UTC, art: null, notify: null, frame: null, pending: null };
+  const styled = S.compose({ base: 'clock', overlay: 'none', generator: 'popsquares', clock: { ...CLOCK_DEFAULT, font: 'big', colour: '2060ff' } }, local, WALL_180808_MS);
+  const expected = S.black();
+  S.renderClock(expected, WALL_180808_MS, S.TZ_UTC, { ...CLOCK_DEFAULT, font: 'big', colour: '2060ff' });
+  assert.deepEqual(styled.rgb, expected);
+  assert.equal(styled.label, 'clock · big · solid');
+  assert.deepEqual(px(styled.rgb, 2, 14), [0x20, 0x60, 0xff]);   // the foot of the big "1" at column 2
+  const plain = S.compose({ base: 'clock', overlay: 'none', generator: 'popsquares' }, local, WALL_180808_MS);
+  const classic = S.black();
+  S.renderClock(classic, WALL_180808_MS, S.TZ_UTC);
+  assert.deepEqual(plain.rgb, classic);
+  assert.equal(plain.label, 'clock');
+});
