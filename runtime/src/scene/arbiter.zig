@@ -168,7 +168,7 @@ test "a request's transition is remembered and the exit pairs it in reverse" {
     var a = fresh();
     a.default_transition = .{ .duration_ns = 7 };
     _ = a.apply(.{ .set_base = .clock }, 0);
-    try std.testing.expectEqual(transition.Spec{ .effect = .fade, .direction = .left, .duration_ns = 7 }, a.takeTransition().?);
+    try std.testing.expectEqual(transition.Spec{ .effect = .slide, .direction = .left, .duration_ns = 7 }, a.takeTransition().?);
     const swipe = transition.Spec{ .effect = .swipe_in, .direction = .left, .duration_ns = 3 };
     _ = a.applyWith(.{ .notify = .{ .text = "hi", .colour = white, .duration_s = 1 } }, swipe, 0);
     try std.testing.expectEqual(swipe, a.takeTransition().?);
@@ -194,6 +194,24 @@ test "a request's transition is remembered and the exit pairs it in reverse" {
     _ = a.applyWith(.{ .notify = .{ .text = "hi", .colour = white, .duration_s = 1 } }, .{ .effect = .expand, .exit = .none }, 8 * s_ns);
     _ = a.takeTransition();
     a.tick(9 * s_ns, 0);
+    try std.testing.expectEqual(transition.Effect.cut, a.takeTransition().?.effect);
+}
+
+test "the default between base scenes is a slide that follows their order" {
+    var a = fresh(); // art
+    _ = a.apply(.{ .set_base = .clock }, 0);
+    try std.testing.expectEqual(transition.Spec{ .effect = .slide, .direction = .left }, a.takeTransition().?);
+    _ = a.apply(.{ .set_base = .ip }, 0);
+    try std.testing.expectEqual(transition.Direction.left, a.takeTransition().?.direction);
+    _ = a.apply(.{ .set_base = .art }, 0);
+    try std.testing.expectEqual(transition.Direction.right, a.takeTransition().?.direction);
+    a.action(.right, 0); // the buttons take the same path
+    try std.testing.expectEqual(transition.Spec{ .effect = .slide, .direction = .left }, a.takeTransition().?);
+    _ = a.apply(.{ .notify = .{ .text = "hi", .colour = white, .duration_s = 1 } }, 0);
+    _ = a.takeTransition();
+    _ = a.apply(.{ .set_base = .ip }, 0); // the same base: only the overlay leaves, with the default fade
+    try std.testing.expectEqual(transition.Effect.fade, a.takeTransition().?.effect);
+    _ = a.applyWith(.{ .set_base = .clock }, transition.Spec.cut, 0); // a request still decides
     try std.testing.expectEqual(transition.Effect.cut, a.takeTransition().?.effect);
 }
 
@@ -339,7 +357,12 @@ pub const Arbiter = struct {
     pub fn applyWith(self: *Arbiter, cmd: Command, spec: ?transition.Spec, now_ns: u64) Result {
         switch (cmd) {
             .set_base => |b| {
-                if (b != self.base or self.overlay != .none) self.mark(spec);
+                if (b != self.base) {
+                    // between the base scenes the default is a slide that follows their order:
+                    // forward (art, clock, ip) to the left, back to the right, like pages
+                    const forward = @intFromEnum(b) > @intFromEnum(self.base);
+                    self.pending = spec orelse .{ .effect = .slide, .direction = if (forward) .left else .right, .duration_ns = self.default_transition.duration_ns };
+                } else if (self.overlay != .none) self.mark(spec);
                 self.base = b;
                 self.overlay = .none;
                 return .{ .applied = self.bump() };

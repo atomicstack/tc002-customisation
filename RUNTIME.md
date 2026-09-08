@@ -253,10 +253,11 @@ fades the output to black over 600 ms and then stops redrawing altogether (no
 art stepping, no transfers, no cpu); on fades back in. scene selection,
 notifications and brightness keep applying while the panel is dark, so it
 shows the current state when it comes back. every visible change of scene
-runs a [transition](#transitions): by default a 500 ms cross-fade whenever
-the base, the generator or a notification changes (start or end); raw frames,
-reseeds and brightness switch at once. both durations are renderer options;
-0 disables.
+runs a [transition](#transitions), 500 ms by default: a slide between the
+base scenes (forward through art, clock, ip to the left, back to the right,
+like pages), a cross-fade when the generator, a notification (start or end)
+or the showing clock's style changes; raw frames, reseeds and brightness
+switch at once. both durations are renderer options; 0 disables.
 
 ### transitions
 
@@ -303,8 +304,9 @@ the right and one that expanded from the centre collapses into it; `same`
 keeps the direction, so the content carries on across the panel like a
 carousel and the base follows it in; `none` cuts. omitting the fields keeps
 the defaults; a request with `direction`, `transition_ms` or `exit` alone
-applies them to the default effect. a change from the buttons or the knob
-always uses the default fade. the effects are composited in the renderer from
+applies them to the default effect. a change between the base scenes with
+no effect named, from the buttons or `PUT /scene`, slides forward (art, clock,
+ip) to the left and back to the right; the knob's generator change fades. the effects are composited in the renderer from
 the frame that was on the panel and the scene's new output; `GET /scenes`
 lists them under `transitions`. the mqtt `cmd/frame` envelope grows from 14
 to 18 or 19 bytes when it carries one: `u8 effect` (the index in that list),
