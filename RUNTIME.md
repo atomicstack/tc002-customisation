@@ -584,8 +584,9 @@ tools/tc002-run.sh stop
 
 the english web control panel in [`panel/`](panel/) talks to the **stock**
 api; [`panel-v2/`](panel-v2/) is the same idea for this api, with a local
-proxy that holds the tokens and a live preview from `/screen` (simulated
-against the mock).
+proxy that holds the tokens, the transient and durable
+[clock styles](#clock-styles) and a live preview from `/screen` (simulated
+against the mock, fonts and gradients included).
 
 ## memory audits
 

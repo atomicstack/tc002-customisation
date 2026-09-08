@@ -35,7 +35,7 @@ tools:
 | [`led/`](led/) | popsquares generative art running on the device at 60 fps, straight to the panel over spi — static armv7 binary built with zig, plus an adb start/stop wrapper |
 | [`led-zig/`](led-zig/) | full-parity idiomatic zig renderer with typed modules, colocated tests, native dry-run, static armv7 build, and adb wrapper |
 | [`runtime/`](runtime/) | the custom runtime: a supervisor, a renderer (popsquares, plasma, clock, ip, notifications, raw frames, buttons and knob) and an unprivileged network daemon with a bearer-authenticated `/api/v1` and an mqtt client with home-assistant discovery, plus the bootstrap the vendor loader runs and a memory-audit tool. zig 0.16, static armv7, no libc, volatile under `/tmp`. reference in [`RUNTIME.md`](RUNTIME.md) |
-| [`panel-v2/`](panel-v2/) | the same idea for the custom runtime in [`RUNTIME.md`](RUNTIME.md): a local proxy that holds the api tokens and a page that drives scenes, notifications, frames, settings, mqtt, remote presses, display power and the log ring, with a live 52×16 preview from `/screen` (simulated against the mock) |
+| [`panel-v2/`](panel-v2/) | the same idea for the custom runtime in [`RUNTIME.md`](RUNTIME.md): a local proxy that holds the api tokens and a page that drives scenes, clock fonts and colours, notifications, frames, settings, mqtt, remote presses, display power and the log ring, with a live 52×16 preview from `/screen` (simulated against the mock) |
 
 related: [pixdeck](https://github.com/cailurus/PixDeck) is a working stock-firmware
 client for the custom-app protocol over both http and mqtt — its `pixbar_core.py`
@@ -109,21 +109,24 @@ to pick the device when several are attached. the preview is the live frame
 from `/screen` when the runtime offers that route (exact, as shown after
 fades, before brightness); against `mock-device.py` and older builds without
 it, the page falls back to a simulation of the runtime's status (its own
-font, layout and generators ported to javascript), so the clock and ip are
-exact, notifications and frames are exact only when this page sent them
+font, clock fonts, gradients, layout and generators ported to javascript),
+so the clock and ip are exact, notifications and frames are exact only when this page sent them
 (otherwise they are shown as unknown), and the art shows the same algorithm
 with a local seed. the controls card drives the physical buttons, knob and
 rotary remotely through `/input`; the scene card's power switch fades the
-display through `/action`; and the logs card follows the runtime's log ring
-through `/logs`. `mock-device.py` is a stand-in for developing without a
+display through `/action`; the scene card also sets a transient
+[clock style](RUNTIME.md#clock-styles) (font, solid or gradient colours)
+while the settings card holds the durable one; and the logs card follows
+the runtime's log ring through `/logs`. `mock-device.py` is a stand-in for developing without a
 device.
 
-![the panel-v2 console: a simulated clock preview above cards for status, remote controls, scene, notifications, frames, settings, mqtt and the log ring](panel-v2/screenshots/console.png)
+![the panel-v2 console: a simulated clock preview in the big font with a blue gradient, above cards for status, remote controls, scene and clock style, notifications, frames, settings, mqtt and the log ring](panel-v2/screenshots/console.png)
 
 <img src="panel-v2/screenshots/console-narrow.png" width="330" alt="the panel-v2 console at phone width, stacked into a single column">
 
 (screenshots are against `mock-device.py` in the clock scene with timezone
-`AEST-10AEDT,M10.1.0,M4.1.0/3` applied, not a real device.)
+`AEST-10AEDT,M10.1.0,M4.1.0/3` applied and a transient `big` font with a
+vertical gradient, not a real device.)
 
 **adopt a factory-fresh device**
 
