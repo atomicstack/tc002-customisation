@@ -10,11 +10,17 @@ commands:
   scene <art|clock|ip> [--generator NAME] [--seed N]
         [--font classic|mini|segment|big|block] [--colour-mode solid|gradient] [--colour rrggbb]
         [--colour2 rrggbb] [--gradient horizontal|vertical|diagonal] [--spread 0..255]   transient clock style
+        [--transition EFFECT] [--direction left|right|up|down] [--transition-ms 0..5000]
   brightness <1..100>                 transient brightness
   reseed [N]                          reseed the art
   arm-stream                          arm stream mode (two-second wait)
-  notify <text> [--colour rrggbb] [--duration S]
-  frame <file.rgb|--colour rrggbb> [--duration S]   2496 raw rgb888 bytes
+  notify <text> [--colour rrggbb] [--duration S] [--transition EFFECT] [--direction D] [--transition-ms N]
+  frame <file.rgb|--colour rrggbb> [--duration S] [--transition EFFECT] [--direction D] [--transition-ms N]
+                                      2496 raw rgb888 bytes
+  transition effects (scene, notify, frame): fade cut slide swipe_out swipe_in collapse expand wipe
+                                      dissolve split_out split_in blinds flip rain rain_random; the
+                                      direction is the way the moving content travels; notifications
+                                      and frames leave with the paired effect the other way
   power <on|off>                      display power (fades to and from black)
   input <control> <event> [--steps N] press a control remotely: left|middle|right|knob with
                                       press|release|click (knob also long); rotary with cw|ccw
@@ -78,6 +84,9 @@ def epoch(args, token):
         sys.exit(f"cannot read status ({status}): {raw.decode(errors='replace')}")
     return json.loads(raw)["epoch"]
 
+def transition_fields(a):
+    return {k: v for k, v in (("transition", a.transition), ("direction", a.direction), ("transition_ms", a.transition_ms)) if v is not None}
+
 def kv(pairs):
     out = {}
     for p in pairs:
@@ -113,6 +122,9 @@ def main():
     ap.add_argument("--colour2")
     ap.add_argument("--gradient")
     ap.add_argument("--spread", type=int)
+    ap.add_argument("--transition")
+    ap.add_argument("--direction")
+    ap.add_argument("--transition-ms", type=int, dest="transition_ms")
     a = ap.parse_args()
     admin_commands = {"config-set", "config-save", "mqtt", "mqtt-set"}
     token = load_token(a, a.admin or a.command in admin_commands)
@@ -128,6 +140,7 @@ def main():
         if a.seed is not None: body["seed"] = a.seed
         style = {k: v for k, v in (("font", a.font), ("colour_mode", a.colour_mode), ("colour", a.colour), ("colour2", a.colour2), ("gradient", a.gradient), ("spread", a.spread)) if v is not None}
         if style: body["clock"] = style
+        body.update(transition_fields(a))
         return show(*call(a, "PUT", "/scene", body, token=token))
     if c in ("brightness", "reseed", "arm-stream"):
         body = {"action": {"brightness": "brightness", "reseed": "reseed", "arm-stream": "arm_stream"}[c], "request_id": rid, "epoch": epoch(a, token)}
@@ -188,6 +201,7 @@ def main():
     if c == "notify":
         body = {"text": " ".join(a.args), "duration_s": a.duration, "request_id": rid, "epoch": epoch(a, token)}
         if a.colour: body["colour"] = a.colour
+        body.update(transition_fields(a))
         return show(*call(a, "POST", "/notify", body, token=token))
     if c == "frame":
         if a.colour:
@@ -197,6 +211,7 @@ def main():
         if len(rgb) != 2496:
             sys.exit("a frame is exactly 2496 bytes")
         q = f"duration_s={a.duration}&request_id={rid}&epoch={epoch(a, token)}"
+        q += "".join(f"&{k}={v}" for k, v in transition_fields(a).items())
         return show(*call(a, "POST", "/frame", rgb, content_type="application/octet-stream", token=token, query=q))
     if c == "config":
         return show(*call(a, "GET", "/config", token=token))

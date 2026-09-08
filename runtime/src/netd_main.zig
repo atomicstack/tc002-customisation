@@ -14,6 +14,7 @@ const messages = @import("ipc/messages.zig");
 const codec = @import("ipc/codec.zig");
 const config = @import("supervisor/config.zig");
 const geometry = @import("panel/geometry.zig");
+const transition = @import("panel/transition.zig");
 const scene = @import("scene/scene.zig");
 const actions = @import("input/actions.zig");
 const clock = @import("scene/clock.zig");
@@ -380,7 +381,7 @@ const Netd = struct {
                 self.respond(c, 200, "application/json", api.scenes_body);
                 self.flushConn(c, now);
             },
-            .set_scene => |s| self.relay(c, .{ .set_base = .{ .base = @intFromEnum(s.base), .generator = if (s.generator) |g| @intFromEnum(g) else 0xff, .seed = s.seed orelse 0, .style = if (s.style) |st| messages.ClockStyle.fromPatch(st) else .{} } }, s.request_id, s.epoch orelse 0, now),
+            .set_scene => |s| self.relay(c, .{ .set_base = .{ .base = @intFromEnum(s.base), .generator = if (s.generator) |g| @intFromEnum(g) else 0xff, .seed = s.seed orelse 0, .style = if (s.style) |st| messages.ClockStyle.fromPatch(st) else .{}, .transition = messages.Transition.fromSpec(s.transition) } }, s.request_id, s.epoch orelse 0, now),
             .action => |a| switch (a.kind) {
                 .brightness => self.relay(c, .{ .brightness = .{ .value = a.brightness.? } }, a.request_id, a.epoch, now),
                 .reseed => self.relay(c, .{ .reseed = .{ .seed = a.seed orelse @truncate(now ^ a.request_id) } }, a.request_id, a.epoch, now),
@@ -393,7 +394,7 @@ const Netd = struct {
             },
             .logs => |l| self.ask(c, .{ .log_get = .{ .after = l.after } }, .logs, now),
             .input => |i| self.relay(c, .{ .inject_input = .{ .control = @intFromEnum(i.control), .event = @intFromEnum(i.event), .steps = i.steps } }, i.request_id, i.epoch, now),
-            .notify => |n| self.relay(c, .{ .notify = messages.Notify.init(n.text, n.colour, n.duration_s) }, n.request_id, n.epoch, now),
+            .notify => |n| self.relay(c, .{ .notify = messages.Notify.init(n.text, n.colour, n.duration_s, messages.Transition.fromSpec(n.transition)) }, n.request_id, n.epoch, now),
             .frame => |f| {
                 if (!self.frameAllowed(now)) {
                     c.client_id = f.request_id;
@@ -401,7 +402,7 @@ const Netd = struct {
                     self.flushConn(c, now);
                     return;
                 }
-                self.relay(c, .{ .frame = .{ .duration_s = f.duration_s, .rgb = f.rgb.* } }, f.request_id, f.epoch, now);
+                self.relay(c, .{ .frame = .{ .duration_s = f.duration_s, .transition = messages.Transition.fromSpec(f.transition), .rgb = f.rgb.* } }, f.request_id, f.epoch, now);
             },
             .config_get => self.ask(c, .config_get, .config, now),
             .config_patch => |p| {
@@ -1075,11 +1076,15 @@ const Netd = struct {
         if (!std.mem.startsWith(u8, p.topic, cmd_prefix)) return;
         const suffix = p.topic[cmd_prefix.len..];
         if (std.mem.eql(u8, suffix, "frame")) {
-            if (p.payload.len != mqtt_frame_envelope) return;
+            // the 14-byte envelope, or 18 bytes with a transition (effect, direction, duration_ms) before the rgb
+            const extended = p.payload.len == mqtt_frame_envelope + 4;
+            if (p.payload.len != mqtt_frame_envelope and !extended) return;
             const rid = std.mem.readInt(u64, p.payload[0..8], .big);
             const epoch = std.mem.readInt(u32, p.payload[8..12], .big);
             const duration = std.mem.readInt(u16, p.payload[12..14], .big);
-            if (duration < 1 or duration > 300) {
+            const t: messages.Transition = if (extended) .{ .has = 1, .effect = p.payload[14], .direction = p.payload[15], .duration_ms = std.mem.readInt(u16, p.payload[16..18], .big) } else .{};
+            const bad_transition = extended and (t.toSpec() == null or t.duration_ms > transition.max_duration_ms);
+            if (duration < 1 or duration > 300 or bad_transition) {
                 self.publishResult(rid, .rejected, self.status.revision);
                 return;
             }
@@ -1087,7 +1092,8 @@ const Netd = struct {
                 self.publishResult(rid, .overload, self.status.revision);
                 return;
             }
-            self.mqttRelay(.{ .frame = .{ .duration_s = duration, .rgb = p.payload[14..][0..geometry.rgb_bytes].* } }, rid, epoch, now);
+            const rgb_at: usize = if (extended) 18 else 14;
+            self.mqttRelay(.{ .frame = .{ .duration_s = duration, .transition = t, .rgb = p.payload[rgb_at..][0..geometry.rgb_bytes].* } }, rid, epoch, now);
             return;
         }
         if (std.mem.eql(u8, suffix, "screen")) {
@@ -1103,7 +1109,7 @@ const Netd = struct {
                 self.mqttPublish("result", o.slice(), 0, false);
             },
             .op => |op| switch (op) {
-                .set_scene => |s| self.mqttRelay(.{ .set_base = .{ .base = @intFromEnum(s.base), .generator = if (s.generator) |g| @intFromEnum(g) else 0xff, .seed = s.seed orelse 0, .style = if (s.style) |st| messages.ClockStyle.fromPatch(st) else .{} } }, s.request_id, s.epoch orelse 0, now),
+                .set_scene => |s| self.mqttRelay(.{ .set_base = .{ .base = @intFromEnum(s.base), .generator = if (s.generator) |g| @intFromEnum(g) else 0xff, .seed = s.seed orelse 0, .style = if (s.style) |st| messages.ClockStyle.fromPatch(st) else .{}, .transition = messages.Transition.fromSpec(s.transition) } }, s.request_id, s.epoch orelse 0, now),
                 .action => |a| switch (a.kind) {
                     .brightness => self.mqttRelay(.{ .brightness = .{ .value = a.brightness.? } }, a.request_id, a.epoch, now),
                     .reseed => self.mqttRelay(.{ .reseed = .{ .seed = a.seed orelse @truncate(now ^ a.request_id) } }, a.request_id, a.epoch, now),
@@ -1111,7 +1117,7 @@ const Netd = struct {
                     .power => self.mqttRelay(.{ .power = .{ .on = @intFromBool(a.power.?) } }, a.request_id, a.epoch, now),
                 },
                 .input => |i| self.mqttRelay(.{ .inject_input = .{ .control = @intFromEnum(i.control), .event = @intFromEnum(i.event), .steps = i.steps } }, i.request_id, i.epoch, now),
-                .notify => |n| self.mqttRelay(.{ .notify = messages.Notify.init(n.text, n.colour, n.duration_s) }, n.request_id, n.epoch, now),
+                .notify => |n| self.mqttRelay(.{ .notify = messages.Notify.init(n.text, n.colour, n.duration_s, messages.Transition.fromSpec(n.transition)) }, n.request_id, n.epoch, now),
                 .config_patch => |cp| {
                     // the control subset only: transient brightness and scene parameters
                     const admin_fields = cp.timezone != null or cp.ntp_server != null or cp.ntp_interval_s != null or cp.frame_timeout_ms != null or cp.metrics_interval_s != null or cp.discovery != null or cp.discovery_prefix != null or cp.clock_font != null or cp.clock_colour_mode != null or cp.clock_colour != null or cp.clock_colour2 != null or cp.clock_gradient != null or cp.clock_spread != null;

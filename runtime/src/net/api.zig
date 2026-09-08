@@ -9,6 +9,7 @@ const arbiter = @import("../scene/arbiter.zig");
 const scene = @import("../scene/scene.zig");
 const actions = @import("../input/actions.zig");
 const clock = @import("../scene/clock.zig");
+const transition = @import("../panel/transition.zig");
 
 pub const token_len = 32;
 pub const Token = [token_len]u8;
@@ -49,7 +50,7 @@ pub const ActionKind = enum { brightness, reseed, arm_stream, power };
 pub const Op = union(enum) {
     status,
     scenes,
-    set_scene: struct { base: Base, generator: ?scene.Generator, seed: ?u32, style: ?clock.StylePatch, request_id: u64, epoch: ?u32 },
+    set_scene: struct { base: Base, generator: ?scene.Generator, seed: ?u32, style: ?clock.StylePatch, transition: ?transition.Spec, request_id: u64, epoch: ?u32 },
     action: struct { kind: ActionKind, brightness: ?u8, seed: ?u32, power: ?bool, request_id: u64, epoch: u32 },
     /// the framebuffer as shown; `raw` = octets instead of the json document
     screen: struct { raw: bool },
@@ -57,8 +58,8 @@ pub const Op = union(enum) {
     logs: struct { after: u32 },
     /// a remote control event: the same paths as a physical press
     input: struct { control: actions.Control, event: actions.EdgeEvent, steps: u8, request_id: u64, epoch: u32 },
-    notify: struct { text: []const u8, colour: [3]u8, duration_s: u16, request_id: u64, epoch: u32 },
-    frame: struct { rgb: *const geometry.Rgb, duration_s: u16, request_id: u64, epoch: u32 },
+    notify: struct { text: []const u8, colour: [3]u8, duration_s: u16, transition: ?transition.Spec, request_id: u64, epoch: u32 },
+    frame: struct { rgb: *const geometry.Rgb, duration_s: u16, transition: ?transition.Spec, request_id: u64, epoch: u32 },
     config_get,
     config_patch: ConfigPatch,
     config_save: struct { revision: ?u32 },
@@ -113,10 +114,10 @@ pub const Arena = [json.arena_size]u8;
 
 // json wire schemas (request bodies)
 const ClockBody = struct { font: ?[]const u8 = null, colour_mode: ?[]const u8 = null, colour: ?[]const u8 = null, colour2: ?[]const u8 = null, gradient: ?[]const u8 = null, spread: ?u8 = null };
-const SceneBody = struct { base: []const u8, generator: ?[]const u8 = null, seed: ?u32 = null, clock: ?ClockBody = null, request_id: []const u8, epoch: ?u32 = null };
+const SceneBody = struct { base: []const u8, generator: ?[]const u8 = null, seed: ?u32 = null, clock: ?ClockBody = null, transition: ?[]const u8 = null, direction: ?[]const u8 = null, transition_ms: ?u32 = null, request_id: []const u8, epoch: ?u32 = null };
 const ActionBody = struct { action: []const u8, brightness: ?u8 = null, seed: ?u32 = null, power: ?bool = null, request_id: []const u8, epoch: u32 };
 const InputBody = struct { control: []const u8, event: []const u8, steps: u8 = 1, request_id: []const u8, epoch: u32 };
-const NotifyBody = struct { text: []const u8, colour: ?[]const u8 = null, duration_s: u16 = 5, request_id: []const u8, epoch: u32 };
+const NotifyBody = struct { text: []const u8, colour: ?[]const u8 = null, duration_s: u16 = 5, transition: ?[]const u8 = null, direction: ?[]const u8 = null, transition_ms: ?u32 = null, request_id: []const u8, epoch: u32 };
 const ConfigBody = struct {
     brightness: ?u8 = null,
     base: ?[]const u8 = null,
@@ -320,7 +321,13 @@ pub fn parseFrame(query: []const u8, body: []const u8) Route {
     const rid = parseRequestId(queryValue(query, "request_id") orelse "") orelse return bad("missing_request_id", "request_id (hex) is required in the query");
     const epoch_text = queryValue(query, "epoch") orelse return bad("missing_epoch", "epoch is required in the query");
     const epoch = std.fmt.parseInt(u32, epoch_text, 10) catch return bad("invalid_epoch", "epoch must be a number");
-    return .{ .op = .{ .frame = .{ .rgb = body[0..geometry.rgb_bytes], .duration_s = duration, .request_id = rid, .epoch = epoch } } };
+    var ms: ?u32 = null;
+    if (queryValue(query, "transition_ms")) |t| ms = std.fmt.parseInt(u32, t, 10) catch return bad("invalid_transition_ms", "transition_ms must be 0..5000");
+    const spec = switch (parseTransition(queryValue(query, "transition"), queryValue(query, "direction"), ms, .cut)) {
+        .reject => |j| return .{ .reject = j },
+        .op => |t| t,
+    };
+    return .{ .op = .{ .frame = .{ .rgb = body[0..geometry.rgb_bytes], .duration_s = duration, .transition = spec, .request_id = rid, .epoch = epoch } } };
 }
 
 /// a json body for one of the schemas; shared by http routes and mqtt command topics.
@@ -338,7 +345,11 @@ pub fn parseBody(kind: BodyKind, body: []const u8, arena: *Arena) Route {
                     .op => |op| style = op,
                 }
             }
-            return .{ .op = .{ .set_scene = .{ .base = base, .generator = generator, .seed = b.seed, .style = style, .request_id = rid, .epoch = b.epoch } } };
+            const spec = switch (parseTransition(b.transition, b.direction, b.transition_ms, .fade)) {
+                .reject => |j| return .{ .reject = j },
+                .op => |t| t,
+            };
+            return .{ .op = .{ .set_scene = .{ .base = base, .generator = generator, .seed = b.seed, .style = style, .transition = spec, .request_id = rid, .epoch = b.epoch } } };
         },
         .action => {
             const b = json.parse(ActionBody, body, arena) catch |e| return jsonError(e);
@@ -375,7 +386,11 @@ pub fn parseBody(kind: BodyKind, body: []const u8, arena: *Arena) Route {
             if (b.duration_s < 1 or b.duration_s > 300) return bad("invalid_duration", "duration_s must be 1..300");
             const colour = if (b.colour) |c| (parseColour(c) orelse return bad("invalid_colour", "colour must be rrggbb hex")) else [3]u8{ 255, 255, 255 };
             const rid = parseRequestId(b.request_id) orelse return bad("invalid_request_id", "request_id must be 1..16 hex digits");
-            return .{ .op = .{ .notify = .{ .text = b.text, .colour = colour, .duration_s = b.duration_s, .request_id = rid, .epoch = b.epoch } } };
+            const spec = switch (parseTransition(b.transition, b.direction, b.transition_ms, .fade)) {
+                .reject => |j| return .{ .reject = j },
+                .op => |t| t,
+            };
+            return .{ .op = .{ .notify = .{ .text = b.text, .colour = colour, .duration_s = b.duration_s, .transition = spec, .request_id = rid, .epoch = b.epoch } } };
         },
         .config_patch => {
             const b = json.parse(ConfigBody, body, arena) catch |e| return jsonError(e);
@@ -438,6 +453,37 @@ fn parseClockStyle(font_text: ?[]const u8, mode_text: ?[]const u8, colour_text: 
     return .{ .op = p };
 }
 
+/// the three transition fields shared by `/scene`, `/notify` and `/frame`: none given means the
+/// renderer's default; an effect without a direction takes the effect's natural one; a
+/// missing duration is 500 ms.
+const TransitionRoute = union(enum) { op: ?transition.Spec, reject: Reject };
+fn parseTransition(effect_text: ?[]const u8, direction_text: ?[]const u8, ms: ?u32, natural: transition.Effect) TransitionRoute {
+    if (effect_text == null and direction_text == null and ms == null) return .{ .op = null };
+    const effect = if (effect_text) |t| (enumByName(transition.Effect, t) orelse return .{ .reject = .{ .status = 400, .code = "invalid_transition", .message = effect_names_message } }) else natural;
+    const direction = if (direction_text) |t| (enumByName(transition.Direction, t) orelse return .{ .reject = .{ .status = 400, .code = "invalid_direction", .message = "direction must be left, right, up or down" } }) else effect.naturalDirection();
+    if (ms) |v| if (v > transition.max_duration_ms) return .{ .reject = .{ .status = 400, .code = "invalid_transition_ms", .message = "transition_ms must be 0..5000" } };
+    return .{ .op = .{ .effect = effect, .direction = direction, .duration_ns = if (ms) |v| @as(u64, v) * 1_000_000 else transition.default_duration_ns } };
+}
+
+const effect_names_message = "transition must be one of " ++ namesList(transition.Effect);
+
+/// an enum's tag names as a json array, built at comptime so the catalogue cannot drift
+fn namesJson(comptime E: type) []const u8 {
+    comptime {
+        var out: []const u8 = "[";
+        for (std.meta.fields(E), 0..) |f, i| out = out ++ (if (i == 0) "\"" else ",\"") ++ f.name ++ "\"";
+        return out ++ "]";
+    }
+}
+
+fn namesList(comptime E: type) []const u8 {
+    comptime {
+        var out: []const u8 = "";
+        for (std.meta.fields(E), 0..) |f, i| out = out ++ (if (i == 0) "" else ", ") ++ f.name;
+        return out;
+    }
+}
+
 pub fn parseIpv4(text: []const u8) ?[4]u8 {
     var out: [4]u8 = undefined;
     var it = std.mem.splitScalar(u8, text, '.');
@@ -451,7 +497,7 @@ pub fn parseIpv4(text: []const u8) ?[4]u8 {
 }
 
 /// the `scenes` document is static.
-pub const scenes_body = "{\"bases\":[\"art\",\"clock\",\"ip\"],\"generators\":[{\"index\":0,\"name\":\"popsquares\",\"parameters\":{\"seed\":\"u32\"}},{\"index\":1,\"name\":\"plasma\",\"parameters\":{\"seed\":\"u32\"}}],\"clock\":{\"fonts\":[\"classic\",\"mini\",\"segment\",\"big\",\"block\"],\"colour_modes\":[\"solid\",\"gradient\"],\"gradients\":[\"horizontal\",\"vertical\",\"diagonal\"],\"spread\":[0,255],\"max_spread\":255},\"notify\":{\"text_max\":128,\"duration_s\":[1,300]},\"frame\":{\"bytes\":2496,\"duration_s\":[1,300]}}";
+pub const scenes_body = "{\"bases\":[\"art\",\"clock\",\"ip\"],\"generators\":[{\"index\":0,\"name\":\"popsquares\",\"parameters\":{\"seed\":\"u32\"}},{\"index\":1,\"name\":\"plasma\",\"parameters\":{\"seed\":\"u32\"}}],\"clock\":{\"fonts\":[\"classic\",\"mini\",\"segment\",\"big\",\"block\"],\"colour_modes\":[\"solid\",\"gradient\"],\"gradients\":[\"horizontal\",\"vertical\",\"diagonal\"],\"spread\":[0,255],\"max_spread\":255},\"notify\":{\"text_max\":128,\"duration_s\":[1,300]},\"frame\":{\"bytes\":2496,\"duration_s\":[1,300]},\"transitions\":{\"effects\":" ++ namesJson(transition.Effect) ++ ",\"directions\":" ++ namesJson(transition.Direction) ++ ",\"duration_ms\":[0,5000]}}";
 
 // tests
 
@@ -503,6 +549,31 @@ test "status codes: origin, route, method, credentials, authority" {
     try expectReject(route(testReq(.PATCH, "/api/v1/config", "", control_header, "application/json", null), "{}", &c, &origins, &arena), 403, "forbidden");
     try std.testing.expect(route(testReq(.PATCH, "/api/v1/config", "", admin_header, "application/json", null), "{}", &c, &origins, &arena) == .op);
     try std.testing.expect(route(testReq(.GET, "/api/v1/status", "", admin_header, null, null), "", &c, &origins, &arena).op == .status);
+}
+
+test "transition fields become a spec with the effect's natural direction and 500 ms" {
+    const c = testCreds();
+    var arena: Arena = undefined;
+    const origins = OriginPolicy{};
+    const s = route(testReq(.PUT, "/api/v1/scene", "", control_header, "application/json", null), "{\"base\":\"clock\",\"transition\":\"swipe_in\",\"request_id\":\"7\"}", &c, &origins, &arena);
+    try std.testing.expectEqual(transition.Spec{ .effect = .swipe_in, .direction = .left, .duration_ns = 500_000_000 }, s.op.set_scene.transition.?);
+    const n = route(testReq(.POST, "/api/v1/notify", "", control_header, "application/json", null), "{\"text\":\"x\",\"request_id\":\"1\",\"epoch\":1,\"transition\":\"rain\",\"transition_ms\":1200}", &c, &origins, &arena);
+    try std.testing.expectEqual(transition.Spec{ .effect = .rain, .direction = .down, .duration_ns = 1_200_000_000 }, n.op.notify.transition.?);
+    const d = route(testReq(.POST, "/api/v1/notify", "", control_header, "application/json", null), "{\"text\":\"x\",\"request_id\":\"1\",\"epoch\":1,\"direction\":\"up\"}", &c, &origins, &arena);
+    try std.testing.expectEqual(transition.Spec{ .effect = .fade, .direction = .up, .duration_ns = 500_000_000 }, d.op.notify.transition.?);
+    const none = route(testReq(.POST, "/api/v1/notify", "", control_header, "application/json", null), "{\"text\":\"x\",\"request_id\":\"1\",\"epoch\":1}", &c, &origins, &arena);
+    try std.testing.expect(none.op.notify.transition == null);
+    try expectReject(route(testReq(.POST, "/api/v1/notify", "", control_header, "application/json", null), "{\"text\":\"x\",\"request_id\":\"1\",\"epoch\":1,\"transition\":\"warp\"}", &c, &origins, &arena), 400, "invalid_transition");
+    try expectReject(route(testReq(.PUT, "/api/v1/scene", "", control_header, "application/json", null), "{\"base\":\"art\",\"direction\":\"sideways\",\"request_id\":\"7\"}", &c, &origins, &arena), 400, "invalid_direction");
+    try expectReject(route(testReq(.PUT, "/api/v1/scene", "", control_header, "application/json", null), "{\"base\":\"art\",\"transition_ms\":5001,\"request_id\":\"7\"}", &c, &origins, &arena), 400, "invalid_transition_ms");
+    const frame = [_]u8{7} ** geometry.rgb_bytes;
+    const f = route(testReq(.POST, "/api/v1/frame", "duration_s=5&request_id=ab&epoch=1&transition=expand&transition_ms=0", control_header, "application/octet-stream", null), &frame, &c, &origins, &arena);
+    try std.testing.expectEqual(transition.Spec{ .effect = .expand, .direction = .left, .duration_ns = 0 }, f.op.frame.transition.?);
+    const plain = route(testReq(.POST, "/api/v1/frame", "duration_s=5&request_id=ab&epoch=1", control_header, "application/octet-stream", null), &frame, &c, &origins, &arena);
+    try std.testing.expect(plain.op.frame.transition == null);
+    try expectReject(route(testReq(.POST, "/api/v1/frame", "duration_s=5&request_id=ab&epoch=1&transition_ms=x", control_header, "application/octet-stream", null), &frame, &c, &origins, &arena), 400, "invalid_transition_ms");
+    try std.testing.expect(std.mem.indexOf(u8, scenes_body, "\"transitions\":{\"effects\":[\"fade\",\"cut\",\"slide\",\"swipe_out\"") != null);
+    try std.testing.expect(std.mem.endsWith(u8, scenes_body, "\"directions\":[\"left\",\"right\",\"up\",\"down\"],\"duration_ms\":[0,5000]}}"));
 }
 
 test "notify and scene bodies become typed operations with validation" {
