@@ -152,7 +152,8 @@ fn blockGlyph(s: Segments) Glyph {
 const block_digits: [10]Glyph = blk: {
     var out: [10]Glyph = undefined;
     for (segment_table, 0..) |s, i| out[i] = blockGlyph(s);
-    out[1] = fromArt(6, 10, .{ "..##..", "..##..", "####..", "####..", "..##..", "..##..", "..##..", "..##..", "######", "######" });
+    // the stock 1: the flag is a one-pixel staircase down and to the left of the bar's top
+    out[1] = fromArt(6, 10, .{ "..##..", ".###..", "####..", "..##..", "..##..", "..##..", "..##..", "..##..", "######", "######" });
     break :blk out;
 };
 const block_colon = fromArt(2, 10, .{ "..", "..", "##", "##", "..", "..", "##", "##", "..", ".." });
@@ -313,7 +314,10 @@ test "big is the classic digit scaled by two; segment and block digits are the e
     const zero = glyph(.block, '0');
     try std.testing.expectEqual([6]u8{ 255, 255, 0, 0, 255, 255 }, zero.a[5][0..6].*);
     const block_one = glyph(.block, '1');
+    try std.testing.expectEqual([6]u8{ 0, 0, 255, 255, 0, 0 }, block_one.a[0][0..6].*);
+    try std.testing.expectEqual([6]u8{ 0, 255, 255, 255, 0, 0 }, block_one.a[1][0..6].*);
     try std.testing.expectEqual([6]u8{ 255, 255, 255, 255, 0, 0 }, block_one.a[2][0..6].*);
+    try std.testing.expectEqual([6]u8{ 0, 0, 255, 255, 0, 0 }, block_one.a[3][0..6].*);
     try std.testing.expectEqual(full, block_one.a[9][0..6].*);
     const colon = glyph(.block, ':');
     try std.testing.expectEqual(@as(u8, 2), colon.w);
