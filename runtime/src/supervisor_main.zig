@@ -341,6 +341,8 @@ const Supervisor = struct {
     ntfy_ca: [api.max_ca]u8 = undefined,
     ntfy_ca_len: u16 = 0,
     ntfy_seq: u64 = 0,
+    /// the running subscriber is being replaced after a settings change: its exit is expected
+    ntfy_replacing: bool = false,
     relays: [relay_max]Relay = [_]Relay{.{}} ** relay_max,
     snapshot: messages.StatusSnapshot = .{},
     last_heartbeat: messages.Heartbeat = .{ .presented = 0, .revision = 0, .state = 0 },
@@ -603,7 +605,7 @@ const Supervisor = struct {
             error.NoChild => @as(?u32, 0),
             else => return,
         } orelse return;
-        if (self.shutting_down or !self.cfg.ntfy.enabled) {
+        if (self.shutting_down or !self.cfg.ntfy.enabled or self.ntfy_replacing) {
             log.info("ntfy subscriber pid {d} stopped", .{pid});
         } else if ((status & 0x7f) == 0) {
             log.warn("ntfy subscriber pid {d} exited with code {d}", .{ pid, (status >> 8) & 0xff });
@@ -616,13 +618,21 @@ const Supervisor = struct {
         for (&self.relays) |*r| if (r.from_ntfy) {
             r.used = false;
         };
-        // the backoff doubles up to a minute; a run that lasted longer than a minute starts over
-        self.ntfy_backoff_ns = if (now - self.ntfy_spawned_ns > 60 * ns_per_s) ntfy_backoff_min_ns else @min(self.ntfy_backoff_ns * 2, ntfy_backoff_max_ns);
-        self.ntfy_restart_at = now + self.ntfy_backoff_ns;
-        if (self.cfg.ntfy.enabled and !self.shutting_down) {
-            if (self.snapshot.ntfy.state != 3) self.snapshot.ntfy = .{ .state = 3, .messages = self.snapshot.ntfy.messages, .err = config.Text.init("subscriber exited"), .ca_set = self.caSet() };
+        if (self.ntfy_replacing) {
+            // a replacement starts at once and shows as connecting until it reports
+            self.ntfy_replacing = false;
+            self.ntfy_backoff_ns = ntfy_backoff_min_ns;
+            self.ntfy_restart_at = now;
+            self.snapshot.ntfy = .{ .state = if (self.cfg.ntfy.enabled) 1 else 0, .messages = self.snapshot.ntfy.messages, .ca_set = self.caSet() };
         } else {
-            self.snapshot.ntfy = .{ .messages = self.snapshot.ntfy.messages, .ca_set = self.caSet() };
+            // the backoff doubles up to a minute; a run that lasted longer than a minute starts over
+            self.ntfy_backoff_ns = if (now - self.ntfy_spawned_ns > 60 * ns_per_s) ntfy_backoff_min_ns else @min(self.ntfy_backoff_ns * 2, ntfy_backoff_max_ns);
+            self.ntfy_restart_at = now + self.ntfy_backoff_ns;
+            if (self.cfg.ntfy.enabled and !self.shutting_down) {
+                if (self.snapshot.ntfy.state != 3) self.snapshot.ntfy = .{ .state = 3, .messages = self.snapshot.ntfy.messages, .err = config.Text.init("subscriber exited"), .ca_set = self.caSet() };
+            } else {
+                self.snapshot.ntfy = .{ .messages = self.snapshot.ntfy.messages, .ca_set = self.caSet() };
+            }
         }
         self.sendNetd(.{ .status = self.snapshot }, 0);
     }
@@ -638,7 +648,10 @@ const Supervisor = struct {
     fn restartNtfy(self: *Supervisor, now: u64) void {
         self.ntfy_backoff_ns = ntfy_backoff_min_ns;
         self.ntfy_restart_at = now;
-        if (self.ntfy_pid) |pid| sys.kill(pid, .TERM);
+        if (self.ntfy_pid) |pid| {
+            self.ntfy_replacing = true;
+            sys.kill(pid, .TERM);
+        }
         if (!self.cfg.ntfy.enabled) {
             self.snapshot.ntfy = .{ .messages = self.snapshot.ntfy.messages, .ca_set = self.caSet() };
             self.sendNetd(.{ .status = self.snapshot }, 0);

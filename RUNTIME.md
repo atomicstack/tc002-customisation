@@ -20,6 +20,7 @@ the reference for what the code does; how to build and run it is in
 | `tc002-supervisor` | root | 384 kb | sets `sys.zkapp.state=running` first, then owns everything privileged: spawns and watches the renderer, binds port 80, generates the api tokens, keeps the settings file, reads the maintenance gesture, polls `wlan0`, relays api commands, samples `/proc` |
 | `tc002d` | root | 255 kb | the renderer. the only process that opens `/dev/spidev0.0` and the latch gpio. scenes, overlays, physical input, paced presentation, heartbeats |
 | `tc002-netd` | uid 1001 | 396 kb | the network daemon: an http/1.1 server for `/api/v1` and an mqtt 3.1.1 client. holds no authoritative state; every command is relayed through the supervisor to the live renderer |
+| `tc002-ntfy` | uid 1001 | 1.1 mb | the ntfy subscriber: dns, tcp, tls 1.3 with the standard library (that is the size), the json stream; sends `notify` to the supervisor. only runs while `ntfy.enabled` |
 | `tc002-memdump` | root, by hand | 171 kb | a maintenance tool that streams a sparse memory snapshot of one process over adb ([memory audits](#memory-audits)) |
 
 ¹ ReleaseSafe, stripped, as built on 2026-09-06. `-Doptimize=ReleaseSmall` gives
@@ -370,6 +371,54 @@ lists the modes under `ip.modes`:
 a layout change while the ip scene is showing runs a transition like a scene
 change.
 
+### ntfy
+
+the runtime can subscribe to a [ntfy](https://docs.ntfy.sh/subscribe/api/)
+topic, on the official service or a self-hosted server, and show every message
+as a notification. `GET /ntfy` and `PUT /ntfy` (admin) carry the settings;
+`tools/tc002ctl.py ntfy` / `ntfy-set` are the client side:
+
+| field | meaning | default |
+|---|---|---|
+| `enabled` | subscribe or not | `false` |
+| `url` | `https://ntfy.sh`, or a self-hosted `http://host[:port][/prefix]` / `https://…` (at most 64 characters; a host name or a dotted address) | `""` |
+| `topic` | the topic name (letters, digits, `_`, `-`; at most 64) | `""` |
+| `token` | a ntfy access token, sent as `Authorization: Bearer` (a secret: reported only as `token_set`) | `""` |
+| `username`, `password` | basic auth instead of a token (the password is a secret: `password_set`) | `""` |
+| `duration_s` | how long each message stays on the panel, 1–300 | `10` |
+| `insecure` | skip certificate verification (a self-signed server) | `false` |
+| `ca` | a pem certificate (at most 3,500 bytes) to trust in addition to the built-in root; `""` removes it; reported as `ca_set` | none |
+
+the settings are part of the saved configuration (`config-save`); the ca is
+kept beside the tokens in the credentials directory (root only) and handed to
+the subscriber over ipc. a message shows as `title: message` (or the message
+alone), folded to printable ascii and at most 128 characters, coloured by
+priority: min and low grey, default white, high orange, urgent red. it
+arrives with the default transition and leaves like any notification.
+
+**how it runs.** the subscriber is a fourth process, `tc002-ntfy`, spawned
+by the supervisor as uid 1001 like netd, with the ipc socket on fd 3 and no
+other descriptors. it takes its settings once (the supervisor replaces it on
+every settings change), resolves the host through the device's resolvers,
+connects, and for `https` speaks tls 1.3 with the standard library's client
+and a bundle holding **ISRG Root X1** (the root of ntfy.sh's chain and of
+every let's encrypt certificate; sha256
+`96:BC:EC:06:26:49:76:F3:74:60:77:9A:CF:28:C5:A7:CF:E8:A3:C0:AA:E1:1A:8F:FC:EE:05:C0:BD:DF:08:C6`,
+valid to 2035) plus the extra `ca` if one is installed; `insecure` skips
+both the chain and the host name check. it then keeps
+`GET /<topic>/json` open (chunked ndjson, a keepalive every 45 s; 90 s of
+silence counts as a dead stream), sends each message to the panel through the
+supervisor, and reconnects with a backoff from one to sixty seconds using
+`since=<last message id>` so nothing published during a gap is lost. the
+supervisor restarts it with its own backoff should it exit.
+
+`/status` and `GET /ntfy` report `ntfy.state` (`off`, `connecting`,
+`subscribed`, `error`), the message count and the last error text (`dns
+lookup failed`, `connect failed`, `tls handshake failed`, `certificate
+rejected`, `unauthorized: check the token or password`, `not found: check the
+url and topic`, …). the subscriber's log lines are in the ring like everyone
+else's.
+
 ### time zones
 
 the `timezone` setting (and the supervisor's `--tz`) takes either a posix
@@ -459,6 +508,9 @@ supervisor ↔ renderer and supervisor ↔ netd use the same framing on
 
 | direction | kinds |
 |-----------|-------|
+| supervisor → ntfy subscriber | `ntfy_config` (the settings and the ca, once after spawn) |
+| ntfy subscriber → supervisor | `notify` (each message), `ntfy_status` |
+| netd → supervisor | `ntfy_put` (the settings patch, the ca inline) |
 | renderer → supervisor | `heartbeat` (presented count, revision, state, base, generator, overlay, brightness), `ready`, `result` |
 | supervisor → renderer | `set_base`, `notify`, `frame`, `brightness`, `reseed`, `arm_stream`, `time_corrected`, `ip_changed`, `stop`, `set_timezone` |
 | supervisor → netd | `credentials`, `config`, `status`, `result`, `save_result` |

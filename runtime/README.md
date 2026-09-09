@@ -61,6 +61,8 @@ tools/tc002ctl.py -s <device-ip> --token-file tokens scene clock --font big --co
 tools/tc002ctl.py -s <device-ip> --token-file tokens config-set clock_font=block timezone=Europe/Amsterdam   # durable defaults, admin token
 tools/tc002ctl.py -s <device-ip> --token-file tokens scene ip --ip-mode big                      # the address in one of four layouts
 tools/tc002ctl.py -s <device-ip> --token-file tokens scene clock --font hires                     # time, a bar through the second, milliseconds at 60 fps
+tools/tc002ctl.py -s <device-ip> --token-file tokens --admin ntfy-set enabled=true url=https://ntfy.sh topic=my-clock   # then: curl -d hello ntfy.sh/my-clock
+tools/tc002ctl.py -s <device-ip> --token-file tokens --admin ntfy-set url=https://ntfy.home.lan:8443 --ca-file ca.pem  # a self-hosted server with a private ca
 tools/tc002ctl.py -s <device-ip> --token-file tokens input middle click      # a remote press; rotary cw --steps 3
 tools/tc002ctl.py -s <device-ip> --token-file tokens screen --ascii          # the frame as shown, drawn in the terminal
 tools/tc002ctl.py -s <device-ip> --token-file tokens logs --follow           # the supervisor's log ring
@@ -95,6 +97,11 @@ controls. the full reference is [`RUNTIME.md`](../RUNTIME.md).
   ReleaseSmall; on the volatile path that is about 0.7 mb of tmpfs ram. `-Doptimize=ReleaseSmall`
   is available; a simple panic handler and no segfault handler already keep the dwarf unwinder out.
 - **procfs rss on this kernel reads 4 kb for every static process** and is reported as-is.
+- **the ntfy subscriber is a 1.1 mb binary**: the standard library's tls 1.3 client, certificate
+  verification (rsa and ecdsa), dns resolution and the threaded io layer come along with it. it is a
+  process of its own, spawned only while a subscription is enabled, so the rest of the runtime does
+  not pay for it. one root certificate (isrg root x1) is built in; anything else needs the `ca`
+  setting or `insecure`.
 - **transitions in the renderer** cost two more 2,496-byte frame buffers (the old layer is the
   outgoing scene rendered live every frame, so two scenes render per frame while an effect runs)
   and a per-pixel source lookup (or multiply-add for the fade) at 60 hz for the duration of the
