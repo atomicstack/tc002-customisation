@@ -105,7 +105,7 @@ test "stream arming is an overlay that expires after two seconds" {
 
 test "physical actions: buttons select the base, rotary and knob depend on the base" {
     var a = fresh();
-    a.action(.middle, 0);
+    a.action(.left, 0);
     try std.testing.expect(a.base == .clock);
     a.action(.rotate_cw, 0);
     try std.testing.expectEqual(clock.Font.mini, a.clock.style.font); // the knob pages the faces
@@ -115,7 +115,7 @@ test "physical actions: buttons select the base, rotary and knob depend on the b
     try std.testing.expect(a.base == .ip);
     a.action(.rotate_ccw, 0);
     try std.testing.expectEqual(ip.Mode.big, a.ip.mode); // and the layouts
-    a.action(.left, 0);
+    a.action(.middle, 0);
     try std.testing.expect(a.base == .art);
     a.action(.rotate_cw, 0);
     try std.testing.expectEqual(scene.Generator.plasma, a.art.generator);
@@ -131,7 +131,7 @@ test "physical actions: buttons select the base, rotary and knob depend on the b
     a.action(.knob_long, 0);
     try std.testing.expect(a.overlay == .stream_arming);
     _ = a.apply(.{ .notify = .{ .text = "x", .colour = white, .duration_s = 5 } }, 0);
-    a.action(.middle, 0); // a scene-changing action cancels the overlay
+    a.action(.left, 0); // a scene-changing action cancels the overlay
     try std.testing.expect(a.overlay == .none);
     var i: u32 = 0;
     while (i < 40) : (i += 1) a.action(.rotate_ccw, 0);
@@ -569,8 +569,8 @@ pub const Arbiter = struct {
 
     pub fn action(self: *Arbiter, a: scene.Action, now_ns: u64) void {
         switch (a) {
-            .left => _ = self.apply(.{ .set_base = .art }, now_ns),
-            .middle => _ = self.apply(.{ .set_base = .clock }, now_ns),
+            .left => _ = self.apply(.{ .set_base = .clock }, now_ns),
+            .middle => _ = self.apply(.{ .set_base = .art }, now_ns),
             .right => _ = self.apply(.{ .set_base = .ip }, now_ns),
             // the knob pages through the current scene: generators in art, faces in the clock,
             // layouts in ip

@@ -334,7 +334,7 @@ class Device:
             return self.set_overlay("stream_arming", 2)
         if event in ("click", "release"):
             if control in ("left", "middle", "right"):
-                self.base = {"left": "art", "middle": "clock", "right": "ip"}[control]
+                self.base = {"left": "clock", "middle": "art", "right": "ip"}[control]
                 self.overlay = "none"
             elif control == "knob" and self.base == "art":
                 pass  # reseed the art; the mock does not track a seed to change

@@ -387,8 +387,8 @@ does not know is rejected with `400 rejected`.
 
 | control | in `art` | in `clock` / `ip` |
 |---------|----------|-------------------|
-| left button (release) | select `art` | select `art` |
-| middle button (release) | select `clock` | select `clock` |
+| left button (release) | select `clock` | select `clock` |
+| middle button (release) | select `art` | select `art` |
 | right button (release) | select `ip` | select `ip` |
 | knob rotate | next / previous generator | next / previous clock face in the clock; next / previous layout in ip |
 | knob short press | reseed the art | nothing |
