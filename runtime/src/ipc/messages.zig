@@ -58,6 +58,16 @@ test "every message kind round-trips through a packet" {
         .{ .config_save = .{ .has_revision = 1, .revision = 6 } },
         .{ .save_result = .{ .status = .conflict, .saved_revision = 5 } },
         .{ .mqtt_put = try MqttPut.fromApi(.{ .host = "10.0.0.2", .password = "Pw", .enabled = true }) },
+        .{ .ntfy_put = try NtfyPut.fromApi(.{ .url = "https://ntfy.sh", .topic = "t", .enabled = true, .ca = "-----BEGIN CERTIFICATE-----\nAA==\n-----END CERTIFICATE-----\n" }) },
+        .{ .ntfy_put = try NtfyPut.fromApi(.{ .duration_s = 30, .insecure = true, .ca = "" }) },
+        .{ .ntfy_config = blk: {
+            var nc = NtfyConfig{ .ntfy = .{ .enabled = true, .url = config.Text.init("http://10.0.0.5:8080"), .topic = config.Text.init("door"), .token = config.Text.init("tk"), .duration_s = 5 } };
+            const pem = "-----BEGIN CERTIFICATE-----\nAA==\n-----END CERTIFICATE-----\n";
+            nc.ca_len = pem.len;
+            @memcpy(nc.ca[0..pem.len], pem);
+            break :blk nc;
+        } },
+        .{ .ntfy_status = .{ .state = 2, .messages = 9, .err = config.Text.init("dns failed") } },
         .status_get,
         .{ .status = .{ .renderer_state = 2, .epoch = 3, .revision = 4, .presented = 5, .base = 1, .brightness = 77, .uptime_s = 8, .mem_available_kb = 14000, .cpu_pct = 12, .fps_x10 = 599, .ip_present = 1, .ip = .{ 10, 0, 0, 111 }, .config_revision = 2, .saved_revision = 1, .boot_id = 0xabcd, .sample_age_ms = 40, .mac = .{ 1, 2, 3, 4, 5, 6 }, .mac_present = 1, .load_1m_x100 = 123, .mem_free_kb = 4000, .wifi_level_dbm = -61, .wifi_quality = 49, .cpu_renderer_pct_x10 = 87, .tmpfs_used_kb = 1300, .battery_mv = 3987, .battery_pct = 80, .usb_present = 1, .clock = ClockStyle.full(.{ .font = .segment }) } },
     };
@@ -199,6 +209,10 @@ pub const Kind = enum(u8) {
     mqtt_put = 38,
     status_get = 39,
     status = 40,
+    // supervisor <-> netd (ntfy settings) and supervisor <-> the ntfy subscriber
+    ntfy_put = 45,
+    ntfy_config = 46,
+    ntfy_status = 47,
 };
 
 pub const Status = enum(u8) { applied = 0, rejected = 1, overload = 2, stale_epoch = 3, expired = 4, unavailable = 5, timeout = 6, conflict = 7 };
@@ -556,6 +570,209 @@ pub const ConfigPatch = struct {
     }
 };
 
+/// the ntfy settings patch from netd: presence flags, fixed fields and a pem certificate of
+/// variable length at the end (0 = not given; presence with length 0 = remove).
+pub const NtfyPut = struct {
+    has: u16 = 0,
+    enabled: u8 = 0,
+    url: config.Text = .{},
+    topic: config.Text = .{},
+    token: config.Text = .{},
+    username: config.Text = .{},
+    password: config.Text = .{},
+    duration_s: u16 = 0,
+    insecure: u8 = 0,
+    ca_len: u16 = 0,
+    ca: [api.max_ca]u8 = undefined,
+
+    pub const F = struct {
+        pub const enabled: u16 = 1 << 0;
+        pub const url: u16 = 1 << 1;
+        pub const topic: u16 = 1 << 2;
+        pub const token: u16 = 1 << 3;
+        pub const username: u16 = 1 << 4;
+        pub const password: u16 = 1 << 5;
+        pub const duration_s: u16 = 1 << 6;
+        pub const insecure: u16 = 1 << 7;
+        pub const ca: u16 = 1 << 8;
+    };
+
+    pub const fixed_len = 2 + 1 + 5 * (config.text_max + 1) + 2 + 1 + 2;
+
+    pub fn fromApi(p: api.NtfyPut) error{TooLong}!NtfyPut {
+        var w = NtfyPut{};
+        if (p.enabled) |v| {
+            w.has |= F.enabled;
+            w.enabled = @intFromBool(v);
+        }
+        if (p.url) |v| {
+            w.has |= F.url;
+            try w.url.set(v);
+        }
+        if (p.topic) |v| {
+            w.has |= F.topic;
+            try w.topic.set(v);
+        }
+        if (p.token) |v| {
+            w.has |= F.token;
+            try w.token.set(v);
+        }
+        if (p.username) |v| {
+            w.has |= F.username;
+            try w.username.set(v);
+        }
+        if (p.password) |v| {
+            w.has |= F.password;
+            try w.password.set(v);
+        }
+        if (p.duration_s) |v| {
+            w.has |= F.duration_s;
+            w.duration_s = v;
+        }
+        if (p.insecure) |v| {
+            w.has |= F.insecure;
+            w.insecure = @intFromBool(v);
+        }
+        if (p.ca) |v| {
+            if (v.len > api.max_ca) return error.TooLong;
+            w.has |= F.ca;
+            w.ca_len = @intCast(v.len);
+            @memcpy(w.ca[0..v.len], v);
+        }
+        return w;
+    }
+
+    pub fn toApi(self: *const NtfyPut) api.NtfyPut {
+        const h = self.has;
+        return .{
+            .enabled = if (h & F.enabled != 0) self.enabled != 0 else null,
+            .url = if (h & F.url != 0) self.url.slice() else null,
+            .topic = if (h & F.topic != 0) self.topic.slice() else null,
+            .token = if (h & F.token != 0) self.token.slice() else null,
+            .username = if (h & F.username != 0) self.username.slice() else null,
+            .password = if (h & F.password != 0) self.password.slice() else null,
+            .duration_s = if (h & F.duration_s != 0) self.duration_s else null,
+            .insecure = if (h & F.insecure != 0) self.insecure != 0 else null,
+            .ca = if (h & F.ca != 0) self.ca[0..self.ca_len] else null,
+        };
+    }
+
+    fn put(self: *const NtfyPut, out: []u8) usize {
+        var o: usize = 0;
+        std.mem.writeInt(u16, out[o..][0..2], self.has, .little);
+        out[o + 2] = self.enabled;
+        o += 3;
+        putText(out, &o, self.url);
+        putText(out, &o, self.topic);
+        putText(out, &o, self.token);
+        putText(out, &o, self.username);
+        putText(out, &o, self.password);
+        std.mem.writeInt(u16, out[o..][0..2], self.duration_s, .little);
+        out[o + 2] = self.insecure;
+        std.mem.writeInt(u16, out[o + 3 ..][0..2], self.ca_len, .little);
+        o += 5;
+        @memcpy(out[o .. o + self.ca_len], self.ca[0..self.ca_len]);
+        return o + self.ca_len;
+    }
+
+    fn get(b: []const u8) error{BadPayload}!NtfyPut {
+        if (b.len < fixed_len) return error.BadPayload;
+        var w = NtfyPut{};
+        var o: usize = 0;
+        w.has = std.mem.readInt(u16, b[o..][0..2], .little);
+        w.enabled = b[o + 2];
+        o += 3;
+        w.url = try getText(b, &o);
+        w.topic = try getText(b, &o);
+        w.token = try getText(b, &o);
+        w.username = try getText(b, &o);
+        w.password = try getText(b, &o);
+        w.duration_s = std.mem.readInt(u16, b[o..][0..2], .little);
+        w.insecure = b[o + 2];
+        w.ca_len = std.mem.readInt(u16, b[o + 3 ..][0..2], .little);
+        o += 5;
+        if (w.ca_len > api.max_ca or b.len != o + w.ca_len) return error.BadPayload;
+        @memcpy(w.ca[0..w.ca_len], b[o .. o + w.ca_len]);
+        return w;
+    }
+};
+
+/// what the ntfy subscriber needs, sent by the supervisor once after spawn: the settings and
+/// the extra ca certificate (pem, may be empty).
+pub const NtfyConfig = struct {
+    ntfy: config.Ntfy = .{},
+    ca_len: u16 = 0,
+    ca: [api.max_ca]u8 = undefined,
+
+    pub const fixed_len = 1 + 5 * (config.text_max + 1) + 2 + 1 + 2;
+
+    pub fn caSlice(self: *const NtfyConfig) []const u8 {
+        return self.ca[0..self.ca_len];
+    }
+
+    fn put(self: *const NtfyConfig, out: []u8) usize {
+        var o: usize = 0;
+        out[o] = @intFromBool(self.ntfy.enabled);
+        o += 1;
+        putText(out, &o, self.ntfy.url);
+        putText(out, &o, self.ntfy.topic);
+        putText(out, &o, self.ntfy.token);
+        putText(out, &o, self.ntfy.username);
+        putText(out, &o, self.ntfy.password);
+        std.mem.writeInt(u16, out[o..][0..2], self.ntfy.duration_s, .little);
+        out[o + 2] = @intFromBool(self.ntfy.insecure);
+        std.mem.writeInt(u16, out[o + 3 ..][0..2], self.ca_len, .little);
+        o += 5;
+        @memcpy(out[o .. o + self.ca_len], self.ca[0..self.ca_len]);
+        return o + self.ca_len;
+    }
+
+    fn get(b: []const u8) error{BadPayload}!NtfyConfig {
+        if (b.len < fixed_len) return error.BadPayload;
+        var c = NtfyConfig{};
+        var o: usize = 0;
+        c.ntfy.enabled = b[o] != 0;
+        o += 1;
+        c.ntfy.url = try getText(b, &o);
+        c.ntfy.topic = try getText(b, &o);
+        c.ntfy.token = try getText(b, &o);
+        c.ntfy.username = try getText(b, &o);
+        c.ntfy.password = try getText(b, &o);
+        c.ntfy.duration_s = std.mem.readInt(u16, b[o..][0..2], .little);
+        c.ntfy.insecure = b[o + 2] != 0;
+        c.ca_len = std.mem.readInt(u16, b[o + 3 ..][0..2], .little);
+        o += 5;
+        if (c.ca_len > api.max_ca or b.len != o + c.ca_len) return error.BadPayload;
+        @memcpy(c.ca[0..c.ca_len], b[o .. o + c.ca_len]);
+        return c;
+    }
+};
+
+/// the subscriber's state for /status: 0 off, 1 connecting, 2 subscribed, 3 error (with text)
+pub const NtfyStatus = struct {
+    state: u8 = 0,
+    messages: u32 = 0,
+    err: config.Text = .{},
+    /// set by the supervisor: an extra ca certificate is installed
+    ca_set: u8 = 0,
+
+    pub const wire_len = 1 + 4 + config.text_max + 1 + 1;
+
+    fn put(self: *const NtfyStatus, out: []u8) void {
+        out[0] = self.state;
+        std.mem.writeInt(u32, out[1..5], self.messages, .little);
+        var o: usize = 5;
+        putText(out, &o, self.err);
+        out[o] = self.ca_set;
+    }
+
+    fn get(b: []const u8) error{BadPayload}!NtfyStatus {
+        var o: usize = 5;
+        const err = try getText(b, &o);
+        return .{ .state = b[0], .messages = std.mem.readInt(u32, b[1..5], .little), .err = err, .ca_set = b[o] };
+    }
+};
+
 pub const MqttPut = struct {
     has: u8 = 0,
     enabled: u8 = 0,
@@ -678,10 +895,11 @@ pub const StatusSnapshot = struct {
     // v3: display power as the renderer reports it
     power: u8 = 1,
     ip_mode: u8 = 0,
+    ntfy: NtfyStatus = .{},
     // v4: the clock style as the renderer reports it (mask ignored)
     clock: ClockStyle = .{},
 
-    pub const wire_len = 1 + 4 + 4 + 8 + 4 + 4 + 4 + 1 + 4 + 4 + 4 + 4 + 2 + 1 + 4 + 1 + 4 + 4 + 4 + 4 + 4 + (6 + 1 + 2 + 4 + 2 + 1 + 2 + 2 + 2 + 4 + 2 + 1 + 1) + 1 + ClockStyle.wire_len + 1;
+    pub const wire_len = 1 + 4 + 4 + 8 + 4 + 4 + 4 + 1 + 4 + 4 + 4 + 4 + 2 + 1 + 4 + 1 + 4 + 4 + 4 + 4 + 4 + (6 + 1 + 2 + 4 + 2 + 1 + 2 + 2 + 2 + 4 + 2 + 1 + 1) + 1 + ClockStyle.wire_len + 1 + NtfyStatus.wire_len;
 };
 
 pub const Message = union(Kind) {
@@ -716,6 +934,9 @@ pub const Message = union(Kind) {
     mqtt_put: MqttPut,
     status_get,
     status: StatusSnapshot,
+    ntfy_put: NtfyPut,
+    ntfy_config: NtfyConfig,
+    ntfy_status: NtfyStatus,
 };
 
 pub const Packet = struct { request_id: u64, epoch: u32, message: Message };
@@ -846,6 +1067,12 @@ fn encodePayload(msg: Message, out: []u8) usize {
             o += 1;
             return o;
         },
+        .ntfy_put => |n| return n.put(out),
+        .ntfy_config => |n| return n.put(out),
+        .ntfy_status => |n| {
+            n.put(out[0..NtfyStatus.wire_len]);
+            return NtfyStatus.wire_len;
+        },
         .status => |st| {
             var o: usize = 0;
             out[o] = st.renderer_state;
@@ -924,6 +1151,8 @@ fn encodePayload(msg: Message, out: []u8) usize {
             o += ClockStyle.wire_len;
             out[o] = st.ip_mode;
             o += 1;
+            st.ntfy.put(out[o .. o + NtfyStatus.wire_len]);
+            o += NtfyStatus.wire_len;
             return o;
         },
         .result => |r| {
@@ -1137,6 +1366,16 @@ pub fn decodePacket(bytes: []const u8) Error!Packet {
             m.tls = b[o];
             break :blk .{ .mqtt_put = m };
         },
+        .ntfy_put => blk: {
+            break :blk .{ .ntfy_put = try NtfyPut.get(p) };
+        },
+        .ntfy_config => blk: {
+            break :blk .{ .ntfy_config = try NtfyConfig.get(p) };
+        },
+        .ntfy_status => blk: {
+            const b = try fixed(p, NtfyStatus.wire_len);
+            break :blk .{ .ntfy_status = try NtfyStatus.get(b) };
+        },
         .status => blk: {
             const b = try fixed(p, StatusSnapshot.wire_len);
             var st = StatusSnapshot{};
@@ -1216,6 +1455,8 @@ pub fn decodePacket(bytes: []const u8) Error!Packet {
             st.clock = ClockStyle.get(b[o .. o + ClockStyle.wire_len]);
             o += ClockStyle.wire_len;
             st.ip_mode = b[o];
+            o += 1;
+            st.ntfy = try NtfyStatus.get(b[o .. o + NtfyStatus.wire_len]);
             break :blk .{ .status = st };
         },
         .ready => blk: {

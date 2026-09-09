@@ -11,6 +11,7 @@ const actions = @import("../input/actions.zig");
 const clock = @import("../scene/clock.zig");
 const transition = @import("../panel/transition.zig");
 const ip = @import("../scene/ip.zig");
+const ntfy_url = @import("../ntfy/url.zig");
 
 pub const token_len = 32;
 pub const Token = [token_len]u8;
@@ -67,6 +68,8 @@ pub const Op = union(enum) {
     mqtt_get,
     mqtt_put: MqttPut,
     mqtt_status,
+    ntfy_get,
+    ntfy_put: NtfyPut,
     streams_create,
     streams_palette,
     streams_delete,
@@ -91,6 +94,22 @@ pub const ConfigPatch = struct {
     clock_gradient: ?clock.Gradient = null,
     clock_spread: ?u8 = null,
     ip_mode: ?ip.Mode = null,
+};
+
+/// a pem certificate for a self-hosted ntfy: at most this many bytes (a root ca is 1.3-2 kb)
+pub const max_ca = 3500;
+
+pub const NtfyPut = struct {
+    enabled: ?bool = null,
+    url: ?[]const u8 = null,
+    topic: ?[]const u8 = null,
+    token: ?[]const u8 = null,
+    username: ?[]const u8 = null,
+    password: ?[]const u8 = null,
+    duration_s: ?u16 = null,
+    insecure: ?bool = null,
+    /// a pem certificate to trust as well as the public roots; "" removes it
+    ca: ?[]const u8 = null,
 };
 
 pub const MqttPut = struct {
@@ -142,6 +161,7 @@ const ConfigBody = struct {
     ip_mode: ?[]const u8 = null,
 };
 const SaveBody = struct { revision: ?u32 = null };
+const NtfyBody = struct { enabled: ?bool = null, url: ?[]const u8 = null, topic: ?[]const u8 = null, token: ?[]const u8 = null, username: ?[]const u8 = null, password: ?[]const u8 = null, duration_s: ?u16 = null, insecure: ?bool = null, ca: ?[]const u8 = null };
 const MqttBody = struct {
     enabled: ?bool = null,
     host: ?[]const u8 = null,
@@ -233,6 +253,8 @@ const endpoints = [_]Endpoint{
     .{ .method = .GET, .path = "/api/v1/mqtt", .authority = .admin },
     .{ .method = .PUT, .path = "/api/v1/mqtt", .authority = .admin },
     .{ .method = .GET, .path = "/api/v1/mqtt/status", .authority = .control },
+    .{ .method = .GET, .path = "/api/v1/ntfy", .authority = .admin },
+    .{ .method = .PUT, .path = "/api/v1/ntfy", .authority = .admin },
     .{ .method = .POST, .path = "/api/v1/streams", .authority = .control },
     .{ .method = .GET, .path = "/api/v1/screen", .authority = .control },
     .{ .method = .GET, .path = "/api/v1/logs", .authority = .control },
@@ -278,6 +300,7 @@ pub fn route(req: http.Request, body: []const u8, creds: *const Credentials, ori
     if (std.mem.eql(u8, ep.path, "/api/v1/scenes")) return .{ .op = .scenes };
     if (std.mem.eql(u8, ep.path, "/api/v1/config") and req.method == .GET) return .{ .op = .config_get };
     if (std.mem.eql(u8, ep.path, "/api/v1/mqtt") and req.method == .GET) return .{ .op = .mqtt_get };
+    if (std.mem.eql(u8, ep.path, "/api/v1/ntfy") and req.method == .GET) return .{ .op = .ntfy_get };
     if (std.mem.eql(u8, ep.path, "/api/v1/mqtt/status")) return .{ .op = .mqtt_status };
     if (std.mem.eql(u8, ep.path, "/api/v1/screen")) {
         const format = queryValue(req.query, "format") orelse "json";
@@ -304,12 +327,13 @@ pub fn route(req: http.Request, body: []const u8, creds: *const Credentials, ori
     if (std.mem.eql(u8, ep.path, "/api/v1/config")) return parseBody(.config_patch, body, arena);
     if (std.mem.eql(u8, ep.path, "/api/v1/config/save")) return parseBody(.config_save, body, arena);
     if (std.mem.eql(u8, ep.path, "/api/v1/mqtt")) return parseBody(.mqtt_put, body, arena);
+    if (std.mem.eql(u8, ep.path, "/api/v1/ntfy")) return parseBody(.ntfy_put, body, arena);
     if (std.mem.eql(u8, ep.path, "/api/v1/input")) return parseBody(.input, body, arena);
     return .{ .reject = .{ .status = 404, .code = "not_found", .message = "no such route" } };
 }
 
 
-pub const BodyKind = enum { scene, action, notify, config_patch, config_save, mqtt_put, input };
+pub const BodyKind = enum { scene, action, notify, config_patch, config_save, mqtt_put, ntfy_put, input };
 
 pub fn enumByName(comptime E: type, text: []const u8) ?E {
     inline for (@typeInfo(E).@"enum".fields) |f| if (std.mem.eql(u8, text, f.name)) return @enumFromInt(f.value);
@@ -447,6 +471,23 @@ pub fn parseBody(kind: BodyKind, body: []const u8, arena: *Arena) Route {
                 if (@field(b, name)) |v| if (v.len > 64) return bad("invalid_" ++ name, name ++ " must be at most 64 characters");
             }
             return .{ .op = .{ .mqtt_put = .{ .enabled = b.enabled, .host = b.host, .port = b.port, .username = b.username, .password = b.password, .client_id = b.client_id, .prefix = b.prefix, .tls = b.tls } } };
+        },
+        .ntfy_put => {
+            const b = json.parse(NtfyBody, body, arena) catch |e| return jsonError(e);
+            if (b.url) |u| {
+                if (u.len > 64) return bad("invalid_url", "url must be at most 64 characters");
+                if (u.len > 0) _ = ntfy_url.parse(u) catch return bad("invalid_url", "url must be http://host[:port][/prefix] or https://host[:port][/prefix]");
+            }
+            if (b.topic) |t| {
+                if (t.len > 64) return bad("invalid_topic", "topic must be 1..64 characters of letters, digits, _ and -");
+                for (t) |ch| if (!(std.ascii.isAlphanumeric(ch) or ch == '_' or ch == '-')) return bad("invalid_topic", "topic must be 1..64 characters of letters, digits, _ and -");
+            }
+            inline for (.{ "token", "username", "password" }) |name| {
+                if (@field(b, name)) |v| if (v.len > 64) return bad("invalid_" ++ name, name ++ " must be at most 64 characters");
+            }
+            if (b.duration_s) |d| if (d < 1 or d > 300) return bad("invalid_duration", "duration_s must be 1..300");
+            if (b.ca) |ca| if (ca.len > max_ca or (ca.len > 0 and std.mem.indexOf(u8, ca, "-----BEGIN CERTIFICATE-----") == null)) return bad("invalid_ca", "ca must be a pem certificate of at most 3500 bytes, or empty to remove it");
+            return .{ .op = .{ .ntfy_put = .{ .enabled = b.enabled, .url = b.url, .topic = b.topic, .token = b.token, .username = b.username, .password = b.password, .duration_s = b.duration_s, .insecure = b.insecure, .ca = b.ca } } };
         },
     }
 }
@@ -609,6 +650,22 @@ test "the ip mode rides on the scene body and the settings patch" {
     try std.testing.expectEqual(ip.Mode.mini, cp.op.config_patch.ip_mode.?);
     try expectReject(route(testReq(.PATCH, "/api/v1/config", "", admin_header, "application/json", null), "{\"ip_mode\":\"huge\"}", &c, &origins, &arena), 400, "invalid_ip_mode");
     try std.testing.expect(std.mem.indexOf(u8, scenes_body, "\"ip\":{\"modes\":[\"lines\",\"mini\",\"scroll\",\"big\"]}") != null);
+}
+
+test "ntfy settings are admin-only and validated" {
+    const c = testCreds();
+    var arena: Arena = undefined;
+    const origins = OriginPolicy{};
+    const p = route(testReq(.PUT, "/api/v1/ntfy", "", admin_header, "application/json", null), "{\"enabled\":true,\"url\":\"https://ntfy.sh\",\"topic\":\"tc002-alerts\",\"token\":\"tk_abc\",\"duration_s\":12,\"ca\":\"-----BEGIN CERTIFICATE-----\\nAA==\\n-----END CERTIFICATE-----\"}", &c, &origins, &arena);
+    try std.testing.expectEqualStrings("tc002-alerts", p.op.ntfy_put.topic.?);
+    try std.testing.expectEqual(@as(?u16, 12), p.op.ntfy_put.duration_s);
+    try std.testing.expect(p.op.ntfy_put.ca.?.len > 20);
+    try std.testing.expect(route(testReq(.GET, "/api/v1/ntfy", "", admin_header, null, null), "", &c, &origins, &arena).op == .ntfy_get);
+    try expectReject(route(testReq(.GET, "/api/v1/ntfy", "", control_header, null, null), "", &c, &origins, &arena), 403, "forbidden");
+    try expectReject(route(testReq(.PUT, "/api/v1/ntfy", "", admin_header, "application/json", null), "{\"url\":\"ntfy.sh\"}", &c, &origins, &arena), 400, "invalid_url");
+    try expectReject(route(testReq(.PUT, "/api/v1/ntfy", "", admin_header, "application/json", null), "{\"topic\":\"has space\"}", &c, &origins, &arena), 400, "invalid_topic");
+    try expectReject(route(testReq(.PUT, "/api/v1/ntfy", "", admin_header, "application/json", null), "{\"duration_s\":0}", &c, &origins, &arena), 400, "invalid_duration");
+    try expectReject(route(testReq(.PUT, "/api/v1/ntfy", "", admin_header, "application/json", null), "{\"ca\":\"not a pem\"}", &c, &origins, &arena), 400, "invalid_ca");
 }
 
 test "notify and scene bodies become typed operations with validation" {

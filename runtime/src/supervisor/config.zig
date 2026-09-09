@@ -5,6 +5,7 @@ const std = @import("std");
 const api = @import("../net/api.zig");
 const clock = @import("../scene/clock.zig");
 const ip = @import("../scene/ip.zig");
+const ntfy_url = @import("../ntfy/url.zig");
 const tz = @import("../scene/tz.zig");
 
 pub const text_max = 64;
@@ -42,6 +43,19 @@ pub const Mqtt = struct {
     tls: bool = false,
 };
 
+/// the ntfy subscription (https://docs.ntfy.sh/subscribe/api/): the official service or a
+/// self-hosted server. the token and password are secrets: never returned by the api.
+pub const Ntfy = struct {
+    enabled: bool = false,
+    url: Text = .{},
+    topic: Text = .{},
+    token: Text = .{},
+    username: Text = .{},
+    password: Text = .{},
+    duration_s: u16 = 10,
+    insecure: bool = false,
+};
+
 pub const Config = struct {
     revision: u32 = 0,
     saved_revision: u32 = 0,
@@ -58,6 +72,7 @@ pub const Config = struct {
     origins: [api.max_origins]Text = .{ .{}, .{}, .{}, .{} },
     origin_count: u8 = 0,
     mqtt: Mqtt = .{},
+    ntfy: Ntfy = .{},
     clock_font: u8 = 0,
     clock_colour_mode: u8 = 0,
     clock_colour: [3]u8 = .{ 255, 255, 255 },
@@ -134,6 +149,28 @@ pub const Config = struct {
         self.revision += 1;
     }
 
+    pub fn patchNtfy(self: *const Config, p: api.NtfyPut) PatchError!Ntfy {
+        var next = self.ntfy;
+        if (p.enabled) |v| next.enabled = v;
+        if (p.url) |v| try next.url.set(v);
+        if (p.topic) |v| try next.topic.set(v);
+        if (p.token) |v| try next.token.set(v);
+        if (p.username) |v| try next.username.set(v);
+        if (p.password) |v| try next.password.set(v);
+        if (p.duration_s) |v| next.duration_s = v;
+        if (p.insecure) |v| next.insecure = v;
+        if (next.url.len > 0) _ = ntfy_url.parse(next.url.slice()) catch return error.Invalid;
+        if (next.duration_s < 1 or next.duration_s > 300) return error.Invalid;
+        if (next.enabled and (next.url.len == 0 or next.topic.len == 0)) return error.Invalid;
+        return next;
+    }
+
+    /// apply a validated ntfy patch (see `patchNtfy`); bumps the revision.
+    pub fn setNtfy(self: *Config, next: Ntfy) void {
+        self.ntfy = next;
+        self.revision += 1;
+    }
+
     pub fn originPolicy(self: *const Config) api.OriginPolicy {
         var policy = api.OriginPolicy{};
         for (self.origins[0..self.origin_count], 0..) |*o, i| policy.allowed[i] = o.slice();
@@ -168,7 +205,7 @@ fn getText(in: []const u8, off: *usize) error{BadPayload}!Text {
 
 const text_wire = 1 + text_max;
 /// schema, revisions, brightness/base/generator, timezone, ntp, intervals, discovery, origins, mqtt
-pub const encoded_len = 1 + 4 + 4 + 3 + text_wire + 5 + 4 + 2 + 4 + 1 + text_wire + 1 + api.max_origins * text_wire + 1 + text_wire + 2 + 4 * text_wire + 1 + 11;
+pub const encoded_len = 1 + 4 + 4 + 3 + text_wire + 5 + 4 + 2 + 4 + 1 + text_wire + 1 + api.max_origins * text_wire + 1 + text_wire + 2 + 4 * text_wire + 1 + 11 + 1 + 5 * text_wire + 2 + 1;
 
 pub fn encode(c: *const Config, out: *[encoded_len]u8) void {
     var o: usize = 0;
@@ -217,6 +254,17 @@ pub fn encode(c: *const Config, out: *[encoded_len]u8) void {
     out[o + 9] = c.clock_spread;
     out[o + 10] = c.ip_mode;
     o += 11;
+    out[o] = @intFromBool(c.ntfy.enabled);
+    o += 1;
+    putText(out, &o, c.ntfy.url);
+    putText(out, &o, c.ntfy.topic);
+    putText(out, &o, c.ntfy.token);
+    putText(out, &o, c.ntfy.username);
+    putText(out, &o, c.ntfy.password);
+    std.mem.writeInt(u16, out[o..][0..2], c.ntfy.duration_s, .little);
+    o += 2;
+    out[o] = @intFromBool(c.ntfy.insecure);
+    o += 1;
     std.debug.assert(o == encoded_len);
 }
 
@@ -266,6 +314,17 @@ pub fn decode(in: []const u8) error{BadPayload}!Config {
     c.clock_gradient = in[o + 8];
     c.clock_spread = in[o + 9];
     c.ip_mode = in[o + 10];
+    o += 11;
+    c.ntfy.enabled = in[o] != 0;
+    o += 1;
+    c.ntfy.url = try getText(in, &o);
+    c.ntfy.topic = try getText(in, &o);
+    c.ntfy.token = try getText(in, &o);
+    c.ntfy.username = try getText(in, &o);
+    c.ntfy.password = try getText(in, &o);
+    c.ntfy.duration_s = std.mem.readInt(u16, in[o..][0..2], .little);
+    o += 2;
+    c.ntfy.insecure = in[o] != 0;
     return c;
 }
 
@@ -301,6 +360,16 @@ const FileForm = struct {
         client_id: []const u8 = "",
         prefix: []const u8 = "",
         tls: bool = false,
+    } = .{},
+    ntfy: struct {
+        enabled: bool = false,
+        url: []const u8 = "",
+        topic: []const u8 = "",
+        token: []const u8 = "",
+        username: []const u8 = "",
+        password: []const u8 = "",
+        duration_s: u16 = 10,
+        insecure: bool = false,
     } = .{},
 };
 
@@ -353,6 +422,16 @@ pub fn toJson(c: *const Config, out: []u8) error{Overflow}![]u8 {
             .prefix = c.mqtt.prefix.slice(),
             .tls = c.mqtt.tls,
         },
+        .ntfy = .{
+            .enabled = c.ntfy.enabled,
+            .url = c.ntfy.url.slice(),
+            .topic = c.ntfy.topic.slice(),
+            .token = c.ntfy.token.slice(),
+            .username = c.ntfy.username.slice(),
+            .password = c.ntfy.password.slice(),
+            .duration_s = c.ntfy.duration_s,
+            .insecure = c.ntfy.insecure,
+        },
     };
     std.json.Stringify.value(form, .{}, &w) catch return error.Overflow;
     return w.buffered();
@@ -388,6 +467,16 @@ pub fn fromJson(bytes: []const u8, arena: []u8) error{ Invalid, TooLong }!Config
     try c.mqtt.client_id.set(f.mqtt.client_id);
     try c.mqtt.prefix.set(f.mqtt.prefix);
     c.mqtt.tls = f.mqtt.tls;
+    c.ntfy.enabled = f.ntfy.enabled;
+    try c.ntfy.url.set(f.ntfy.url);
+    try c.ntfy.topic.set(f.ntfy.topic);
+    try c.ntfy.token.set(f.ntfy.token);
+    try c.ntfy.username.set(f.ntfy.username);
+    try c.ntfy.password.set(f.ntfy.password);
+    c.ntfy.duration_s = f.ntfy.duration_s;
+    c.ntfy.insecure = f.ntfy.insecure;
+    if (c.ntfy.url.len > 0) _ = ntfy_url.parse(c.ntfy.url.slice()) catch return error.Invalid;
+    if (c.ntfy.duration_s < 1 or c.ntfy.duration_s > 300) return error.Invalid;
     c.clock_font = @intFromEnum(api.enumByName(clock.Font, f.clock_font) orelse return error.Invalid);
     c.clock_colour_mode = @intFromEnum(api.enumByName(clock.ColourMode, f.clock_colour_mode) orelse return error.Invalid);
     c.clock_colour = api.parseColour(f.clock_colour) orelse return error.Invalid;
@@ -397,6 +486,19 @@ pub fn fromJson(bytes: []const u8, arena: []u8) error{ Invalid, TooLong }!Config
     c.ip_mode = @intFromEnum(api.enumByName(ip.Mode, f.ip_mode) orelse return error.Invalid);
     if (tz.resolve(f.timezone) == null) return error.Invalid;
     return c;
+}
+
+test "ntfy patches validate the url, the topic and the duration" {
+    var c = Config{};
+    try std.testing.expectError(error.Invalid, c.patchNtfy(.{ .enabled = true }));
+    try std.testing.expectError(error.Invalid, c.patchNtfy(.{ .url = "ntfy.sh" }));
+    try std.testing.expectError(error.Invalid, c.patchNtfy(.{ .duration_s = 0 }));
+    const n = try c.patchNtfy(.{ .url = "http://10.0.0.5:8080/ntfy", .topic = "t", .enabled = true });
+    try std.testing.expect(n.enabled);
+    c.setNtfy(n);
+    try std.testing.expectEqual(@as(u32, 1), c.revision);
+    const off = try c.patchNtfy(.{ .enabled = false });
+    try std.testing.expectEqualStrings("t", off.topic.slice());
 }
 
 test "patches validate, bump the revision, and honour the expected revision" {
@@ -432,6 +534,7 @@ test "ipc encoding round-trips every field" {
     try c.patchMqtt(.{ .enabled = true, .host = "10.0.0.2", .port = 8883, .username = "u", .password = "p", .client_id = "cid", .prefix = "tc002/x", .tls = true });
     c.origins[0] = Text.init("http://panel.local");
     c.origin_count = 1;
+    c.setNtfy(try c.patchNtfy(.{ .enabled = true, .url = "https://ntfy.sh", .topic = "alerts", .token = "tk_secret", .duration_s = 7, .insecure = true }));
     c.saved_revision = 1;
     var buf: [encoded_len]u8 = undefined;
     encode(&c, &buf);
@@ -450,6 +553,7 @@ test "json persistence round-trips and rejects junk" {
     c.origins[0] = Text.init("http://panel");
     c.origin_count = 1;
     var out: [file_max]u8 = undefined;
+    c.setNtfy(try c.patchNtfy(.{ .enabled = true, .url = "https://ntfy.sh", .topic = "alerts", .token = "tk_secret", .duration_s = 7, .insecure = true }));
     const text = try toJson(&c, &out);
     var arena: [4096]u8 = undefined;
     const back = try fromJson(text, &arena);
@@ -464,6 +568,10 @@ test "json persistence round-trips and rejects junk" {
     try std.testing.expectEqual(clock.Font.big, back.clockStyle().font);
     try std.testing.expectEqual(clock.ColourMode.gradient, back.clockStyle().mode);
     try std.testing.expectEqual(ip.Mode.big, back.ipMode());
+    try std.testing.expectEqualStrings("alerts", back.ntfy.topic.slice());
+    try std.testing.expectEqualStrings("tk_secret", back.ntfy.token.slice());
+    try std.testing.expectEqual(@as(u16, 7), back.ntfy.duration_s);
+    try std.testing.expect(back.ntfy.enabled and back.ntfy.insecure);
     try std.testing.expectEqual([3]u8{ 0xff, 0x80, 0x00 }, back.clockStyle().colour);
     try std.testing.expectEqual(clock.default_spread, back.clockStyle().spread);
     try std.testing.expectError(error.Invalid, fromJson("{\"schema\":1,\"timezone\":\"Nowhere/Land\"}", &arena));

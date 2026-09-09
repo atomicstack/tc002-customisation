@@ -7,6 +7,9 @@ test {
     _ = @import("panel/presenter.zig");
     _ = @import("panel/fade.zig");
     _ = @import("panel/transition.zig");
+    _ = @import("ntfy/url.zig");
+    _ = @import("ntfy/http.zig");
+    _ = @import("ntfy/message.zig");
     _ = @import("scene/scene.zig");
     _ = @import("scene/popsquares.zig");
     _ = @import("scene/plasma.zig");

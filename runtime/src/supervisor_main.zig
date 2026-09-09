@@ -29,7 +29,7 @@ pub const std_options: std.Options = .{ .enable_segfault_handler = false };
 
 const ns_per_s = std.time.ns_per_s;
 
-const Tag = enum(u64) { timer = 1, signals = 2, ipc = 3, keys = 4, netd = 5, mcu = 6, logs = 7, sntp = 8 };
+const Tag = enum(u64) { timer = 1, signals = 2, ipc = 3, keys = 4, netd = 5, mcu = 6, logs = 7, sntp = 8, ntfy = 9 };
 
 const tick_ns: u64 = 100_000_000;
 const property_timeout_ns: u64 = 2 * ns_per_s;
@@ -48,6 +48,10 @@ var packet_buf: [codec.max_message]u8 = undefined;
 var send_buf: [codec.max_message]u8 = undefined;
 var evbuf: [32 * evdev.event_size]u8 = undefined;
 var netd_packet_buf: [codec.max_message]u8 = undefined;
+var ntfy_packet_buf: [codec.max_message]u8 = undefined;
+var ntfy_send_buf: [codec.max_message]u8 = undefined;
+const ntfy_backoff_min_ns: u64 = 2 * ns_per_s;
+const ntfy_backoff_max_ns: u64 = 60 * ns_per_s;
 var config_buf: [config.file_max]u8 = undefined;
 var config_arena: [4096]u8 = undefined;
 var proc_buf: [4096]u8 = undefined;
@@ -60,7 +64,7 @@ fn ringSink(line: []const u8) void {
     ring.push(line);
 }
 
-const Relay = struct { used: bool = false, id: u64 = 0, deadline_ns: u64 = 0 };
+const Relay = struct { used: bool = false, id: u64 = 0, deadline_ns: u64 = 0, from_ntfy: bool = false };
 
 const mcu_reply_timeout_ns: u64 = 500_000_000;
 
@@ -327,6 +331,16 @@ const Supervisor = struct {
     netd_path: [:0]const u8 = "/tmp/tc002/tc002-netd",
     netd_restart_at: u64 = 0,
     netd_exits: child.NetdExits = .{},
+    // the ntfy subscriber: a child like netd, restarted with backoff, replaced on a settings change
+    ntfy_pid: ?sys.Pid = null,
+    ntfy_fd: ?sys.Fd = null,
+    ntfy_restart_at: u64 = 0,
+    ntfy_backoff_ns: u64 = ntfy_backoff_min_ns,
+    ntfy_spawned_ns: u64 = 0,
+    ntfy_path: [:0]const u8 = "/tmp/tc002/tc002-ntfy",
+    ntfy_ca: [api.max_ca]u8 = undefined,
+    ntfy_ca_len: u16 = 0,
+    ntfy_seq: u64 = 0,
     relays: [relay_max]Relay = [_]Relay{.{}} ** relay_max,
     snapshot: messages.StatusSnapshot = .{},
     last_heartbeat: messages.Heartbeat = .{ .presented = 0, .revision = 0, .state = 0 },
@@ -519,6 +533,178 @@ const Supervisor = struct {
         if (self.netd_pid == null and now >= self.netd_restart_at) self.spawnNetd(now);
     }
 
+    // the ntfy subscriber
+
+    fn caSet(self: *const Supervisor) u8 {
+        return @intFromBool(self.ntfy_ca_len > 0);
+    }
+
+    fn ntfyConfigMessage(self: *const Supervisor) messages.Message {
+        var nc = messages.NtfyConfig{ .ntfy = self.cfg.ntfy, .ca_len = self.ntfy_ca_len };
+        @memcpy(nc.ca[0..self.ntfy_ca_len], self.ntfy_ca[0..self.ntfy_ca_len]);
+        return .{ .ntfy_config = nc };
+    }
+
+    fn sendNtfy(self: *Supervisor, msg: messages.Message) void {
+        const fd = self.ntfy_fd orelse return;
+        const packet = messages.encodePacket(msg, 0, lifecycle.epoch, &ntfy_send_buf) catch return;
+        sys.sendPacket(fd, packet) catch |e| {
+            if (e != error.WouldBlock) log.warn("ipc send to the ntfy subscriber failed: {s}", .{sys.errText(e)});
+        };
+    }
+
+    fn spawnNtfy(self: *Supervisor, now: u64) void {
+        const fds = sys.socketpairSeqpacket() catch |e| {
+            log.err("socketpair for the ntfy subscriber failed: {s}", .{sys.errText(e)});
+            self.ntfy_restart_at = now + ntfy_backoff_max_ns;
+            return;
+        };
+        const pid = sys.fork() catch |e| {
+            log.err("fork for the ntfy subscriber failed: {s}", .{sys.errText(e)});
+            sys.close(fds[0]);
+            sys.close(fds[1]);
+            self.ntfy_restart_at = now + ntfy_backoff_max_ns;
+            return;
+        };
+        if (pid == 0) {
+            sys.unblockAllSignals();
+            sys.setSignalDisposition(.TERM, linux.SIG.DFL);
+            sys.setSignalDisposition(.INT, linux.SIG.DFL);
+            sys.setSignalDisposition(.PIPE, linux.SIG.DFL);
+            if (self.log_pipe) |lp| {
+                sys.dup2(lp[1], 1) catch sys.exit(126);
+                sys.dup2(lp[1], 2) catch sys.exit(126);
+            }
+            sys.dup2(fds[1], 60) catch sys.exit(126);
+            sys.dup2(60, 3) catch sys.exit(126);
+            var fd: i32 = 4;
+            while (fd < 64) : (fd += 1) sys.close(fd);
+            sys.prctlPdeathsig(.TERM) catch sys.exit(126);
+            if (sys.getppid() != self.self_pid) sys.exit(125);
+            sys.dropPrivileges(netd_uid, netd_gid) catch sys.exit(124);
+            const argv = [_:null]?[*:0]const u8{self.ntfy_path.ptr};
+            const envp = [_:null]?[*:0]const u8{};
+            sys.execve(self.ntfy_path.ptr, &argv, &envp) catch {};
+            sys.exit(127);
+        }
+        sys.close(fds[1]);
+        self.ntfy_fd = fds[0];
+        self.ntfy_pid = pid;
+        self.ntfy_spawned_ns = now;
+        sys.epollAdd(self.ep, fds[0], linux.EPOLL.IN, @intFromEnum(Tag.ntfy)) catch {};
+        log.info("spawned the ntfy subscriber pid {d} as uid {d}", .{ pid, netd_uid });
+        self.sendNtfy(self.ntfyConfigMessage());
+        self.snapshot.ntfy = .{ .state = 1, .messages = self.snapshot.ntfy.messages, .ca_set = self.caSet() };
+    }
+
+    fn reapNtfy(self: *Supervisor, now: u64) void {
+        const pid = self.ntfy_pid orelse return;
+        const status = sys.waitNoHang(pid) catch |e| switch (e) {
+            error.NoChild => @as(?u32, 0),
+            else => return,
+        } orelse return;
+        if (self.shutting_down or !self.cfg.ntfy.enabled) {
+            log.info("ntfy subscriber pid {d} stopped", .{pid});
+        } else if ((status & 0x7f) == 0) {
+            log.warn("ntfy subscriber pid {d} exited with code {d}", .{ pid, (status >> 8) & 0xff });
+        } else {
+            log.warn("ntfy subscriber pid {d} killed by signal {d}", .{ pid, status & 0x7f });
+        }
+        if (self.ntfy_fd) |fd| sys.close(fd);
+        self.ntfy_fd = null;
+        self.ntfy_pid = null;
+        for (&self.relays) |*r| if (r.from_ntfy) {
+            r.used = false;
+        };
+        // the backoff doubles up to a minute; a run that lasted longer than a minute starts over
+        self.ntfy_backoff_ns = if (now - self.ntfy_spawned_ns > 60 * ns_per_s) ntfy_backoff_min_ns else @min(self.ntfy_backoff_ns * 2, ntfy_backoff_max_ns);
+        self.ntfy_restart_at = now + self.ntfy_backoff_ns;
+        if (self.cfg.ntfy.enabled and !self.shutting_down) {
+            if (self.snapshot.ntfy.state != 3) self.snapshot.ntfy = .{ .state = 3, .messages = self.snapshot.ntfy.messages, .err = config.Text.init("subscriber exited"), .ca_set = self.caSet() };
+        } else {
+            self.snapshot.ntfy = .{ .messages = self.snapshot.ntfy.messages, .ca_set = self.caSet() };
+        }
+        self.sendNetd(.{ .status = self.snapshot }, 0);
+    }
+
+    fn pollNtfy(self: *Supervisor, now: u64) void {
+        if (self.shutting_down) return;
+        if (self.cfg.ntfy.enabled) {
+            if (self.ntfy_pid == null and now >= self.ntfy_restart_at) self.spawnNtfy(now);
+        } else if (self.ntfy_pid) |pid| sys.kill(pid, .TERM);
+    }
+
+    /// the settings changed: the subscriber takes them once, so a running one is replaced
+    fn restartNtfy(self: *Supervisor, now: u64) void {
+        self.ntfy_backoff_ns = ntfy_backoff_min_ns;
+        self.ntfy_restart_at = now;
+        if (self.ntfy_pid) |pid| sys.kill(pid, .TERM);
+        if (!self.cfg.ntfy.enabled) {
+            self.snapshot.ntfy = .{ .messages = self.snapshot.ntfy.messages, .ca_set = self.caSet() };
+            self.sendNetd(.{ .status = self.snapshot }, 0);
+        }
+    }
+
+    /// the extra ca certificate lives beside the tokens (root only); the subscriber gets it over ipc
+    fn storeNtfyCa(self: *Supervisor, pem: []const u8) void {
+        self.ntfy_ca_len = @intCast(pem.len);
+        @memcpy(self.ntfy_ca[0..pem.len], pem);
+        var dir_buf: [160]u8 = undefined;
+        var tmp_buf: [160]u8 = undefined;
+        var path_buf: [160]u8 = undefined;
+        const dir = self.pathIn(&dir_buf, "credentials");
+        const tmp = self.pathIn(&tmp_buf, "credentials/ntfy-ca.pem.tmp");
+        const path = self.pathIn(&path_buf, "credentials/ntfy-ca.pem");
+        sys.saveFileAtomic(dir, tmp, path, pem) catch |e| log.warn("the ntfy ca could not be stored: {s}", .{sys.errText(e)});
+        log.info("ntfy ca {s} ({d} bytes)", .{ if (pem.len > 0) "installed" else "removed", pem.len });
+    }
+
+    fn loadNtfyCa(self: *Supervisor) void {
+        var path_buf: [160]u8 = undefined;
+        const path = self.pathIn(&path_buf, "credentials/ntfy-ca.pem");
+        if (sys.readFile(path, &self.ntfy_ca)) |bytes| {
+            self.ntfy_ca_len = @intCast(bytes.len);
+            if (bytes.len > 0) log.info("ntfy ca loaded ({d} bytes)", .{bytes.len});
+        } else |_| {}
+        self.snapshot.ntfy.ca_set = self.caSet();
+    }
+
+    fn drainNtfy(self: *Supervisor, now: u64) void {
+        const fd = self.ntfy_fd orelse return;
+        var count: u32 = 0;
+        while (count < ipc_packets_per_iteration) : (count += 1) {
+            const packet = sys.recvPacket(fd, &ntfy_packet_buf) catch |e| {
+                if (e != error.Closed) log.warn("ntfy subscriber receive failed: {s}", .{sys.errText(e)});
+                return;
+            } orelse return;
+            const p = messages.decodePacket(packet) catch |e| {
+                log.warn("bad packet from the ntfy subscriber: {s}", .{@errorName(e)});
+                continue;
+            };
+            switch (p.message) {
+                .notify => |n| {
+                    if (self.child_fd == null or lifecycle.state != .running) continue;
+                    var slot: ?*Relay = null;
+                    for (&self.relays) |*r| if (!r.used) {
+                        slot = r;
+                        break;
+                    };
+                    const r = slot orelse continue;
+                    self.ntfy_seq += 1;
+                    const id: u64 = 0x8000_0000_0000_0000 | self.ntfy_seq;
+                    if (!self.sendRenderer(.{ .notify = n }, id, lifecycle.epoch)) continue;
+                    r.* = .{ .used = true, .id = id, .deadline_ns = now + relay_timeout_ns, .from_ntfy = true };
+                },
+                .ntfy_status => |st| {
+                    self.snapshot.ntfy = st;
+                    self.snapshot.ntfy.ca_set = self.caSet();
+                    self.sendNetd(.{ .status = self.snapshot }, 0);
+                },
+                else => log.warn("unexpected {s} from the ntfy subscriber", .{@tagName(p.message)}),
+            }
+        }
+    }
+
     fn relayResult(self: *Supervisor, request_id: u64, status: messages.Status, revision: u32) void {
         self.sendNetd(.{ .result = .{ .status = status, .revision = revision } }, request_id);
     }
@@ -579,6 +765,17 @@ const Supervisor = struct {
                         continue;
                     };
                     self.snapshot.config_revision = self.cfg.revision;
+                    self.sendNetd(.{ .config = self.cfg }, p.request_id);
+                },
+                .ntfy_put => |w| {
+                    const next = self.cfg.patchNtfy(w.toApi()) catch {
+                        self.sendNetd(.{ .save_result = .{ .status = .rejected, .saved_revision = self.cfg.saved_revision } }, p.request_id);
+                        continue;
+                    };
+                    if (w.has & messages.NtfyPut.F.ca != 0) self.storeNtfyCa(w.ca[0..w.ca_len]);
+                    self.cfg.setNtfy(next);
+                    self.snapshot.config_revision = self.cfg.revision;
+                    self.restartNtfy(now);
                     self.sendNetd(.{ .config = self.cfg }, p.request_id);
                 },
                 .config_save => |cs| {
@@ -856,6 +1053,7 @@ const Supervisor = struct {
                 @intFromEnum(linux.SIG.CHLD) => {
                     self.reap(now);
                     self.reapNetd(now);
+                    self.reapNtfy(now);
                 },
                 else => {
                     if (!self.shutting_down) log.info("signal {d}: shutting down", .{info.signo});
@@ -905,7 +1103,7 @@ const Supervisor = struct {
                 .result => |r| {
                     for (&self.relays) |*rel| if (rel.used and rel.id == p.request_id) {
                         rel.used = false;
-                        self.relayResult(p.request_id, r.status, r.revision);
+                        if (!rel.from_ntfy) self.relayResult(p.request_id, r.status, r.revision);
                         break;
                     };
                 },
@@ -1147,6 +1345,9 @@ fn run(cfg_in: cli.Config, environ: anytype, args: []const [:0]const u8) !u8 {
     log.info("supervising {s} (fallback {s}) profile {s} pid {d}", .{ cfg.renderer, cfg.fallbackPath(), @tagName(cfg.profile), s.self_pid });
     var netd_path_buf: [160]u8 = undefined;
     s.netd_path = std.fmt.bufPrintZ(&netd_path_buf, "{s}/tc002-netd", .{cfg.dir}) catch unreachable;
+    var ntfy_path_buf: [160]u8 = undefined;
+    s.ntfy_path = std.fmt.bufPrintZ(&ntfy_path_buf, "{s}/tc002-ntfy", .{cfg.dir}) catch unreachable;
+    s.loadNtfyCa();
     var boot: [4]u8 = undefined;
     sys.getrandom(&boot) catch {};
     s.boot_id = std.mem.readInt(u32, &boot, .little);
@@ -1190,6 +1391,8 @@ fn run(cfg_in: cli.Config, environ: anytype, args: []const [:0]const u8) !u8 {
         s.pollIp(now);
         s.drainNetd(now);
         s.pollNetd(now);
+        s.drainNtfy(now);
+        s.pollNtfy(now);
         s.mcu_link.poll(&s, now);
         s.sntp_link.poll(now); // sntp
         s.expireRelays(now);
@@ -1200,7 +1403,10 @@ fn run(cfg_in: cli.Config, environ: anytype, args: []const [:0]const u8) !u8 {
         if (s.shutting_down and s.netd_pid != null) {
             if (s.netd_pid) |pid| sys.kill(pid, .TERM);
         }
-        if (s.shutting_down and s.child_pid == null and s.netd_pid == null) break;
+        if (s.shutting_down and s.ntfy_pid != null) {
+            if (s.ntfy_pid) |pid| sys.kill(pid, .TERM);
+        }
+        if (s.shutting_down and s.child_pid == null and s.netd_pid == null and s.ntfy_pid == null) break;
         try sys.timerfdArmAt(timer, now + tick_ns);
         const n = try sys.epollWait(ep, &events, -1);
         for (events[0..n]) |ev| {

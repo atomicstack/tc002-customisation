@@ -434,6 +434,25 @@ const Netd = struct {
                 };
                 self.ask(c, .{ .mqtt_put = w }, .config, now);
             },
+            .ntfy_get => {
+                if (!self.have_cfg) {
+                    self.respondError(c, 503, "not_ready", "settings not received yet");
+                    self.flushConn(c, now);
+                    return;
+                }
+                var o = Out{ .buf = &json_buf };
+                self.ntfySettingsJson(&o);
+                self.respond(c, 200, "application/json", o.slice());
+                self.flushConn(c, now);
+            },
+            .ntfy_put => |p| {
+                const w = messages.NtfyPut.fromApi(p) catch {
+                    self.respondError(c, 400, "invalid_value", "a text field is too long");
+                    self.flushConn(c, now);
+                    return;
+                };
+                self.ask(c, .{ .ntfy_put = w }, .config, now);
+            },
             .mqtt_status => {
                 var o = Out{ .buf = &json_buf };
                 self.mqttStatusJson(&o, now);
@@ -719,6 +738,8 @@ const Netd = struct {
         o.add("},\"clock\":");
         clockJson(o, st.clock);
         o.fmt(",\"ip_mode\":\"{s}\"", .{enumName(ip.Mode, st.ip_mode)});
+        o.add(",\"ntfy\":");
+        self.ntfyStatusJson(o);
         o.fmt(",\"config_revision\":{d},\"saved_revision\":{d},\"transport\":\"plaintext\",\"mqtt\":", .{ st.config_revision, st.saved_revision });
         self.mqttStatusJson(o, now);
         o.fmt(",\"boot_id\":\"{x:0>8}\",\"sample_age_ms\":{d},", .{ st.boot_id, st.sample_age_ms + @as(u32, @intCast(@min((now -| self.status_at_ns) / 1_000_000, 0xffffffff))) });
@@ -757,6 +778,37 @@ const Netd = struct {
             o.str(org.slice());
         }
         o.add("]}");
+    }
+
+    fn ntfyStateName(state: u8) []const u8 {
+        return switch (state) {
+            1 => "connecting",
+            2 => "subscribed",
+            3 => "error",
+            else => "off",
+        };
+    }
+
+    /// the subscriber's state as reported through the supervisor's snapshot
+    fn ntfyStatusJson(self: *Netd, o: *Out) void {
+        const n = &self.status.ntfy;
+        o.fmt("{{\"state\":\"{s}\",\"messages\":{d},\"error\":", .{ ntfyStateName(n.state), n.messages });
+        o.str(n.err.slice());
+        o.add("}");
+    }
+
+    /// the settings without the secrets, plus whether they are set, plus the live status
+    fn ntfySettingsJson(self: *Netd, o: *Out) void {
+        const n = &self.cfg.ntfy;
+        o.fmt("{{\"enabled\":{},\"url\":", .{n.enabled});
+        o.str(n.url.slice());
+        o.add(",\"topic\":");
+        o.str(n.topic.slice());
+        o.add(",\"username\":");
+        o.str(n.username.slice());
+        o.fmt(",\"token_set\":{},\"password_set\":{},\"duration_s\":{d},\"insecure\":{},\"ca_set\":{},\"status\":", .{ n.token.len > 0, n.password.len > 0, n.duration_s, n.insecure, self.status.ntfy.ca_set != 0 });
+        self.ntfyStatusJson(o);
+        o.add("}");
     }
 
     fn mqttSettingsJson(self: *Netd, o: *Out) void {

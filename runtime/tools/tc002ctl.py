@@ -39,6 +39,10 @@ commands:
   config-save [revision]              write the settings file, optionally only at that revision
   mqtt                                broker settings (password never returned)
   mqtt-set key=value ...              keys: enabled host port username password client_id prefix tls
+  ntfy                                the ntfy subscription: settings (no secrets) and live status
+  ntfy-set key=value ... [--ca-file PEM]   keys: enabled url topic token username password duration_s
+                                      insecure; --ca-file installs a pem certificate to trust as well as
+                                      the built-in isrg root x1 (--ca-file '' removes it)
   mqtt-status                         connection state
 
 the token file holds 64 raw bytes (control token then admin token) as written by the supervisor,
@@ -132,8 +136,9 @@ def main():
     ap.add_argument("--transition-ms", type=int, dest="transition_ms")
     ap.add_argument("--exit")
     ap.add_argument("--ip-mode", dest="ip_mode")
+    ap.add_argument("--ca-file", dest="ca_file")
     a = ap.parse_args()
-    admin_commands = {"config-set", "config-save", "mqtt", "mqtt-set"}
+    admin_commands = {"config-set", "config-save", "mqtt", "mqtt-set", "ntfy", "ntfy-set"}
     token = load_token(a, a.admin or a.command in admin_commands)
     rid = secrets.token_hex(8)
     c = a.command
@@ -230,6 +235,16 @@ def main():
         return show(*call(a, "POST", "/config/save", body, token=token))
     if c == "mqtt":
         return show(*call(a, "GET", "/mqtt", token=token))
+    if c == "ntfy":
+        return show(*call(a, "GET", "/ntfy", token=token))
+    if c == "ntfy-set":
+        body = kv(a.args)
+        for key in ("enabled", "insecure"):
+            if key in body and isinstance(body[key], str): body[key] = body[key].lower() in ("1", "true", "yes", "on")
+        if "duration_s" in body and isinstance(body["duration_s"], str): body["duration_s"] = int(body["duration_s"])
+        if a.ca_file is not None:
+            body["ca"] = open(a.ca_file).read() if a.ca_file else ""
+        return show(*call(a, "PUT", "/ntfy", body, token=token))
     if c == "mqtt-set":
         return show(*call(a, "PUT", "/mqtt", kv(a.args), token=token))
     if c == "mqtt-status":
