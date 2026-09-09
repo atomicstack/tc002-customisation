@@ -16,7 +16,7 @@ pub const usage =
     \\  --knob PATH         rotary evdev node (/dev/input/event68)
     \\  --keymap L,M,R,K    keycodes for left, middle, right, knob (108,105,106,103)
     \\  --tz RULE           posix tz rule for the clock (UTC0)
-    \\  --base art|clock|ip initial base scene (art)
+    \\  --base art|clock|ip initial base scene (clock)
     \\  --generator N       initial art generator index (0)
     \\  --seed N            art seed, 0 = from the clock (0)
     \\  --brightness N      1..100 (100)
@@ -41,7 +41,9 @@ pub const Config = struct {
     knob_path: [:0]const u8 = "/dev/input/event68",
     keymap: evdev.KeyMap = .{},
     tz_rule: [:0]const u8 = "UTC0",
-    base: arbiter.Base = .art,
+    // the clock, not art: the fallback slot is spawned without --start-dark, so this default
+    // is what a cold start shows before the supervisor pushes the saved scene
+    base: arbiter.Base = .clock,
     generator: scene.Generator = .popsquares,
     seed: u32 = 0,
     brightness: u8 = 100,
@@ -132,7 +134,7 @@ test "defaults" {
     const o = try parse(&.{});
     try std.testing.expectEqual(@as(?i32, null), o.run.ipc_fd);
     try std.testing.expectEqual(@as(u8, 100), o.run.brightness);
-    try std.testing.expectEqual(arbiter.Base.art, o.run.base);
+    try std.testing.expectEqual(arbiter.Base.clock, o.run.base);
     try std.testing.expectEqualStrings("UTC0", o.run.tz_rule);
 }
 

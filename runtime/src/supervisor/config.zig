@@ -60,7 +60,8 @@ pub const Config = struct {
     revision: u32 = 0,
     saved_revision: u32 = 0,
     brightness: u8 = 100,
-    base: u8 = 0,
+    /// index into base_names: the clock, so a cold start never shows the art generator
+    base: u8 = base_clock,
     generator: u8 = 0,
     timezone: Text = Text.init("UTC0"),
     ntp_server: ?[4]u8 = null,
@@ -334,7 +335,7 @@ const FileForm = struct {
     schema: u8 = 1,
     revision: u32 = 0,
     brightness: u8 = 100,
-    base: []const u8 = "art",
+    base: []const u8 = base_names[base_clock],
     generator: []const u8 = "popsquares",
     timezone: []const u8 = "UTC0",
     ntp_server: ?[]const u8 = null,
@@ -374,6 +375,9 @@ const FileForm = struct {
 };
 
 const base_names = [_][]const u8{ "art", "clock", "ip" };
+/// the base scene of a device with no settings file: a power cycle wipes /tmp, and the first
+/// frame after a cold start must be the clock rather than a flash of the art generator.
+const base_clock: u8 = 1;
 const generator_names = [_][]const u8{ "popsquares", "plasma" };
 
 fn nameIndex(names: []const []const u8, name: []const u8) ?u8 {
@@ -582,6 +586,17 @@ test "json persistence round-trips and rejects junk" {
     try std.testing.expectError(error.Invalid, fromJson("{\"schema\":1,\"brightness\":0}", &arena));
     try std.testing.expectError(error.Invalid, fromJson("not json", &arena));
     try std.testing.expectError(error.Invalid, fromJson("{\"schema\":1,\"bogus\":1}", &arena));
+}
+
+test "a cold start with no settings file shows the clock, never art" {
+    // a power cycle wipes /tmp, so the very first frame after a cold start comes from these
+    // defaults. it must be the clock: art is only ever shown when it was asked for.
+    const c = Config{};
+    try std.testing.expectEqualStrings("clock", base_names[c.base]);
+
+    var arena: [4096]u8 = undefined;
+    const back = try fromJson("{\"schema\":1}", &arena);
+    try std.testing.expectEqualStrings("clock", base_names[back.base]);
 }
 
 test "origin policy is derived from the config" {
