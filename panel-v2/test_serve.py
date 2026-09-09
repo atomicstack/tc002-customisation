@@ -34,6 +34,8 @@ class PureTests(unittest.TestCase):
         self.assertEqual(serve.token_for("PUT", "mqtt"), "admin")
         self.assertEqual(serve.token_for("GET", "config"), "control")
         self.assertEqual(serve.token_for("GET", "mqtt/status"), "control")
+        self.assertEqual(serve.token_for("GET", "ntfy"), "admin")
+        self.assertEqual(serve.token_for("PUT", "ntfy"), "admin")
         self.assertEqual(serve.token_for("POST", "notify"), "control")
 
     def test_rewrite(self):
@@ -301,6 +303,21 @@ class EndToEndTests(unittest.TestCase):
             self.assertEqual(json.loads(e.read())["error"], "not_implemented")
 
     DEFAULT_CLOCK = {"font": "classic", "colour_mode": "solid", "colour": "ffffff", "colour2": "ffffff", "gradient": "horizontal"}
+
+    def test_ntfy_settings_round_trip_without_secrets(self):
+        status, doc = self.call("PUT", "ntfy", {"enabled": True, "url": "https://ntfy.sh", "topic": "tc002", "token": "tk_x", "duration_s": 8})
+        self.assertEqual(status, 200)
+        self.assertEqual((doc["enabled"], doc["url"], doc["topic"], doc["token_set"], doc["duration_s"]), (True, "https://ntfy.sh", "tc002", True, 8))
+        self.assertNotIn("token", doc)
+        self.assertEqual(doc["status"]["state"], "subscribed")
+        status, doc = self.call("PUT", "ntfy", {"url": "ntfy.sh"})
+        self.assertEqual((status, doc["error"]), (400, "invalid_url"))
+        status, doc = self.call("PUT", "ntfy", {"ca": "nope"})
+        self.assertEqual((status, doc["error"]), (400, "invalid_ca"))
+        _, st = self.call("GET", "status")
+        self.assertEqual(st["ntfy"]["state"], "subscribed")
+        status, doc = self.call("PUT", "ntfy", {"enabled": False})
+        self.assertEqual(doc["status"]["state"], "off")
 
     def test_scenes_status_and_config_carry_the_clock_style(self):
         _, scenes = self.call("GET", "scenes")

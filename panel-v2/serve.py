@@ -21,7 +21,7 @@ import argparse, functools, http.server, json, os, re, socketserver, subprocess,
 HERE = os.path.dirname(os.path.abspath(__file__))
 TOKENS = {"control": None, "admin": None}
 # routes that take the admin token; everything else on /api/v1 takes control
-ADMIN_ROUTES = {("PATCH", "config"), ("POST", "config/save"), ("GET", "mqtt"), ("PUT", "mqtt")}
+ADMIN_ROUTES = {("PATCH", "config"), ("POST", "config/save"), ("GET", "mqtt"), ("PUT", "mqtt"), ("GET", "ntfy"), ("PUT", "ntfy")}
 # host may carry a port (host:1234) so the mock or a device behind a forward works
 PATH_RE = re.compile(r"^/api/([0-9a-zA-Z.\-]+(?::\d+)?)/v1/([A-Za-z0-9_\-]+(?:/[A-Za-z0-9_\-]+)*)(?:\?(.*))?$")
 DEVICE_TIMEOUT_S = 10

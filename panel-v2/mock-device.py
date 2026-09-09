@@ -151,6 +151,8 @@ class Device:
                        "metrics_interval_s": 30, "discovery": False, "discovery_prefix": "homeassistant", "origins": [],
                        "clock": dict(DEFAULT_CLOCK), "ip_mode": "lines"}
         self.mqtt = {"enabled": False, "host": "", "port": 1883, "username": "", "password": "", "client_id": "", "prefix": "", "tls": False}
+        self.ntfy = {"enabled": False, "url": "", "topic": "", "token": "", "username": "", "password": "", "duration_s": 10, "insecure": False, "ca": ""}
+        self.ntfy_messages = 0
         self.reconnects = 0
 
     # bookkeeping
@@ -207,7 +209,8 @@ class Device:
                 "memory_available_kb": 16084, "cpu_pct": 5, "restarts": self.restarts,
                 "network": {"ip": "10.0.0.111"}, "time": {"state": "unsynced", "age_s": None},
                 "config_revision": self.config["revision"], "saved_revision": self.config["saved_revision"],
-                "transport": "plaintext", "mqtt": self.mqtt_status(), "boot_id": self.boot_id, "sample_age_ms": 200}
+                "transport": "plaintext", "mqtt": self.mqtt_status(), "ntfy": self.ntfy_doc()["status"],
+                "boot_id": self.boot_id, "sample_age_ms": 200}
 
     def logs(self, after):
         lines = [{"seq": s, "text": t} for s, t in self.log_lines if s > after][:16]
@@ -228,6 +231,43 @@ class Device:
         m = self.mqtt
         return {"enabled": m["enabled"], "host": m["host"], "port": m["port"], "username": m["username"],
                 "client_id": m["client_id"], "prefix": m["prefix"] or "tc002", "tls": m["tls"], "password_set": bool(m["password"])}
+
+    def ntfy_doc(self):
+        n = self.ntfy
+        state = "subscribed" if n["enabled"] and n["url"] and n["topic"] else "off"
+        return {"enabled": n["enabled"], "url": n["url"], "topic": n["topic"], "username": n["username"],
+                "token_set": bool(n["token"]), "password_set": bool(n["password"]), "duration_s": n["duration_s"],
+                "insecure": n["insecure"], "ca_set": bool(n["ca"]),
+                "status": {"state": state, "messages": self.ntfy_messages, "error": ""}}
+
+    def put_ntfy(self, body):
+        n = dict(self.ntfy)
+        for k in ("url", "topic", "token", "username", "password"):
+            if k in body:
+                if not isinstance(body[k], str) or len(body[k]) > 64:
+                    raise Reject(400, f"invalid_{k}", f"{k} must be at most 64 characters")
+                n[k] = body[k]
+        if n["url"] and not (n["url"].startswith("http://") or n["url"].startswith("https://")):
+            raise Reject(400, "invalid_url", "url must be http://host[:port][/prefix] or https://host[:port][/prefix]")
+        if "duration_s" in body:
+            if not isinstance(body["duration_s"], int) or not 1 <= body["duration_s"] <= 300:
+                raise Reject(400, "invalid_duration", "duration_s must be 1..300")
+            n["duration_s"] = body["duration_s"]
+        for k in ("enabled", "insecure"):
+            if k in body:
+                if not isinstance(body[k], bool):
+                    raise Reject(400, "invalid_json", "the body is not valid json for this schema")
+                n[k] = body[k]
+        if "ca" in body:
+            ca = body["ca"]
+            if not isinstance(ca, str) or len(ca) > 3500 or (ca and "-----BEGIN CERTIFICATE-----" not in ca):
+                raise Reject(400, "invalid_ca", "ca must be a pem certificate of at most 3500 bytes, or empty to remove it")
+            n["ca"] = ca
+        if n["enabled"] and not (n["url"] and n["topic"]):
+            raise Reject(400, "rejected", "the settings were rejected")
+        self.ntfy = n
+        self.config["revision"] += 1
+        self.log(f"ntfy settings applied: enabled {n['enabled']} url {n['url']!r} topic {n['topic']!r}", proc="tc002-supervisor")
 
     def mqtt_status(self):
         m = self.mqtt
@@ -485,13 +525,15 @@ SCHEMAS = {
                 "clock_font", "clock_colour_mode", "clock_colour", "clock_colour2", "clock_gradient", "ip_mode"}, set()),
     "config/save": ({"revision"}, set()),
     "mqtt": ({"enabled", "host", "port", "username", "password", "client_id", "prefix", "tls"}, set()),
+    "ntfy": ({"enabled", "url", "topic", "token", "username", "password", "duration_s", "insecure", "ca"}, set()),
 }
 
 ROUTES = {("GET", "status"): "control", ("GET", "scenes"): "control", ("PUT", "scene"): "control",
           ("POST", "action"): "control", ("POST", "input"): "control", ("GET", "logs"): "control",
           ("GET", "config"): "control", ("PATCH", "config"): "admin",
           ("POST", "config/save"): "admin", ("POST", "notify"): "control", ("POST", "frame"): "control",
-          ("GET", "mqtt"): "admin", ("PUT", "mqtt"): "admin", ("GET", "mqtt/status"): "control"}
+          ("GET", "mqtt"): "admin", ("PUT", "mqtt"): "admin", ("GET", "mqtt/status"): "control",
+          ("GET", "ntfy"): "admin", ("PUT", "ntfy"): "admin"}
 
 
 def route_lookup(method, endpoint):
@@ -627,6 +669,11 @@ class Handler(http.server.BaseHTTPRequestHandler):
                     return self._send(200, d.mqtt_doc())
                 if endpoint == "mqtt/status":
                     return self._send(200, d.mqtt_status())
+                if endpoint == "ntfy" and method == "GET":
+                    return self._send(200, d.ntfy_doc())
+                if endpoint == "ntfy":
+                    d.put_ntfy(self._json_body("ntfy"))
+                    return self._send(200, d.ntfy_doc())
         except Reject as e:
             return self._error(e.status, e.code, e.message)
         return self._error(404, "not_found", "no such route")

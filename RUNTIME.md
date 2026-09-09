@@ -645,7 +645,7 @@ view: `state` and seconds since the last accepted reply (see
 `revision` counts accepted patches (and mqtt setting changes) since the
 supervisor started with the loaded file; `saved_revision` is what is on disk.
 the file itself is the same document in a slightly different shape, with
-`"schema":1` and the mqtt block inline:
+`"schema":1` and the mqtt and ntfy blocks inline (the ntfy `token` and `password` are stored as given; the ca lives in the credentials directory instead):
 
 ```json
 {"schema":1,"revision":1,"brightness":60,"base":"clock","generator":"popsquares",

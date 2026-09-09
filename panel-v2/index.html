@@ -325,6 +325,28 @@ input[type=file]{font:12px var(--body);color:var(--muted);max-width:220px}
       <div class="actions"><span class="note">broker changes bump the settings revision; use <b>save to device</b> above to keep them.</span></div>
     </section>
 
+    <section class="card s5" id="ntfyCard">
+      <h2>ntfy <span id="ntfystate" class="pill">unknown</span></h2>
+      <div class="lockmsg">the proxy has no admin token: ntfy settings are read-only</div>
+      <div class="rows">
+        <div class="field"><label for="nenabled">Enabled<span class="key">enabled · subscribes to the topic</span></label><input type="checkbox" class="sw" id="nenabled"></div>
+        <div class="field"><label for="nurl">Server<span class="key">url · https://ntfy.sh or http(s)://host[:port][/prefix]</span></label><input type="text" id="nurl" placeholder="https://ntfy.sh" autocomplete="off"></div>
+        <div class="field"><label for="ntopic">Topic<span class="key">topic</span></label><input type="text" id="ntopic" placeholder="my-clock" autocomplete="off"></div>
+        <div class="field"><label for="ntoken">Access token<span class="key">token · bearer · never returned</span></label><input type="password" id="ntoken" autocomplete="new-password" placeholder="unchanged"></div>
+        <div class="field"><label for="nuser">Username<span class="key">username · basic auth instead of a token</span></label><input type="text" id="nuser" autocomplete="off"></div>
+        <div class="field"><label for="npwd">Password<span class="key">password · never returned</span></label><input type="password" id="npwd" autocomplete="new-password" placeholder="unchanged"></div>
+        <div class="field"><label for="ndurs">Show for<span class="key">duration_s · seconds each message stays, 1–300</span></label><input type="number" id="ndurs" min="1" max="300" value="10"></div>
+        <div class="field"><label for="ninsecure">Skip certificate checks<span class="key">insecure · a self-signed server</span></label><input type="checkbox" class="sw" id="ninsecure"></div>
+        <div class="field"><label for="nca">Extra CA<span class="key">ca · pem, trusted with the built-in isrg root x1; empty removes it</span></label><textarea id="nca" rows="3" placeholder="-----BEGIN CERTIFICATE-----" spellcheck="false"></textarea></div>
+      </div>
+      <div class="actions">
+        <button class="btn" id="napply">Apply</button>
+        <button class="btn ghost" id="ncheck">Recheck</button>
+        <span class="note" id="ndetail"></span>
+      </div>
+      <div class="actions"><span class="note">changes bump the settings revision; use <b>save to device</b> above to keep them. messages show as <i>title: message</i>, coloured by priority.</span></div>
+    </section>
+
     <section class="card s12" id="logsCard">
       <h2>Logs</h2>
       <div class="lockmsg">the proxy has no control token: start serve.py with --token-file or --adb-pull</div>
@@ -370,7 +392,7 @@ async function call(method, path, body, contentType) {
   let doc = null;
   try { doc = txt ? JSON.parse(txt) : null; } catch { doc = { raw: txt }; }
   if (!r.ok) {
-    if (r.status === 403 && doc && doc.error === 'forbidden') { lock('settingsCard', true); lock('mqttCard', true); }
+    if (r.status === 403 && doc && doc.error === 'forbidden') { lock('settingsCard', true); lock('mqttCard', true); lock('ntfyCard', true); }
     const e = new Error(doc && doc.message ? `${doc.message} (${doc.error})` : `HTTP ${r.status}`);
     e.status = r.status; e.code = doc && doc.error; throw e;
   }
@@ -840,6 +862,50 @@ $('mapply').addEventListener('click', async () => {
 });
 $('mcheck').addEventListener('click', mqttStatus);
 
+/* ---------- ntfy (admin) ---------- */
+let NTFY = null, ntfyCaShown = '';
+function showNtfyStatus(s) {
+  const el = $('ntfystate');
+  el.textContent = s.state;
+  el.className = 'pill ' + (s.state === 'subscribed' ? 'on' : (s.state === 'error' ? 'off' : ''));
+  const bits = [];
+  if (s.messages) bits.push(`${s.messages} message${s.messages === 1 ? '' : 's'}`);
+  if (s.error) bits.push(s.error);
+  $('ndetail').textContent = bits.join(' · ');
+}
+function showNtfy(n) {
+  NTFY = n;
+  $('nenabled').checked = !!n.enabled; $('nurl').value = n.url; $('ntopic').value = n.topic;
+  $('ntoken').value = ''; $('ntoken').placeholder = n.token_set ? 'set (unchanged)' : 'not set';
+  $('nuser').value = n.username; $('npwd').value = ''; $('npwd').placeholder = n.password_set ? 'set (unchanged)' : 'not set';
+  $('ndurs').value = n.duration_s; $('ninsecure').checked = !!n.insecure;
+  ntfyCaShown = n.ca_set ? '(a certificate is installed; paste a new one to replace it, clear to remove)' : '';
+  $('nca').value = ''; $('nca').placeholder = ntfyCaShown || '-----BEGIN CERTIFICATE-----';
+  if (n.status) showNtfyStatus(n.status);
+}
+async function ntfyStatus() {
+  try { const n = await call('GET', 'ntfy'); showNtfyStatus(n.status); } catch (e) { $('ntfystate').textContent = 'unknown'; $('ntfystate').className = 'pill'; }
+}
+$('napply').addEventListener('click', async () => {
+  const url = $('nurl').value.trim(), topic = $('ntopic').value.trim();
+  const body = { enabled: $('nenabled').checked, url, topic, username: $('nuser').value.trim(), duration_s: +$('ndurs').value || 10, insecure: $('ninsecure').checked };
+  if ($('ntoken').value) body.token = $('ntoken').value;
+  if ($('npwd').value) body.password = $('npwd').value;
+  const ca = $('nca').value.trim();
+  if (ca) body.ca = ca;                                   // a pasted certificate replaces the installed one
+  else if (NTFY && NTFY.ca_set && $('nca').dataset.cleared === '1') body.ca = '';   // an explicit clear removes it
+  if (body.enabled && !(url && topic)) return toast('a server url and a topic are needed to enable ntfy', true);
+  try {
+    showNtfy(await call('PUT', 'ntfy', body));
+    $('nca').dataset.cleared = '';
+    toast('ntfy settings applied (not yet saved)');
+    setTimeout(ntfyStatus, 2500);
+    loadConfig().catch(() => {}); refreshStatus(true);
+  } catch (e) { toast(e.message, true); }
+});
+$('nca').addEventListener('input', () => { $('nca').dataset.cleared = $('nca').value.trim() ? '' : '1'; });
+$('ncheck').addEventListener('click', ntfyStatus);
+
 /* ---------- logs (the log ring, GET /logs?after=N) ---------- */
 let logNext = 0, logLines = [], logInFlight = false;
 function renderLogs() {
@@ -885,7 +951,7 @@ async function loadTokens() {
   const noControl = !TOKENS.control;
   lock('sceneCard', noControl); lock('notificationCard', noControl); lock('frameCard', noControl);
   lock('controlsCard', noControl); lock('logsCard', noControl);
-  lock('settingsCard', noControl || !TOKENS.admin); lock('mqttCard', noControl || !TOKENS.admin);
+  lock('settingsCard', noControl || !TOKENS.admin); lock('mqttCard', noControl || !TOKENS.admin); lock('ntfyCard', noControl || !TOKENS.admin);
 }
 async function loadAll() {
   if (!host()) { setConn('off', 'no device'); return; }
@@ -904,6 +970,7 @@ async function loadAll() {
     if (STATUS.clock) showClockStyle(STATUS.clock);
     await loadConfig();
     if (TOKENS.admin) { try { showMqtt(await call('GET', 'mqtt')); } catch (e) { toast(e.message, true); } }
+    if (TOKENS.admin) { try { showNtfy(await call('GET', 'ntfy')); } catch (e) { toast(e.message, true); } }
     await mqttStatus();
     setConn('on', 'connected');
     pollScreen();
