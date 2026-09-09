@@ -306,7 +306,12 @@ carousel and the base follows it in; `none` cuts. omitting the fields keeps
 the defaults; a request with `direction`, `transition_ms` or `exit` alone
 applies them to the default effect. a change between the base scenes with
 no effect named, from the buttons or `PUT /scene`, slides forward (art, clock,
-ip) to the left and back to the right; the knob's generator change fades. the effects are composited in the renderer from
+ip) to the left and back to the right; the knob's generator change fades.
+**both layers stay live** while an effect runs: the outgoing scene keeps
+rendering as the old layer (art keeps stepping, an outgoing generator too,
+the clock keeps ticking, a notification keeps scrolling) until the effect
+ends. only when an effect starts while another is still running is the old
+layer the composite frame that was on the panel at that moment, held still. the effects are composited in the renderer from
 the frame that was on the panel and the scene's new output; `GET /scenes`
 lists them under `transitions`. the mqtt `cmd/frame` envelope grows from 14
 to 18 or 19 bytes when it carries one: `u8 effect` (the index in that list),

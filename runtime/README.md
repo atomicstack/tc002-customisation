@@ -95,9 +95,10 @@ controls. the full reference is [`RUNTIME.md`](../RUNTIME.md).
   ReleaseSmall; on the volatile path that is about 0.7 mb of tmpfs ram. `-Doptimize=ReleaseSmall`
   is available; a simple panic handler and no segfault handler already keep the dwarf unwinder out.
 - **procfs rss on this kernel reads 4 kb for every static process** and is reported as-is.
-- **transitions in the renderer** cost one more 2,496-byte frame buffer and a per-pixel source lookup
-  (or multiply-add for the fade) at 60 hz for the duration of the effect, 500 ms unless the request
-  says otherwise; a dark panel costs nothing (no redraws at all). fifteen effects are compiled in
+- **transitions in the renderer** cost two more 2,496-byte frame buffers (the old layer is the
+  outgoing scene rendered live every frame, so two scenes render per frame while an effect runs)
+  and a per-pixel source lookup (or multiply-add for the fade) at 60 hz for the duration of the
+  effect, 500 ms unless the request says otherwise; a dark panel costs nothing (no redraws at all). fifteen effects are compiled in
   (`panel/transition.zig`); a request names one, a direction, a duration and an exit mode, and an
   overlay leaves with the paired effect the other way, the same way, or a cut.
 - **the screen document is base64 in json** (3,328 characters) so `curl` and `jq` can use it without

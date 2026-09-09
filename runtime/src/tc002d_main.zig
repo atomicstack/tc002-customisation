@@ -45,6 +45,8 @@ var rgb: geometry.Rgb = undefined;
 /// what goes to the panel after fades: the scene output blended and levelled, before brightness.
 var out_rgb: geometry.Rgb = geometry.black_rgb;
 var fader = fade.Fader{};
+/// the outgoing scene rendered live as a transition's old layer
+var old_rgb: geometry.Rgb = undefined;
 var frame: geometry.Frame = undefined;
 var lut: pack.Lut = undefined;
 var lut_brightness: u8 = 0;
@@ -121,10 +123,18 @@ const Renderer = struct {
     fn redraw(self: *Renderer, now: u64, base_deadline: u64) void {
         const wall = sys.realtimeNs();
         arb.tick(now, wall);
-        if (arb.takeTransition()) |spec| fader.begin(&out_rgb, spec, now);
+        if (arb.takeTransition()) |spec| {
+            // an effect that starts while another runs, or a cut, has no live old layer: the
+            // remembered composite (or nothing) stands in
+            const chained = fader.cross.active();
+            fader.begin(&out_rgb, spec, now);
+            if (chained or !fader.cross.active()) arb.transitionDone();
+        }
         fader.setPower(arb.power, now);
         arb.render(wall, &rgb);
-        const fading = fader.apply(&rgb, &out_rgb, now);
+        const live_old = fader.cross.active() and arb.renderOutgoing(wall, &old_rgb);
+        const fading = if (live_old) fader.applyLive(&old_rgb, &rgb, &out_rgb, now) else fader.apply(&rgb, &out_rgb, now);
+        if (!fader.cross.active()) arb.transitionDone();
         if (lut_brightness != arb.brightness) {
             lut = pack.buildLut(arb.brightness);
             lut_brightness = arb.brightness;

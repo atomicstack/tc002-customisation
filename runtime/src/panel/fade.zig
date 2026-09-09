@@ -54,7 +54,16 @@ pub const Fader = struct {
     /// composite `in` into `out` for `now`; returns true while a fade is still running. the frame
     /// produced on the iteration that completes a fade is exact (the caller latches it).
     pub fn apply(self: *Fader, in: *const geometry.Rgb, out: *geometry.Rgb, now_ns: u64) bool {
-        _ = self.cross.apply(in, out, now_ns);
+        return self.composite(null, in, out, now_ns);
+    }
+
+    /// the same with the outgoing scene rendered live as the effect's old layer
+    pub fn applyLive(self: *Fader, old: *const geometry.Rgb, in: *const geometry.Rgb, out: *geometry.Rgb, now_ns: u64) bool {
+        return self.composite(old, in, out, now_ns);
+    }
+
+    fn composite(self: *Fader, old: ?*const geometry.Rgb, in: *const geometry.Rgb, out: *geometry.Rgb, now_ns: u64) bool {
+        _ = if (old) |o| self.cross.applyFrom(o, in, out, now_ns) else self.cross.apply(in, out, now_ns);
         if (self.power_start) |s| {
             const elapsed = now_ns -| s;
             const target: i64 = if (self.power_on) 255 else 0;

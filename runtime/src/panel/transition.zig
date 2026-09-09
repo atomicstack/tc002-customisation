@@ -131,6 +131,11 @@ pub const Transition = struct {
     /// composite the remembered frame and `in` into `out` for `now`; true while still running. the
     /// frame produced on the iteration that completes a run is exactly `in`.
     pub fn apply(self: *Transition, in: *const geometry.Rgb, out: *geometry.Rgb, now_ns: u64) bool {
+        return self.applyFrom(&self.from, in, out, now_ns);
+    }
+
+    /// the same with a live old layer instead of the remembered frame
+    pub fn applyFrom(self: *Transition, old: *const geometry.Rgb, in: *const geometry.Rgb, out: *geometry.Rgb, now_ns: u64) bool {
         const s = self.start orelse {
             out.* = in.*;
             return false;
@@ -141,7 +146,7 @@ pub const Transition = struct {
             out.* = in.*;
             return false;
         }
-        composite(self.spec.effect, self.spec.direction, &self.from, in, out, @intCast(elapsed * 256 / self.spec.duration_ns));
+        composite(self.spec.effect, self.spec.direction, old, in, out, @intCast(elapsed * 256 / self.spec.duration_ns));
         return true;
     }
 };
@@ -537,4 +542,13 @@ test "a transition runs over its duration and ends exactly on the new frame" {
     try std.testing.expect(!t.apply(&new, &out, 6_000_000_000));
     try std.testing.expectEqualSlices(u8, &new, &out);
     try std.testing.expect(!t.active());
+    // a live old layer replaces the remembered frame
+    t.begin(&old, .{ .effect = .wipe, .direction = .right, .duration_ns = 1_000_000_000 }, 0);
+    var live = marked(9);
+    try std.testing.expect(t.applyFrom(&live, &new, &out, 500_000_000));
+    try expectPx(&out, 26, 0, 26, 0, 9);
+    try expectPx(&out, 0, 0, 0, 0, new_tag);
+    live = marked(8);
+    try std.testing.expect(t.applyFrom(&live, &new, &out, 600_000_000));
+    try expectPx(&out, 40, 0, 40, 0, 8);
 }

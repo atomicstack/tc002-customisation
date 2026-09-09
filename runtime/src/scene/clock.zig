@@ -123,8 +123,8 @@ pub const State = struct {
 
     /// where each font puts its text: everything centred, `mini` adds the date underneath,
     /// `big` shows hours and minutes only.
-    fn layout(self: *const State, time_text: []const u8, date_text: []const u8, ms_text: []const u8, lines: *[2]Line) []const Line {
-        const f = self.style.font;
+    fn layout(style: Style, time_text: []const u8, date_text: []const u8, ms_text: []const u8, lines: *[2]Line) []const Line {
+        const f = style.font;
         switch (f) {
             .classic, .segment, .block => {
                 lines[0] = .{ .x = centre(f, time_text), .y = @divFloor(geometry.height - @as(i32, clockfont.glyphHeight(f)), 2), .text = time_text, .font = f };
@@ -157,6 +157,11 @@ pub const State = struct {
     }
 
     pub fn render(self: *const State, wall_ns: u64, rgb: *geometry.Rgb) void {
+        self.renderWith(self.style, wall_ns, rgb);
+    }
+
+    /// render with a given style: the outgoing layer of a restyle transition keeps the old one
+    pub fn renderWith(self: *const State, style: Style, wall_ns: u64, rgb: *geometry.Rgb) void {
         const utc_s: i64 = @intCast(wall_ns / std.time.ns_per_s);
         const local_s = tz.localFromUtc(self.rule, utc_s);
         var tbuf: [8]u8 = undefined;
@@ -167,12 +172,12 @@ pub const State = struct {
         var mbuf: [3]u8 = undefined;
         const ms_text = std.fmt.bufPrint(&mbuf, "{d:0>3}", .{ms}) catch unreachable;
         var storage: [2]Line = undefined;
-        const lines = self.layout(time_text, date_text, ms_text, &storage);
+        const lines = layout(style, time_text, date_text, ms_text, &storage);
         rgb.* = geometry.black_rgb;
-        const hires = self.style.font == .hires;
+        const hires = style.font == .hires;
         const bar: ?i32 = if (hires) @intCast(ms * geometry.width / 1000) else null;
-        switch (self.style.mode) {
-            .solid => paint(rgb, lines, bar, clockfont.Solid{ .colour = self.style.colour }),
+        switch (style.mode) {
+            .solid => paint(rgb, lines, bar, clockfont.Solid{ .colour = style.colour }),
             .gradient => {
                 var box = Box{ .x0 = geometry.width, .y0 = geometry.height, .x1 = -1, .y1 = -1 };
                 for (lines) |l| {
@@ -182,7 +187,7 @@ pub const State = struct {
                     box.y1 = @max(box.y1, l.y + @as(i32, clockfont.glyphHeight(l.font)) - 1);
                 }
                 if (hires) box = .{ .x0 = 0, .y0 = 0, .x1 = geometry.width - 1, .y1 = hires_ms_y + 4 }; // the bar spans the panel
-                const painter = GradientPainter{ .c1 = self.style.colour, .c2 = self.style.effectiveColour2(), .box = box, .dir = self.style.gradient };
+                const painter = GradientPainter{ .c1 = style.colour, .c2 = style.effectiveColour2(), .box = box, .dir = style.gradient };
                 paint(rgb, lines, bar, painter);
             },
         }

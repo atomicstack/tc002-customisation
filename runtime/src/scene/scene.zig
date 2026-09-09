@@ -119,21 +119,35 @@ pub const Art = struct {
         self.generator = g;
     }
 
-    pub fn nextGenerator(self: *Art, forward: bool) void {
+    /// the generator after (or before) the current one in the catalogue
+    pub fn neighbour(self: *const Art, forward: bool) Generator {
         const n: u8 = @intFromEnum(self.generator);
         const next: u8 = if (forward) (n + 1) % generator_count else (n + generator_count - 1) % generator_count;
-        self.generator = @enumFromInt(next);
+        return @enumFromInt(next);
+    }
+
+    pub fn nextGenerator(self: *Art, forward: bool) void {
+        self.generator = self.neighbour(forward);
     }
 
     pub fn step(self: *Art, dt_s: f32) void {
-        switch (self.generator) {
+        self.stepGenerator(self.generator, dt_s);
+    }
+
+    /// step one generator: the one showing, or an outgoing one kept moving through a transition
+    pub fn stepGenerator(self: *Art, g: Generator, dt_s: f32) void {
+        switch (g) {
             .popsquares => self.popsquares.step(self.options, dt_s),
             .plasma => self.plasma.step(dt_s),
         }
     }
 
     pub fn render(self: *const Art, rgb: *geometry.Rgb) void {
-        switch (self.generator) {
+        self.renderGenerator(self.generator, rgb);
+    }
+
+    pub fn renderGenerator(self: *const Art, g: Generator, rgb: *geometry.Rgb) void {
+        switch (g) {
             .popsquares => self.popsquares.render(self.options, rgb),
             .plasma => self.plasma.render(rgb),
         }

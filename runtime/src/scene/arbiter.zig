@@ -221,6 +221,53 @@ test "the default between base scenes is a slide that follows their order" {
     try std.testing.expectEqual(transition.Effect.fade, a.takeTransition().?.effect);
 }
 
+test "the outgoing scene stays live through a transition and is dropped when it ends" {
+    var a = fresh(); // art, popsquares
+    var old: geometry.Rgb = undefined;
+    var direct: geometry.Rgb = undefined;
+    try std.testing.expect(!a.renderOutgoing(0, &old));
+    _ = a.apply(.{ .set_base = .clock }, 0);
+    try std.testing.expect(a.takeTransition() != null);
+    try std.testing.expectEqual(Base.art, a.outgoing.?.base);
+    try std.testing.expect(a.renderOutgoing(0, &old));
+    a.art.render(&direct);
+    try std.testing.expectEqualSlices(u8, &direct, &old);
+    a.tick(100_000_000, 0); // the art moves on and the old layer follows it
+    try std.testing.expect(a.renderOutgoing(0, &old));
+    a.art.render(&direct);
+    try std.testing.expectEqualSlices(u8, &direct, &old);
+    a.transitionDone();
+    try std.testing.expect(!a.renderOutgoing(0, &old));
+    // a notification: the base is the outgoing layer; at its expiry the notification is
+    _ = a.apply(.{ .notify = .{ .text = "hi", .colour = white, .duration_s = 1 } }, 100_000_000);
+    try std.testing.expectEqual(Base.clock, a.outgoing.?.base);
+    try std.testing.expect(a.outgoing.?.overlay == .none);
+    _ = a.takeTransition();
+    a.transitionDone();
+    a.tick(2 * s_ns, 0);
+    try std.testing.expect(a.outgoing.?.overlay == .notify);
+    try std.testing.expect(a.renderOutgoing(0, &old));
+    var expected = geometry.black_rgb;
+    font.blit(&expected, 20, 4, "hi", white);
+    try std.testing.expectEqualSlices(u8, &expected, &old);
+    _ = a.takeTransition();
+    a.transitionDone();
+    // a generator change keeps the old generator stepping alongside the new one
+    _ = a.apply(.{ .set_base = .art }, 2 * s_ns);
+    _ = a.takeTransition();
+    a.transitionDone();
+    _ = a.apply(.{ .select_generator = .plasma }, 2 * s_ns);
+    try std.testing.expectEqual(scene.Generator.popsquares, a.outgoing.?.generator);
+    a.tick(3 * s_ns, 0);
+    try std.testing.expect(a.renderOutgoing(0, &old));
+    a.art.renderGenerator(.popsquares, &direct);
+    try std.testing.expectEqualSlices(u8, &direct, &old);
+    // a second command while one is pending keeps the first outgoing layer
+    _ = a.apply(.{ .set_base = .clock }, 3 * s_ns);
+    try std.testing.expectEqual(scene.Generator.popsquares, a.outgoing.?.generator);
+    try std.testing.expectEqual(Base.art, a.outgoing.?.base);
+}
+
 test "the ip mode bumps only on change and transitions only while the ip scene shows" {
     var a = fresh();
     try std.testing.expectEqual(Result{ .applied = 0 }, a.apply(.{ .set_ip_mode = .lines }, 0));
@@ -299,6 +346,10 @@ pub const Raw = struct { rgb: geometry.Rgb, until_ns: u64, transition: transitio
 
 pub const Overlay = union(enum) { none, notify: Notify, raw: Raw, stream_arming: u64 };
 
+/// what was showing when the running transition began. the renderer composites it as the
+/// effect's old layer, live: the art keeps stepping, the clock ticking, a notification scrolling.
+pub const Outgoing = struct { base: Base, generator: scene.Generator, overlay: Overlay, clock_style: clock.Style, ip_mode: ip.Mode };
+
 pub const Command = union(enum) {
     set_base: Base,
     select_generator: scene.Generator,
@@ -334,6 +385,8 @@ pub const Arbiter = struct {
     pending: ?transition.Spec = null,
     /// the transition a change gets when the request names none (the renderer sets its duration)
     default_transition: transition.Spec = .{},
+    /// the scene the pending transition leaves, kept live until the renderer reports it finished
+    outgoing: ?Outgoing = null,
     last_tick_ns: u64 = 0,
     art: scene.Art,
     clock: clock.State,
@@ -365,6 +418,30 @@ pub const Arbiter = struct {
         self.pending = spec orelse self.default_transition;
     }
 
+    fn capture(self: *const Arbiter) Outgoing {
+        return .{ .base = self.base, .generator = self.art.generator, .overlay = self.overlay, .clock_style = self.clock.style, .ip_mode = self.ip.mode };
+    }
+
+    /// the renderer finished (or cut short) the transition: the old layer is no longer needed
+    pub fn transitionDone(self: *Arbiter) void {
+        self.outgoing = null;
+    }
+
+    /// the old layer of the running transition, rendered live; false when there is none
+    pub fn renderOutgoing(self: *const Arbiter, wall_ns: u64, rgb: *geometry.Rgb) bool {
+        const o = self.outgoing orelse return false;
+        switch (o.overlay) {
+            .notify => |n| self.renderNotify(&n, rgb),
+            .raw => |r| rgb.* = r.rgb,
+            .stream_arming, .none => switch (o.base) {
+                .art => self.art.renderGenerator(o.generator, rgb),
+                .clock => self.clock.renderWith(o.clock_style, wall_ns, rgb),
+                .ip => self.ip.renderWith(o.ip_mode, self.last_tick_ns, rgb),
+            },
+        }
+        return true;
+    }
+
     fn validDuration(d: u16) bool {
         return d >= 1 and d <= 300;
     }
@@ -373,8 +450,17 @@ pub const Arbiter = struct {
         return self.applyWith(cmd, null, now_ns);
     }
 
-    /// apply a command whose request named a transition (`spec`), or none (the default).
+    /// apply a command whose request named a transition (`spec`), or none (the default). a
+    /// command that starts a transition remembers what was showing as the outgoing layer.
     pub fn applyWith(self: *Arbiter, cmd: Command, spec: ?transition.Spec, now_ns: u64) Result {
+        const before = self.capture();
+        const was_pending = self.pending != null;
+        const res = self.applyInner(cmd, spec, now_ns);
+        if (!was_pending and self.pending != null) self.outgoing = before;
+        return res;
+    }
+
+    fn applyInner(self: *Arbiter, cmd: Command, spec: ?transition.Spec, now_ns: u64) Result {
         switch (cmd) {
             .set_base => |b| {
                 if (b != self.base) {
@@ -458,11 +544,7 @@ pub const Arbiter = struct {
             .middle => _ = self.apply(.{ .set_base = .clock }, now_ns),
             .right => _ = self.apply(.{ .set_base = .ip }, now_ns),
             .rotate_cw, .rotate_ccw => switch (self.base) {
-                .art => {
-                    self.art.nextGenerator(a == .rotate_cw);
-                    self.mark(null);
-                    _ = self.bump();
-                },
+                .art => _ = self.apply(.{ .select_generator = self.art.neighbour(a == .rotate_cw) }, now_ns),
                 .clock, .ip => {
                     const b: i32 = @as(i32, self.brightness) + if (a == .rotate_cw) @as(i32, brightness_step) else -@as(i32, brightness_step);
                     self.brightness = @intCast(std.math.clamp(b, 1, 100));
@@ -481,7 +563,10 @@ pub const Arbiter = struct {
         _ = wall_ns;
         const dt_ns = now_ns -| self.last_tick_ns;
         self.last_tick_ns = now_ns;
-        self.art.step(@as(f32, @floatFromInt(dt_ns)) / @as(f32, s_ns));
+        const dt_s = @as(f32, @floatFromInt(dt_ns)) / @as(f32, s_ns);
+        self.art.step(dt_s);
+        // an outgoing generator keeps moving through its transition
+        if (self.outgoing) |o| if (o.generator != self.art.generator) self.art.stepGenerator(o.generator, dt_s);
         const until: ?u64 = switch (self.overlay) {
             .notify => |n| n.until_ns,
             .raw => |r| r.until_ns,
@@ -489,6 +574,8 @@ pub const Arbiter = struct {
             .none => null,
         };
         if (until) |u| if (now_ns >= u) {
+            const before = self.capture();
+            const was_pending = self.pending != null;
             // an overlay leaves with the paired effect travelling the other way
             switch (self.overlay) {
                 .notify => |n| self.pending = n.transition.outgoing(),
@@ -499,6 +586,7 @@ pub const Arbiter = struct {
             }
             self.overlay = .none;
             _ = self.bump();
+            if (!was_pending and self.pending != null) self.outgoing = before;
         };
     }
 
@@ -522,22 +610,24 @@ pub const Arbiter = struct {
 
     pub fn render(self: *const Arbiter, wall_ns: u64, rgb: *geometry.Rgb) void {
         switch (self.overlay) {
-            .notify => |n| {
-                rgb.* = geometry.black_rgb;
-                const text = n.text[0..n.len];
-                const w: i32 = @intCast(font.textWidth(text));
-                if (w <= geometry.width) {
-                    font.blit(rgb, @divFloor(geometry.width - w, 2), 4, text, n.colour);
-                } else {
-                    // scroll in from the right edge, one pixel per period, wrapping after the text has left
-                    const span: u64 = @intCast(w + geometry.width);
-                    const steps = (self.last_tick_ns -| n.since_ns) / scroll_period_ns;
-                    const x: i32 = geometry.width - @as(i32, @intCast(steps % span));
-                    font.blit(rgb, x, 4, text, n.colour);
-                }
-            },
+            .notify => |n| self.renderNotify(&n, rgb),
             .raw => |r| rgb.* = r.rgb,
             .stream_arming, .none => self.renderBase(wall_ns, rgb),
+        }
+    }
+
+    fn renderNotify(self: *const Arbiter, n: *const Notify, rgb: *geometry.Rgb) void {
+        rgb.* = geometry.black_rgb;
+        const text = n.text[0..n.len];
+        const w: i32 = @intCast(font.textWidth(text));
+        if (w <= geometry.width) {
+            font.blit(rgb, @divFloor(geometry.width - w, 2), 4, text, n.colour);
+        } else {
+            // scroll in from the right edge, one pixel per period, wrapping after the text has left
+            const span: u64 = @intCast(w + geometry.width);
+            const steps = (self.last_tick_ns -| n.since_ns) / scroll_period_ns;
+            const x: i32 = geometry.width - @as(i32, @intCast(steps % span));
+            font.blit(rgb, x, 4, text, n.colour);
         }
     }
 

@@ -34,6 +34,11 @@ pub const State = struct {
     }
 
     pub fn render(self: *const State, now_ns: u64, rgb: *geometry.Rgb) void {
+        self.renderWith(self.mode, now_ns, rgb);
+    }
+
+    /// render in a given mode: the outgoing layer of a layout change keeps the old one
+    pub fn renderWith(self: *const State, mode: Mode, now_ns: u64, rgb: *geometry.Rgb) void {
         rgb.* = geometry.black_rgb;
         const a = self.addr orelse {
             font.blit(rgb, 11, 4, "no ip", self.colour);
@@ -41,7 +46,7 @@ pub const State = struct {
         };
         var buf: [15]u8 = undefined;
         const painter = clockfont.Solid{ .colour = self.colour };
-        switch (self.mode) {
+        switch (mode) {
             .lines => {
                 var b1: [9]u8 = undefined;
                 var b2: [8]u8 = undefined;
