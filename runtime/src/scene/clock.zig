@@ -101,8 +101,13 @@ const GradientPainter = struct {
     }
 };
 
-/// one line of text and where it goes.
-const Line = struct { x: i32, y: i32, text: []const u8 };
+/// one line of text, where it goes and which glyphs draw it.
+const Line = struct { x: i32, y: i32, text: []const u8, font: Font };
+
+/// the hires layout: the time on rows 0..6, a bar on row 8 filling through each second, the
+/// milliseconds in mini digits on rows 10..14
+const hires_bar_row: i32 = 8;
+const hires_ms_y: i32 = 10;
 
 pub const State = struct {
     rule: tz.Rule,
@@ -118,22 +123,36 @@ pub const State = struct {
 
     /// where each font puts its text: everything centred, `mini` adds the date underneath,
     /// `big` shows hours and minutes only.
-    fn layout(self: *const State, time_text: []const u8, date_text: []const u8, lines: *[2]Line) []const Line {
+    fn layout(self: *const State, time_text: []const u8, date_text: []const u8, ms_text: []const u8, lines: *[2]Line) []const Line {
         const f = self.style.font;
         switch (f) {
             .classic, .segment, .block => {
-                lines[0] = .{ .x = centre(f, time_text), .y = @divFloor(geometry.height - @as(i32, clockfont.glyphHeight(f)), 2), .text = time_text };
+                lines[0] = .{ .x = centre(f, time_text), .y = @divFloor(geometry.height - @as(i32, clockfont.glyphHeight(f)), 2), .text = time_text, .font = f };
                 return lines[0..1];
             },
             .big => {
-                lines[0] = .{ .x = centre(f, time_text[0..5]), .y = 1, .text = time_text[0..5] };
+                lines[0] = .{ .x = centre(f, time_text[0..5]), .y = 1, .text = time_text[0..5], .font = f };
                 return lines[0..1];
             },
             .mini => {
-                lines[0] = .{ .x = centre(f, time_text), .y = 2, .text = time_text };
-                lines[1] = .{ .x = centre(f, date_text), .y = 9, .text = date_text };
+                lines[0] = .{ .x = centre(f, time_text), .y = 2, .text = time_text, .font = f };
+                lines[1] = .{ .x = centre(f, date_text), .y = 9, .text = date_text, .font = f };
                 return lines[0..2];
             },
+            .hires => {
+                lines[0] = .{ .x = centre(.classic, time_text), .y = 0, .text = time_text, .font = .classic };
+                lines[1] = .{ .x = centre(.mini, ms_text), .y = hires_ms_y, .text = ms_text, .font = .mini };
+                return lines[0..2];
+            },
+        }
+    }
+
+    /// draw the lines and, for hires, the bar of the current second
+    fn paint(rgb: *geometry.Rgb, lines: []const Line, bar: ?i32, painter: anytype) void {
+        for (lines) |l| clockfont.blit(rgb, l.x, l.y, l.font, l.text, painter);
+        if (bar) |fill| {
+            var x: i32 = 0;
+            while (x < fill) : (x += 1) rgb[geometry.pixelOffset(@intCast(x), @intCast(hires_bar_row))..][0..3].* = painter.at(x, hires_bar_row);
         }
     }
 
@@ -144,28 +163,34 @@ pub const State = struct {
         var dbuf: [5]u8 = undefined;
         const time_text = formatTime(local_s, &tbuf);
         const date_text = formatDate(local_s, &dbuf);
+        const ms: u32 = @intCast((wall_ns % std.time.ns_per_s) / std.time.ns_per_ms);
+        var mbuf: [3]u8 = undefined;
+        const ms_text = std.fmt.bufPrint(&mbuf, "{d:0>3}", .{ms}) catch unreachable;
         var storage: [2]Line = undefined;
-        const lines = self.layout(time_text, date_text, &storage);
+        const lines = self.layout(time_text, date_text, ms_text, &storage);
         rgb.* = geometry.black_rgb;
-        const f = self.style.font;
+        const hires = self.style.font == .hires;
+        const bar: ?i32 = if (hires) @intCast(ms * geometry.width / 1000) else null;
         switch (self.style.mode) {
-            .solid => for (lines) |l| clockfont.blit(rgb, l.x, l.y, f, l.text, clockfont.Solid{ .colour = self.style.colour }),
+            .solid => paint(rgb, lines, bar, clockfont.Solid{ .colour = self.style.colour }),
             .gradient => {
                 var box = Box{ .x0 = geometry.width, .y0 = geometry.height, .x1 = -1, .y1 = -1 };
                 for (lines) |l| {
                     box.x0 = @min(box.x0, l.x);
                     box.y0 = @min(box.y0, l.y);
-                    box.x1 = @max(box.x1, l.x + @as(i32, @intCast(clockfont.textWidth(f, l.text))) - 1);
-                    box.y1 = @max(box.y1, l.y + @as(i32, clockfont.glyphHeight(f)) - 1);
+                    box.x1 = @max(box.x1, l.x + @as(i32, @intCast(clockfont.textWidth(l.font, l.text))) - 1);
+                    box.y1 = @max(box.y1, l.y + @as(i32, clockfont.glyphHeight(l.font)) - 1);
                 }
+                if (hires) box = .{ .x0 = 0, .y0 = 0, .x1 = geometry.width - 1, .y1 = hires_ms_y + 4 }; // the bar spans the panel
                 const painter = GradientPainter{ .c1 = self.style.colour, .c2 = self.style.effectiveColour2(), .box = box, .dir = self.style.gradient };
-                for (lines) |l| clockfont.blit(rgb, l.x, l.y, f, l.text, painter);
+                paint(rgb, lines, bar, painter);
             },
         }
     }
 
+    /// the clock redraws at the next whole second; the hires layout wants every frame
     pub fn cadence(self: *const State, wall_ns: u64) scene.Cadence {
-        _ = self;
+        if (self.style.font == .hires) return .{ .continuous = scene.frame_period_ns };
         return .{ .at_wall_ns = nextBoundaryWallNs(wall_ns) };
     }
 };
@@ -231,6 +256,28 @@ test "every font renders centred within its box; big drops the seconds; mini add
     try std.testing.expectEqual(Box{ .x0 = 12, .y0 = 2, .x1 = 38, .y1 = 13 }, b);
     // the date line "06/09" sits in rows 9..13 and lights the slash's top-right pixel
     try std.testing.expect(rgb[geometry.pixelOffset(16 + 3 + 1 + 3 + 1 + 2, 9)] != 0);
+}
+
+test "hires shows the time, a bar through the second and the milliseconds, every frame" {
+    const rule = try tz.parse("JST-9");
+    var c = State.init(rule);
+    c.style.font = .hires;
+    const wall_ns: u64 = (4 * 3600 + 5 * 60 + 6) * std.time.ns_per_s + 417_000_000;
+    var rgb = geometry.black_rgb;
+    c.render(wall_ns, &rgb);
+    var expected = geometry.black_rgb;
+    font.blit(&expected, 2, 0, "13:05:06", c.style.colour);
+    for (0..21) |x| expected[geometry.pixelOffset(x, 8)..][0..3].* = c.style.colour; // 417 of 1000 -> 21 of 52 columns
+    clockfont.blit(&expected, 20, 10, .mini, "417", clockfont.Solid{ .colour = c.style.colour });
+    try std.testing.expectEqualSlices(u8, &expected, &rgb);
+    try std.testing.expectEqual(scene.Cadence{ .continuous = scene.frame_period_ns }, c.cadence(wall_ns));
+    c.render(wall_ns + 500_000_000, &rgb); // 13:05:06.917: 47 of 52 columns
+    try std.testing.expect(rgb[geometry.pixelOffset(46, 8)] != 0);
+    try std.testing.expect(rgb[geometry.pixelOffset(47, 8)] == 0);
+    c.style.mode = .gradient;
+    c.style.colour2 = .{ 0, 0, 255 };
+    c.render(wall_ns, &rgb);
+    try std.testing.expect(rgb[geometry.pixelOffset(0, 8)] != 0); // the bar takes the gradient too
 }
 
 test "a gradient runs from the start colour to the clamped end colour across the text" {

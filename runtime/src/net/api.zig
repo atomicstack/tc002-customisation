@@ -455,7 +455,7 @@ pub fn parseBody(kind: BodyKind, body: []const u8, arena: *Arena) Route {
 const StyleRoute = union(enum) { op: clock.StylePatch, reject: Reject };
 fn parseClockStyle(font_text: ?[]const u8, mode_text: ?[]const u8, colour_text: ?[]const u8, colour2_text: ?[]const u8, gradient_text: ?[]const u8, spread: ?u8) StyleRoute {
     var p = clock.StylePatch{ .spread = spread };
-    if (font_text) |s| p.font = enumByName(clock.Font, s) orelse return .{ .reject = .{ .status = 400, .code = "invalid_font", .message = "font must be classic, mini, segment, big or block" } };
+    if (font_text) |s| p.font = enumByName(clock.Font, s) orelse return .{ .reject = .{ .status = 400, .code = "invalid_font", .message = font_names_message } };
     if (mode_text) |s| p.mode = enumByName(clock.ColourMode, s) orelse return .{ .reject = .{ .status = 400, .code = "invalid_colour_mode", .message = "colour_mode must be solid or gradient" } };
     if (colour_text) |s| p.colour = parseColour(s) orelse return .{ .reject = .{ .status = 400, .code = "invalid_colour", .message = "colour must be rrggbb hex" } };
     if (colour2_text) |s| p.colour2 = parseColour(s) orelse return .{ .reject = .{ .status = 400, .code = "invalid_colour2", .message = "colour2 must be rrggbb hex" } };
@@ -477,6 +477,7 @@ fn parseTransition(effect_text: ?[]const u8, direction_text: ?[]const u8, ms: ?u
 }
 
 const effect_names_message = "transition must be one of " ++ namesList(transition.Effect);
+const font_names_message = "font must be one of " ++ namesList(clock.Font);
 
 /// an enum's tag names as a json array, built at comptime so the catalogue cannot drift
 fn namesJson(comptime E: type) []const u8 {
@@ -508,7 +509,7 @@ pub fn parseIpv4(text: []const u8) ?[4]u8 {
 }
 
 /// the `scenes` document is static.
-pub const scenes_body = "{\"bases\":[\"art\",\"clock\",\"ip\"],\"generators\":[{\"index\":0,\"name\":\"popsquares\",\"parameters\":{\"seed\":\"u32\"}},{\"index\":1,\"name\":\"plasma\",\"parameters\":{\"seed\":\"u32\"}}],\"clock\":{\"fonts\":[\"classic\",\"mini\",\"segment\",\"big\",\"block\"],\"colour_modes\":[\"solid\",\"gradient\"],\"gradients\":[\"horizontal\",\"vertical\",\"diagonal\"],\"spread\":[0,255],\"max_spread\":255},\"ip\":{\"modes\":" ++ namesJson(ip.Mode) ++ "},\"notify\":{\"text_max\":128,\"duration_s\":[1,300]},\"frame\":{\"bytes\":2496,\"duration_s\":[1,300]},\"transitions\":{\"effects\":" ++ namesJson(transition.Effect) ++ ",\"directions\":" ++ namesJson(transition.Direction) ++ ",\"exits\":" ++ namesJson(transition.Exit) ++ ",\"duration_ms\":[0,5000]}}";
+pub const scenes_body = "{\"bases\":[\"art\",\"clock\",\"ip\"],\"generators\":[{\"index\":0,\"name\":\"popsquares\",\"parameters\":{\"seed\":\"u32\"}},{\"index\":1,\"name\":\"plasma\",\"parameters\":{\"seed\":\"u32\"}}],\"clock\":{\"fonts\":" ++ namesJson(clock.Font) ++ ",\"colour_modes\":[\"solid\",\"gradient\"],\"gradients\":[\"horizontal\",\"vertical\",\"diagonal\"],\"spread\":[0,255],\"max_spread\":255},\"ip\":{\"modes\":" ++ namesJson(ip.Mode) ++ "},\"notify\":{\"text_max\":128,\"duration_s\":[1,300]},\"frame\":{\"bytes\":2496,\"duration_s\":[1,300]},\"transitions\":{\"effects\":" ++ namesJson(transition.Effect) ++ ",\"directions\":" ++ namesJson(transition.Direction) ++ ",\"exits\":" ++ namesJson(transition.Exit) ++ ",\"duration_ms\":[0,5000]}}";
 
 // tests
 

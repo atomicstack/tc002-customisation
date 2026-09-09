@@ -279,7 +279,7 @@
   /* ---------- clock fonts (clockfont.zig): classic 5x7, mini 3x5, segment 5x9, big 10x14.
      a glyph is {w, h, rows} with bit (w - 1 - col) set for a lit pixel; the blit takes a painter
      (x, y) => [r, g, b] so a gradient is a colour function over the text, not a font property ---------- */
-  const CLOCK_FONTS = ['classic', 'mini', 'segment', 'big'];
+  const CLOCK_FONTS = ['classic', 'mini', 'segment', 'big']; // the fonts the simulator can draw itself; the console's selects come from /scenes
   const CLOCK_GLYPH_H = { classic: 7, mini: 5, segment: 9, big: 14 };
   const clockGap = font => (font === 'big' ? 2 : 1);
   function fromArt(w, art) {

@@ -16,7 +16,7 @@ from urllib.parse import urlsplit, parse_qs
 
 BASES = ["art", "clock", "ip"]
 GENERATORS = ["popsquares", "plasma"]
-CLOCK_FONTS = ["classic", "mini", "segment", "big"]
+CLOCK_FONTS = ["classic", "mini", "segment", "big", "block", "hires"]
 IP_MODES = ["lines", "mini", "scroll", "big"]
 CLOCK_COLOUR_MODES = ["solid", "gradient"]
 CLOCK_GRADIENTS = ["horizontal", "vertical", "diagonal"]

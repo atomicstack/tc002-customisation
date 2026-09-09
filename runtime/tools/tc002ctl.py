@@ -8,7 +8,7 @@ commands:
   status                              renderer, network, time, mqtt state
   scenes                              scene and generator catalogue
   scene <art|clock|ip> [--generator NAME] [--seed N]
-        [--font classic|mini|segment|big|block] [--colour-mode solid|gradient] [--colour rrggbb]
+        [--font classic|mini|segment|big|block|hires] [--colour-mode solid|gradient] [--colour rrggbb]
         [--colour2 rrggbb] [--gradient horizontal|vertical|diagonal] [--spread 0..255]   transient clock style
         [--transition EFFECT] [--direction left|right|up|down] [--transition-ms 0..5000]
         [--ip-mode lines|mini|scroll|big]   transient ip layout (two centred lines, one mini line,

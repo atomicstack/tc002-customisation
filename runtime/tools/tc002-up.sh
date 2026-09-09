@@ -11,7 +11,7 @@
 #   --tz ZONE           iana zone name or posix rule (default Europe/Amsterdam; env TC002_TZ)
 #   --ntp IP            sntp server, ipv4 (default 10.0.0.136, the home assistant host; env
 #                       TC002_NTP); "none" leaves the clock unsynchronised
-#   --font NAME         clock font: classic, mini, segment, big or block (default block)
+#   --font NAME         clock font: classic, mini, segment, big, block or hires (default block)
 #   --base NAME         scene to show: clock, art or ip (default clock)
 #   --no-build          push the binaries already in runtime/zig-out instead of building first
 #   --keep-settings     leave the settings alone (a saved config survives a runtime restart, not

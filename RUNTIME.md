@@ -326,6 +326,7 @@ a clock style is `{font, colour_mode, colour, colour2, gradient, spread}`:
 | `segment` | seven-segment 5×9, generated from a segment table | `hh:mm:ss` | 39 px |
 | `big` | the classic digits scaled to 10×14 | `hh:mm` (no seconds) | 52 px, edge to edge |
 | `block` | the stock clock's face: 6×10 digits with two-pixel strokes, a flagged 1 with a base, a 2×2-dot colon | `hh:mm:ss` | 47 px |
+| `hires` | the classic 5×7 time on rows 0–6, a one-pixel bar on row 8 filling left to right through each second, the milliseconds in 3×5 digits on rows 10–14; redrawn every frame (60 fps) instead of once a second | `hh:mm:ss` and `mmm` | 47 px |
 
 everything is centred. `colour_mode` is `solid` (`colour` only) or `gradient`:
 a linear ramp from `colour` to `colour2` across the text's bounding box,
@@ -564,7 +565,7 @@ view: `state` and seconds since the last accepted reply (see
 | field | range | live effect |
 |-------|-------|-------------|
 | `brightness` | 1–100 | applied to the renderer at once |
-| `clock_font`, `clock_colour_mode`, `clock_colour`, `clock_colour2`, `clock_gradient`, `clock_spread` | `classic\|mini\|segment\|big\|block`; `solid\|gradient`; `rrggbb`; `rrggbb`; `horizontal\|vertical\|diagonal`; 0–255 | applied at once; reported as a `clock` object in `/config` |
+| `clock_font`, `clock_colour_mode`, `clock_colour`, `clock_colour2`, `clock_gradient`, `clock_spread` | `classic\|mini\|segment\|big\|block\|hires`; `solid\|gradient`; `rrggbb`; `rrggbb`; `horizontal\|vertical\|diagonal`; 0–255 | applied at once; reported as a `clock` object in `/config` |
 | `ip_mode` | `lines\|mini\|scroll\|big` | the ip scene's layout, applied at once; see [ip layouts](#ip-layouts) |
 | `base` | `art`, `clock`, `ip` | applied at once |
 | `generator` | `popsquares`, `plasma` | applied at once |

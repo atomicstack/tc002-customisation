@@ -7,7 +7,9 @@ const std = @import("std");
 const geometry = @import("../panel/geometry.zig");
 const font = @import("font.zig");
 
-pub const Font = enum(u8) { classic = 0, mini = 1, segment = 2, big = 3, block = 4 };
+/// `hires` is a layout of the clock scene (classic time, a bar, mini milliseconds) that borrows the
+/// classic glyphs here.
+pub const Font = enum(u8) { classic = 0, mini = 1, segment = 2, big = 3, block = 4, hires = 5 };
 pub const font_count: u8 = @typeInfo(Font).@"enum".fields.len;
 
 pub const max_h = 14;
@@ -20,7 +22,7 @@ const blank = Glyph{ .w = 0, .h = 0, .a = [_][max_w]u8{[_]u8{0} ** max_w} ** max
 
 pub fn glyphHeight(f: Font) u8 {
     return switch (f) {
-        .classic => 7,
+        .classic, .hires => 7,
         .mini => 5,
         .segment => 9,
         .big => 14,
@@ -163,7 +165,7 @@ const block_space = fromArt(6, 10, .{ "......", "......", "......", "......", ".
 /// the glyph for a character in a font; characters a font lacks draw as a blank cell.
 pub fn glyph(f: Font, c: u8) Glyph {
     switch (f) {
-        .classic => return classicGlyph(c, 1),
+        .classic, .hires => return classicGlyph(c, 1),
         .big => return if (c == ':') big_colon else classicGlyph(c, 2),
         .mini => {
             if (c >= '0' and c <= '9') return mini_digits[c - '0'];

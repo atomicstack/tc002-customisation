@@ -304,7 +304,7 @@ class EndToEndTests(unittest.TestCase):
 
     def test_scenes_status_and_config_carry_the_clock_style(self):
         _, scenes = self.call("GET", "scenes")
-        self.assertEqual(scenes["clock"], {"fonts": ["classic", "mini", "segment", "big"], "colour_modes": ["solid", "gradient"],
+        self.assertEqual(scenes["clock"], {"fonts": ["classic", "mini", "segment", "big", "block", "hires"], "colour_modes": ["solid", "gradient"],
                                            "gradients": ["horizontal", "vertical", "diagonal"], "max_spread": 96})
         self.device.config["clock"] = dict(self.DEFAULT_CLOCK); self.device.clock = dict(self.DEFAULT_CLOCK)
         _, st = self.call("GET", "status")
