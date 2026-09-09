@@ -10,7 +10,7 @@ pub const usage =
     \\  --dir PATH              runtime directory (/tmp/tc002)
     \\  --lock PATH             panel lock file (/tmp/tc002/panel.lock)
     \\  --tz RULE               posix tz rule or iana zone name; the renderer gets the rule (UTC0)
-    \\  --keymap L,M,R,K        keycodes for left, middle, right, knob (105,103,106,108)
+    \\  --keymap L,M,R,K        keycodes for left, middle, right, knob (108,105,106,103)
     \\  --keys PATH             button evdev node (/dev/input/event67)
     \\  --knob PATH             rotary evdev node (/dev/input/event68)
     \\  --ip-poll S             seconds between wlan0 address checks (5)
@@ -34,7 +34,7 @@ pub const Config = struct {
     dir: [:0]const u8 = "/tmp/tc002",
     lock_path: [:0]const u8 = "/tmp/tc002/panel.lock",
     tz_rule: [:0]const u8 = "UTC0",
-    keymap_text: [:0]const u8 = "105,103,106,108",
+    keymap_text: [:0]const u8 = "108,105,106,103",
     keymap: evdev.KeyMap = .{},
     keys_path: [:0]const u8 = "/dev/input/event67",
     knob_path: [:0]const u8 = "/dev/input/event68",

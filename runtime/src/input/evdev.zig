@@ -14,10 +14,10 @@ pub const Event = struct { sec: i32, usec: i32, type: u16, code: u16, value: i32
 /// which keycode is which physical control. gpio_keys_1 reports KEY_UP (103), KEY_LEFT (105),
 /// KEY_RIGHT (106) and KEY_DOWN (108); the assignment below is the working guess until measured
 /// on the device (see the plan's task 11) and can be overridden on the command line.
-/// the physical buttons carry the kernel's "key up" (103), "key left" (105) and "key right" (106)
-/// from left to right, and the knob's push is "key down" (108): measured on the device on
-/// 2026-09-09 (the middle button reported 105; the device tree names the codes).
-pub const KeyMap = struct { left: u16 = 103, middle: u16 = 105, right: u16 = 106, knob: u16 = 108 };
+/// measured on the device on 2026-09-09 from the renderer's press log: the left button reports
+/// the kernel's "key down" (108), the middle one "key left" (105), the right one "key right" (106)
+/// and the knob's push "key up" (103). the device tree's names are not positions.
+pub const KeyMap = struct { left: u16 = 108, middle: u16 = 105, right: u16 = 106, knob: u16 = 103 };
 
 test "decode reads the 16-byte little-endian device layout" {
     const bytes = [16]u8{ 0x39, 0x30, 0x00, 0x00, 0xa0, 0x86, 0x01, 0x00, 0x01, 0x00, 0x69, 0x00, 0x01, 0x00, 0x00, 0x00 };
@@ -36,7 +36,7 @@ test "encode is the inverse of decode" {
 }
 
 test "keymap parses four comma-separated keycodes and rejects anything else" {
-    const km = try parseKeyMap("103,105,106,108");
+    const km = try parseKeyMap("108,105,106,103");
     try std.testing.expectEqual(KeyMap{}, km);
     const other = try parseKeyMap("1,2,3,4");
     try std.testing.expectEqual(@as(u16, 4), other.knob);

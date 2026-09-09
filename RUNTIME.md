@@ -79,7 +79,7 @@ usage: tc002-supervisor [options]
   --dir PATH              runtime directory (/tmp/tc002)
   --lock PATH             panel lock file (/tmp/tc002/panel.lock)
   --tz RULE               posix tz rule handed to the renderer (UTC0)
-  --keymap L,M,R,K        keycodes for left, middle, right, knob (103,105,106,108)
+  --keymap L,M,R,K        keycodes for left, middle, right, knob (108,105,106,103)
   --keys PATH             button evdev node (/dev/input/event67)
   --knob PATH             rotary evdev node (/dev/input/event68)
   --ip-poll S             seconds between wlan0 address checks (5)
@@ -207,7 +207,7 @@ usage: tc002d [options]
   --gpio PATH         latch gpio value file (/sys/class/gpio/gpio35/value)
   --keys PATH         button evdev node (/dev/input/event67)
   --knob PATH         rotary evdev node (/dev/input/event68)
-  --keymap L,M,R,K    keycodes for left, middle, right, knob (103,105,106,108)
+  --keymap L,M,R,K    keycodes for left, middle, right, knob (108,105,106,103)
   --tz RULE           posix tz rule for the clock (UTC0)
   --base art|clock|ip initial base scene (art)
   --generator N       initial art generator index (0)
@@ -394,15 +394,19 @@ does not know is rejected with `400 rejected`.
 | knob short press | reseed the art | nothing |
 | knob long press (700 ms) | arm streaming | arm streaming |
 
-the keycode assignment (`103,105,106,108` = left, middle, right, knob) was
-measured on 2026-09-09: the device tree names the four gpio keys "key up"
-103, "key left" 105, "key right" 106 and "key down" 108, and pressing the
-buttons showed the middle one reporting 105 and the right one 106, which
-leaves 103 for the left button and 108 for the knob's push. it is overridable
-with `--keymap`; every mapped press is logged (`key N pressed: middle`) and
-so is a press outside the map (`unmapped keycode N pressed`), so the map can
-be checked from the log route. the rotary encoder reports an absolute
-counter, which is decoded as 8-bit with wrap-around. actions are queued eight
+the keycode assignment (`108,105,106,103` = left, middle, right, knob) was
+measured on 2026-09-09 from the renderer's press log while the buttons were
+pressed: the left button reports the kernel's "key down" 108, the middle one
+"key left" 105, the right one "key right" 106 and the knob's push "key up"
+103 (the device tree's names are not positions). the supervisor passes the
+map to the renderer, so both defaults agree; it is overridable with
+`--keymap`; every mapped press is logged (`key N pressed: middle`) and so is
+a press outside the map (`unmapped keycode N pressed`), so the map can be
+checked from the log route. the vendor's knob driver (the
+`knob` device tree node, `ABS_X` on `event68`) reports state codes rather than
+a counter: one detent is a pair of events, 8 then 1 turning counter-clockwise
+and 13 then 11 clockwise (measured on 2026-09-09), and the second value of
+each pair is the step; anything else is logged as unexpected. actions are queued eight
 at a time per loop iteration; overflow is counted and logged, never blocks.
 
 every edge is also reported outward: each button press and release, the

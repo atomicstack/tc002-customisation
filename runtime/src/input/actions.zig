@@ -1,6 +1,6 @@
 //! maps raw evdev events to normalized physical actions: button releases become left/middle/right,
 //! the knob push becomes a short press on release or a long press once held past the threshold,
-//! and rotary absolute-value transitions become cw/ccw steps. pure; fed with monotonic time.
+//! and the knob driver's state codes become cw/ccw steps. pure; fed with monotonic time.
 const std = @import("std");
 const evdev = @import("evdev.zig");
 const scene = @import("../scene/scene.zig");
@@ -9,9 +9,9 @@ test "a button press and release yields one action on release" {
     var m = Mapper.init(.{});
     var q = ActionQueue{};
     var e = EdgeQueue{};
-    m.feed(key(103, 1), 0, &q, &e);
+    m.feed(key(108, 1), 0, &q, &e);
     try std.testing.expectEqual(@as(usize, 0), q.len);
-    m.feed(key(103, 0), 50_000_000, &q, &e);
+    m.feed(key(108, 0), 50_000_000, &q, &e);
     try std.testing.expectEqualSlices(scene.Action, &.{.left}, q.slice());
     q.clear();
     m.feed(key(105, 1), 0, &q, &e);
@@ -25,38 +25,36 @@ test "a short knob press is reported on release, a long one once while held" {
     var m = Mapper.init(.{});
     var q = ActionQueue{};
     var e = EdgeQueue{};
-    m.feed(key(108, 1), 0, &q, &e);
-    m.feed(key(108, 0), 200_000_000, &q, &e);
+    m.feed(key(103, 1), 0, &q, &e);
+    m.feed(key(103, 0), 200_000_000, &q, &e);
     try std.testing.expectEqualSlices(scene.Action, &.{.knob_short}, q.slice());
     q.clear();
-    m.feed(key(108, 1), 1_000_000_000, &q, &e);
+    m.feed(key(103, 1), 1_000_000_000, &q, &e);
     m.poll(1_500_000_000, &q, &e);
     try std.testing.expectEqual(@as(usize, 0), q.len);
     m.poll(1_800_000_000, &q, &e);
     try std.testing.expectEqualSlices(scene.Action, &.{.knob_long}, q.slice());
     m.poll(2_500_000_000, &q, &e);
-    m.feed(key(108, 0), 3_000_000_000, &q, &e);
+    m.feed(key(103, 0), 3_000_000_000, &q, &e);
     try std.testing.expectEqualSlices(scene.Action, &.{.knob_long}, q.slice());
 }
 
-test "rotary absolute transitions become steps, including wrap-around" {
+test "rotary state codes become one step per detent" {
     var m = Mapper.init(.{});
     var q = ActionQueue{};
     var e = EdgeQueue{};
-    m.feed(abs(10), 0, &q, &e);
-    try std.testing.expectEqual(@as(usize, 0), q.len);
-    m.feed(abs(11), 1, &q, &e);
-    m.feed(abs(12), 2, &q, &e);
+    m.feed(abs(8), 0, &q, &e);
+    try std.testing.expectEqual(@as(usize, 0), q.len); // the first half of a pair is not a step
+    m.feed(abs(1), 1, &q, &e);
+    m.feed(abs(13), 2, &q, &e);
     m.feed(abs(11), 3, &q, &e);
-    try std.testing.expectEqualSlices(scene.Action, &.{ .rotate_cw, .rotate_cw, .rotate_ccw }, q.slice());
+    m.feed(abs(11), 4, &q, &e); // a pair whose first half was lost still counts once
+    try std.testing.expectEqualSlices(scene.Action, &.{ .rotate_ccw, .rotate_cw, .rotate_cw }, q.slice());
+    try std.testing.expectEqual(@as(i32, 1), m.position);
     q.clear();
-    m.feed(abs(255), 4, &q, &e);
-    q.clear();
-    m.feed(abs(0), 5, &q, &e);
-    try std.testing.expectEqualSlices(scene.Action, &.{.rotate_cw}, q.slice());
-    q.clear();
-    m.feed(abs(255), 6, &q, &e);
-    try std.testing.expectEqualSlices(scene.Action, &.{.rotate_ccw}, q.slice());
+    m.feed(abs(7), 5, &q, &e);
+    try std.testing.expectEqual(@as(usize, 0), q.len);
+    try std.testing.expectEqual(@as(?i32, 7), m.abs_unexpected);
 }
 
 test "unknown keys and repeats are ignored and the queue is bounded" {
@@ -65,12 +63,12 @@ test "unknown keys and repeats are ignored and the queue is bounded" {
     var e = EdgeQueue{};
     m.feed(key(999, 1), 0, &q, &e);
     m.feed(key(999, 0), 1, &q, &e);
-    m.feed(key(103, 2), 2, &q, &e); // autorepeat
+    m.feed(key(108, 2), 2, &q, &e); // autorepeat
     try std.testing.expectEqual(@as(usize, 0), q.len);
     var i: u32 = 0;
     while (i < 12) : (i += 1) {
-        m.feed(key(103, 1), i * 10, &q, &e);
-        m.feed(key(103, 0), i * 10 + 1, &q, &e);
+        m.feed(key(108, 1), i * 10, &q, &e);
+        m.feed(key(108, 0), i * 10 + 1, &q, &e);
     }
     try std.testing.expectEqual(@as(usize, ActionQueue.capacity), q.len);
     try std.testing.expectEqual(@as(u32, 12 - ActionQueue.capacity), q.dropped);
@@ -147,13 +145,14 @@ pub const Mapper = struct {
     long_press_ns: u64 = 700_000_000,
     knob_down_since: ?u64 = null,
     knob_long_sent: bool = false,
-    last_abs: ?i32 = null,
     /// detents since start, cw positive; reported with every rotary edge.
     position: i32 = 0,
     /// the last keycode that matched nothing, for the renderer to log; 0 = none.
     unmapped_code: u16 = 0,
     /// the last mapped key that went down, for the renderer's log (cleared when logged)
     last_press: ?struct { code: u16, control: Control } = null,
+    /// a rotary value outside the known codes, for the renderer's log (cleared when logged)
+    abs_unexpected: ?i32 = null,
 
     pub fn init(keymap: evdev.KeyMap) Mapper {
         return .{ .keymap = keymap };
@@ -203,14 +202,16 @@ pub const Mapper = struct {
                 }
             },
             evdev.EV_ABS => {
-                if (self.last_abs) |prev| {
-                    // the knob driver reports an absolute counter; treat it as 8-bit for wrap-around
-                    var delta = ev.value - prev;
-                    if (delta > 127) delta -= 256 else if (delta < -127) delta += 256;
-                    while (delta > 0) : (delta -= 1) self.step(true, out, edges);
-                    while (delta < 0) : (delta += 1) self.step(false, out, edges);
+                // the vendor's knob driver reports state codes on ABS_X, not a counter: one
+                // detent is a pair of events, 8 then 1 turning counter-clockwise and 13 then 11
+                // clockwise (measured on the device on 2026-09-09). the second value of each
+                // pair is the step; anything else is remembered for the log
+                switch (ev.value) {
+                    1 => self.step(false, out, edges),
+                    11 => self.step(true, out, edges),
+                    8, 13 => {},
+                    else => self.abs_unexpected = ev.value,
                 }
-                self.last_abs = ev.value;
             },
             else => {},
         }
@@ -270,14 +271,16 @@ test "edges report every press and release, long holds, and rotary steps with th
     var m = Mapper.init(.{});
     var q = ActionQueue{};
     var e = EdgeQueue{};
-    m.feed(key(103, 1), 0, &q, &e);
-    m.feed(key(103, 0), 1, &q, &e);
-    m.feed(abs(10), 2, &q, &e);
-    m.feed(abs(12), 3, &q, &e);
-    m.feed(abs(11), 4, &q, &e);
-    m.feed(key(108, 1), 5, &q, &e);
+    m.feed(key(108, 1), 0, &q, &e);
+    m.feed(key(108, 0), 1, &q, &e);
+    m.feed(abs(13), 2, &q, &e);
+    m.feed(abs(11), 2, &q, &e); // one clockwise detent
+    m.feed(abs(11), 3, &q, &e); // another, its first half lost
+    m.feed(abs(8), 4, &q, &e);
+    m.feed(abs(1), 4, &q, &e); // one counter-clockwise detent
+    m.feed(key(103, 1), 5, &q, &e);
     m.poll(1_000_000_000, &q, &e);
-    m.feed(key(108, 0), 1_100_000_000, &q, &e);
+    m.feed(key(103, 0), 1_100_000_000, &q, &e);
     m.feed(key(999, 1), 6, &q, &e);
     const expected = [_]Edge{
         .{ .control = .left, .event = .press, .position = 0 },
