@@ -117,7 +117,7 @@ test('clock: render equals a direct blit of the formatted local time', () => {
   assert.deepEqual(rgb, expected);
 });
 
-test('ip: no address renders the no ip text, an address renders on two lines', () => {
+test('ip: no address renders the no ip text, an address renders on two centred lines', () => {
   const none = S.black();
   S.renderIp(none, null);
   const e1 = S.black();
@@ -126,8 +126,8 @@ test('ip: no address renders the no ip text, an address renders on two lines', (
   const some = S.black();
   S.renderIp(some, S.ipFromString('10.0.0.111'));
   const e2 = S.black();
-  S.blit(e2, 1, 0, '10.0.', S.WHITE);
-  S.blit(e2, 1, 8, '0.111', S.WHITE);
+  S.blit(e2, 11, 0, '10.0.', S.WHITE);
+  S.blit(e2, 11, 8, '0.111', S.WHITE);
   assert.deepEqual(some, e2);
   assert.equal(S.ipFromString('10.0.0'), null);
   assert.equal(S.ipFromString('256.0.0.1'), null);
@@ -221,7 +221,7 @@ test('compose picks the right layer and cadence', () => {
   assert.equal(clock.label, 'clock');
 
   const ip = S.compose({ ...base, base: 'ip' }, local, 0);
-  const e2 = S.black(); S.blit(e2, 1, 0, '10.0.', S.WHITE); S.blit(e2, 1, 8, '0.5', S.WHITE);
+  const e2 = S.black(); S.blit(e2, 11, 0, '10.0.', S.WHITE); S.blit(e2, 17, 8, '0.5', S.WHITE); // both lines centred
   assert.deepEqual(ip.rgb, e2);
   assert.equal(ip.cadenceMs, null);
 

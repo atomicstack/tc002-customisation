@@ -17,6 +17,7 @@ from urllib.parse import urlsplit, parse_qs
 BASES = ["art", "clock", "ip"]
 GENERATORS = ["popsquares", "plasma"]
 CLOCK_FONTS = ["classic", "mini", "segment", "big"]
+IP_MODES = ["lines", "mini", "scroll", "big"]
 CLOCK_COLOUR_MODES = ["solid", "gradient"]
 CLOCK_GRADIENTS = ["horizontal", "vertical", "diagonal"]
 CLOCK_MAX_SPREAD = 96
@@ -25,6 +26,7 @@ SCENES = {"bases": BASES,
           "generators": [{"index": 0, "name": "popsquares", "parameters": {"seed": "u32"}},
                          {"index": 1, "name": "plasma", "parameters": {"seed": "u32"}}],
           "clock": {"fonts": CLOCK_FONTS, "colour_modes": CLOCK_COLOUR_MODES, "gradients": CLOCK_GRADIENTS, "max_spread": CLOCK_MAX_SPREAD},
+          "ip": {"modes": IP_MODES},
           "notify": {"text_max": 128, "duration_s": [1, 300]}, "frame": {"bytes": 2496, "duration_s": [1, 300]},
           "transitions": {"effects": ["fade", "cut", "slide", "swipe_out", "swipe_in", "collapse", "expand", "wipe", "dissolve",
                                       "split_out", "split_in", "blinds", "flip", "rain", "rain_random"],
@@ -136,6 +138,7 @@ class Device:
         self.base, self.generator, self.brightness = "art", "popsquares", 100
         self.power = True
         self.clock = dict(DEFAULT_CLOCK)   # the effective style: the durable defaults, or a transient scene block over them
+        self.ip_mode = "lines"
         self.overlay, self.overlay_until = "none", 0.0
         self.presented_base, self.presented_at = 0, self.started
         self.restarts = 0
@@ -146,7 +149,7 @@ class Device:
         self.config = {"revision": 0, "saved_revision": 0, "brightness": 100, "base": "art", "generator": "popsquares",
                        "timezone": "UTC0", "ntp_server": None, "ntp_interval_s": 300, "frame_timeout_ms": 500,
                        "metrics_interval_s": 30, "discovery": False, "discovery_prefix": "homeassistant", "origins": [],
-                       "clock": dict(DEFAULT_CLOCK)}
+                       "clock": dict(DEFAULT_CLOCK), "ip_mode": "lines"}
         self.mqtt = {"enabled": False, "host": "", "port": 1883, "username": "", "password": "", "client_id": "", "prefix": "", "tls": False}
         self.reconnects = 0
 
@@ -173,6 +176,7 @@ class Device:
         self.revision = 0
         self.overlay = "none"
         self.clock = dict(self.config["clock"])   # a fresh renderer gets the durable style
+        self.ip_mode = self.config["ip_mode"]
         self.restarts += 1
 
     def set_overlay(self, kind, duration_s):
@@ -198,7 +202,7 @@ class Device:
         return {"epoch": self.epoch, "revision": self.revision, "renderer": "running", "base": self.base,
                 "generator": self.generator, "overlay": self.overlay, "brightness": self.brightness,
                 "power": self.power,
-                "clock": dict(self.clock),
+                "clock": dict(self.clock), "ip_mode": self.ip_mode,
                 "presented": self.presented(), "fps": fps, "uptime_s": int(time.monotonic() - self.started),
                 "memory_available_kb": 16084, "cpu_pct": 5, "restarts": self.restarts,
                 "network": {"ip": "10.0.0.111"}, "time": {"state": "unsynced", "age_s": None},
@@ -217,6 +221,7 @@ class Device:
                 "ntp": {"server": c["ntp_server"], "interval_s": c["ntp_interval_s"]},
                 "frame_timeout_ms": c["frame_timeout_ms"], "metrics_interval_s": c["metrics_interval_s"],
                 "discovery": {"enabled": c["discovery"], "prefix": c["discovery_prefix"]}, "clock": dict(c["clock"]),
+                "ip_mode": c["ip_mode"],
                 "allowed_origins": list(c["origins"])}
 
     def mqtt_doc(self):
@@ -259,6 +264,14 @@ class Device:
             self.generator = gen
         # a transient restyle merges field by field over the effective style, whatever the base is
         self.clock.update(style)
+        ipb = body.get("ip")
+        if ipb is not None:
+            if not isinstance(ipb, dict) or set(ipb) - {"mode"}:
+                raise Reject(400, "invalid_json", "the body is not valid json for this schema")
+            if "mode" in ipb:
+                if ipb["mode"] not in IP_MODES:
+                    raise Reject(400, "invalid_ip_mode", "ip mode must be lines, mini, scroll or big")
+                self.ip_mode = ipb["mode"]
         self.log(f"scene: {base}")
         return self.bump()
 
@@ -374,6 +387,11 @@ class Device:
             if body["generator"] not in GENERATORS:
                 raise Reject(400, "invalid_generator", "unknown generator")
             nxt["generator"] = body["generator"]
+        if "ip_mode" in body:
+            if body["ip_mode"] not in IP_MODES:
+                raise Reject(400, "invalid_ip_mode", "ip_mode must be lines, mini, scroll or big")
+            nxt["ip_mode"] = body["ip_mode"]
+            self.ip_mode = body["ip_mode"]
         if "timezone" in body:
             if not isinstance(body["timezone"], str) or not 1 <= len(body["timezone"]) <= 64:
                 raise Reject(400, "invalid_timezone", "timezone must be 1..64 characters")
@@ -458,13 +476,13 @@ class Device:
 
 # request schemas: allowed and required keys, as the runtime's strict json enforces
 SCHEMAS = {
-    "scene": ({"base", "generator", "seed", "clock", "transition", "direction", "transition_ms", "exit", "request_id", "epoch"}, {"base", "request_id"}),
+    "scene": ({"base", "generator", "seed", "clock", "ip", "transition", "direction", "transition_ms", "exit", "request_id", "epoch"}, {"base", "request_id"}),
     "action": ({"action", "brightness", "seed", "power", "request_id", "epoch"}, {"action", "request_id", "epoch"}),
     "input": ({"control", "event", "steps", "request_id", "epoch"}, {"control", "event", "request_id", "epoch"}),
     "notify": ({"text", "colour", "duration_s", "transition", "direction", "transition_ms", "exit", "request_id", "epoch"}, {"text", "request_id", "epoch"}),
     "config": ({"brightness", "base", "generator", "timezone", "ntp_server", "ntp_interval_s", "frame_timeout_ms",
                 "metrics_interval_s", "discovery", "discovery_prefix", "expected_revision",
-                "clock_font", "clock_colour_mode", "clock_colour", "clock_colour2", "clock_gradient"}, set()),
+                "clock_font", "clock_colour_mode", "clock_colour", "clock_colour2", "clock_gradient", "ip_mode"}, set()),
     "config/save": ({"revision"}, set()),
     "mqtt": ({"enabled", "host", "port", "username", "password", "client_id", "prefix", "tls"}, set()),
 }

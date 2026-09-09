@@ -443,10 +443,12 @@
     }
     return out;
   }
+  // the `lines` mode of the ip scene: two centred lines (the other modes show through /screen)
   function renderIp(rgb, addr) {
     if (addr) {
-      blit(rgb, 1, 0, `${addr[0]}.${addr[1]}.`, WHITE);
-      blit(rgb, 1, 8, `${addr[2]}.${addr[3]}`, WHITE);
+      const l1 = `${addr[0]}.${addr[1]}.`, l2 = `${addr[2]}.${addr[3]}`;
+      blit(rgb, Math.floor((WIDTH - textWidth(l1)) / 2), 0, l1, WHITE);
+      blit(rgb, Math.floor((WIDTH - textWidth(l2)) / 2), 8, l2, WHITE);
     } else {
       blit(rgb, 11, 4, 'no ip', WHITE);
     }

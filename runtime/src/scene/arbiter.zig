@@ -213,6 +213,24 @@ test "the default between base scenes is a slide that follows their order" {
     try std.testing.expectEqual(transition.Effect.fade, a.takeTransition().?.effect);
     _ = a.applyWith(.{ .set_base = .clock }, transition.Spec.cut, 0); // a request still decides
     try std.testing.expectEqual(transition.Effect.cut, a.takeTransition().?.effect);
+    // a base change with a generator in the same request keeps the slide
+    _ = a.apply(.{ .set_base = .art }, 0);
+    _ = a.apply(.{ .select_generator = if (a.art.generator == .plasma) .popsquares else .plasma }, 0);
+    try std.testing.expectEqual(transition.Effect.slide, a.takeTransition().?.effect);
+    _ = a.apply(.{ .select_generator = if (a.art.generator == .plasma) .popsquares else .plasma }, 0); // alone: the fade
+    try std.testing.expectEqual(transition.Effect.fade, a.takeTransition().?.effect);
+}
+
+test "the ip mode bumps only on change and transitions only while the ip scene shows" {
+    var a = fresh();
+    try std.testing.expectEqual(Result{ .applied = 0 }, a.apply(.{ .set_ip_mode = .lines }, 0));
+    try std.testing.expectEqual(Result{ .applied = 1 }, a.apply(.{ .set_ip_mode = .big }, 0));
+    try std.testing.expect(a.takeTransition() == null); // art is showing
+    _ = a.apply(.{ .set_base = .ip }, 0);
+    _ = a.takeTransition();
+    try std.testing.expectEqual(Result{ .applied = 3 }, a.apply(.{ .set_ip_mode = .mini }, 0));
+    try std.testing.expectEqual(transition.Effect.fade, a.takeTransition().?.effect);
+    try std.testing.expectEqual(ip.Mode.mini, a.ip.mode);
 }
 
 test "a clock restyle merges fields, bumps only on change, and cross-fades while the clock shows" {
@@ -295,6 +313,8 @@ pub const Command = union(enum) {
     power: bool,
     /// a partial restyle of the clock (font, colours); a visible change cross-fades.
     set_clock_style: clock.StylePatch,
+    /// how the ip scene lays the address out; a visible change transitions.
+    set_ip_mode: ip.Mode,
 };
 
 pub const Reject = enum { invalid_text, invalid_duration, invalid_brightness };
@@ -368,7 +388,8 @@ pub const Arbiter = struct {
                 return .{ .applied = self.bump() };
             },
             .select_generator => |g| {
-                if (g != self.art.generator) self.mark(spec);
+                // a generator named alongside a base change must not replace that change's slide
+                if (g != self.art.generator and self.pending == null) self.mark(spec);
                 self.art.select(g);
                 return .{ .applied = self.bump() };
             },
@@ -393,6 +414,11 @@ pub const Arbiter = struct {
                 self.clock.style.apply(p);
                 if (std.meta.eql(before, self.clock.style)) return .{ .applied = self.revision };
                 if (self.base == .clock and self.overlay == .none) self.mark(spec);
+                return .{ .applied = self.bump() };
+            },
+            .set_ip_mode => |m| {
+                if (!self.ip.setMode(m)) return .{ .applied = self.revision };
+                if (self.base == .ip and self.overlay == .none) self.mark(spec);
                 return .{ .applied = self.bump() };
             },
             .raw => |r| {
@@ -490,7 +516,7 @@ pub const Arbiter = struct {
         switch (self.base) {
             .art => self.art.render(rgb),
             .clock => self.clock.render(wall_ns, rgb),
-            .ip => self.ip.render(rgb),
+            .ip => self.ip.render(self.last_tick_ns, rgb),
         }
     }
 

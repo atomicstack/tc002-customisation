@@ -438,6 +438,7 @@ const Supervisor = struct {
         if (before.base != c.base or before.generator != c.generator) self.send(.{ .set_base = .{ .base = c.base, .generator = c.generator, .seed = 0 } });
         if (!std.mem.eql(u8, before.timezone.slice(), c.timezone.slice())) self.send(.{ .set_timezone = config.Text.init(c.tzRule()) });
         if (!std.meta.eql(before.clockStyle(), c.clockStyle())) self.send(.{ .clock_style = messages.ClockStyle.full(c.clockStyle()) });
+        if (before.ip_mode != c.ip_mode) self.send(.{ .ip_mode = .{ .mode = c.ip_mode } });
         if (!std.meta.eql(before.ntp_server, c.ntp_server) or before.ntp_interval_s != c.ntp_interval_s) self.sntp_link.configure(self, sys.monotonicNs()); // sntp
         self.snapshot.config_revision = c.revision;
         self.snapshot.saved_revision = c.saved_revision;
@@ -540,7 +541,7 @@ const Supervisor = struct {
                     ring.page(g.after, &page);
                     self.sendNetd(.{ .log_lines = page }, p.request_id);
                 },
-                .set_base, .notify, .frame, .brightness, .reseed, .arm_stream, .screen_get, .inject_input, .power, .clock_style => {
+                .set_base, .notify, .frame, .brightness, .reseed, .arm_stream, .screen_get, .inject_input, .power, .clock_style, .ip_mode => {
                     if (self.child_fd == null or lifecycle.state != .running) {
                         self.relayResult(p.request_id, .unavailable, self.snapshot.revision);
                         continue;
@@ -742,6 +743,7 @@ const Supervisor = struct {
         self.snapshot.revision = h.revision;
         self.snapshot.power = h.power;
         self.snapshot.clock = h.clock;
+        self.snapshot.ip_mode = h.ip_mode;
         self.snapshot.presented = h.presented;
         self.snapshot.base = h.base;
         self.snapshot.generator = h.generator;
@@ -892,6 +894,7 @@ const Supervisor = struct {
                     self.send(.{ .set_base = .{ .base = self.cfg.base, .generator = self.cfg.generator, .seed = 0 } });
                     self.send(.{ .set_timezone = config.Text.init(self.cfg.tzRule()) });
                     self.send(.{ .clock_style = messages.ClockStyle.full(self.cfg.clockStyle()) });
+                    self.send(.{ .ip_mode = .{ .mode = self.cfg.ip_mode } });
                     self.snapshot.epoch = lifecycle.epoch;
                     self.snapshot.renderer_state = 2;
                     for (&self.relays) |*r| r.used = false;

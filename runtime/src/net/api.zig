@@ -10,6 +10,7 @@ const scene = @import("../scene/scene.zig");
 const actions = @import("../input/actions.zig");
 const clock = @import("../scene/clock.zig");
 const transition = @import("../panel/transition.zig");
+const ip = @import("../scene/ip.zig");
 
 pub const token_len = 32;
 pub const Token = [token_len]u8;
@@ -50,7 +51,7 @@ pub const ActionKind = enum { brightness, reseed, arm_stream, power };
 pub const Op = union(enum) {
     status,
     scenes,
-    set_scene: struct { base: Base, generator: ?scene.Generator, seed: ?u32, style: ?clock.StylePatch, transition: ?transition.Spec, request_id: u64, epoch: ?u32 },
+    set_scene: struct { base: Base, generator: ?scene.Generator, seed: ?u32, style: ?clock.StylePatch, ip_mode: ?ip.Mode, transition: ?transition.Spec, request_id: u64, epoch: ?u32 },
     action: struct { kind: ActionKind, brightness: ?u8, seed: ?u32, power: ?bool, request_id: u64, epoch: u32 },
     /// the framebuffer as shown; `raw` = octets instead of the json document
     screen: struct { raw: bool },
@@ -89,6 +90,7 @@ pub const ConfigPatch = struct {
     clock_colour2: ?[3]u8 = null,
     clock_gradient: ?clock.Gradient = null,
     clock_spread: ?u8 = null,
+    ip_mode: ?ip.Mode = null,
 };
 
 pub const MqttPut = struct {
@@ -114,7 +116,8 @@ pub const Arena = [json.arena_size]u8;
 
 // json wire schemas (request bodies)
 const ClockBody = struct { font: ?[]const u8 = null, colour_mode: ?[]const u8 = null, colour: ?[]const u8 = null, colour2: ?[]const u8 = null, gradient: ?[]const u8 = null, spread: ?u8 = null };
-const SceneBody = struct { base: []const u8, generator: ?[]const u8 = null, seed: ?u32 = null, clock: ?ClockBody = null, transition: ?[]const u8 = null, direction: ?[]const u8 = null, transition_ms: ?u32 = null, exit: ?[]const u8 = null, request_id: []const u8, epoch: ?u32 = null };
+const IpBody = struct { mode: ?[]const u8 = null };
+const SceneBody = struct { base: []const u8, generator: ?[]const u8 = null, seed: ?u32 = null, clock: ?ClockBody = null, ip: ?IpBody = null, transition: ?[]const u8 = null, direction: ?[]const u8 = null, transition_ms: ?u32 = null, exit: ?[]const u8 = null, request_id: []const u8, epoch: ?u32 = null };
 const ActionBody = struct { action: []const u8, brightness: ?u8 = null, seed: ?u32 = null, power: ?bool = null, request_id: []const u8, epoch: u32 };
 const InputBody = struct { control: []const u8, event: []const u8, steps: u8 = 1, request_id: []const u8, epoch: u32 };
 const NotifyBody = struct { text: []const u8, colour: ?[]const u8 = null, duration_s: u16 = 5, transition: ?[]const u8 = null, direction: ?[]const u8 = null, transition_ms: ?u32 = null, exit: ?[]const u8 = null, request_id: []const u8, epoch: u32 };
@@ -136,6 +139,7 @@ const ConfigBody = struct {
     clock_colour2: ?[]const u8 = null,
     clock_gradient: ?[]const u8 = null,
     clock_spread: ?u8 = null,
+    ip_mode: ?[]const u8 = null,
 };
 const SaveBody = struct { revision: ?u32 = null };
 const MqttBody = struct {
@@ -349,7 +353,11 @@ pub fn parseBody(kind: BodyKind, body: []const u8, arena: *Arena) Route {
                 .reject => |j| return .{ .reject = j },
                 .op => |t| t,
             };
-            return .{ .op = .{ .set_scene = .{ .base = base, .generator = generator, .seed = b.seed, .style = style, .transition = spec, .request_id = rid, .epoch = b.epoch } } };
+            var ip_mode: ?ip.Mode = null;
+            if (b.ip) |ib| if (ib.mode) |t| {
+                ip_mode = enumByName(ip.Mode, t) orelse return bad("invalid_ip_mode", "ip mode must be lines, mini, scroll or big");
+            };
+            return .{ .op = .{ .set_scene = .{ .base = base, .generator = generator, .seed = b.seed, .style = style, .ip_mode = ip_mode, .transition = spec, .request_id = rid, .epoch = b.epoch } } };
         },
         .action => {
             const b = json.parse(ActionBody, body, arena) catch |e| return jsonError(e);
@@ -405,7 +413,9 @@ pub fn parseBody(kind: BodyKind, body: []const u8, arena: *Arena) Route {
                 .reject => |j| return .{ .reject = j },
                 .op => |op| op,
             };
+            const ip_mode: ?ip.Mode = if (b.ip_mode) |t| (enumByName(ip.Mode, t) orelse return bad("invalid_ip_mode", "ip_mode must be lines, mini, scroll or big")) else null;
             return .{ .op = .{ .config_patch = .{
+                .ip_mode = ip_mode,
                 .clock_font = style.font,
                 .clock_colour_mode = style.mode,
                 .clock_colour = style.colour,
@@ -498,7 +508,7 @@ pub fn parseIpv4(text: []const u8) ?[4]u8 {
 }
 
 /// the `scenes` document is static.
-pub const scenes_body = "{\"bases\":[\"art\",\"clock\",\"ip\"],\"generators\":[{\"index\":0,\"name\":\"popsquares\",\"parameters\":{\"seed\":\"u32\"}},{\"index\":1,\"name\":\"plasma\",\"parameters\":{\"seed\":\"u32\"}}],\"clock\":{\"fonts\":[\"classic\",\"mini\",\"segment\",\"big\",\"block\"],\"colour_modes\":[\"solid\",\"gradient\"],\"gradients\":[\"horizontal\",\"vertical\",\"diagonal\"],\"spread\":[0,255],\"max_spread\":255},\"notify\":{\"text_max\":128,\"duration_s\":[1,300]},\"frame\":{\"bytes\":2496,\"duration_s\":[1,300]},\"transitions\":{\"effects\":" ++ namesJson(transition.Effect) ++ ",\"directions\":" ++ namesJson(transition.Direction) ++ ",\"exits\":" ++ namesJson(transition.Exit) ++ ",\"duration_ms\":[0,5000]}}";
+pub const scenes_body = "{\"bases\":[\"art\",\"clock\",\"ip\"],\"generators\":[{\"index\":0,\"name\":\"popsquares\",\"parameters\":{\"seed\":\"u32\"}},{\"index\":1,\"name\":\"plasma\",\"parameters\":{\"seed\":\"u32\"}}],\"clock\":{\"fonts\":[\"classic\",\"mini\",\"segment\",\"big\",\"block\"],\"colour_modes\":[\"solid\",\"gradient\"],\"gradients\":[\"horizontal\",\"vertical\",\"diagonal\"],\"spread\":[0,255],\"max_spread\":255},\"ip\":{\"modes\":" ++ namesJson(ip.Mode) ++ "},\"notify\":{\"text_max\":128,\"duration_s\":[1,300]},\"frame\":{\"bytes\":2496,\"duration_s\":[1,300]},\"transitions\":{\"effects\":" ++ namesJson(transition.Effect) ++ ",\"directions\":" ++ namesJson(transition.Direction) ++ ",\"exits\":" ++ namesJson(transition.Exit) ++ ",\"duration_ms\":[0,5000]}}";
 
 // tests
 
@@ -583,6 +593,21 @@ test "transition fields become a spec with the effect's natural direction and 50
     try expectReject(route(testReq(.POST, "/api/v1/notify", "", control_header, "application/json", null), "{\"text\":\"x\",\"request_id\":\"1\",\"epoch\":1,\"exit\":\"back\"}", &c, &origins, &arena), 400, "invalid_exit");
     const fe = route(testReq(.POST, "/api/v1/frame", "duration_s=5&request_id=ab&epoch=1&transition=slide&exit=none", control_header, "application/octet-stream", null), &frame, &c, &origins, &arena);
     try std.testing.expectEqual(transition.Exit.none, fe.op.frame.transition.?.exit);
+}
+
+test "the ip mode rides on the scene body and the settings patch" {
+    const c = testCreds();
+    var arena: Arena = undefined;
+    const origins = OriginPolicy{};
+    const s = route(testReq(.PUT, "/api/v1/scene", "", control_header, "application/json", null), "{\"base\":\"ip\",\"ip\":{\"mode\":\"big\"},\"request_id\":\"7\"}", &c, &origins, &arena);
+    try std.testing.expectEqual(ip.Mode.big, s.op.set_scene.ip_mode.?);
+    const plain = route(testReq(.PUT, "/api/v1/scene", "", control_header, "application/json", null), "{\"base\":\"ip\",\"request_id\":\"7\"}", &c, &origins, &arena);
+    try std.testing.expect(plain.op.set_scene.ip_mode == null);
+    try expectReject(route(testReq(.PUT, "/api/v1/scene", "", control_header, "application/json", null), "{\"base\":\"ip\",\"ip\":{\"mode\":\"huge\"},\"request_id\":\"7\"}", &c, &origins, &arena), 400, "invalid_ip_mode");
+    const cp = route(testReq(.PATCH, "/api/v1/config", "", admin_header, "application/json", null), "{\"ip_mode\":\"mini\"}", &c, &origins, &arena);
+    try std.testing.expectEqual(ip.Mode.mini, cp.op.config_patch.ip_mode.?);
+    try expectReject(route(testReq(.PATCH, "/api/v1/config", "", admin_header, "application/json", null), "{\"ip_mode\":\"huge\"}", &c, &origins, &arena), 400, "invalid_ip_mode");
+    try std.testing.expect(std.mem.indexOf(u8, scenes_body, "\"ip\":{\"modes\":[\"lines\",\"mini\",\"scroll\",\"big\"]}") != null);
 }
 
 test "notify and scene bodies become typed operations with validation" {

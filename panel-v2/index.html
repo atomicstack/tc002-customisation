@@ -221,6 +221,7 @@ input[type=file]{font:12px var(--body);color:var(--muted);max-width:220px}
             <button type="button" data-v="ip" role="radio" aria-checked="false">IP</button>
           </div></div>
         <div class="field"><label for="gen">Generator<span class="key">art only</span></label><select id="gen"></select></div>
+        <div class="field"><label for="kip">IP layout<span class="key">ip only · PUT /scene ip.mode · transient</span></label><select id="kip"></select></div>
         <div class="field"><label for="strans">Transition<span class="key">transition · direction · for the next scene change</span></label>
           <span class="inline"><select id="strans"></select><select id="sdir"></select></span></div>
         <div class="field"><label for="kfont">Clock font<span class="key">clock only · PUT /scene clock.font · transient</span></label><select id="kfont"></select></div>
@@ -282,6 +283,7 @@ input[type=file]{font:12px var(--body);color:var(--muted);max-width:220px}
           <select id="cbase"><option value="art">art</option><option value="clock">clock</option><option value="ip">ip</option></select></div>
         <div class="field"><label for="cgen">Generator at start<span class="key">generator</span></label><select id="cgen"></select></div>
         <div class="field"><label for="cfont">Clock font<span class="key">clock_font · applied at once</span></label><select id="cfont"></select></div>
+        <div class="field"><label for="cip">IP layout<span class="key">ip_mode · applied at once</span></label><select id="cip"></select></div>
         <div class="field"><label for="cmode">Clock colour mode<span class="key">clock_colour_mode</span></label><select id="cmode"></select></div>
         <div class="field"><label for="ccolour">Clock colour<span class="key">clock_colour</span></label><input type="color" id="ccolour" value="#ffffff"></div>
         <div class="field"><label for="ccolour2">Gradient end colour<span class="key">clock_colour2 · clamped to max_spread of clock_colour</span></label><input type="color" id="ccolour2" value="#ffffff"></div>
@@ -446,6 +448,7 @@ function onStatus(prev) {
     $('gen').value = s.generator;
   }
   if (s.overlay === 'none') { local.notify = null; local.frame = null; }
+  if (s.ip_mode && (!prev || prev.ip_mode !== s.ip_mode)) $('kip').value = s.ip_mode;
   // the effective style: mirrored only when it changed, so an open colour picker is not clobbered
   if (s.clock && (!prev || !sameClock(prev.clock, s.clock))) showClockStyle(s.clock);
   if (!prev || prev.brightness !== s.brightness) setRange('bright', s.brightness);
@@ -609,6 +612,15 @@ async function setClockStyle(patch, what) {
   } catch (e) { toast(e.message, true); }
 }
 $('kfont').addEventListener('change', () => setClockStyle({ font: $('kfont').value }, `font: ${$('kfont').value}`));
+// the transient ip layout, sent like a clock restyle: the current base repeated, the mode alongside
+$('kip').addEventListener('change', async () => {
+  if (!STATUS) return;
+  const base = STATUS.base, mode = $('kip').value;
+  try {
+    await command('PUT', 'scene', (id, epoch) => ({ base, generator: base === 'art' ? $('gen').value : undefined, ip: { mode }, request_id: id, epoch }));
+    toast(`ip layout: ${mode}${base === 'ip' ? '' : ' (shown when ip is the scene)'}`);
+  } catch (e) { toast(e.message, true); }
+});
 $('kmode').addEventListener('click', e => { const b = e.target.closest('button'); if (b) setClockStyle({ colour_mode: b.dataset.v }, `colour: ${b.dataset.v}`); });
 $('kcolour').addEventListener('change', () => setClockStyle({ colour: hexColour($('kcolour').value) }, `colour: ${hexColour($('kcolour').value)}`));
 $('kcolour2').addEventListener('change', () => setClockStyle({ colour2: hexColour($('kcolour2').value) }, `gradient end: ${hexColour($('kcolour2').value)}`));
@@ -618,6 +630,8 @@ function fillClockSelects() {
   const fonts = cat.fonts || S.CLOCK_FONTS, modes = cat.colour_modes || ['solid', 'gradient'], grads = cat.gradients || ['horizontal', 'vertical', 'diagonal'];
   fillSelect($('kfont'), fonts, $('kfont').value); fillSelect($('kgrad'), grads, $('kgrad').value);
   fillSelect($('cfont'), fonts, $('cfont').value); fillSelect($('cmode'), modes, $('cmode').value); fillSelect($('cgrad'), grads, $('cgrad').value);
+  const ipModes = (SCENES && SCENES.ip && SCENES.ip.modes) || ['lines', 'mini', 'scroll', 'big'];
+  fillSelect($('kip'), ipModes, $('kip').value); fillSelect($('cip'), ipModes, $('cip').value);
   $('kspread').textContent = String(cat.max_spread == null ? S.CLOCK_MAX_SPREAD : cat.max_spread);
 }
 $('reseed').addEventListener('click', async () => {
@@ -734,6 +748,7 @@ function showConfig(c) {
   $('cdisc').checked = !!c.discovery.enabled; $('cdp').value = c.discovery.prefix;
   const k = c.clock || S.DEFAULT_CLOCK_STYLE;   // a runtime without clock styles: show the defaults, patch nothing
   $('cfont').value = k.font; $('cmode').value = k.colour_mode; $('ccolour').value = '#' + k.colour; $('ccolour2').value = '#' + k.colour2; $('cgrad').value = k.gradient;
+  if (c.ip_mode) $('cip').value = c.ip_mode;
   const unsaved = c.revision !== c.saved_revision;
   const crev = $('crev'); crev.textContent = '';
   crev.append(`revision ${c.revision} · saved ${c.saved_revision}`);
@@ -764,6 +779,9 @@ $('capply').addEventListener('click', async () => {
     if (hexColour($('ccolour').value) !== k.colour) patch.clock_colour = hexColour($('ccolour').value);
     if (hexColour($('ccolour2').value) !== k.colour2) patch.clock_colour2 = hexColour($('ccolour2').value);
     if ($('cgrad').value !== k.gradient) patch.clock_gradient = $('cgrad').value;
+  }
+  if (CONFIG.ip_mode) {
+    if ($('cip').value !== CONFIG.ip_mode) patch.ip_mode = $('cip').value;
   }
   if (Object.keys(patch).length === 1) return toast('nothing changed');
   try {

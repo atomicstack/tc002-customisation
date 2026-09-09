@@ -15,6 +15,7 @@ const codec = @import("ipc/codec.zig");
 const config = @import("supervisor/config.zig");
 const geometry = @import("panel/geometry.zig");
 const transition = @import("panel/transition.zig");
+const ip = @import("scene/ip.zig");
 const scene = @import("scene/scene.zig");
 const actions = @import("input/actions.zig");
 const clock = @import("scene/clock.zig");
@@ -381,7 +382,7 @@ const Netd = struct {
                 self.respond(c, 200, "application/json", api.scenes_body);
                 self.flushConn(c, now);
             },
-            .set_scene => |s| self.relay(c, .{ .set_base = .{ .base = @intFromEnum(s.base), .generator = if (s.generator) |g| @intFromEnum(g) else 0xff, .seed = s.seed orelse 0, .style = if (s.style) |st| messages.ClockStyle.fromPatch(st) else .{}, .transition = messages.Transition.fromSpec(s.transition) } }, s.request_id, s.epoch orelse 0, now),
+            .set_scene => |s| self.relay(c, .{ .set_base = .{ .base = @intFromEnum(s.base), .generator = if (s.generator) |g| @intFromEnum(g) else 0xff, .seed = s.seed orelse 0, .style = if (s.style) |st| messages.ClockStyle.fromPatch(st) else .{}, .transition = messages.Transition.fromSpec(s.transition), .ip_mode = if (s.ip_mode) |m| @intFromEnum(m) else 0xff } }, s.request_id, s.epoch orelse 0, now),
             .action => |a| switch (a.kind) {
                 .brightness => self.relay(c, .{ .brightness = .{ .value = a.brightness.? } }, a.request_id, a.epoch, now),
                 .reseed => self.relay(c, .{ .reseed = .{ .seed = a.seed orelse @truncate(now ^ a.request_id) } }, a.request_id, a.epoch, now),
@@ -717,6 +718,7 @@ const Netd = struct {
         if (st.time_age_s == 0xffffffff) o.add("null") else o.fmt("{d}", .{st.time_age_s});
         o.add("},\"clock\":");
         clockJson(o, st.clock);
+        o.fmt(",\"ip_mode\":\"{s}\"", .{enumName(ip.Mode, st.ip_mode)});
         o.fmt(",\"config_revision\":{d},\"saved_revision\":{d},\"transport\":\"plaintext\",\"mqtt\":", .{ st.config_revision, st.saved_revision });
         self.mqttStatusJson(o, now);
         o.fmt(",\"boot_id\":\"{x:0>8}\",\"sample_age_ms\":{d},", .{ st.boot_id, st.sample_age_ms + @as(u32, @intCast(@min((now -| self.status_at_ns) / 1_000_000, 0xffffffff))) });
@@ -748,6 +750,7 @@ const Netd = struct {
         o.str(c.discovery_prefix.slice());
         o.add("},\"clock\":");
         clockJson(o, messages.ClockStyle.full(c.clockStyle()));
+        o.fmt(",\"ip_mode\":\"{s}\"", .{enumName(ip.Mode, c.ip_mode)});
         o.add(",\"allowed_origins\":[");
         for (c.origins[0..c.origin_count], 0..) |*org, i| {
             if (i > 0) o.add(",");
@@ -1111,7 +1114,7 @@ const Netd = struct {
                 self.mqttPublish("result", o.slice(), 0, false);
             },
             .op => |op| switch (op) {
-                .set_scene => |s| self.mqttRelay(.{ .set_base = .{ .base = @intFromEnum(s.base), .generator = if (s.generator) |g| @intFromEnum(g) else 0xff, .seed = s.seed orelse 0, .style = if (s.style) |st| messages.ClockStyle.fromPatch(st) else .{}, .transition = messages.Transition.fromSpec(s.transition) } }, s.request_id, s.epoch orelse 0, now),
+                .set_scene => |s| self.mqttRelay(.{ .set_base = .{ .base = @intFromEnum(s.base), .generator = if (s.generator) |g| @intFromEnum(g) else 0xff, .seed = s.seed orelse 0, .style = if (s.style) |st| messages.ClockStyle.fromPatch(st) else .{}, .transition = messages.Transition.fromSpec(s.transition), .ip_mode = if (s.ip_mode) |m| @intFromEnum(m) else 0xff } }, s.request_id, s.epoch orelse 0, now),
                 .action => |a| switch (a.kind) {
                     .brightness => self.mqttRelay(.{ .brightness = .{ .value = a.brightness.? } }, a.request_id, a.epoch, now),
                     .reseed => self.mqttRelay(.{ .reseed = .{ .seed = a.seed orelse @truncate(now ^ a.request_id) } }, a.request_id, a.epoch, now),
@@ -1122,7 +1125,7 @@ const Netd = struct {
                 .notify => |n| self.mqttRelay(.{ .notify = messages.Notify.init(n.text, n.colour, n.duration_s, messages.Transition.fromSpec(n.transition)) }, n.request_id, n.epoch, now),
                 .config_patch => |cp| {
                     // the control subset only: transient brightness and scene parameters
-                    const admin_fields = cp.timezone != null or cp.ntp_server != null or cp.ntp_interval_s != null or cp.frame_timeout_ms != null or cp.metrics_interval_s != null or cp.discovery != null or cp.discovery_prefix != null or cp.clock_font != null or cp.clock_colour_mode != null or cp.clock_colour != null or cp.clock_colour2 != null or cp.clock_gradient != null or cp.clock_spread != null;
+                    const admin_fields = cp.timezone != null or cp.ntp_server != null or cp.ntp_interval_s != null or cp.frame_timeout_ms != null or cp.metrics_interval_s != null or cp.discovery != null or cp.discovery_prefix != null or cp.clock_font != null or cp.clock_colour_mode != null or cp.clock_colour != null or cp.clock_colour2 != null or cp.clock_gradient != null or cp.clock_spread != null or cp.ip_mode != null;
                     if (admin_fields) {
                         var o = Out{ .buf = &json_buf };
                         o.add("{\"status\":\"rejected\",\"error\":\"admin_only\",\"message\":\"durable settings are administered over http\"}");

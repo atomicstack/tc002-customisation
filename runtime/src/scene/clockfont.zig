@@ -61,6 +61,7 @@ const mini_digits = [10]Glyph{
 const mini_colon = fromArt(1, 5, .{ ".", "#", ".", "#", "." });
 const mini_slash = fromArt(3, 5, .{ "..#", "..#", ".#.", "#..", "#.." });
 const mini_space = fromArt(3, 5, .{ "...", "...", "...", "...", "..." });
+const mini_dot = fromArt(1, 5, .{ ".", ".", ".", ".", "#" });
 
 // segment: seven segments a..g on a 5x9 cell, digits from the usual table
 const Segments = packed struct(u7) { a: bool, b: bool, c: bool, d: bool, e: bool, f: bool, g: bool };
@@ -168,6 +169,7 @@ pub fn glyph(f: Font, c: u8) Glyph {
             if (c >= '0' and c <= '9') return mini_digits[c - '0'];
             if (c == ':') return mini_colon;
             if (c == '/') return mini_slash;
+            if (c == '.') return mini_dot;
             return mini_space;
         },
         .segment => {
@@ -278,6 +280,7 @@ test "text widths match the layouts the clock relies on" {
     try std.testing.expectEqual(@as(u32, 39), textWidth(.segment, "13:05:09"));
     try std.testing.expectEqual(@as(u32, 27), textWidth(.mini, "13:05:09"));
     try std.testing.expectEqual(@as(u32, 19), textWidth(.mini, "07/09"));
+    try std.testing.expectEqual(@as(u32, 33), textWidth(.mini, "10.0.0.111"));
     try std.testing.expectEqual(@as(u32, 52), textWidth(.big, "13:05"));
     try std.testing.expectEqual(@as(u32, 47), textWidth(.block, "13:05:09"));
     try std.testing.expectEqual(@as(u32, 0), textWidth(.big, ""));

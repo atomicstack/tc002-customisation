@@ -12,6 +12,7 @@ const spidev = @import("panel/spidev.zig");
 const scene = @import("scene/scene.zig");
 const tz = @import("scene/tz.zig");
 const arbiter = @import("scene/arbiter.zig");
+const ip = @import("scene/ip.zig");
 const evdev = @import("input/evdev.zig");
 const actions = @import("input/actions.zig");
 const messages = @import("ipc/messages.zig");
@@ -178,6 +179,7 @@ const Renderer = struct {
             .brightness = arb.brightness,
             .power = @intFromBool(arb.power),
             .clock = messages.ClockStyle.full(arb.clock.style),
+            .ip_mode = @intFromEnum(arb.ip.mode),
         } }, 0);
     }
 
@@ -246,9 +248,16 @@ const Renderer = struct {
                     if (s.seed != 0) r = arb.apply(.{ .reseed = s.seed }, now);
                 }
                 if (s.style.has != 0) r = arb.applyWith(.{ .set_clock_style = s.style.toPatch() }, spec, now);
+                if (s.ip_mode != 0xff) {
+                    if (messages.enumFromInt(ip.Mode, s.ip_mode)) |m| r = arb.applyWith(.{ .set_ip_mode = m }, spec, now);
+                }
                 break :blk r;
             },
             .clock_style => |cs| arb.apply(.{ .set_clock_style = cs.toPatch() }, now),
+            .ip_mode => |m| blk: {
+                const mode = messages.enumFromInt(ip.Mode, m.mode) orelse break :blk arbiter.Result{ .rejected = .invalid_text };
+                break :blk arb.apply(.{ .set_ip_mode = mode }, now);
+            },
             .notify => |n| arb.applyWith(.{ .notify = .{ .text = n.slice(), .colour = n.colour, .duration_s = n.duration_s } }, n.transition.toSpec(), now),
             .frame => |f| arb.applyWith(.{ .raw = .{ .rgb = &f.rgb, .duration_s = f.duration_s } }, f.transition.toSpec(), now),
             .brightness => |b| arb.apply(.{ .brightness = b.value }, now),

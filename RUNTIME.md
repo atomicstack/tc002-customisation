@@ -233,7 +233,7 @@ the visible output is one **base** scene plus at most one temporary
 |------|---------------|----------------|
 | `art` | a generator: `popsquares` (the same cell simulation as [`led/`](LED-SPI.md#led-native-popsquares-at-60-fps)) or `plasma` (integer sum-of-sines) | continuous, 60 hz |
 | `clock` | local time from a posix tz rule (`AEST-10AEDT,M10.1.0,M4.1.0/3` style, with `Mm.w.d` transitions) or an iana zone name, in one of five fonts and a solid or gradient colour; see [clock styles](#clock-styles) and [time zones](#time-zones) | once per wall-second boundary |
-| `ip` | the ipv4 address on two lines, or `no ip` | on change only |
+| `ip` | the ipv4 address in one of four layouts (`ip_mode`, see [ip layouts](#ip-layouts)), or `no ip` | on change only; one step per 33 ms while a layout scrolls |
 
 | overlay | bounds | behaviour |
 |---------|--------|-----------|
@@ -344,6 +344,24 @@ of the six fields (`font`, `colour_mode`, `colour`, `colour2`, `gradient`, `spre
 for automations, exactly like a transient generator choice for art; the next
 settings change or renderer restart returns to the defaults. `/status` and
 the retained `state` report the effective style under `clock`.
+
+### ip layouts
+
+the ip scene has four layouts, chosen by the `ip_mode` setting (durable,
+admin over `PATCH /config`, applied at once) or transiently by `PUT /scene`
+and `cmd/scene` with `{"base":"ip","ip":{"mode":...}}`, exactly like a
+transient clock style; `/status` and `/config` report `ip_mode`, `/scenes`
+lists the modes under `ip.modes`:
+
+| mode | layout |
+|---|---|
+| `lines` | the first two octets with a trailing dot over the last two, each line centred in the 5×7 font (the default) |
+| `mini` | the whole address on one centred line of 3×5 digits with one-pixel dots; the widest possible address (four three-digit octets) is 53 px and loses its last column |
+| `scroll` | one line in the 5×7 font, centred when it fits (up to 8 characters) and otherwise scrolling in from the right one pixel per 33 ms |
+| `big` | one line of 10×14 digits, scrolling |
+
+a layout change while the ip scene is showing runs a transition like a scene
+change.
 
 ### time zones
 
@@ -547,6 +565,7 @@ view: `state` and seconds since the last accepted reply (see
 |-------|-------|-------------|
 | `brightness` | 1–100 | applied to the renderer at once |
 | `clock_font`, `clock_colour_mode`, `clock_colour`, `clock_colour2`, `clock_gradient`, `clock_spread` | `classic\|mini\|segment\|big\|block`; `solid\|gradient`; `rrggbb`; `rrggbb`; `horizontal\|vertical\|diagonal`; 0–255 | applied at once; reported as a `clock` object in `/config` |
+| `ip_mode` | `lines\|mini\|scroll\|big` | the ip scene's layout, applied at once; see [ip layouts](#ip-layouts) |
 | `base` | `art`, `clock`, `ip` | applied at once |
 | `generator` | `popsquares`, `plasma` | applied at once |
 | `timezone` | a posix tz rule (`AEST-10AEDT,M10.1.0,M4.1.0/3`) or an iana zone name (`Europe/Amsterdam`, case-insensitive), ≤ 64 characters; anything else is rejected | applied at once; a zone name follows that zone's current daylight-saving law |

@@ -4,6 +4,7 @@
 const std = @import("std");
 const api = @import("../net/api.zig");
 const clock = @import("../scene/clock.zig");
+const ip = @import("../scene/ip.zig");
 const tz = @import("../scene/tz.zig");
 
 pub const text_max = 64;
@@ -63,6 +64,12 @@ pub const Config = struct {
     clock_colour2: [3]u8 = .{ 255, 255, 255 },
     clock_gradient: u8 = 0,
     clock_spread: u8 = clock.default_spread,
+    ip_mode: u8 = 0,
+
+    /// the ip scene's layout (unknown stored values fall back to the default).
+    pub fn ipMode(self: *const Config) ip.Mode {
+        return enumOr(ip.Mode, self.ip_mode, .lines);
+    }
 
     /// the clock style these settings describe (unknown stored values fall back to defaults).
     pub fn clockStyle(self: *const Config) clock.Style {
@@ -107,6 +114,7 @@ pub const Config = struct {
         if (p.clock_colour2) |v| next.clock_colour2 = v;
         if (p.clock_gradient) |v| next.clock_gradient = @intFromEnum(v);
         if (p.clock_spread) |v| next.clock_spread = v;
+        if (p.ip_mode) |v| next.ip_mode = @intFromEnum(v);
         next.revision = self.revision + 1;
         self.* = next;
     }
@@ -160,7 +168,7 @@ fn getText(in: []const u8, off: *usize) error{BadPayload}!Text {
 
 const text_wire = 1 + text_max;
 /// schema, revisions, brightness/base/generator, timezone, ntp, intervals, discovery, origins, mqtt
-pub const encoded_len = 1 + 4 + 4 + 3 + text_wire + 5 + 4 + 2 + 4 + 1 + text_wire + 1 + api.max_origins * text_wire + 1 + text_wire + 2 + 4 * text_wire + 1 + 10;
+pub const encoded_len = 1 + 4 + 4 + 3 + text_wire + 5 + 4 + 2 + 4 + 1 + text_wire + 1 + api.max_origins * text_wire + 1 + text_wire + 2 + 4 * text_wire + 1 + 11;
 
 pub fn encode(c: *const Config, out: *[encoded_len]u8) void {
     var o: usize = 0;
@@ -207,7 +215,8 @@ pub fn encode(c: *const Config, out: *[encoded_len]u8) void {
     out[o + 5 ..][0..3].* = c.clock_colour2;
     out[o + 8] = c.clock_gradient;
     out[o + 9] = c.clock_spread;
-    o += 10;
+    out[o + 10] = c.ip_mode;
+    o += 11;
     std.debug.assert(o == encoded_len);
 }
 
@@ -256,6 +265,7 @@ pub fn decode(in: []const u8) error{BadPayload}!Config {
     c.clock_colour2 = in[o + 5 ..][0..3].*;
     c.clock_gradient = in[o + 8];
     c.clock_spread = in[o + 9];
+    c.ip_mode = in[o + 10];
     return c;
 }
 
@@ -281,6 +291,7 @@ const FileForm = struct {
     clock_colour2: []const u8 = "ffffff",
     clock_gradient: []const u8 = "horizontal",
     clock_spread: u8 = clock.default_spread,
+    ip_mode: []const u8 = "lines",
     mqtt: struct {
         enabled: bool = false,
         host: []const u8 = "",
@@ -319,6 +330,7 @@ pub fn toJson(c: *const Config, out: []u8) error{Overflow}![]u8 {
         .clock_colour2 = std.fmt.bufPrint(&colour2_buf, "{x:0>2}{x:0>2}{x:0>2}", .{ c.clock_colour2[0], c.clock_colour2[1], c.clock_colour2[2] }) catch unreachable,
         .clock_gradient = @tagName(enumOr(clock.Gradient, c.clock_gradient, .horizontal)),
         .clock_spread = c.clock_spread,
+        .ip_mode = @tagName(enumOr(ip.Mode, c.ip_mode, .lines)),
         .revision = c.revision,
         .brightness = c.brightness,
         .base = base_names[@min(c.base, base_names.len - 1)],
@@ -382,6 +394,7 @@ pub fn fromJson(bytes: []const u8, arena: []u8) error{ Invalid, TooLong }!Config
     c.clock_colour2 = api.parseColour(f.clock_colour2) orelse return error.Invalid;
     c.clock_gradient = @intFromEnum(api.enumByName(clock.Gradient, f.clock_gradient) orelse return error.Invalid);
     c.clock_spread = f.clock_spread;
+    c.ip_mode = @intFromEnum(api.enumByName(ip.Mode, f.ip_mode) orelse return error.Invalid);
     if (tz.resolve(f.timezone) == null) return error.Invalid;
     return c;
 }
@@ -415,7 +428,7 @@ test "patches validate, bump the revision, and honour the expected revision" {
 
 test "ipc encoding round-trips every field" {
     var c = Config{};
-    try c.patch(.{ .brightness = 7, .base = .clock, .generator = .plasma, .timezone = "EST5EDT,M3.2.0,M11.1.0", .ntp_server = .{ 1, 2, 3, 4 }, .ntp_interval_s = 600, .frame_timeout_ms = 250, .metrics_interval_s = 0, .discovery = true, .discovery_prefix = "ha", .clock_font = .segment, .clock_colour_mode = .gradient, .clock_colour = .{ 1, 2, 3 }, .clock_colour2 = .{ 4, 5, 6 }, .clock_gradient = .diagonal, .clock_spread = 12 });
+    try c.patch(.{ .brightness = 7, .base = .clock, .generator = .plasma, .timezone = "EST5EDT,M3.2.0,M11.1.0", .ntp_server = .{ 1, 2, 3, 4 }, .ntp_interval_s = 600, .frame_timeout_ms = 250, .metrics_interval_s = 0, .discovery = true, .discovery_prefix = "ha", .clock_font = .segment, .clock_colour_mode = .gradient, .clock_colour = .{ 1, 2, 3 }, .clock_colour2 = .{ 4, 5, 6 }, .clock_gradient = .diagonal, .clock_spread = 12, .ip_mode = .scroll });
     try c.patchMqtt(.{ .enabled = true, .host = "10.0.0.2", .port = 8883, .username = "u", .password = "p", .client_id = "cid", .prefix = "tc002/x", .tls = true });
     c.origins[0] = Text.init("http://panel.local");
     c.origin_count = 1;
@@ -432,7 +445,7 @@ test "ipc encoding round-trips every field" {
 
 test "json persistence round-trips and rejects junk" {
     var c = Config{};
-    try c.patch(.{ .brightness = 33, .base = .ip, .timezone = "AEST-10AEDT,M10.1.0,M4.1.0/3", .ntp_server = .{ 10, 0, 0, 5 }, .clock_font = .big, .clock_colour = .{ 0xff, 0x80, 0x00 }, .clock_colour_mode = .gradient });
+    try c.patch(.{ .brightness = 33, .base = .ip, .timezone = "AEST-10AEDT,M10.1.0,M4.1.0/3", .ntp_server = .{ 10, 0, 0, 5 }, .clock_font = .big, .clock_colour = .{ 0xff, 0x80, 0x00 }, .clock_colour_mode = .gradient, .ip_mode = .big });
     try c.patchMqtt(.{ .enabled = true, .host = "10.0.0.2", .username = "tc002", .password = "Pw1", .prefix = "tc002/dev" });
     c.origins[0] = Text.init("http://panel");
     c.origin_count = 1;
@@ -450,11 +463,13 @@ test "json persistence round-trips and rejects junk" {
     try std.testing.expectEqualStrings("http://panel", back.origins[0].slice());
     try std.testing.expectEqual(clock.Font.big, back.clockStyle().font);
     try std.testing.expectEqual(clock.ColourMode.gradient, back.clockStyle().mode);
+    try std.testing.expectEqual(ip.Mode.big, back.ipMode());
     try std.testing.expectEqual([3]u8{ 0xff, 0x80, 0x00 }, back.clockStyle().colour);
     try std.testing.expectEqual(clock.default_spread, back.clockStyle().spread);
     try std.testing.expectError(error.Invalid, fromJson("{\"schema\":1,\"timezone\":\"Nowhere/Land\"}", &arena));
     try std.testing.expect(std.mem.indexOf(u8, text, "\"clock_colour\":\"ff8000\"") != null);
     try std.testing.expectError(error.Invalid, fromJson("{\"schema\":1,\"clock_font\":\"comic\"}", &arena));
+    try std.testing.expectError(error.Invalid, fromJson("{\"schema\":1,\"ip_mode\":\"huge\"}", &arena));
     try std.testing.expectError(error.Invalid, fromJson("{\"schema\":1,\"clock_colour\":\"red\"}", &arena));
     try std.testing.expectError(error.Invalid, fromJson("{\"schema\":1,\"brightness\":0}", &arena));
     try std.testing.expectError(error.Invalid, fromJson("not json", &arena));

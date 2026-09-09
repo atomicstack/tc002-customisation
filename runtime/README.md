@@ -59,6 +59,7 @@ tools/tc002ctl.py -s <device-ip> --token-file tokens frame --colour ff0000 --dur
 tools/tc002ctl.py -s <device-ip> --token-file tokens power off               # fades to black; `power on` fades back
 tools/tc002ctl.py -s <device-ip> --token-file tokens scene clock --font big --colour-mode gradient --colour 2060ff --colour2 60c0ff --gradient vertical
 tools/tc002ctl.py -s <device-ip> --token-file tokens config-set clock_font=block timezone=Europe/Amsterdam   # durable defaults, admin token
+tools/tc002ctl.py -s <device-ip> --token-file tokens scene ip --ip-mode big                      # the address in one of four layouts
 tools/tc002ctl.py -s <device-ip> --token-file tokens input middle click      # a remote press; rotary cw --steps 3
 tools/tc002ctl.py -s <device-ip> --token-file tokens screen --ascii          # the frame as shown, drawn in the terminal
 tools/tc002ctl.py -s <device-ip> --token-file tokens logs --follow           # the supervisor's log ring

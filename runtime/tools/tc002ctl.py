@@ -11,6 +11,8 @@ commands:
         [--font classic|mini|segment|big|block] [--colour-mode solid|gradient] [--colour rrggbb]
         [--colour2 rrggbb] [--gradient horizontal|vertical|diagonal] [--spread 0..255]   transient clock style
         [--transition EFFECT] [--direction left|right|up|down] [--transition-ms 0..5000]
+        [--ip-mode lines|mini|scroll|big]   transient ip layout (two centred lines, one mini line,
+                                            a scrolling line, big scrolling digits)
   brightness <1..100>                 transient brightness
   reseed [N]                          reseed the art
   arm-stream                          arm stream mode (two-second wait)
@@ -33,7 +35,7 @@ commands:
   config-set key=value ...            patch settings; keys: brightness base generator timezone ntp_server
                                       ntp_interval_s frame_timeout_ms metrics_interval_s discovery discovery_prefix
                                       clock_font clock_colour_mode clock_colour clock_colour2 clock_gradient
-                                      clock_spread; timezone takes a posix rule or an iana name (Europe/Amsterdam)
+                                      clock_spread ip_mode; timezone takes a posix rule or an iana name (Europe/Amsterdam)
   config-save [revision]              write the settings file, optionally only at that revision
   mqtt                                broker settings (password never returned)
   mqtt-set key=value ...              keys: enabled host port username password client_id prefix tls
@@ -129,6 +131,7 @@ def main():
     ap.add_argument("--direction")
     ap.add_argument("--transition-ms", type=int, dest="transition_ms")
     ap.add_argument("--exit")
+    ap.add_argument("--ip-mode", dest="ip_mode")
     a = ap.parse_args()
     admin_commands = {"config-set", "config-save", "mqtt", "mqtt-set"}
     token = load_token(a, a.admin or a.command in admin_commands)
@@ -144,6 +147,7 @@ def main():
         if a.seed is not None: body["seed"] = a.seed
         style = {k: v for k, v in (("font", a.font), ("colour_mode", a.colour_mode), ("colour", a.colour), ("colour2", a.colour2), ("gradient", a.gradient), ("spread", a.spread)) if v is not None}
         if style: body["clock"] = style
+        if a.ip_mode: body["ip"] = {"mode": a.ip_mode}
         body.update(transition_fields(a))
         return show(*call(a, "PUT", "/scene", body, token=token))
     if c in ("brightness", "reseed", "arm-stream"):
