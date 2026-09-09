@@ -895,6 +895,8 @@ const Supervisor = struct {
                     self.send(.{ .set_timezone = config.Text.init(self.cfg.tzRule()) });
                     self.send(.{ .clock_style = messages.ClockStyle.full(self.cfg.clockStyle()) });
                     self.send(.{ .ip_mode = .{ .mode = self.cfg.ip_mode } });
+                    // the renderer started dark: reveal the saved state with the power ramp
+                    self.send(.{ .power = .{ .on = 1 } });
                     self.snapshot.epoch = lifecycle.epoch;
                     self.snapshot.renderer_state = 2;
                     for (&self.relays) |*r| r.used = false;

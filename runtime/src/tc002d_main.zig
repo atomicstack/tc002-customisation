@@ -73,6 +73,8 @@ const Renderer = struct {
     /// the last redraw found nothing to schedule (an idle scene, or the panel dark): redraw only
     /// on a change instead of on every wake-up.
     idle: bool = false,
+    /// started dark and not yet switched on: the saved state lands without effects, then fades in
+    unrevealed: bool = false,
     next_heartbeat: u64 = 0,
     next_stats: u64 = 0,
     stopping: bool = false,
@@ -123,12 +125,18 @@ const Renderer = struct {
     fn redraw(self: *Renderer, now: u64, base_deadline: u64) void {
         const wall = sys.realtimeNs();
         arb.tick(now, wall);
+        if (self.unrevealed and arb.power) self.unrevealed = false;
         if (arb.takeTransition()) |spec| {
-            // an effect that starts while another runs, or a cut, has no live old layer: the
-            // remembered composite (or nothing) stands in
-            const chained = fader.cross.active();
-            fader.begin(&out_rgb, spec, now);
-            if (chained or !fader.cross.active()) arb.transitionDone();
+            if (self.unrevealed) {
+                // nothing is visible yet: the saved state simply lands, the power ramp reveals it
+                arb.transitionDone();
+            } else {
+                // an effect that starts while another runs, or a cut, has no live old layer: the
+                // remembered composite (or nothing) stands in
+                const chained = fader.cross.active();
+                fader.begin(&out_rgb, spec, now);
+                if (chained or !fader.cross.active()) arb.transitionDone();
+            }
         }
         fader.setPower(arb.power, now);
         arb.render(wall, &rgb);
@@ -439,6 +447,13 @@ fn run(cfg: cli.Config) !u8 {
     fader.crossfade_ns = @as(u64, cfg.crossfade_ms) * 1_000_000;
     arb.default_transition = .{ .effect = .fade, .duration_ns = fader.crossfade_ns };
     fader.power_ns = @as(u64, cfg.power_fade_ms) * 1_000_000;
+    if (cfg.start_dark) {
+        // dark until the supervisor has pushed the saved state and sends power on
+        arb.power = false;
+        fader.power_on = false;
+        fader.level = 0;
+        fader.level_from = 0;
+    }
 
     const started = sys.monotonicNs();
     var r = Renderer{
@@ -453,8 +468,7 @@ fn run(cfg: cli.Config) !u8 {
         .mapper = actions.Mapper.init(cfg.keymap),
         .started_ns = started,
         .next_heartbeat = started,
-        .next_stats = started + stats_period_ns,
-    };
+        .next_stats = started + stats_period_ns, .unrevealed = cfg.start_dark };
     log.info("epoch {d} seed {d} base {s} generator {d} {s}", .{ cfg.epoch, seed, @tagName(cfg.base), @intFromEnum(cfg.generator), if (cfg.dry_run) "dry run" else "panel open" });
 
     var events: [8]sys.Event = undefined;

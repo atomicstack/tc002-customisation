@@ -142,6 +142,12 @@ pub fn spawnArgv(cfg: Config, path: [:0]const u8, epoch_text: [:0]const u8, out:
         out[n] = "--stats";
         n += 1;
     }
+    // our own renderer starts dark and is switched on once the saved state is in place; an
+    // older fallback binary may not know the option
+    if (std.mem.eql(u8, path, cfg.renderer)) {
+        out[n] = "--start-dark";
+        n += 1;
+    }
     out[n] = null;
     return n;
 }
@@ -170,7 +176,7 @@ test "the renderer argv is exact" {
     const o = try parse(&.{ "--tz", "JST-9", "--keymap", "1,2,3,4", "--stats" });
     var argv: Argv = undefined;
     const n = spawnArgv(o.run, "/tmp/tc002/tc002d", "7", &argv);
-    const expected = [_][]const u8{ "/tmp/tc002/tc002d", "--ipc-fd", "3", "--epoch", "7", "--lock", "/tmp/tc002/panel.lock", "--tz", "JST-9", "--keymap", "1,2,3,4", "--keys", "/dev/input/event67", "--knob", "/dev/input/event68", "--stats" };
+    const expected = [_][]const u8{ "/tmp/tc002/tc002d", "--ipc-fd", "3", "--epoch", "7", "--lock", "/tmp/tc002/panel.lock", "--tz", "JST-9", "--keymap", "1,2,3,4", "--keys", "/dev/input/event67", "--knob", "/dev/input/event68", "--stats", "--start-dark" };
     try std.testing.expectEqual(expected.len, n);
     for (expected, 0..) |e, i| try std.testing.expectEqualStrings(e, std.mem.span(argv[i].?));
     try std.testing.expect(argv[n] == null);

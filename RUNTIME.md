@@ -111,7 +111,8 @@ machine driven by monotonic time:
 each spawn gets a new **epoch** (1, 2, …). commands carry the epoch they were
 issued against, and a renderer rejects commands from an older epoch with
 `stale_epoch`, so a client cannot re-apply a command to a restarted renderer
-by accident. on `ready` the supervisor pushes the saved brightness, base scene,
+by accident. the renderer is spawned with `--start-dark`, so nothing of its
+built-in default scene reaches the panel; on `ready` the supervisor pushes the saved brightness, base scene,
 generator and timezone, and the current ip.
 
 ### the maintenance gesture and profiles

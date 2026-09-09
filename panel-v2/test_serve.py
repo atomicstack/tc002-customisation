@@ -224,7 +224,7 @@ class EndToEndTests(unittest.TestCase):
 
     def test_input_is_validated_and_applied(self):
         _, st = self.call("GET", "status")
-        status, doc = self.call("POST", "input", {"control": "middle", "event": "click", "request_id": "e1", "epoch": st["epoch"]})
+        status, doc = self.call("POST", "input", {"control": "left", "event": "click", "request_id": "e1", "epoch": st["epoch"]})
         self.assertEqual((status, doc["status"]), (200, "applied"))
         _, st2 = self.call("GET", "status")
         self.assertEqual(st2["base"], "clock")
@@ -245,7 +245,7 @@ class EndToEndTests(unittest.TestCase):
         status, doc = self.call("POST", "input", {"control": "middle", "event": "click", "steps": 2, "request_id": "e7", "epoch": st3["epoch"]})
         self.assertEqual((status, doc["error"]), (400, "invalid_steps"))
         # switch to art and confirm cw moves the generator there, not the brightness
-        status, doc = self.call("POST", "input", {"control": "left", "event": "click", "request_id": "e8", "epoch": st3["epoch"]})
+        status, doc = self.call("POST", "input", {"control": "middle", "event": "click", "request_id": "e8", "epoch": st3["epoch"]})
         self.assertEqual((status, doc["status"]), (200, "applied"))
         _, st4 = self.call("GET", "status")
         self.assertEqual(st4["base"], "art")

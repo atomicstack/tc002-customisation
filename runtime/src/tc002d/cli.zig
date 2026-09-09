@@ -25,6 +25,8 @@ pub const usage =
     \\  --power-fade-ms N   fade to and from black on power changes, 0..5000 (600)
     \\  --dry-run           never open spidev/gpio; model the panel only
     \\  --stats             log achieved cadence every 5 s
+    \\  --start-dark        keep the panel dark until a power-on command: the supervisor uses it so
+    \\                      the saved scene fades in instead of the built-in default showing first
     \\  --help
     \\
 ;
@@ -48,6 +50,7 @@ pub const Config = struct {
     power_fade_ms: u32 = 600,
     dry_run: bool = false,
     stats: bool = false,
+    start_dark: bool = false,
 };
 
 pub const Outcome = union(enum) { run: Config, help, failure: [:0]const u8 };
@@ -69,6 +72,10 @@ pub fn parse(args: []const [:0]const u8) ParseError!Outcome {
         if (std.mem.eql(u8, a, "--help") or std.mem.eql(u8, a, "-h")) return .help;
         if (std.mem.eql(u8, a, "--dry-run")) {
             c.dry_run = true;
+            continue;
+        }
+        if (std.mem.eql(u8, a, "--start-dark")) {
+            c.start_dark = true;
             continue;
         }
         if (std.mem.eql(u8, a, "--stats")) {
@@ -146,6 +153,8 @@ test "options are typed and validated" {
     try std.testing.expectError(error.BadValue, parse(&.{ "--base", "moon" }));
     try std.testing.expectError(error.BadValue, parse(&.{ "--generator", "9" }));
     try std.testing.expectError(error.UnknownOption, parse(&.{"--bogus"}));
+    const d = try parse(&.{"--start-dark"});
+    try std.testing.expect(d.run.start_dark);
     const f = try parse(&.{ "--crossfade-ms", "0", "--power-fade-ms", "1000" });
     try std.testing.expectEqual(@as(u32, 0), f.run.crossfade_ms);
     try std.testing.expectEqual(@as(u32, 1000), f.run.power_fade_ms);
