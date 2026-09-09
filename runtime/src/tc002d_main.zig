@@ -347,6 +347,10 @@ const Renderer = struct {
             log.warn("dropped {d} physical actions under load", .{queue.dropped});
         }
         self.sendEdges(&edges);
+        if (self.mapper.last_press) |p| {
+            log.info("key {d} pressed: {s}", .{ p.code, @tagName(p.control) });
+            self.mapper.last_press = null;
+        }
         if (self.mapper.unmapped_code != 0) {
             log.info("unmapped keycode {d} pressed (keymap {d},{d},{d},{d})", .{ self.mapper.unmapped_code, self.mapper.keymap.left, self.mapper.keymap.middle, self.mapper.keymap.right, self.mapper.keymap.knob });
             self.mapper.unmapped_code = 0;

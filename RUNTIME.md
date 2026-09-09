@@ -79,7 +79,7 @@ usage: tc002-supervisor [options]
   --dir PATH              runtime directory (/tmp/tc002)
   --lock PATH             panel lock file (/tmp/tc002/panel.lock)
   --tz RULE               posix tz rule handed to the renderer (UTC0)
-  --keymap L,M,R,K        keycodes for left, middle, right, knob (105,103,106,108)
+  --keymap L,M,R,K        keycodes for left, middle, right, knob (103,105,106,108)
   --keys PATH             button evdev node (/dev/input/event67)
   --knob PATH             rotary evdev node (/dev/input/event68)
   --ip-poll S             seconds between wlan0 address checks (5)
@@ -207,7 +207,7 @@ usage: tc002d [options]
   --gpio PATH         latch gpio value file (/sys/class/gpio/gpio35/value)
   --keys PATH         button evdev node (/dev/input/event67)
   --knob PATH         rotary evdev node (/dev/input/event68)
-  --keymap L,M,R,K    keycodes for left, middle, right, knob (105,103,106,108)
+  --keymap L,M,R,K    keycodes for left, middle, right, knob (103,105,106,108)
   --tz RULE           posix tz rule for the clock (UTC0)
   --base art|clock|ip initial base scene (art)
   --generator N       initial art generator index (0)
@@ -390,15 +390,18 @@ does not know is rejected with `400 rejected`.
 | left button (release) | select `art` | select `art` |
 | middle button (release) | select `clock` | select `clock` |
 | right button (release) | select `ip` | select `ip` |
-| knob rotate | next / previous generator | brightness ± 5 |
+| knob rotate | next / previous generator | next / previous clock face in the clock; next / previous layout in ip |
 | knob short press | reseed the art | nothing |
 | knob long press (700 ms) | arm streaming | arm streaming |
 
-the keycode assignment (`105,103,106,108` = left, middle, right, knob) is the
-working guess from the gpio-keys driver and has not been confirmed by pressing
-buttons on the device; it is overridable with `--keymap`, and a press on a
-keycode outside the map is logged (`unmapped keycode N pressed`) so the map
-can be corrected from the log route. the rotary encoder reports an absolute
+the keycode assignment (`103,105,106,108` = left, middle, right, knob) was
+measured on 2026-09-09: the device tree names the four gpio keys "key up"
+103, "key left" 105, "key right" 106 and "key down" 108, and pressing the
+buttons showed the middle one reporting 105 and the right one 106, which
+leaves 103 for the left button and 108 for the knob's push. it is overridable
+with `--keymap`; every mapped press is logged (`key N pressed: middle`) and
+so is a press outside the map (`unmapped keycode N pressed`), so the map can
+be checked from the log route. the rotary encoder reports an absolute
 counter, which is decoded as 8-bit with wrap-around. actions are queued eight
 at a time per loop iteration; overflow is counted and logged, never blocks.
 
@@ -772,14 +775,14 @@ all on a warm device that had been up for days, under the lock, on
 - **confinement.** netd is uid 1001, but `/dev/socket/property_service` is
   world-writable on this init, so the uid change alone does not deny it the
   property service. recorded as a gap, not claimed as isolated.
-- **physical input** has not been exercised on the device: the keymap is a
-  guess, and the maintenance gesture and hardened profile are host-tested
-  only.
+- **physical input**: the three buttons are confirmed on the device (the
+  keymap was corrected on 2026-09-09); the knob's push and long press, the
+  maintenance gesture and the hardened profile are host-tested only.
 - cors headers and an api field for `allowed_origins` (browser clients go
   through `panel-v2/serve.py`).
 - **input on hardware.** the outward events and remote injection are tested
-  through the api; nobody has pressed the physical buttons under this runtime
-  yet, so the keymap is still the working guess above.
+  through the api; the buttons have been pressed under this runtime (see the
+  keymap above), the knob's push has not.
 
 ## design notes
 

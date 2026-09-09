@@ -14,7 +14,7 @@ pub const usage =
     \\  --gpio PATH         latch gpio value file (/sys/class/gpio/gpio35/value)
     \\  --keys PATH         button evdev node (/dev/input/event67)
     \\  --knob PATH         rotary evdev node (/dev/input/event68)
-    \\  --keymap L,M,R,K    keycodes for left, middle, right, knob (105,103,106,108)
+    \\  --keymap L,M,R,K    keycodes for left, middle, right, knob (103,105,106,108)
     \\  --tz RULE           posix tz rule for the clock (UTC0)
     \\  --base art|clock|ip initial base scene (art)
     \\  --generator N       initial art generator index (0)

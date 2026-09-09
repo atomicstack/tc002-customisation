@@ -9,13 +9,13 @@ test "a button press and release yields one action on release" {
     var m = Mapper.init(.{});
     var q = ActionQueue{};
     var e = EdgeQueue{};
-    m.feed(key(105, 1), 0, &q, &e);
+    m.feed(key(103, 1), 0, &q, &e);
     try std.testing.expectEqual(@as(usize, 0), q.len);
-    m.feed(key(105, 0), 50_000_000, &q, &e);
+    m.feed(key(103, 0), 50_000_000, &q, &e);
     try std.testing.expectEqualSlices(scene.Action, &.{.left}, q.slice());
     q.clear();
-    m.feed(key(103, 1), 0, &q, &e);
-    m.feed(key(103, 0), 1, &q, &e);
+    m.feed(key(105, 1), 0, &q, &e);
+    m.feed(key(105, 0), 1, &q, &e);
     m.feed(key(106, 1), 0, &q, &e);
     m.feed(key(106, 0), 1, &q, &e);
     try std.testing.expectEqualSlices(scene.Action, &.{ .middle, .right }, q.slice());
@@ -65,12 +65,12 @@ test "unknown keys and repeats are ignored and the queue is bounded" {
     var e = EdgeQueue{};
     m.feed(key(999, 1), 0, &q, &e);
     m.feed(key(999, 0), 1, &q, &e);
-    m.feed(key(105, 2), 2, &q, &e); // autorepeat
+    m.feed(key(103, 2), 2, &q, &e); // autorepeat
     try std.testing.expectEqual(@as(usize, 0), q.len);
     var i: u32 = 0;
     while (i < 12) : (i += 1) {
-        m.feed(key(105, 1), i * 10, &q, &e);
-        m.feed(key(105, 0), i * 10 + 1, &q, &e);
+        m.feed(key(103, 1), i * 10, &q, &e);
+        m.feed(key(103, 0), i * 10 + 1, &q, &e);
     }
     try std.testing.expectEqual(@as(usize, ActionQueue.capacity), q.len);
     try std.testing.expectEqual(@as(u32, 12 - ActionQueue.capacity), q.dropped);
@@ -152,6 +152,8 @@ pub const Mapper = struct {
     position: i32 = 0,
     /// the last keycode that matched nothing, for the renderer to log; 0 = none.
     unmapped_code: u16 = 0,
+    /// the last mapped key that went down, for the renderer's log (cleared when logged)
+    last_press: ?struct { code: u16, control: Control } = null,
 
     pub fn init(keymap: evdev.KeyMap) Mapper {
         return .{ .keymap = keymap };
@@ -183,6 +185,7 @@ pub const Mapper = struct {
                     return;
                 };
                 edges.push(.{ .control = control, .event = if (down) .press else .release, .position = self.position });
+                if (down) self.last_press = .{ .code = ev.code, .control = control };
                 if (control == .knob) {
                     if (down) {
                         self.knob_down_since = now_ns;
@@ -267,8 +270,8 @@ test "edges report every press and release, long holds, and rotary steps with th
     var m = Mapper.init(.{});
     var q = ActionQueue{};
     var e = EdgeQueue{};
-    m.feed(key(105, 1), 0, &q, &e);
-    m.feed(key(105, 0), 1, &q, &e);
+    m.feed(key(103, 1), 0, &q, &e);
+    m.feed(key(103, 0), 1, &q, &e);
     m.feed(abs(10), 2, &q, &e);
     m.feed(abs(12), 3, &q, &e);
     m.feed(abs(11), 4, &q, &e);

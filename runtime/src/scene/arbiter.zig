@@ -4,7 +4,7 @@
 //! rules from the design: a base selection clears any overlay; a new notification or raw frame
 //! replaces the existing overlay; expiry reveals the current base; stream arming waits two
 //! seconds for a session and then falls back; rotary selects the generator in art and changes
-//! brightness in clock/ip; a short knob press reseeds art; a long one arms streaming.
+//! clock faces in the clock and layouts in ip; a short knob press reseeds art; a long one arms streaming.
 const std = @import("std");
 const geometry = @import("../panel/geometry.zig");
 const transition = @import("../panel/transition.zig");
@@ -108,18 +108,18 @@ test "physical actions: buttons select the base, rotary and knob depend on the b
     a.action(.middle, 0);
     try std.testing.expect(a.base == .clock);
     a.action(.rotate_cw, 0);
-    try std.testing.expectEqual(@as(u8, 100), a.brightness); // clamped at the top
+    try std.testing.expectEqual(clock.Font.mini, a.clock.style.font); // the knob pages the faces
     a.action(.rotate_ccw, 0);
-    try std.testing.expectEqual(@as(u8, 95), a.brightness);
+    try std.testing.expectEqual(clock.Font.classic, a.clock.style.font);
     a.action(.right, 0);
     try std.testing.expect(a.base == .ip);
     a.action(.rotate_ccw, 0);
-    try std.testing.expectEqual(@as(u8, 90), a.brightness);
+    try std.testing.expectEqual(ip.Mode.big, a.ip.mode); // and the layouts
     a.action(.left, 0);
     try std.testing.expect(a.base == .art);
     a.action(.rotate_cw, 0);
     try std.testing.expectEqual(scene.Generator.plasma, a.art.generator);
-    try std.testing.expectEqual(@as(u8, 90), a.brightness);
+    try std.testing.expectEqual(@as(u8, 100), a.brightness);
     a.action(.rotate_cw, 0);
     try std.testing.expectEqual(scene.Generator.popsquares, a.art.generator);
     var before: geometry.Rgb = undefined;
@@ -135,7 +135,8 @@ test "physical actions: buttons select the base, rotary and knob depend on the b
     try std.testing.expect(a.overlay == .none);
     var i: u32 = 0;
     while (i < 40) : (i += 1) a.action(.rotate_ccw, 0);
-    try std.testing.expectEqual(@as(u8, 1), a.brightness); // never fully off from the knob
+    try std.testing.expectEqual(clock.Font.segment, a.clock.style.font); // 40 steps back around six faces
+    try std.testing.expectEqual(@as(u8, 100), a.brightness); // the knob leaves brightness alone
 }
 
 test "transitions mark scene changes and notification edges, never raw frames or repeats" {
@@ -268,6 +269,28 @@ test "the outgoing scene stays live through a transition and is dropped when it 
     try std.testing.expectEqual(Base.art, a.outgoing.?.base);
 }
 
+test "the knob pages through generators, clock faces and ip layouts" {
+    var a = fresh(); // art, popsquares
+    a.action(.rotate_cw, 0);
+    try std.testing.expectEqual(scene.Generator.plasma, a.art.generator);
+    a.action(.rotate_ccw, 0);
+    try std.testing.expectEqual(scene.Generator.popsquares, a.art.generator);
+    _ = a.apply(.{ .set_base = .clock }, 0);
+    _ = a.takeTransition();
+    a.action(.rotate_cw, 0);
+    try std.testing.expectEqual(clock.Font.mini, a.clock.style.font);
+    try std.testing.expectEqual(transition.Effect.fade, a.takeTransition().?.effect); // a restyle while the clock shows
+    a.action(.rotate_ccw, 0);
+    a.action(.rotate_ccw, 0);
+    try std.testing.expectEqual(clock.Font.hires, a.clock.style.font); // wraps around
+    _ = a.apply(.{ .set_base = .ip }, 0);
+    a.action(.rotate_ccw, 0);
+    try std.testing.expectEqual(ip.Mode.big, a.ip.mode);
+    a.action(.rotate_cw, 0);
+    try std.testing.expectEqual(ip.Mode.lines, a.ip.mode);
+    try std.testing.expectEqual(@as(u8, 100), a.brightness); // the knob no longer touches brightness
+}
+
 test "the ip mode bumps only on change and transitions only while the ip scene shows" {
     var a = fresh();
     try std.testing.expectEqual(Result{ .applied = 0 }, a.apply(.{ .set_ip_mode = .lines }, 0));
@@ -336,8 +359,14 @@ test "ip and time updates redraw without changing the revision" {
 }
 
 pub const scroll_period_ns: u64 = 33_333_333;
+
+/// the next (or previous) value of an enum, wrapping around
+fn cycle(comptime E: type, v: E, forward: bool) E {
+    const n = @typeInfo(E).@"enum".fields.len;
+    const i: usize = @intFromEnum(v);
+    return @enumFromInt(if (forward) (i + 1) % n else (i + n - 1) % n);
+}
 const arming_wait_ns: u64 = 2 * s_ns;
-const brightness_step: u8 = 5;
 
 pub const Base = enum(u8) { art = 0, clock = 1, ip = 2 };
 
@@ -543,13 +572,12 @@ pub const Arbiter = struct {
             .left => _ = self.apply(.{ .set_base = .art }, now_ns),
             .middle => _ = self.apply(.{ .set_base = .clock }, now_ns),
             .right => _ = self.apply(.{ .set_base = .ip }, now_ns),
+            // the knob pages through the current scene: generators in art, faces in the clock,
+            // layouts in ip
             .rotate_cw, .rotate_ccw => switch (self.base) {
                 .art => _ = self.apply(.{ .select_generator = self.art.neighbour(a == .rotate_cw) }, now_ns),
-                .clock, .ip => {
-                    const b: i32 = @as(i32, self.brightness) + if (a == .rotate_cw) @as(i32, brightness_step) else -@as(i32, brightness_step);
-                    self.brightness = @intCast(std.math.clamp(b, 1, 100));
-                    _ = self.bump();
-                },
+                .clock => _ = self.apply(.{ .set_clock_style = .{ .font = cycle(clock.Font, self.clock.style.font, a == .rotate_cw) } }, now_ns),
+                .ip => _ = self.apply(.{ .set_ip_mode = cycle(ip.Mode, self.ip.mode, a == .rotate_cw) }, now_ns),
             },
             .knob_short => if (self.base == .art) {
                 _ = self.apply(.{ .reseed = self.art.seed *% 1664525 +% 1013904223 }, now_ns);
