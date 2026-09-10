@@ -222,8 +222,8 @@ input[type=file]{font:12px var(--body);color:var(--muted);max-width:220px}
           </div></div>
         <div class="field"><label for="gen">Generator<span class="key">art only</span></label><select id="gen"></select></div>
         <div class="field"><label for="kip">IP layout<span class="key">ip only · PUT /scene ip.mode · transient</span></label><select id="kip"></select></div>
-        <div class="field"><label for="strans">Transition<span class="key">transition · direction · for the next scene change</span></label>
-          <span class="inline"><select id="strans"></select><select id="sdir"></select></span></div>
+        <div class="field"><label for="strans">Transition<span class="key">transition · default: fade · for the next scene change</span></label><select id="strans"></select></div>
+        <div class="field"><label for="sdir">Direction<span class="key">direction · auto: the effect's own</span></label><select id="sdir"></select></div>
         <div class="field"><label for="kfont">Clock font<span class="key">clock only · PUT /scene clock.font · transient</span></label><select id="kfont"></select></div>
         <div class="field"><span class="lab">Clock colour<span class="key">clock.colour_mode · colour · colour2 · gradient</span></span>
           <span class="inline">
@@ -251,8 +251,9 @@ input[type=file]{font:12px var(--body);color:var(--muted);max-width:220px}
           <span class="inline"><input type="text" id="ntext" maxlength="128" placeholder="hello" autocomplete="off"><span class="counter" id="ncount">0/128</span></span></div>
         <div class="field"><label for="ncolour">Colour</label><input type="color" id="ncolour" value="#ffffff"></div>
         <div class="field"><label for="ndur">Duration<span class="key">seconds, 1–300</span></label><input type="number" id="ndur" min="1" max="300" value="5"></div>
-        <div class="field"><label for="ntrans">Transition<span class="key">transition · direction · exit (how it leaves)</span></label>
-          <span class="inline"><select id="ntrans"></select><select id="ndir"></select><select id="nexit"></select></span></div>
+        <div class="field"><label for="ntrans">Transition<span class="key">transition · default: fade</span></label><select id="ntrans"></select></div>
+        <div class="field"><label for="ndir">Direction<span class="key">direction · auto: the effect's own</span></label><select id="ndir"></select></div>
+        <div class="field"><label for="nexit">Exit<span class="key">exit · how it leaves</span></label><select id="nexit"></select></div>
       </div>
       <div class="actions"><button class="btn" id="nsend">Send notification</button></div>
     </section>
@@ -264,8 +265,9 @@ input[type=file]{font:12px var(--body);color:var(--muted);max-width:220px}
         <div class="field"><label for="fcolour">Solid colour</label><input type="color" id="fcolour" value="#ff0000"></div>
         <div class="field"><label for="fimage">Image<span class="key">scaled to 52×16, cropped to fit</span></label><input type="file" id="fimage" accept="image/*"></div>
         <div class="field"><label for="fdur">Duration<span class="key">seconds, 1–300</span></label><input type="number" id="fdur" min="1" max="300" value="5"></div>
-        <div class="field"><label for="ftrans">Transition<span class="key">transition · direction · exit · frames cut unless asked</span></label>
-          <span class="inline"><select id="ftrans"></select><select id="fdir"></select><select id="fexit"></select></span></div>
+        <div class="field"><label for="ftrans">Transition<span class="key">transition · default: cut</span></label><select id="ftrans"></select></div>
+        <div class="field"><label for="fdir">Direction<span class="key">direction · auto: the effect's own</span></label><select id="fdir"></select></div>
+        <div class="field"><label for="fexit">Exit<span class="key">exit · how it leaves</span></label><select id="fexit"></select></div>
       </div>
       <div class="actions">
         <button class="btn" id="fsendcolour">Send colour</button>

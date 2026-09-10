@@ -138,6 +138,26 @@ test.after(async () => {
   if (tmp) try { rmSync(tmp, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }); } catch { /* a stray profile file is not a test failure */ }
 });
 
+// each control must be named by its own row: a select sitting beside two others under one shared
+// label reads as an anonymous box (the transition rows once put effect, direction and exit under a
+// single "Transition" label)
+test('every select is named by the row it sits in', { skip: chromeAvailable ? false : 'google chrome is not installed' }, async () => {
+  await cdp.setWidth(1200);
+  const unnamed = await cdp.eval(`
+    (() => {
+      const out = [];
+      for (const sel of document.querySelectorAll('.card select')) {
+        const field = sel.closest('.field');
+        const own = field && field.querySelector(\`label[for="\${sel.id}"]\`);
+        if (!own && !sel.getAttribute('aria-label')) out.push({ card: (sel.closest('.card').id || ''), select: sel.id });
+      }
+      return out;
+    })()
+  `);
+  assert.deepEqual(unnamed, [], `these selects have no label of their own in their row and no aria-label: ${
+    unnamed.map(u => `${u.card}/${u.select}`).join(', ')}`);
+});
+
 // the widths that matter: 1440 and 1200 put the five-column cards at their narrowest useful size,
 // 950 is just past the breakpoint where cards stop spanning the full grid, 700 and 390 are the
 // stacked layouts
