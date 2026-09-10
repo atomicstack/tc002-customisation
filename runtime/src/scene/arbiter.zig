@@ -236,6 +236,22 @@ test "a base change slides the way its button sits on the panel" {
     try std.testing.expectEqual(transition.Direction.right, a.takeTransition().?.direction);
 }
 
+test "in the menu a clockwise detent moves right through the items" {
+    // the knob driver's two state-code pairs were assigned to cw and ccw by inference on
+    // 2026-09-09 and the device says they are the wrong way round: a physical clockwise detent
+    // arrives as rotate_ccw. the menu follows the knob rather than the label, because its dot row
+    // reads left to right and matt reported clockwise walking it leftwards.
+    var a = fresh();
+    a.openMenu(0);
+    try std.testing.expectEqual(menu.Item.brightness, a.menu_state.?.item);
+    a.action(.rotate_ccw, 0); // a physical clockwise detent: one to the right
+    try std.testing.expectEqual(menu.Item.display_off, a.menu_state.?.item);
+    a.action(.rotate_cw, 0); // and counter-clockwise goes back
+    try std.testing.expectEqual(menu.Item.brightness, a.menu_state.?.item);
+    a.action(.rotate_cw, 0); // wrapping backwards off the top lands on exit
+    try std.testing.expectEqual(menu.Item.exit, a.menu_state.?.item);
+}
+
 test "the default between base scenes is a slide, and a request still overrides it" {
     var a = fresh(); // art
     _ = a.apply(.{ .set_base = .clock }, 0); // the clock's button is left of art's
@@ -663,8 +679,12 @@ pub const Arbiter = struct {
 
     fn menuAction(self: *Arbiter, a: scene.Action, now_ns: u64) void {
         const ev: menu.Input = switch (a) {
-            .rotate_cw => .next,
-            .rotate_ccw => .prev,
+            // the knob's two state-code pairs were assigned to cw and ccw by inference, and the
+            // device says they are the wrong way round: a physical clockwise detent arrives here
+            // as rotate_ccw. the menu follows the knob, so clockwise walks its dot row rightwards.
+            // the paging inside an app still follows the driver's labels.
+            .rotate_ccw => .next,
+            .rotate_cw => .prev,
             .knob_short => .click,
             .middle => .back,
             .right => .step_up,

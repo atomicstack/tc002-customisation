@@ -511,14 +511,22 @@ the current item lit.
 `exit` is last, so it is one counter-clockwise click from the item the menu
 opens on.
 
-- **the knob** turns to move between items, and its click acts on the one
-  showing: a toggle flips, an adjustable opens for editing (turn to change,
+- **the knob** turns to move between items, clockwise moving rightwards along
+  the dot row, and its click acts on the one showing: a toggle flips, an adjustable opens for editing (turn to change,
   click to finish), an action runs.
 - **the left and right buttons** change the showing item's value in place,
   without opening it for editing; **middle** backs out, and closes the menu
   when nothing is open for editing.
 - **fifteen seconds** with nothing touched closes the menu, keeping whatever is
   on the panel. in the reboot dialogue a timeout answers no.
+
+the menu maps the knob by what it physically does rather than by the driver's
+labels: the two `ABS_X` state-code pairs were assigned to clockwise and
+counter-clockwise by inference in 2026-09-09, and the panel says they are the
+wrong way round, so a physical clockwise detent arrives as `rotate_ccw`. the
+paging inside an app still follows the labels, so correcting them at the source
+would flip the menu back and turn the app paging the other way; it would also
+change what `POST /input` means by `cw`.
 
 a value is applied at once as a preview but is only **written** once it has
 settled, 700 ms after the last change, so a knob spin sends one request and
