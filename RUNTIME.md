@@ -270,8 +270,10 @@ art stepping, no transfers, no cpu); on fades back in. scene selection,
 notifications and brightness keep applying while the panel is dark, so it
 shows the current state when it comes back. every visible change of scene
 runs a [transition](#transitions), 500 ms by default: a slide between the
-base scenes (forward through art, clock, ip to the left, back to the right,
-like pages), a cross-fade when the generator, a notification (start or end)
+base scenes, following where their buttons sit rather than the enum's own
+numbering (left to right the panel reads clock, art, ip, so a scene further
+right comes in from the right, like pages), a cross-fade when the generator,
+a notification (start or end)
 or the showing clock's style changes; raw frames, reseeds and brightness
 switch at once. both durations are renderer options; 0 disables.
 

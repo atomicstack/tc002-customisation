@@ -168,8 +168,8 @@ test "transitions mark scene changes and notification edges, never raw frames or
 test "a request's transition is remembered and the exit pairs it in reverse" {
     var a = fresh();
     a.default_transition = .{ .duration_ns = 7 };
-    _ = a.apply(.{ .set_base = .clock }, 0);
-    try std.testing.expectEqual(transition.Spec{ .effect = .slide, .direction = .left, .duration_ns = 7 }, a.takeTransition().?);
+    _ = a.apply(.{ .set_base = .clock }, 0); // art -> clock: the clock's button is the left one
+    try std.testing.expectEqual(transition.Spec{ .effect = .slide, .direction = .right, .duration_ns = 7 }, a.takeTransition().?);
     const swipe = transition.Spec{ .effect = .swipe_in, .direction = .left, .duration_ns = 3 };
     _ = a.applyWith(.{ .notify = .{ .text = "hi", .colour = white, .duration_s = 1 } }, swipe, 0);
     try std.testing.expectEqual(swipe, a.takeTransition().?);
@@ -198,10 +198,41 @@ test "a request's transition is remembered and the exit pairs it in reverse" {
     try std.testing.expectEqual(transition.Effect.cut, a.takeTransition().?.effect);
 }
 
-test "the default between base scenes is a slide that follows their order" {
+test "a base change slides the way its button sits on the panel" {
+    // the buttons are laid out left, middle, right and select clock, art, ip. moving to a scene
+    // whose button is further right must bring it in from the right, whichever way the Base enum
+    // happens to be numbered.
+    const cases = [_]struct { from: Base, to: Base, dir: transition.Direction }{
+        .{ .from = .clock, .to = .art, .dir = .left },
+        .{ .from = .clock, .to = .ip, .dir = .left },
+        .{ .from = .art, .to = .ip, .dir = .left },
+        .{ .from = .art, .to = .clock, .dir = .right },
+        .{ .from = .ip, .to = .clock, .dir = .right },
+        .{ .from = .ip, .to = .art, .dir = .right },
+    };
+    for (cases) |c| {
+        var a = Arbiter.init(c.from, .popsquares, 1, tz.utc);
+        _ = a.apply(.{ .set_base = c.to }, 0);
+        const got = a.takeTransition().?;
+        try std.testing.expectEqual(transition.Effect.slide, got.effect);
+        try std.testing.expectEqual(c.dir, got.direction);
+    }
+    // and the same through the buttons themselves
+    var a = Arbiter.init(.art, .popsquares, 1, tz.utc);
+    a.action(.left, 0); // art -> clock, one to the left
+    try std.testing.expectEqual(transition.Direction.right, a.takeTransition().?.direction);
+    a.action(.middle, 0); // clock -> art, one to the right
+    try std.testing.expectEqual(transition.Direction.left, a.takeTransition().?.direction);
+    a.action(.right, 0); // art -> ip, one to the right
+    try std.testing.expectEqual(transition.Direction.left, a.takeTransition().?.direction);
+    a.action(.middle, 0); // ip -> art, one to the left
+    try std.testing.expectEqual(transition.Direction.right, a.takeTransition().?.direction);
+}
+
+test "the default between base scenes is a slide, and a request still overrides it" {
     var a = fresh(); // art
-    _ = a.apply(.{ .set_base = .clock }, 0);
-    try std.testing.expectEqual(transition.Spec{ .effect = .slide, .direction = .left }, a.takeTransition().?);
+    _ = a.apply(.{ .set_base = .clock }, 0); // the clock's button is left of art's
+    try std.testing.expectEqual(transition.Spec{ .effect = .slide, .direction = .right }, a.takeTransition().?);
     _ = a.apply(.{ .set_base = .ip }, 0);
     try std.testing.expectEqual(transition.Direction.left, a.takeTransition().?.direction);
     _ = a.apply(.{ .set_base = .art }, 0);
@@ -368,7 +399,23 @@ fn cycle(comptime E: type, v: E, forward: bool) E {
 }
 const arming_wait_ns: u64 = 2 * s_ns;
 
-pub const Base = enum(u8) { art = 0, clock = 1, ip = 2 };
+pub const Base = enum(u8) {
+    art = 0,
+    clock = 1,
+    ip = 2,
+
+    /// where the scene sits across the panel, left to right, which is the order of the buttons
+    /// that select it: left is the clock, middle is art, right is ip. the enum's own numbering is
+    /// the settings and ipc encoding and is not a layout: reading it as one made a base change
+    /// slide the wrong way whenever the clock and art were the two involved.
+    pub fn position(self: Base) u8 {
+        return switch (self) {
+            .clock => 0,
+            .art => 1,
+            .ip => 2,
+        };
+    }
+};
 
 pub const Notify = struct { text: [128]u8, len: u8, colour: [3]u8, since_ns: u64, until_ns: u64, transition: transition.Spec };
 pub const Raw = struct { rgb: geometry.Rgb, until_ns: u64, transition: transition.Spec };
@@ -493,9 +540,9 @@ pub const Arbiter = struct {
         switch (cmd) {
             .set_base => |b| {
                 if (b != self.base) {
-                    // between the base scenes the default is a slide that follows their order:
-                    // forward (art, clock, ip) to the left, back to the right, like pages
-                    const forward = @intFromEnum(b) > @intFromEnum(self.base);
+                    // between the base scenes the default is a slide that follows where their
+                    // buttons sit: a scene further right comes in from the right, like pages
+                    const forward = b.position() > self.base.position();
                     self.pending = spec orelse .{ .effect = .slide, .direction = if (forward) .left else .right, .duration_ns = self.default_transition.duration_ns };
                 } else if (self.overlay != .none) self.mark(spec);
                 self.base = b;
