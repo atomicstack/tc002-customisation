@@ -473,9 +473,14 @@ map to the renderer, so both defaults agree; it is overridable with
 a press outside the map (`unmapped keycode N pressed`), so the map can be
 checked from the log route. the vendor's knob driver (the
 `knob` device tree node, `ABS_X` on `event68`) reports state codes rather than
-a counter: one detent is a pair of events, 8 then 1 turning counter-clockwise
-and 13 then 11 clockwise (measured on 2026-09-09), and the second value of
-each pair is the step; anything else is logged as unexpected. actions are queued eight
+a counter: one detent is a pair of events, **8 then 1 turning clockwise and 13
+then 11 counter-clockwise**, and the second value of each pair is the step;
+anything else is logged as unexpected. the pairs were measured on 2026-09-09
+but assigned to the two directions by inference, the wrong way round; the panel
+settled it on 2026-09-11, when a clockwise turn walked the menu's dot row
+leftwards. everything downstream reads these labels, so `rotate_cw`, the
+`cw` of `POST /input` and the `rotary` mqtt event now all mean the direction
+the knob is actually turning. actions are queued eight
 at a time per loop iteration; overflow is counted and logged, never blocks.
 
 every edge is also reported outward: each button press and release, the
@@ -519,14 +524,6 @@ opens on.
   when nothing is open for editing.
 - **fifteen seconds** with nothing touched closes the menu, keeping whatever is
   on the panel. in the reboot dialogue a timeout answers no.
-
-the menu maps the knob by what it physically does rather than by the driver's
-labels: the two `ABS_X` state-code pairs were assigned to clockwise and
-counter-clockwise by inference in 2026-09-09, and the panel says they are the
-wrong way round, so a physical clockwise detent arrives as `rotate_ccw`. the
-paging inside an app still follows the labels, so correcting them at the source
-would flip the menu back and turn the app paging the other way; it would also
-change what `POST /input` means by `cw`.
 
 a value is applied at once as a preview but is only **written** once it has
 settled, 700 ms after the last change, so a knob spin sends one request and

@@ -39,7 +39,10 @@ test "a short knob press is reported on release, a long one once while held" {
     try std.testing.expectEqualSlices(scene.Action, &.{.knob_long}, q.slice());
 }
 
-test "rotary state codes become one step per detent" {
+test "rotary state codes become one step per detent, the way the knob actually turns" {
+    // which pair is which was inferred in 2026-09-09 from the order of a test sequence and was
+    // backwards: matt turned the knob clockwise in the menu on 2026-09-11 and it walked the items
+    // leftwards. 8 then 1 is a clockwise detent, 13 then 11 counter-clockwise.
     var m = Mapper.init(.{});
     var q = ActionQueue{};
     var e = EdgeQueue{};
@@ -49,8 +52,9 @@ test "rotary state codes become one step per detent" {
     m.feed(abs(13), 2, &q, &e);
     m.feed(abs(11), 3, &q, &e);
     m.feed(abs(11), 4, &q, &e); // a pair whose first half was lost still counts once
-    try std.testing.expectEqualSlices(scene.Action, &.{ .rotate_ccw, .rotate_cw, .rotate_cw }, q.slice());
-    try std.testing.expectEqual(@as(i32, 1), m.position);
+    try std.testing.expectEqualSlices(scene.Action, &.{ .rotate_cw, .rotate_ccw, .rotate_ccw }, q.slice());
+    try std.testing.expectEqual(@as(i32, -1), m.position);
+    try std.testing.expectEqual(EdgeEvent.cw, e.slice()[0].event);
     q.clear();
     m.feed(abs(7), 5, &q, &e);
     try std.testing.expectEqual(@as(usize, 0), q.len);
@@ -203,12 +207,14 @@ pub const Mapper = struct {
             },
             evdev.EV_ABS => {
                 // the vendor's knob driver reports state codes on ABS_X, not a counter: one
-                // detent is a pair of events, 8 then 1 turning counter-clockwise and 13 then 11
-                // clockwise (measured on the device on 2026-09-09). the second value of each
-                // pair is the step; anything else is remembered for the log
+                // detent is a pair of events, 8 then 1 turning clockwise and 13 then 11
+                // counter-clockwise. the second value of each pair is the step; anything else is
+                // remembered for the log. (the pairs were measured on 2026-09-09 but assigned to
+                // the two directions by inference, the wrong way round; matt caught it on
+                // 2026-09-11 when a clockwise turn walked the menu leftwards.)
                 switch (ev.value) {
-                    1 => self.step(false, out, edges),
-                    11 => self.step(true, out, edges),
+                    1 => self.step(true, out, edges),
+                    11 => self.step(false, out, edges),
                     8, 13 => {},
                     else => self.abs_unexpected = ev.value,
                 }
@@ -274,10 +280,10 @@ test "edges report every press and release, long holds, and rotary steps with th
     m.feed(key(108, 1), 0, &q, &e);
     m.feed(key(108, 0), 1, &q, &e);
     m.feed(abs(13), 2, &q, &e);
-    m.feed(abs(11), 2, &q, &e); // one clockwise detent
+    m.feed(abs(11), 2, &q, &e); // one counter-clockwise detent
     m.feed(abs(11), 3, &q, &e); // another, its first half lost
     m.feed(abs(8), 4, &q, &e);
-    m.feed(abs(1), 4, &q, &e); // one counter-clockwise detent
+    m.feed(abs(1), 4, &q, &e); // one clockwise detent
     m.feed(key(103, 1), 5, &q, &e);
     m.poll(1_000_000_000, &q, &e);
     m.feed(key(103, 0), 1_100_000_000, &q, &e);
@@ -285,12 +291,12 @@ test "edges report every press and release, long holds, and rotary steps with th
     const expected = [_]Edge{
         .{ .control = .left, .event = .press, .position = 0 },
         .{ .control = .left, .event = .release, .position = 0 },
-        .{ .control = .rotary, .event = .cw, .position = 1 },
-        .{ .control = .rotary, .event = .cw, .position = 2 },
-        .{ .control = .rotary, .event = .ccw, .position = 1 },
-        .{ .control = .knob, .event = .press, .position = 1 },
-        .{ .control = .knob, .event = .long, .position = 1 },
-        .{ .control = .knob, .event = .release, .position = 1 },
+        .{ .control = .rotary, .event = .ccw, .position = -1 },
+        .{ .control = .rotary, .event = .ccw, .position = -2 },
+        .{ .control = .rotary, .event = .cw, .position = -1 },
+        .{ .control = .knob, .event = .press, .position = -1 },
+        .{ .control = .knob, .event = .long, .position = -1 },
+        .{ .control = .knob, .event = .release, .position = -1 },
     };
     try std.testing.expectEqualSlices(Edge, &expected, e.slice());
     try std.testing.expectEqual(@as(u16, 999), m.unmapped_code);
