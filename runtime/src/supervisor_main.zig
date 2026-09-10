@@ -16,6 +16,9 @@ const config = @import("supervisor/config.zig");
 const mcu = @import("supervisor/mcu.zig");
 const logring = @import("supervisor/logring.zig");
 const tz = @import("scene/tz.zig");
+const clock = @import("scene/clockfont.zig");
+const scene = @import("scene/scene.zig");
+const ip = @import("scene/ip.zig");
 const sntp = @import("supervisor/sntp.zig");
 const api = @import("net/api.zig");
 
@@ -326,6 +329,8 @@ const Supervisor = struct {
     request_id: u64 = 1,
     last_ip: ?[4]u8 = null,
     next_ip_poll: u64 = 0,
+    /// when the on-device menu's info page is due its next set of readings
+    next_device_push: u64 = 0,
     shutting_down: bool = false,
     // network daemon
     cfg: config.Config = .{},
@@ -502,6 +507,81 @@ const Supervisor = struct {
         self.cfg.saved_revision = self.cfg.revision;
         log.info("configuration saved, revision {d}", .{self.cfg.revision});
         return .applied;
+    }
+
+    /// reboot, asked for on the panel and confirmed there. the display goes dark first so the
+    /// device does not sit showing a frozen clock, then the vendor's own reboot runs.
+    fn rebootNow(self: *Supervisor) void {
+        self.send(.{ .power = .{ .on = 0 } });
+        self.snapshot.power = 0;
+        const pid = sys.fork() catch {
+            log.err("reboot: fork failed", .{});
+            return;
+        };
+        if (pid == 0) {
+            sys.unblockAllSignals();
+            const path: [:0]const u8 = "/bin/reboot";
+            const argv = [_:null]?[*:0]const u8{path.ptr};
+            const envp = [_:null]?[*:0]const u8{};
+            sys.execve(path.ptr, &argv, &envp) catch {};
+            sys.exit(127);
+        }
+        log.info("reboot: /bin/reboot started as pid {d}", .{pid});
+    }
+
+    /// the on-device menu changed something. the renderer has already previewed it; here it is
+    /// validated, applied and persisted like any other settings change, so it survives a reboot.
+    fn onMenuRequest(self: *Supervisor, m: messages.MenuRequest, now: u64) void {
+        const kind = messages.enumFromInt(messages.MenuRequest.Kind, m.kind) orelse {
+            log.warn("unknown menu request {d}", .{m.kind});
+            return;
+        };
+        switch (kind) {
+            .power_off => {
+                self.snapshot.power = 0;
+                self.send(.{ .power = .{ .on = 0 } });
+                log.info("menu: display off", .{});
+                return;
+            },
+            .reboot => {
+                log.info("menu: reboot confirmed on the device", .{});
+                self.rebootNow();
+                return;
+            },
+            .brightness, .clock_font, .generator, .ip_mode, .mqtt, .ntfy => {},
+        }
+        const before = self.cfg;
+        const patched = switch (kind) {
+            .brightness => self.cfg.patch(.{ .brightness = @truncate(m.value) }),
+            .clock_font => self.cfg.patch(.{ .clock_font = messages.enumFromInt(clock.Font, @as(u8, @truncate(m.value))) orelse return }),
+            .generator => self.cfg.patch(.{ .generator = messages.enumFromInt(scene.Generator, @as(u8, @truncate(m.value))) orelse return }),
+            .ip_mode => self.cfg.patch(.{ .ip_mode = messages.enumFromInt(ip.Mode, @as(u8, @truncate(m.value))) orelse return }),
+            .mqtt => blk: {
+                var next = self.cfg.mqtt;
+                next.enabled = m.value != 0;
+                break :blk self.cfg.patchMqtt(.{ .enabled = next.enabled });
+            },
+            .ntfy => blk: {
+                const next = self.cfg.patchNtfy(.{ .enabled = m.value != 0 }) catch |e| break :blk e;
+                self.cfg.setNtfy(next);
+                self.restartNtfy(now);
+                break :blk {};
+            },
+            else => unreachable,
+        };
+        patched catch |e| {
+            log.warn("menu {s} rejected: {s}", .{ @tagName(kind), @errorName(e) });
+            self.cfg = before;
+            return;
+        };
+        self.snapshot.config_revision = self.cfg.revision;
+        // the renderer already shows it, but netd holds its own copy and acts on the mqtt and
+        // ntfy settings itself, so it has to be told: nothing else pushes a change it did not ask
+        // for. then it goes to disk like any other settings change.
+        self.applyConfigLive(before);
+        self.sendNetd(.{ .config = self.cfg }, 0);
+        self.persistSettings();
+        log.info("menu: {s} set, revision {d}", .{ @tagName(kind), self.cfg.revision });
     }
 
     /// every accepted settings change is written out at once: forgetting to save is what lost a
@@ -1197,6 +1277,7 @@ const Supervisor = struct {
                     };
                 },
                 .input => |i| self.sendNetd(.{ .input = i }, 0),
+                .menu_request => |m| self.onMenuRequest(m, now),
                 else => log.warn("unexpected {s} from renderer", .{@tagName(p.message)}),
             }
         }
@@ -1281,6 +1362,24 @@ const Supervisor = struct {
             },
             .confirm_slot => log.info("renderer healthy for sixty seconds: {s} slot confirmed", .{@tagName(lifecycle.slot)}),
         }
+    }
+
+    /// the readouts the menu's info page shows. the renderer cannot see any of this itself.
+    fn pushDeviceStatus(self: *Supervisor, now: u64) void {
+        if (now < self.next_device_push) return;
+        self.next_device_push = now + 5 * ns_per_s;
+        if (self.snapshot.renderer_state != 2) return;
+        const st = self.snapshot;
+        self.send(.{ .device_status = .{
+            .battery_pct = st.battery_pct,
+            .usb = st.usb_present,
+            .wifi_quality = st.wifi_quality,
+            .wifi_dbm = st.wifi_level_dbm,
+            .time_synced = @intFromBool(st.time_state == 1), // 1 is synced; 2 is stale
+            .mqtt_on = @intFromBool(self.cfg.mqtt.enabled),
+            .ntfy_on = @intFromBool(self.cfg.ntfy.enabled),
+            .uptime_s = st.uptime_s,
+        } });
     }
 
     fn pollIp(self: *Supervisor, now: u64) void {
@@ -1480,6 +1579,7 @@ fn run(cfg_in: cli.Config, environ: anytype, args: []const [:0]const u8) !u8 {
         s.pollGesture(now);
         s.pollLifecycle(now);
         s.pollIp(now);
+        s.pushDeviceStatus(now);
         s.drainNetd(now);
         s.pollNetd(now);
         s.drainNtfy(now);

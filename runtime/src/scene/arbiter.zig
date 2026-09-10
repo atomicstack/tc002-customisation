@@ -13,6 +13,7 @@ const font = @import("font.zig");
 const tz = @import("tz.zig");
 const clock = @import("clock.zig");
 const ip = @import("ip.zig");
+const menu = @import("menu.zig");
 
 const white = [3]u8{ 255, 255, 255 };
 const s_ns = std.time.ns_per_s;
@@ -124,10 +125,16 @@ test "physical actions: buttons select the base, rotary and knob depend on the b
     try std.testing.expectEqual(scene.Generator.popsquares, a.art.generator);
     var before: geometry.Rgb = undefined;
     a.render(0, &before);
+    // the knob click opens the settings menu, which takes every control until it closes
     a.action(.knob_short, 0);
+    try std.testing.expect(a.menuOpen());
     var after: geometry.Rgb = undefined;
     a.render(0, &after);
     try std.testing.expect(!std.mem.eql(u8, &before, &after));
+    a.action(.right, 0); // a button inside the menu edits, it does not change the base
+    try std.testing.expect(a.base == .art);
+    a.action(.middle, 0); // middle backs out
+    try std.testing.expect(!a.menuOpen());
     a.action(.knob_long, 0);
     try std.testing.expect(a.overlay == .stream_arming);
     _ = a.apply(.{ .notify = .{ .text = "x", .colour = white, .duration_s = 5 } }, 0);
@@ -467,6 +474,12 @@ pub const Arbiter = struct {
     art: scene.Art,
     clock: clock.State,
     ip: ip.State = .{},
+    /// the settings menu, drawn over everything and taking every control while it is open
+    menu_state: ?menu.Menu = null,
+    /// what the menu wants the supervisor to do; the renderer takes it and sends it up
+    menu_request: ?menu.Request = null,
+    /// the device readouts the info page shows, as last pushed
+    device: menu.Status = .{},
 
     pub fn init(base: Base, generator: scene.Generator, seed: u32, rule: tz.Rule) Arbiter {
         return .{ .base = base, .art = scene.Art.init(generator, seed), .clock = clock.State.init(rule) };
@@ -615,6 +628,7 @@ pub const Arbiter = struct {
     }
 
     pub fn action(self: *Arbiter, a: scene.Action, now_ns: u64) void {
+        if (self.menu_state != null) return self.menuAction(a, now_ns);
         switch (a) {
             .left => _ = self.apply(.{ .set_base = .clock }, now_ns),
             .middle => _ = self.apply(.{ .set_base = .art }, now_ns),
@@ -626,10 +640,101 @@ pub const Arbiter = struct {
                 .clock => _ = self.apply(.{ .set_clock_style = .{ .font = cycle(clock.Font, self.clock.style.font, a == .rotate_cw) } }, now_ns),
                 .ip => _ = self.apply(.{ .set_ip_mode = cycle(ip.Mode, self.ip.mode, a == .rotate_cw) }, now_ns),
             },
-            .knob_short => if (self.base == .art) {
-                _ = self.apply(.{ .reseed = self.art.seed *% 1664525 +% 1013904223 }, now_ns);
-            },
+            .knob_short => self.openMenu(now_ns),
             .knob_long => _ = self.apply(.arm_stream, now_ns),
+        }
+    }
+
+    pub fn menuOpen(self: *const Arbiter) bool {
+        return self.menu_state != null;
+    }
+
+    pub fn openMenu(self: *Arbiter, now_ns: u64) void {
+        self.menu_state = menu.Menu.open(.{
+            .brightness = self.brightness,
+            .clock_font = self.clock.style.font,
+            .generator = self.art.generator,
+            .ip_mode = self.ip.mode,
+            .mqtt = self.device.mqtt_on,
+            .ntfy = self.device.ntfy_on,
+        }, self.device, now_ns);
+        self.dirty = true;
+    }
+
+    fn menuAction(self: *Arbiter, a: scene.Action, now_ns: u64) void {
+        const ev: menu.Input = switch (a) {
+            .rotate_cw => .next,
+            .rotate_ccw => .prev,
+            .knob_short => .click,
+            .middle => .back,
+            .right => .step_up,
+            .left => .step_down,
+            .knob_long => return, // the stream gesture stays out of the menu
+        };
+        const m = &(self.menu_state.?);
+        self.handleMenu(m.input(ev, now_ns), now_ns);
+        self.drainMenuCommit();
+    }
+
+    /// a settled change goes up exactly once; the previews that led to it never do
+    fn drainMenuCommit(self: *Arbiter) void {
+        const m = &(self.menu_state orelse return);
+        const r = m.takeReady();
+        if (r != .none) self.menu_request = r;
+    }
+
+    /// apply the preview of what the menu asked for and keep the durable part for the renderer
+    fn handleMenu(self: *Arbiter, r: menu.Request, now_ns: u64) void {
+        self.dirty = true;
+        switch (r) {
+            .none => return,
+            .close => {
+                self.menu_state = null;
+                return;
+            },
+            .brightness => |v| {
+                self.brightness = v;
+            },
+            .clock_font => |f| {
+                self.clock.style.font = f;
+            },
+            .generator => |g| self.art.select(g),
+            .ip_mode => |m| {
+                _ = self.ip.setMode(m);
+            },
+            .mqtt => |on| {
+                self.device.mqtt_on = on;
+            },
+            .ntfy => |on| {
+                self.device.ntfy_on = on;
+            },
+            .power_off => {
+                self.power = false;
+            },
+            .reseed => self.art.reseed(self.art.seed *% 1664525 +% 1013904223),
+            .reboot => {},
+        }
+        _ = now_ns;
+        // only the two actions travel up from here; a value waits until it has settled
+        switch (r) {
+            .power_off, .reboot => self.menu_request = r,
+            else => {},
+        }
+    }
+
+    /// the renderer takes what the menu asked the supervisor for
+    pub fn takeMenuRequest(self: *Arbiter) ?menu.Request {
+        const r = self.menu_request;
+        self.menu_request = null;
+        return r;
+    }
+
+    /// the supervisor's periodic push of what the info page reads
+    pub fn setDeviceStatus(self: *Arbiter, st: menu.Status) void {
+        self.device = st;
+        if (self.menu_state) |*m| {
+            m.status = st;
+            if (m.item == .info) self.dirty = true;
         }
     }
 
@@ -638,6 +743,12 @@ pub const Arbiter = struct {
         _ = wall_ns;
         const dt_ns = now_ns -| self.last_tick_ns;
         self.last_tick_ns = now_ns;
+        // the menu's own timers: a changed value settles, and an untouched menu closes
+        if (self.menu_state) |*m| {
+            const r = m.tick(now_ns);
+            self.drainMenuCommit();
+            self.handleMenu(r, now_ns);
+        }
         const dt_s = @as(f32, @floatFromInt(dt_ns)) / @as(f32, s_ns);
         self.art.step(dt_s);
         // an outgoing generator keeps moving through its transition
@@ -684,6 +795,7 @@ pub const Arbiter = struct {
     }
 
     pub fn render(self: *const Arbiter, wall_ns: u64, rgb: *geometry.Rgb) void {
+        if (self.menu_state) |*m| return m.render(self.last_tick_ns, rgb);
         switch (self.overlay) {
             .notify => |n| self.renderNotify(&n, rgb),
             .raw => |r| rgb.* = r.rgb,
@@ -707,6 +819,8 @@ pub const Arbiter = struct {
     }
 
     pub fn cadence(self: *const Arbiter, wall_ns: u64) scene.Cadence {
+        // the menu redraws steadily: a value may be scrolling and the commit and idle timers run
+        if (self.menu_state != null) return .{ .continuous = 40 * std.time.ns_per_ms };
         return switch (self.overlay) {
             .notify => |n| if (font.textWidth(n.text[0..n.len]) > geometry.width) .{ .continuous = scroll_period_ns } else .idle,
             .raw => .idle,

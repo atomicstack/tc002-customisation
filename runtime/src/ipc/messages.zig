@@ -68,6 +68,9 @@ test "every message kind round-trips through a packet" {
             break :blk nc;
         } },
         .{ .ntfy_status = .{ .state = 2, .messages = 9, .err = config.Text.init("dns failed") } },
+        .{ .menu_request = .{ .kind = @intFromEnum(MenuRequest.Kind.brightness), .value = 70 } },
+        .{ .menu_request = .{ .kind = @intFromEnum(MenuRequest.Kind.reboot) } },
+        .{ .device_status = .{ .battery_pct = 80, .usb = 1, .wifi_quality = 49, .wifi_dbm = -61, .time_synced = 1, .mqtt_on = 1, .uptime_s = 90061 } },
         .status_get,
         .{ .status = .{ .renderer_state = 2, .epoch = 3, .revision = 4, .presented = 5, .base = 1, .brightness = 77, .uptime_s = 8, .mem_available_kb = 14000, .cpu_pct = 12, .fps_x10 = 599, .ip_present = 1, .ip = .{ 10, 0, 0, 111 }, .config_revision = 2, .saved_revision = 1, .boot_id = 0xabcd, .sample_age_ms = 40, .mac = .{ 1, 2, 3, 4, 5, 6 }, .mac_present = 1, .load_1m_x100 = 123, .mem_free_kb = 4000, .wifi_level_dbm = -61, .wifi_quality = 49, .cpu_renderer_pct_x10 = 87, .tmpfs_used_kb = 1300, .battery_mv = 3987, .battery_pct = 80, .usb_present = 1, .clock = ClockStyle.full(.{ .font = .segment }) } },
     };
@@ -213,6 +216,9 @@ pub const Kind = enum(u8) {
     ntfy_put = 45,
     ntfy_config = 46,
     ntfy_status = 47,
+    // the on-device settings menu: the renderer asks, the supervisor answers with a push
+    menu_request = 48,
+    device_status = 49,
 };
 
 pub const Status = enum(u8) { applied = 0, rejected = 1, overload = 2, stale_epoch = 3, expired = 4, unavailable = 5, timeout = 6, conflict = 7 };
@@ -397,6 +403,28 @@ pub const Transition = struct {
 pub const SetBase = struct { base: u8, generator: u8, seed: u32, style: ClockStyle = .{}, transition: Transition = .{}, ip_mode: u8 = 0xff };
 /// the ip scene's layout as a durable setting pushed to the renderer
 pub const IpMode = struct { mode: u8 };
+
+/// what the on-device menu asks the supervisor to do. the renderer has already previewed it.
+pub const MenuRequest = struct {
+    kind: u8,
+    value: u32 = 0,
+
+    pub const Kind = enum(u8) { brightness = 0, clock_font = 1, generator = 2, ip_mode = 3, mqtt = 4, ntfy = 5, power_off = 6, reboot = 7 };
+};
+
+/// what the menu's info page reads. the supervisor has all of it and pushes it every few seconds.
+pub const DeviceStatus = struct {
+    battery_pct: u8 = 255,
+    usb: u8 = 255,
+    wifi_quality: u8 = 255,
+    wifi_dbm: i16 = -32768,
+    time_synced: u8 = 0,
+    mqtt_on: u8 = 0,
+    ntfy_on: u8 = 0,
+    uptime_s: u32 = 0,
+
+    pub const wire_len = 1 + 1 + 1 + 2 + 1 + 1 + 1 + 4;
+};
 pub const Frame = struct { duration_s: u16, transition: Transition = .{}, rgb: geometry.Rgb };
 pub const Brightness = struct { value: u8 };
 pub const Reseed = struct { seed: u32 };
@@ -937,6 +965,8 @@ pub const Message = union(Kind) {
     ntfy_put: NtfyPut,
     ntfy_config: NtfyConfig,
     ntfy_status: NtfyStatus,
+    menu_request: MenuRequest,
+    device_status: DeviceStatus,
 };
 
 pub const Packet = struct { request_id: u64, epoch: u32, message: Message };
@@ -964,6 +994,22 @@ fn encodePayload(msg: Message, out: []u8) usize {
         .ip_mode => |m| {
             out[0] = m.mode;
             return 1;
+        },
+        .menu_request => |m| {
+            out[0] = m.kind;
+            std.mem.writeInt(u32, out[1..5], m.value, .big);
+            return 5;
+        },
+        .device_status => |d| {
+            out[0] = d.battery_pct;
+            out[1] = d.usb;
+            out[2] = d.wifi_quality;
+            std.mem.writeInt(i16, out[3..5], d.wifi_dbm, .big);
+            out[5] = d.time_synced;
+            out[6] = d.mqtt_on;
+            out[7] = d.ntfy_on;
+            std.mem.writeInt(u32, out[8..12], d.uptime_s, .big);
+            return DeviceStatus.wire_len;
         },
         .ready, .arm_stream, .time_corrected, .stop, .config_get, .status_get, .screen_get => return 0,
         .screen => |s| {
@@ -1247,6 +1293,23 @@ pub fn decodePacket(bytes: []const u8) Error!Packet {
         .ip_mode => blk: {
             const b = try fixed(p, 1);
             break :blk .{ .ip_mode = .{ .mode = b[0] } };
+        },
+        .menu_request => blk: {
+            const b = try fixed(p, 5);
+            break :blk .{ .menu_request = .{ .kind = b[0], .value = std.mem.readInt(u32, b[1..5], .big) } };
+        },
+        .device_status => blk: {
+            const b = try fixed(p, DeviceStatus.wire_len);
+            break :blk .{ .device_status = .{
+                .battery_pct = b[0],
+                .usb = b[1],
+                .wifi_quality = b[2],
+                .wifi_dbm = std.mem.readInt(i16, b[3..5], .big),
+                .time_synced = b[5],
+                .mqtt_on = b[6],
+                .ntfy_on = b[7],
+                .uptime_s = std.mem.readInt(u32, b[8..12], .big),
+            } };
         },
         .screen_get => blk: {
             _ = try fixed(p, 0);

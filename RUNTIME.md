@@ -457,8 +457,11 @@ does not know is rejected with `400 rejected`.
 | middle button (release) | select `art` | select `art` |
 | right button (release) | select `ip` | select `ip` |
 | knob rotate | next / previous generator | next / previous clock face in the clock; next / previous layout in ip |
-| knob short press | reseed the art | nothing |
+| knob short press | open the [settings menu](#the-settings-menu) | open the settings menu |
 | knob long press (700 ms) | arm streaming | arm streaming |
+
+while the menu is open every control belongs to it; the table above applies
+only when it is closed.
 
 the keycode assignment (`108,105,106,103` = left, middle, right, knob) was
 measured on 2026-09-09 from the renderer's press log while the buttons were
@@ -482,6 +485,52 @@ publishes them on mqtt as momentary events (see [mqtt](#mqtt)). the same
 controls can be driven remotely (`POST /input`, `cmd/input`): an injected
 `click` is a press and a release through the same mapper, so it produces the
 same actions and the same outward events as a finger would.
+
+### the settings menu
+
+the knob's short press opens a menu on the panel itself, so brightness, the
+faces and the two message services can be changed with nothing else to hand.
+one item shows at a time, which is the only honest layout on 52x16: the item's
+name on the top rows, its value below, and a row of dots along the bottom with
+the current item lit.
+
+| item | what it does | persists |
+|---|---|---|
+| `bright` | brightness in ten steps, 10 to 100 | yes |
+| `sleep` | turns the display off and closes the menu | no, the panel comes back on a restart |
+| `face` | the clock face | yes |
+| `art` | the art generator | yes |
+| `ip` | the ip layout | yes |
+| `seed` | reseeds the art at once | no, a seed is not a setting |
+| `mqtt` | the broker connection on or off | yes |
+| `ntfy` | the subscriber on or off | yes |
+| `info` | the address, wifi, battery, time sync and uptime | read only |
+| `reboot` | asks first, defaulting to no | n/a |
+| `exit` | closes the menu | n/a |
+
+`exit` is last, so it is one counter-clockwise click from the item the menu
+opens on.
+
+- **the knob** turns to move between items, and its click acts on the one
+  showing: a toggle flips, an adjustable opens for editing (turn to change,
+  click to finish), an action runs.
+- **the left and right buttons** change the showing item's value in place,
+  without opening it for editing; **middle** backs out, and closes the menu
+  when nothing is open for editing.
+- **fifteen seconds** with nothing touched closes the menu, keeping whatever is
+  on the panel. in the reboot dialogue a timeout answers no.
+
+a value is applied at once as a preview but is only **written** once it has
+settled, 700 ms after the last change, so a knob spin sends one request and
+one file write rather than one per detent. the renderer draws the menu and
+previews the change; the supervisor validates it as an ordinary settings patch,
+persists it and pushes the result to netd, so the api and mqtt agree with the
+panel. two small ipc messages carry this: `menu_request` upward, and
+`device_status` every five seconds downward for the info page, which is
+otherwise invisible to the renderer.
+
+a notification that arrives while the menu is open is not shown until the menu
+closes; its timer runs regardless.
 
 ### presentation
 

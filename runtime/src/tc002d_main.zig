@@ -12,6 +12,7 @@ const spidev = @import("panel/spidev.zig");
 const scene = @import("scene/scene.zig");
 const tz = @import("scene/tz.zig");
 const arbiter = @import("scene/arbiter.zig");
+const menu = @import("scene/menu.zig");
 const ip = @import("scene/ip.zig");
 const evdev = @import("input/evdev.zig");
 const actions = @import("input/actions.zig");
@@ -138,6 +139,7 @@ const Renderer = struct {
                 if (chained or !fader.cross.active()) arb.transitionDone();
             }
         }
+        if (arb.takeMenuRequest()) |r| self.sendMenuRequest(r);
         fader.setPower(arb.power, now);
         arb.render(wall, &rgb);
         const live_old = fader.cross.active() and arb.renderOutgoing(wall, &old_rgb);
@@ -155,6 +157,24 @@ const Renderer = struct {
         self.redraws += 1;
         self.render_deadline = sched.afterRedraw(fading, cadence, base_deadline, now, wall);
         self.idle = cadence == .idle;
+    }
+
+    /// the settings the on-device menu changed: the supervisor validates, applies and persists
+    fn sendMenuRequest(self: *Renderer, r: menu.Request) void {
+        const K = messages.MenuRequest.Kind;
+        const m: messages.MenuRequest = switch (r) {
+            .brightness => |v| .{ .kind = @intFromEnum(K.brightness), .value = v },
+            .clock_font => |f| .{ .kind = @intFromEnum(K.clock_font), .value = @intFromEnum(f) },
+            .generator => |g| .{ .kind = @intFromEnum(K.generator), .value = @intFromEnum(g) },
+            .ip_mode => |v| .{ .kind = @intFromEnum(K.ip_mode), .value = @intFromEnum(v) },
+            .mqtt => |on| .{ .kind = @intFromEnum(K.mqtt), .value = @intFromBool(on) },
+            .ntfy => |on| .{ .kind = @intFromEnum(K.ntfy), .value = @intFromBool(on) },
+            .power_off => .{ .kind = @intFromEnum(K.power_off) },
+            .reboot => .{ .kind = @intFromEnum(K.reboot) },
+            // a reseed is not a setting and a close is nobody else's business
+            .none, .close, .reseed => return,
+        };
+        self.send(.{ .menu_request = m }, 0);
     }
 
     fn sendEdges(self: *Renderer, edges: *const actions.EdgeQueue) void {
@@ -222,6 +242,20 @@ const Renderer = struct {
             .ip_changed => |i| {
                 _ = arb.apply(.{ .ip_changed = if (i.present != 0) i.addr else null }, now);
                 self.reply(p.request_id, .applied, arb.revision);
+                return;
+            },
+            .device_status => |d| {
+                arb.setDeviceStatus(.{
+                    .address = arb.ip.addr,
+                    .battery_pct = d.battery_pct,
+                    .usb = d.usb,
+                    .wifi_quality = d.wifi_quality,
+                    .wifi_dbm = d.wifi_dbm,
+                    .time_synced = d.time_synced != 0,
+                    .uptime_s = d.uptime_s,
+                    .mqtt_on = d.mqtt_on != 0,
+                    .ntfy_on = d.ntfy_on != 0,
+                });
                 return;
             },
             .set_timezone => |t| {
