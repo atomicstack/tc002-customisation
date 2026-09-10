@@ -1,11 +1,11 @@
 #!/bin/bash
 # tc002-up.sh: bring the custom runtime up on the tc002 in one go: connect adb, build and push
-# the binaries, start the supervisor, apply and save the settings, pull the api tokens for the
-# console. everything on the device lives in tmpfs, so after a reboot (the stock app comes back
-# on its own) this is the way back to the runtime.
+# the binaries, start the supervisor, pull the api tokens for the console. the binaries live in
+# tmpfs, so after a reboot (the stock app comes back on its own) this is the way back to the
+# runtime; the settings and the tokens are durable and come back on their own.
 #
 #   runtime/tools/tc002-up.sh [--device IP[:PORT]] [--tz ZONE] [--ntp IP|none] [--font NAME]
-#                             [--base NAME] [--no-build] [--keep-settings]
+#                             [--base NAME] [--no-build] [--keep-settings] [--reset-settings]
 #
 #   --device IP[:PORT]  adb address (default 10.0.0.111:5555; env TC002_DEVICE)
 #   --tz ZONE           iana zone name or posix rule (default Europe/Amsterdam; env TC002_TZ)
@@ -14,8 +14,10 @@
 #   --font NAME         clock font: classic, mini, segment, big, block or hires (default block)
 #   --base NAME         scene to show: clock, art or ip (default clock)
 #   --no-build          push the binaries already in runtime/zig-out instead of building first
-#   --keep-settings     leave the settings alone (a saved config survives a runtime restart, not
-#                       a reboot)
+#   --keep-settings     leave the settings alone
+#   --reset-settings    apply --tz/--ntp/--font/--base over the device's durable settings. without
+#                       it, a device that already has durable settings keeps them, and only a
+#                       device with none is provisioned from these options
 #
 # the device lock is taken under your user name (env TC002_AGENT) so agents sharing the device
 # see who holds it; it stays held while the runtime runs. `runtime/tools/tc002-run.sh stop`
@@ -45,7 +47,8 @@ while [ $# -gt 0 ]; do
         --base) base=$2; shift 2 ;;
         --no-build) build=0; shift ;;
         --keep-settings) settings=0; shift ;;
-        -h|--help) sed -n '2,22p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+        --reset-settings) settings=2; shift ;;
+        -h|--help) sed -n '2,25p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
         *) echo "tc002-up.sh: unknown option $1" >&2; exit 2 ;;
     esac
 done
@@ -84,10 +87,16 @@ say "start (tz $tz)"
 sleep 2
 
 say "tokens -> $ROOT/tokens (mode 0600; the console's start.sh finds them there)"
-adb pull /tmp/tc002/credentials/tokens "$ROOT/tokens" >/dev/null 2>&1 || die "could not pull the tokens (did the supervisor start?)"
+adb pull /data/tc002/state/credentials/tokens "$ROOT/tokens" >/dev/null 2>&1 ||
+    adb pull /tmp/tc002/credentials/tokens "$ROOT/tokens" >/dev/null 2>&1 ||
+    die "could not pull the tokens (did the supervisor start?)"
 chmod 600 "$ROOT/tokens"
 
-if [ "$settings" = 1 ]; then
+if [ "$settings" = 1 ] && [ -n "$(adb shell "ls /data/tc002/state/config/config.json 2>/dev/null" | tr -d '\r\n')" ]; then
+    settings=0
+    say "settings: the device has durable settings; leaving them alone (--reset-settings to overwrite)"
+fi
+if [ "$settings" != 0 ]; then
     say "settings"
     ntp_arg=""
     [ "$ntp" != none ] && ntp_arg="ntp_server=$ntp"

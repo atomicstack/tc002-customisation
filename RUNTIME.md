@@ -6,11 +6,13 @@ the panel, the buttons and the knob, and expose an authenticated http and mqtt
 api of their own. while it runs, the stock `zkgui` app (and with it the stock
 http api on port 80, the cloud client, the built-in apps) is not running.
 
-everything here is **volatile**: binaries, logs, credentials and settings live
-under `/tmp/tc002/`, the boot hook is `/tmp/EasyUI.cfg`, and nothing is written
-to flash or `/data`. a power cycle always comes back stock. this document is
-the reference for what the code does; how to build and run it is in
-[`runtime/README.md`](runtime/README.md).
+the **code** here is volatile: binaries, logs and the panel lock live under
+`/tmp/tc002/`, the boot hook is `/tmp/EasyUI.cfg`, and a power cycle always
+comes back stock. the **settings and credentials are not**: they live under
+`/data/tc002/state/` on the persistent jffs2 partition and survive a reboot, so
+a restarted runtime comes back configured. nothing else is written to flash, and
+no partition is ever rewritten. this document is the reference for what the code
+does; how to build and run it is in [`runtime/README.md`](runtime/README.md).
 
 ## processes
 
@@ -132,15 +134,27 @@ exercised on the device (nobody has pressed the knob during a run).
 
 ### settings, credentials, the listener
 
+- **where they live**: `--state PATH`, `/data/tc002/state` by default, on the
+  persistent partition, so both survive a reboot. the supervisor creates it at
+  startup; if it cannot (no `/data`, a full or read-only partition) it logs a
+  warning, falls back to `--dir` and keeps running, volatile as before. the
+  layout under either directory is the same, so the fallback is a swap.
+  the first start with a durable directory carries `config/config.json`,
+  `credentials/tokens` and `credentials/ntfy-ca.pem` over from `--dir` if they
+  are there, which keeps the settings and the tokens an upgrade already had. an
+  existing durable file is never overwritten.
 - **credentials**: two 32-byte random tokens (control, admin) generated once
-  into `/tmp/tc002/credentials/tokens` (mode 0600, directory 0700) and handed
+  into `<state>/credentials/tokens` (mode 0600, directory 0700) and handed
   to netd over the channel. netd never reads the file; nothing in the runtime
-  ever logs them.
-- **settings**: `/tmp/tc002/config/config.json`, written atomically (temp
+  ever logs them. they are durable, so the console keeps working across a
+  reboot; a factory reset (the reset key, which wipes `/data`) clears them.
+- **settings**: `<state>/config/config.json`, written atomically (temp
   file, fsync, rename, directory fsync). every accepted patch bumps
-  `revision`; `saved_revision` follows on an explicit save; a patch can name
-  the revision it expects and is refused with `conflict` if it is stale. the
-  model is in [settings](#settings).
+  `revision`. **every accepted settings write is persisted at once**, so
+  `saved_revision` follows on its own and a client confirms persistence by
+  seeing the two match in the reply; `POST /config/save` remains and forces a
+  write. a patch can name the revision it expects and is refused with
+  `conflict` if it is stale. the model is in [settings](#settings).
 - **the listener**: port 80 is bound by root with `SO_REUSEADDR`, then netd
   is forked with exactly two inherited descriptors (fd 3 the channel, fd 5 the
   listener), privileges dropped to uid/gid 1001 with no supplementary groups
@@ -547,7 +561,7 @@ every route, reads included, needs `Authorization: Bearer <token>` where the
 token is 64 hex characters. two tokens exist: **control** (scenes, actions,
 notifications, frames, reading settings and status) and **admin** (changing
 and saving settings, mqtt credentials). the comparison is constant-time
-against both. the tokens are in `/tmp/tc002/credentials/tokens` on the device
+against both. the tokens are in `/data/tc002/state/credentials/tokens` on the device
 (32 bytes control, then 32 bytes admin); `adb pull` it as root. anyone who can
 sniff the lan can read them in flight, which is why this profile is called
 `isolated-lan`.
@@ -644,6 +658,10 @@ view: `state` and seconds since the last accepted reply (see
 
 `revision` counts accepted patches (and mqtt setting changes) since the
 supervisor started with the loaded file; `saved_revision` is what is on disk.
+`PUT /config`, `PUT /mqtt` and `PUT /ntfy` write the file before they answer,
+so the two match in the reply unless the write itself failed, which is the
+signal that it did: the settings are live but not on disk, and the log says
+why. nothing needs an explicit save, and nothing is lost by forgetting one.
 the file itself is the same document in a slightly different shape, with
 `"schema":1` and the mqtt and ntfy blocks inline (the ntfy `token` and `password` are stored as given; the ca lives in the credentials directory instead):
 
@@ -738,7 +756,7 @@ typical session:
 cd runtime
 tools/tc002-run.sh push
 tools/tc002-run.sh start --profile dev --stats --tz 'AEST-10AEDT,M10.1.0,M4.1.0/3'
-adb pull /tmp/tc002/credentials/tokens tokens        # root over adb; keep the file private
+adb pull /data/tc002/state/credentials/tokens tokens # root over adb; keep the file private
 tools/tc002ctl.py -s <device-ip> --token-file tokens status
 tools/tc002ctl.py -s <device-ip> --token-file tokens notify hello --colour 00ff80 --duration 4
 tools/tc002ctl.py -s <device-ip> --token-file tokens config-set brightness=60 base=clock
@@ -825,10 +843,16 @@ all on a warm device that had been up for days, under the lock, on
   and reports them; nothing reads the microphone, sets the led current gain
   or uses the power-off command, and the low-battery behaviour is not
   reproduced. run on usb power.
-- **persistence.** everything is under `/tmp`; the paired-slot durable
-  install, the vendor image builder and the recovery rehearsal the design
-  calls for do not exist. cold boot against zkdaemon's 15 s check, the
-  upgrade-hook ordering and anything on mtd3 are unmeasured.
+- **persistence.** settings and credentials are durable (`/data/tc002/state`),
+  but the **binaries are not**: they are pushed to `/tmp` and a power cycle
+  brings the stock app back, so the runtime is still started by hand. a
+  self-starting runtime means rewriting the `res` partition, since nothing in
+  the boot chain reads a writable location; the design, the evidence and the
+  risks are in the vault note `tc002-customisation/2026-09-09/boot-persistence`.
+  the paired-slot install, the vendor image builder and the recovery rehearsal
+  do not exist. cold boot against zkdaemon's 15 s check, the upgrade-hook
+  ordering (the loader `dlopen`s the app **before** it checks for an upgrade,
+  which would strand the vendor flasher) and anything on mtd3 are unmeasured.
 - **confinement.** netd is uid 1001, but `/dev/socket/property_service` is
   world-writable on this init, so the uid change alone does not deny it the
   property service. recorded as a gap, not claimed as isolated.

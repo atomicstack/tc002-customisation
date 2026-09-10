@@ -53,6 +53,8 @@ var ntfy_send_buf: [codec.max_message]u8 = undefined;
 const ntfy_backoff_min_ns: u64 = 2 * ns_per_s;
 const ntfy_backoff_max_ns: u64 = 60 * ns_per_s;
 var config_buf: [config.file_max]u8 = undefined;
+/// the largest file the durable-state migration copies is the ntfy ca
+var migrate_buf: [api.max_ca]u8 = undefined;
 var config_arena: [4096]u8 = undefined;
 var proc_buf: [4096]u8 = undefined;
 var log_buf: [1024]u8 = undefined;
@@ -307,6 +309,9 @@ const SntpLink = struct {
 const Supervisor = struct {
     cfg_cli: cli.Config,
     cfg_dir_text: []const u8,
+    /// where settings and credentials are read and written: the durable partition when it is
+    /// usable, otherwise cfg_dir_text, which is the volatile behaviour this replaced
+    state_dir_text: []const u8,
     cfg_stats: bool,
     ep: sys.Fd,
     timer: sys.Fd,
@@ -392,12 +397,64 @@ const Supervisor = struct {
         return self.cfg_dir_text;
     }
 
+    /// settings and credentials; the relative layout matches pathIn so the two can be swapped
+    fn statePathIn(self: *Supervisor, buf: []u8, comptime rel: []const u8) [:0]const u8 {
+        return std.fmt.bufPrintZ(buf, "{s}/" ++ rel, .{self.state_dir_text}) catch unreachable;
+    }
+
+    /// create every component of the state directory. /data is mounted by init before the app
+    /// starts, but /data/tc002 and its child are ours to make.
+    fn makeStateDir(self: *Supervisor) !void {
+        var buf: [160]u8 = undefined;
+        const path = self.state_dir_text;
+        if (path.len == 0 or path.len + 1 > buf.len) return error.Invalid;
+        var i: usize = 1;
+        while (i <= path.len) : (i += 1) {
+            if (i < path.len and path[i] != '/') continue;
+            @memcpy(buf[0..i], path[0..i]);
+            buf[i] = 0;
+            const part: [:0]const u8 = buf[0..i :0];
+            sys.mkdir(part, 0o700) catch |e| if (e != error.Exists) return e;
+        }
+    }
+
+    /// carry settings and credentials over from the volatile directory the first time the durable
+    /// one is used, so an upgrade keeps the settings and the tokens the console already holds. an
+    /// existing durable file is never overwritten: this only ever fills a gap.
+    fn migrateState(self: *Supervisor) void {
+        if (std.mem.eql(u8, self.state_dir_text, self.cfg_dir_text)) return;
+        var moved: u8 = 0;
+        inline for (.{ "config", "credentials" }) |d| {
+            var db: [160]u8 = undefined;
+            sys.mkdir(self.statePathIn(&db, d), 0o700) catch {};
+        }
+        inline for (.{ "config/config.json", "credentials/tokens", "credentials/ntfy-ca.pem" }) |rel| {
+            var from_buf: [160]u8 = undefined;
+            var to_buf: [160]u8 = undefined;
+            var dir_buf: [160]u8 = undefined;
+            var tmp_buf: [160]u8 = undefined;
+            var probe: [1]u8 = undefined;
+            const to = self.statePathIn(&to_buf, rel);
+            const absent = if (sys.readFile(to, &probe)) |_| false else |e| e == error.NotFound;
+            if (absent) {
+                if (sys.readFile(self.pathIn(&from_buf, rel), &migrate_buf)) |bytes| {
+                    const dir = self.statePathIn(&dir_buf, comptime std.fs.path.dirname(rel).?);
+                    const tmp = self.statePathIn(&tmp_buf, rel ++ ".tmp");
+                    if (sys.saveFileAtomic(dir, tmp, to, bytes)) |_| {
+                        moved += 1;
+                    } else |e| log.warn("could not carry {s} over: {s}", .{ rel, sys.errText(e) });
+                } else |_| {}
+            }
+        }
+        if (moved > 0) log.info("carried {d} file(s) from {s} into {s}", .{ moved, self.cfg_dir_text, self.state_dir_text });
+    }
+
     fn loadCredentials(self: *Supervisor) !void {
         var dir_buf: [160]u8 = undefined;
         var path_buf: [160]u8 = undefined;
-        const dir = self.pathIn(&dir_buf, "credentials");
+        const dir = self.statePathIn(&dir_buf, "credentials");
         sys.mkdir(dir, 0o700) catch {};
-        const path = self.pathIn(&path_buf, "credentials/tokens");
+        const path = self.statePathIn(&path_buf, "credentials/tokens");
         var raw: [64]u8 = undefined;
         if (sys.readFile(path, &raw)) |bytes| {
             if (bytes.len == 64) {
@@ -408,7 +465,7 @@ const Supervisor = struct {
         } else |_| {}
         try sys.getrandom(&raw);
         var tmp_buf: [160]u8 = undefined;
-        const tmp = self.pathIn(&tmp_buf, "credentials/tokens.tmp");
+        const tmp = self.statePathIn(&tmp_buf, "credentials/tokens.tmp");
         try sys.saveFileAtomic(dir, tmp, path, &raw);
         self.creds = .{ .control = raw[0..32].*, .admin = raw[32..64].* };
         log.info("credentials generated (mode 0600 in the credentials directory; never logged)", .{});
@@ -417,8 +474,8 @@ const Supervisor = struct {
     fn loadConfig(self: *Supervisor) void {
         var dir_buf: [160]u8 = undefined;
         var path_buf: [160]u8 = undefined;
-        sys.mkdir(self.pathIn(&dir_buf, "config"), 0o700) catch {};
-        const path = self.pathIn(&path_buf, "config/config.json");
+        sys.mkdir(self.statePathIn(&dir_buf, "config"), 0o700) catch {};
+        const path = self.statePathIn(&path_buf, "config/config.json");
         const bytes = sys.readFile(path, &config_buf) catch {
             log.info("no saved configuration; using defaults", .{});
             return;
@@ -434,9 +491,9 @@ const Supervisor = struct {
         var dir_buf: [160]u8 = undefined;
         var tmp_buf: [160]u8 = undefined;
         var path_buf: [160]u8 = undefined;
-        const dir = self.pathIn(&dir_buf, "config");
-        const tmp = self.pathIn(&tmp_buf, "config/config.json.tmp");
-        const path = self.pathIn(&path_buf, "config/config.json");
+        const dir = self.statePathIn(&dir_buf, "config");
+        const tmp = self.statePathIn(&tmp_buf, "config/config.json.tmp");
+        const path = self.statePathIn(&path_buf, "config/config.json");
         const text = config.toJson(&self.cfg, &config_buf) catch return .rejected;
         sys.saveFileAtomic(dir, tmp, path, text) catch |e| {
             log.err("configuration save failed: {s}", .{sys.errText(e)});
@@ -445,6 +502,15 @@ const Supervisor = struct {
         self.cfg.saved_revision = self.cfg.revision;
         log.info("configuration saved, revision {d}", .{self.cfg.revision});
         return .applied;
+    }
+
+    /// every accepted settings change is written out at once: forgetting to save is what lost a
+    /// configuration twice. the reply carries `saved_revision`, so a client confirms persistence by
+    /// seeing it match `revision`; if the write failed they differ and the log says why.
+    fn persistSettings(self: *Supervisor) void {
+        _ = self.saveConfig();
+        self.snapshot.config_revision = self.cfg.revision;
+        self.snapshot.saved_revision = self.cfg.saved_revision;
     }
 
     /// live effects of a settings change: the renderer gets transient commands, netd the full config.
@@ -665,16 +731,16 @@ const Supervisor = struct {
         var dir_buf: [160]u8 = undefined;
         var tmp_buf: [160]u8 = undefined;
         var path_buf: [160]u8 = undefined;
-        const dir = self.pathIn(&dir_buf, "credentials");
-        const tmp = self.pathIn(&tmp_buf, "credentials/ntfy-ca.pem.tmp");
-        const path = self.pathIn(&path_buf, "credentials/ntfy-ca.pem");
+        const dir = self.statePathIn(&dir_buf, "credentials");
+        const tmp = self.statePathIn(&tmp_buf, "credentials/ntfy-ca.pem.tmp");
+        const path = self.statePathIn(&path_buf, "credentials/ntfy-ca.pem");
         sys.saveFileAtomic(dir, tmp, path, pem) catch |e| log.warn("the ntfy ca could not be stored: {s}", .{sys.errText(e)});
         log.info("ntfy ca {s} ({d} bytes)", .{ if (pem.len > 0) "installed" else "removed", pem.len });
     }
 
     fn loadNtfyCa(self: *Supervisor) void {
         var path_buf: [160]u8 = undefined;
-        const path = self.pathIn(&path_buf, "credentials/ntfy-ca.pem");
+        const path = self.statePathIn(&path_buf, "credentials/ntfy-ca.pem");
         if (sys.readFile(path, &self.ntfy_ca)) |bytes| {
             self.ntfy_ca_len = @intCast(bytes.len);
             if (bytes.len > 0) log.info("ntfy ca loaded ({d} bytes)", .{bytes.len});
@@ -770,6 +836,7 @@ const Supervisor = struct {
                         continue;
                     };
                     self.applyConfigLive(before);
+                    self.persistSettings();
                     self.sendNetd(.{ .config = self.cfg }, p.request_id);
                 },
                 .mqtt_put => |w| {
@@ -778,6 +845,7 @@ const Supervisor = struct {
                         continue;
                     };
                     self.snapshot.config_revision = self.cfg.revision;
+                    self.persistSettings();
                     self.sendNetd(.{ .config = self.cfg }, p.request_id);
                 },
                 .ntfy_put => |w| {
@@ -789,6 +857,7 @@ const Supervisor = struct {
                     self.cfg.setNtfy(next);
                     self.snapshot.config_revision = self.cfg.revision;
                     self.restartNtfy(now);
+                    self.persistSettings();
                     self.sendNetd(.{ .config = self.cfg }, p.request_id);
                 },
                 .config_save => |cs| {
@@ -1349,7 +1418,16 @@ fn run(cfg_in: cli.Config, environ: anytype, args: []const [:0]const u8) !u8 {
     try sys.epollAdd(ep, sigfd, linux.EPOLL.IN, @intFromEnum(Tag.signals));
     if (keys) |fd| try sys.epollAdd(ep, fd, linux.EPOLL.IN, @intFromEnum(Tag.keys));
 
-    var s = Supervisor{ .cfg_cli = cfg, .cfg_dir_text = cfg.dir, .cfg_stats = cfg.stats, .ep = ep, .timer = timer, .sigfd = sigfd, .keys = keys, .self_pid = sys.getpid() };
+    var s = Supervisor{ .cfg_cli = cfg, .cfg_dir_text = cfg.dir, .state_dir_text = cfg.state, .cfg_stats = cfg.stats, .ep = ep, .timer = timer, .sigfd = sigfd, .keys = keys, .self_pid = sys.getpid() };
+    // settings and credentials belong on the persistent partition; if it cannot be used the
+    // runtime still comes up, on the volatile directory, and says so rather than failing to start
+    if (s.makeStateDir()) |_| {
+        s.migrateState();
+        log.info("durable settings and credentials in {s}", .{s.state_dir_text});
+    } else |e| {
+        log.warn("{s} is unusable ({s}); settings and credentials stay in {s} and will not survive a reboot", .{ s.state_dir_text, sys.errText(e), s.cfg_dir_text });
+        s.state_dir_text = s.cfg_dir_text;
+    }
     // the children's log lines come through a pipe so the ring sees them; the file still gets them
     if (sys.pipeNonblock()) |lp| {
         s.log_pipe = lp;

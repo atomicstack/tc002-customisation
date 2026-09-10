@@ -50,7 +50,7 @@ tokens (control and admin, 32 random bytes each) are generated once by the super
 `<dir>/credentials/tokens` (mode 0600) and handed over the channel; nothing on disk is readable by netd.
 
 ```bash
-adb pull /tmp/tc002/credentials/tokens tokens          # root over adb; keep the file private
+adb pull /data/tc002/state/credentials/tokens tokens   # root over adb; keep the file private
 tools/tc002ctl.py -s <device-ip> --token-file tokens status
 tools/tc002ctl.py -s <device-ip> --token-file tokens scene art --generator plasma --seed 5
 tools/tc002ctl.py -s <device-ip> --token-file tokens notify hello --colour 00ff80 --duration 4

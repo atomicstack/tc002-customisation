@@ -7,7 +7,8 @@ pub const usage =
     \\  --profile dev|hardened  dev leaves adbd alone; hardened resets persist.sys.zkdebug=0 at boot (dev)
     \\  --renderer PATH         candidate renderer (/tmp/tc002/tc002d)
     \\  --fallback PATH         fallback renderer after three failures in sixty seconds (same as --renderer)
-    \\  --dir PATH              runtime directory (/tmp/tc002)
+    \\  --dir PATH              volatile runtime directory: binaries, log, lock (/tmp/tc002)
+    \\  --state PATH            durable settings and credentials (/data/tc002/state); falls back to --dir
     \\  --lock PATH             panel lock file (/tmp/tc002/panel.lock)
     \\  --tz RULE               posix tz rule or iana zone name; the renderer gets the rule (UTC0)
     \\  --keymap L,M,R,K        keycodes for left, middle, right, knob (108,105,106,103)
@@ -32,6 +33,9 @@ pub const Config = struct {
     renderer: [:0]const u8 = "/tmp/tc002/tc002d",
     fallback: ?[:0]const u8 = null,
     dir: [:0]const u8 = "/tmp/tc002",
+    /// settings and credentials live here, on the persistent jffs2 partition, so they survive a
+    /// power cycle. the layout under it matches the one under --dir, so falling back is a swap.
+    state: [:0]const u8 = "/data/tc002/state",
     lock_path: [:0]const u8 = "/tmp/tc002/panel.lock",
     tz_rule: [:0]const u8 = "UTC0",
     keymap_text: [:0]const u8 = "108,105,106,103",
@@ -82,7 +86,7 @@ pub fn parse(args: []const [:0]const u8) ParseError!Outcome {
             c.from_bootstrap = true;
             continue;
         }
-        const known = [_][]const u8{ "--profile", "--renderer", "--fallback", "--dir", "--lock", "--tz", "--keymap", "--keys", "--knob", "--ip-poll", "--mcu", "--mcu-baud", "--mcu-poll" };
+        const known = [_][]const u8{ "--profile", "--renderer", "--fallback", "--dir", "--state", "--lock", "--tz", "--keymap", "--keys", "--knob", "--ip-poll", "--mcu", "--mcu-baud", "--mcu-poll" };
         var is_known = false;
         for (known) |k| is_known = is_known or std.mem.eql(u8, a, k);
         if (!is_known) return error.UnknownOption;
@@ -97,6 +101,8 @@ pub fn parse(args: []const [:0]const u8) ParseError!Outcome {
             c.fallback = v;
         } else if (std.mem.eql(u8, a, "--dir")) {
             c.dir = v;
+        } else if (std.mem.eql(u8, a, "--state")) {
+            c.state = v;
         } else if (std.mem.eql(u8, a, "--lock")) {
             c.lock_path = v;
         } else if (std.mem.eql(u8, a, "--tz")) {
@@ -156,6 +162,12 @@ test "defaults and fallback path" {
     const o = try parse(&.{});
     try std.testing.expectEqual(Profile.dev, o.run.profile);
     try std.testing.expectEqualStrings("/tmp/tc002/tc002d", o.run.fallbackPath());
+    // settings and credentials default to the persistent partition, not the tmpfs one
+    try std.testing.expectEqualStrings("/data/tc002/state", o.run.state);
+    try std.testing.expectEqualStrings("/tmp/tc002", o.run.dir);
+    const st = try parse(&.{ "--state", "/data/elsewhere", "--dir", "/tmp/x" });
+    try std.testing.expectEqualStrings("/data/elsewhere", st.run.state);
+    try std.testing.expectEqualStrings("/tmp/x", st.run.dir);
     const f = try parse(&.{ "--fallback", "/res/bin/tc002d", "--profile", "hardened", "--ip-poll", "30", "--from-bootstrap", "--close-inherited" });
     try std.testing.expectEqualStrings("/res/bin/tc002d", f.run.fallbackPath());
     try std.testing.expectEqual(Profile.hardened, f.run.profile);
