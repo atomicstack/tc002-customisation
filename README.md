@@ -104,13 +104,16 @@ and runs the proxy until ctrl-c; `--port`, `--token-file` and `--serial` cover
 the rest. by hand it is:
 
 ```bash
-adb pull /tmp/tc002/credentials/tokens tokens        # or let serve.py do it with --adb-pull
+adb pull /data/tc002/state/credentials/tokens tokens # or let serve.py do it with --adb-pull
 cd panel-v2 && /usr/bin/python3 serve.py 8777 --token-file ../tokens
 # open http://127.0.0.1:8777/?host=<device-ip>
 ```
 
 only for a device running the runtime in [`RUNTIME.md`](RUNTIME.md); the stock
-app's console is `panel/`. the address is typed or given as `?host=`: the
+app's console is `panel/`. the tokens live on the persistent partition, so a
+pulled file keeps working across reboots until a factory reset; `--adb-pull`
+tries that path and falls back to `/tmp/tc002/credentials/tokens`, where a
+runtime that could not use `/data` keeps them. the address is typed or given as `?host=`: the
 runtime does not broadcast on udp/55555. `serve.py` serves the page and
 proxies `/api/<device-ip>/v1/<endpoint>` to the device's `/api/v1/<endpoint>`,
 adding the bearer token the route needs, so the browser never holds a token

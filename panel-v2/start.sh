@@ -7,9 +7,10 @@
 #   host           the device address; when omitted and a device is attached over adb, the wlan0
 #                  address is read from it
 #   --port N       local port for the proxy (default 8777)
-#   --token-file   the 64-byte token file pulled from /tmp/tc002/credentials/tokens; when omitted,
-#                  ./tokens or ../tokens is used if present, otherwise the tokens are pulled over
-#                  adb into memory (nothing written to disk)
+#   --token-file   the 64-byte token file pulled from /data/tc002/state/credentials/tokens; when
+#                  omitted, ./tokens or ../tokens is used if present, otherwise the tokens are
+#                  pulled over adb into memory (nothing written to disk). they are durable, so a
+#                  pulled file keeps working across reboots
 #   --serial S     adb serial when several devices are attached
 #   --mock         no device: start mock-device.py (default port 18080, --mock-port to change) with
 #                  a shared token file and point the console at it
@@ -32,7 +33,7 @@ while [ $# -gt 0 ]; do
     --mock) mock=1; shift ;;
     --mock-port) mock_port="$2"; shift 2 ;;
     --open) open_browser=1; shift ;;
-    -h|--help) sed -n '2,16p' "$self" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help) awk 'NR>1 && /^#/ {if ($0 ~ /^# apple/) exit; sub(/^# ?/, ""); print}' "$self"; exit 0 ;;
     -*) echo "start.sh: unknown option $1" >&2; exit 2 ;;
     *) host="$1"; shift ;;
   esac

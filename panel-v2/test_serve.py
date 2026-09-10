@@ -1,10 +1,21 @@
 #!/usr/bin/python3
 """tests for the panel-v2 proxy. run: /usr/bin/python3 -m unittest test_serve -v"""
-import importlib.util, json, os, secrets, socket, sys, tempfile, threading, unittest, urllib.error, urllib.request
+import contextlib, importlib.util, json, os, secrets, socket, subprocess, sys, tempfile, threading, unittest, urllib.error, urllib.request
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 import serve  # noqa: E402
+
+
+@contextlib.contextmanager
+def mock_attr(obj, name, value):
+    """swap an attribute for the body of a with-block, so a test can stand in for subprocess.run."""
+    old = getattr(obj, name)
+    setattr(obj, name, value)
+    try:
+        yield
+    finally:
+        setattr(obj, name, old)
 
 
 class PureTests(unittest.TestCase):
@@ -45,6 +56,50 @@ class PureTests(unittest.TestCase):
         self.assertEqual(serve.rewrite("/api/10.0.0.5/v1/config/save"), ("10.0.0.5", "config/save", ""))
         for bad in ("/api/10.0.0.5/status", "/api//v1/status", "/tokens", "/api/10.0.0.5/v1/../etc"):
             self.assertIsNone(serve.rewrite(bad), bad)
+
+    def test_adb_pull_tries_the_durable_token_path_then_the_volatile_one(self):
+        # the runtime keeps its credentials on /data and falls back to /tmp only when it could not
+        # make the durable directory, so the durable path is tried first
+        self.assertEqual(serve.TOKEN_PATHS,
+                         ("/data/tc002/state/credentials/tokens", "/tmp/tc002/credentials/tokens"))
+        tried = []
+
+        def fake_run(cmd, **kw):
+            tried.append(cmd[-2])
+            if cmd[-2] == serve.TOKEN_PATHS[0]:
+                return subprocess.CompletedProcess(cmd, 1, "", "adb: error: remote object does not exist")
+            with open(cmd[-1], "wb") as f:
+                f.write(b"\x11" * 32 + b"\x22" * 32)
+            return subprocess.CompletedProcess(cmd, 0, "", "")
+
+        with mock_attr(serve.subprocess, "run", fake_run):
+            tokens = serve.adb_pull()
+        self.assertEqual(tried, list(serve.TOKEN_PATHS))
+        self.assertEqual(tokens["control"], "11" * 32)
+        self.assertEqual(tokens["admin"], "22" * 32)
+
+    def test_adb_pull_names_both_paths_when_neither_is_there(self):
+        def fake_run(cmd, **kw):
+            return subprocess.CompletedProcess(cmd, 1, "", "adb: error: remote object does not exist")
+
+        with mock_attr(serve.subprocess, "run", fake_run):
+            with self.assertRaises(RuntimeError) as e:
+                serve.adb_pull()
+        for path in serve.TOKEN_PATHS:
+            self.assertIn(path, str(e.exception))
+
+    def test_adb_pull_passes_the_serial_through(self):
+        seen = []
+
+        def fake_run(cmd, **kw):
+            seen.append(cmd)
+            with open(cmd[-1], "wb") as f:
+                f.write(b"\x33" * 64)
+            return subprocess.CompletedProcess(cmd, 0, "", "")
+
+        with mock_attr(serve.subprocess, "run", fake_run):
+            serve.adb_pull("R58M123")
+        self.assertEqual(seen[0][:3], ["adb", "-s", "R58M123"])
 
 
 def load_mock():
@@ -116,6 +171,14 @@ class EndToEndTests(unittest.TestCase):
                 return r.status, json.loads(r.read())
         except urllib.error.HTTPError as e:
             return e.code, json.loads(e.read())
+
+    def mock_call(self, path, body=None):
+        """the mock's own control endpoints (mock/restart, mock/persist): no auth, not proxied."""
+        data = json.dumps(body).encode() if body is not None else b""
+        req = urllib.request.Request(f"http://127.0.0.1:{self.mock_port}/{path}", data=data,
+                                     method="POST", headers={"Content-Type": "application/json"})
+        with urllib.request.urlopen(req, timeout=5) as r:
+            return r.status, json.loads(r.read())
 
     def test_tokens_endpoint_reports_presence_only(self):
         with urllib.request.urlopen(f"http://127.0.0.1:{self.proxy_port}/tokens") as r:
@@ -377,6 +440,49 @@ class EndToEndTests(unittest.TestCase):
             self.assertEqual((status, doc["error"]), (400, code), body)
         _, cfg2 = self.call("GET", "config")
         self.assertEqual(cfg2["clock"], want)   # a rejected patch changes nothing
+
+    def test_every_settings_write_is_persisted_before_the_reply(self):
+        # the device writes each accepted change to flash before answering, so the two revisions in
+        # its reply always match; the console reads that as "it is on the device"
+        _, cfg = self.call("GET", "config")
+        status, doc = self.call("PATCH", "config", {"brightness": 42, "expected_revision": cfg["revision"]})
+        self.assertEqual(status, 200)
+        self.assertEqual(doc["revision"], doc["saved_revision"])
+        self.assertGreater(doc["revision"], cfg["revision"])
+        _, st = self.call("GET", "status")
+        self.assertEqual(st["config_revision"], st["saved_revision"])
+        # broker and ntfy settings are settings writes too
+        status, _ = self.call("PUT", "mqtt", {"host": "10.0.0.9"})
+        self.assertEqual(status, 200)
+        _, after_mqtt = self.call("GET", "config")
+        self.assertEqual(after_mqtt["revision"], after_mqtt["saved_revision"])
+        status, _ = self.call("PUT", "ntfy", {"topic": "persisted"})
+        self.assertEqual(status, 200)
+        _, after_ntfy = self.call("GET", "config")
+        self.assertEqual(after_ntfy["revision"], after_ntfy["saved_revision"])
+        self.assertGreater(after_ntfy["revision"], after_mqtt["revision"])
+
+    def test_the_save_route_remains_and_is_a_no_op_when_everything_is_written(self):
+        _, cfg = self.call("GET", "config")
+        status, doc = self.call("POST", "config/save", {"revision": cfg["revision"]})
+        self.assertEqual((status, doc["status"]), (200, "saved"))
+        self.assertEqual(doc["saved_revision"], cfg["revision"])
+
+    def test_a_failed_flash_write_leaves_the_revisions_apart(self):
+        # the only way the two can differ now: the write to flash failed. the console reports that
+        # as an error rather than asking for a save
+        self.assertEqual(self.mock_call("mock/persist", {"enabled": False})[0], 200)
+        try:
+            _, cfg = self.call("GET", "config")
+            status, doc = self.call("PATCH", "config", {"brightness": 44, "expected_revision": cfg["revision"]})
+            self.assertEqual(status, 200)
+            self.assertGreater(doc["revision"], doc["saved_revision"])
+            _, st = self.call("GET", "status")
+            self.assertGreater(st["config_revision"], st["saved_revision"])
+        finally:
+            self.mock_call("mock/persist", {"enabled": True})
+        _, back = self.call("GET", "config")
+        self.assertEqual(back["revision"], back["saved_revision"])
 
 
 class StartScriptTests(unittest.TestCase):

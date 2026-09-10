@@ -141,6 +141,7 @@ input[type=file]{font:12px var(--body);color:var(--muted);max-width:220px}
 .inline{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
 .rev{font-family:var(--data);font-size:12px;color:var(--muted)}
 .rev b{color:var(--warn);font-weight:600}
+.rev.bad b{color:var(--danger)}
 .knob{width:52px;height:52px;border-radius:50%;background:var(--surface-2);border:1px solid var(--line-2);position:relative;flex:none;cursor:pointer;padding:0}
 .knob::after{content:"";position:absolute;left:50%;top:6px;width:4px;height:13px;margin-left:-2px;border-radius:2px;background:var(--accent-text)}
 .knob:active{background:var(--line)}
@@ -301,9 +302,9 @@ input[type=file]{font:12px var(--body);color:var(--muted);max-width:220px}
       </div>
       <div class="actions">
         <button class="btn" id="capply">Apply</button>
-        <button class="btn ghost" id="csave">Save to device</button>
         <span class="rev" id="crev">—</span>
       </div>
+      <div class="actions"><span class="note">every accepted change is written to the device's flash before it answers, so it survives a restart. no separate save.</span></div>
     </section>
 
     <section class="card s5" id="mqttCard">
@@ -324,7 +325,7 @@ input[type=file]{font:12px var(--body);color:var(--muted);max-width:220px}
         <button class="btn ghost" id="mcheck">Recheck</button>
         <span class="note" id="mdetail"></span>
       </div>
-      <div class="actions"><span class="note">broker changes bump the settings revision; use <b>save to device</b> above to keep them.</span></div>
+      <div class="actions"><span class="note">broker changes bump the settings revision and are written to flash at once.</span></div>
     </section>
 
     <section class="card s5" id="ntfyCard">
@@ -346,7 +347,7 @@ input[type=file]{font:12px var(--body);color:var(--muted);max-width:220px}
         <button class="btn ghost" id="ncheck">Recheck</button>
         <span class="note" id="ndetail"></span>
       </div>
-      <div class="actions"><span class="note">changes bump the settings revision; use <b>save to device</b> above to keep them. messages show as <i>title: message</i>, coloured by priority.</span></div>
+      <div class="actions"><span class="note">changes bump the settings revision and are written to flash at once. messages show as <i>title: message</i>, coloured by priority.</span></div>
     </section>
 
     <section class="card s12" id="logsCard">
@@ -437,7 +438,7 @@ const NOW_ROWS = [
     return `${s.time.state}${age}`;
   }, 'time.state · age_s'],
   ['transport', s => s.transport, 'transport'],
-  ['settings', s => `revision ${s.config_revision} · saved ${s.saved_revision}`, 'config_revision · saved_revision'],
+  ['settings', s => `revision ${s.config_revision} · saved ${s.saved_revision}${s.config_revision !== s.saved_revision ? ' · write failed' : ''}`, 'config_revision · saved_revision'],
   ['restarts', s => String(s.restarts), 'renderer restarts'],
 ];
 // "big · gradient ff8000 to ffc000 vertical" or "classic · solid ffffff"; the dash when the runtime predates styles
@@ -773,11 +774,14 @@ function showConfig(c) {
   const k = c.clock || S.DEFAULT_CLOCK_STYLE;   // a runtime without clock styles: show the defaults, patch nothing
   $('cfont').value = k.font; $('cmode').value = k.colour_mode; $('ccolour').value = '#' + k.colour; $('ccolour2').value = '#' + k.colour2; $('cgrad').value = k.gradient;
   if (c.ip_mode) $('cip').value = c.ip_mode;
-  const unsaved = c.revision !== c.saved_revision;
+  // the device persists every accepted write before replying, so the two revisions match unless
+  // that write failed: what is on screen is live but would not survive a restart
+  const unwritten = c.revision !== c.saved_revision;
   const crev = $('crev'); crev.textContent = '';
+  crev.classList.toggle('bad', unwritten);
   crev.append(`revision ${c.revision} · saved ${c.saved_revision}`);
-  if (unsaved) {
-    const b = document.createElement('b'); b.textContent = 'unsaved';
+  if (unwritten) {
+    const b = document.createElement('b'); b.textContent = 'not written to flash';
     crev.append(' · ', b);
   }
   try { local.tz = S.tzParse(c.timezone); } catch { local.tz = S.TZ_UTC; }
@@ -809,22 +813,26 @@ $('capply').addEventListener('click', async () => {
   }
   if (Object.keys(patch).length === 1) return toast('nothing changed');
   try {
-    showConfig(await call('PATCH', 'config', patch));
-    toast('settings applied (not yet saved)');
+    const c = await call('PATCH', 'config', patch);
+    showConfig(c);
+    toast(...appliedToast(c, 'settings'));
     refreshStatus(true);
   } catch (e) {
     if (e.code === 'revision_conflict') { toast('settings changed elsewhere; reloaded', true); loadConfig().catch(() => {}); }
     else toast(e.message, true);
   }
 });
-$('csave').addEventListener('click', async () => {
-  if (!CONFIG) return;
-  try {
-    const r = await call('POST', 'config/save', { revision: CONFIG.revision });
-    toast(`saved revision ${r.saved_revision}`);
-    await loadConfig(); refreshStatus(true);
-  } catch (e) { toast(e.message, true); }
-});
+// what to say after a settings write: the device has already persisted it, unless it could not
+function appliedToast(c, what) {
+  if (c && c.revision !== c.saved_revision) {
+    return [`${what} applied, but the device could not write them to flash: revision ${c.revision}, saved ${c.saved_revision}`, true];
+  }
+  return [`${what} applied and written to the device`, false];
+}
+// mqtt and ntfy writes bump the settings revision, so the settings card follows them
+async function reloadConfig() {
+  try { const c = await call('GET', 'config'); showConfig(c); return c; } catch { return null; }
+}
 
 /* ---------- mqtt (admin) ---------- */
 function showMqtt(m) {
@@ -857,7 +865,7 @@ $('mapply').addEventListener('click', async () => {
   if (body.enabled && !host) return toast('a broker address is needed to enable mqtt', true);
   try {
     showMqtt(await call('PUT', 'mqtt', body));
-    toast('broker settings applied (not yet saved)');
+    toast(...appliedToast(await reloadConfig(), 'broker settings'));
     setTimeout(mqttStatus, 1500);
     loadConfig().catch(() => {}); refreshStatus(true);
   } catch (e) { toast(e.message, true); }
@@ -900,7 +908,7 @@ $('napply').addEventListener('click', async () => {
   try {
     showNtfy(await call('PUT', 'ntfy', body));
     $('nca').dataset.cleared = '';
-    toast('ntfy settings applied (not yet saved)');
+    toast(...appliedToast(await reloadConfig(), 'ntfy settings'));
     setTimeout(ntfyStatus, 2500);
     loadConfig().catch(() => {}); refreshStatus(true);
   } catch (e) { toast(e.message, true); }

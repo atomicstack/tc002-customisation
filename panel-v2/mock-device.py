@@ -8,6 +8,8 @@ usage: mock-device.py [--port 8080] [--token-file FILE]
   --token-file   64 raw bytes (control token then admin token); created with random tokens when
                  the file does not exist, so `serve.py --token-file` can read the same file.
   POST /mock/restart (no auth) bumps the epoch, like a renderer restart.
+  POST /mock/persist {"enabled":bool} (no auth) turns the write to flash off, the one thing that
+                 can leave revision ahead of saved_revision.
 
 binds 127.0.0.1. point the console at 127.0.0.1:<port>.
 """
@@ -153,6 +155,9 @@ class Device:
         self.mqtt = {"enabled": False, "host": "", "port": 1883, "username": "", "password": "", "client_id": "", "prefix": "", "tls": False}
         self.ntfy = {"enabled": False, "url": "", "topic": "", "token": "", "username": "", "password": "", "duration_s": 10, "insecure": False, "ca": ""}
         self.ntfy_messages = 0
+        # the device persists every accepted settings write before replying; off simulates that
+        # write failing, which is the only way revision and saved_revision can drift apart
+        self.persist = True
         self.reconnects = 0
 
     # bookkeeping
@@ -160,6 +165,12 @@ class Device:
     def bump(self):
         self.revision += 1
         return self.revision
+
+    def persist_settings(self):
+        """every accepted settings write reaches flash before the reply, so saved_revision follows
+        the revision on its own (RUNTIME.md, "settings, credentials, the listener")."""
+        if self.persist:
+            self.config["saved_revision"] = self.config["revision"]
 
     def tick(self):
         if self.overlay != "none" and time.monotonic() >= self.overlay_until:
@@ -267,6 +278,7 @@ class Device:
             raise Reject(400, "rejected", "the settings were rejected")
         self.ntfy = n
         self.config["revision"] += 1
+        self.persist_settings()
         self.log(f"ntfy settings applied: enabled {n['enabled']} url {n['url']!r} topic {n['topic']!r}", proc="tc002-supervisor")
 
     def mqtt_status(self):
@@ -477,6 +489,7 @@ class Device:
         if nxt["clock"] != c["clock"]:
             # the supervisor sends the whole durable style, so a transient scene block is replaced
             self.clock = dict(nxt["clock"]); self.bump()
+        self.persist_settings()
         self.log(f"configuration applied, revision {nxt['revision']}", proc="tc002-supervisor")
 
     def save_config(self, body):
@@ -511,6 +524,7 @@ class Device:
             raise Reject(400, "rejected", "the settings were rejected")
         self.mqtt = m
         self.config["revision"] += 1
+        self.persist_settings()
         self.log("mqtt settings applied", proc="tc002-netd")
 
 
@@ -524,6 +538,7 @@ SCHEMAS = {
                 "metrics_interval_s", "discovery", "discovery_prefix", "expected_revision",
                 "clock_font", "clock_colour_mode", "clock_colour", "clock_colour2", "clock_gradient", "ip_mode"}, set()),
     "config/save": ({"revision"}, set()),
+    "mock/persist": ({"enabled"}, {"enabled"}),
     "mqtt": ({"enabled", "host", "port", "username", "password", "client_id", "prefix", "tls"}, set()),
     "ntfy": ({"enabled", "url", "topic", "token", "username", "password", "duration_s", "insecure", "ca"}, set()),
 }
@@ -607,6 +622,15 @@ class Handler(http.server.BaseHTTPRequestHandler):
             with d.lock:
                 d.restart()
             return self._send(200, {"epoch": d.epoch})
+        if path == "/mock/persist" and method == "POST":
+            body = self._json_body("mock/persist")
+            if not isinstance(body.get("enabled"), bool):
+                return self._error(400, "invalid_json", "the body is not valid json for this schema")
+            with d.lock:
+                d.persist = body["enabled"]
+                if d.persist:
+                    d.persist_settings()
+            return self._send(200, {"persist": d.persist})
         if not path.startswith("/api/v1/"):
             return self._error(404, "not_found", "no such route")
         endpoint = path[len("/api/v1/"):]

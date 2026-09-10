@@ -6,7 +6,7 @@ bearer token the route needs, so the browser never holds a secret and only ever 
 origin (the runtime emits no cors headers, so direct browser->device fetches are blocked anyway).
 
 tokens: --token-file FILE   the 64 raw bytes the supervisor writes (control token, then admin),
-                            as pulled with `adb pull /tmp/tc002/credentials/tokens`
+                            as pulled with `adb pull /data/tc002/state/credentials/tokens`
         --adb-pull          pull that file over adb at startup into memory (nothing on disk)
         --serial S          the adb serial/host:port to pull from, when several are connected
 without either the page loads but every proxied call fails 503 no_token.
@@ -42,15 +42,23 @@ def load_token_file(path):
     return {"control": control, "admin": admin}
 
 
+# where the runtime keeps its credentials: the durable state directory first, then the volatile
+# one it falls back to when /data cannot be used (RUNTIME.md, "settings, credentials, the listener")
+TOKEN_PATHS = ("/data/tc002/state/credentials/tokens", "/tmp/tc002/credentials/tokens")
+
+
 def adb_pull(serial=None):
     """pull the token file into memory via a temporary directory; nothing is left on disk."""
     with tempfile.TemporaryDirectory() as d:
         target = os.path.join(d, "tokens")
-        cmd = ["adb"] + (["-s", serial] if serial else []) + ["pull", "/tmp/tc002/credentials/tokens", target]
-        r = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
-        if r.returncode != 0:
-            raise RuntimeError(f"adb pull failed: {(r.stderr or r.stdout).strip()}")
-        return load_token_file(target)
+        problems = []
+        for path in TOKEN_PATHS:
+            cmd = ["adb"] + (["-s", serial] if serial else []) + ["pull", path, target]
+            r = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+            if r.returncode == 0:
+                return load_token_file(target)
+            problems.append(f"{path}: {(r.stderr or r.stdout).strip()}")
+        raise RuntimeError("adb pull failed:\n  " + "\n  ".join(problems))
 
 
 def token_for(method, endpoint):
