@@ -60,9 +60,9 @@ body{margin:0;background:var(--bg);color:var(--ink);font:14px/1.5 var(--body)}
 .card h2 .pill{margin-left:auto;text-transform:none;letter-spacing:0;font-family:var(--body);font-weight:400}
 .s4{grid-column:span 4}.s3{grid-column:span 3}.s5{grid-column:span 5}.s7{grid-column:span 7}.s8{grid-column:span 8}.s12{grid-column:span 12}
 .rows{display:flex;flex-direction:column}
-.field{display:flex;align-items:center;justify-content:space-between;gap:14px;padding:7px 0;border-bottom:1px solid var(--line)}
+.field{display:flex;align-items:center;justify-content:space-between;gap:14px;padding:7px 0;border-bottom:1px solid var(--line);flex-wrap:wrap}
 .field:last-child{border-bottom:0}
-.field>label,.field>.lab{display:flex;flex-direction:column;gap:1px;min-width:0;flex:1;color:var(--ink)}
+.field>label,.field>.lab{display:flex;flex-direction:column;gap:1px;min-width:min(140px,100%);flex:1;color:var(--ink)}
 .key{font-family:var(--data);font-size:11px;color:var(--muted)}
 .hint{font-size:12px;color:var(--muted)}
 .val{font-family:var(--data);font-variant-numeric:tabular-nums;font-size:13px;color:var(--ink);text-align:right;word-break:break-all}
