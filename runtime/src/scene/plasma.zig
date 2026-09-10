@@ -30,6 +30,46 @@ test "the frame is not black and stepping changes it" {
     try std.testing.expect(!std.mem.eql(u8, &before, &after));
 }
 
+test "the field is smooth: no seam runs through it" {
+    // the plasma is a sum of sines sampled 4 units apart across and 12 down, so neighbouring
+    // pixels are close. a wrap in the middle of the arithmetic shows up as a hard diagonal edge,
+    // which is what matt photographed: the value jumped 127 to 0 along x + 3y = 64.
+    // measured bounds on a smooth field are 22 across and 59 down; with the wrap they were 225
+    // and 236.
+    var s = State.init(7);
+    var rgb: geometry.Rgb = undefined;
+    var step: u32 = 0;
+    while (step < 24) : (step += 1) {
+        s.render(&rgb);
+        for (0..geometry.height) |y| {
+            for (0..geometry.width) |x| {
+                const here = geometry.pixelOffset(x, y);
+                if (x + 1 < geometry.width) {
+                    const right = geometry.pixelOffset(x + 1, y);
+                    for (0..3) |ch| {
+                        const d = @abs(@as(i32, rgb[here + ch]) - @as(i32, rgb[right + ch]));
+                        if (d > 40) {
+                            std.debug.print("seam across at ({d},{d}): channel step {d}\n", .{ x, y, d });
+                            return error.SeamAcross;
+                        }
+                    }
+                }
+                if (y + 1 < geometry.height) {
+                    const below = geometry.pixelOffset(x, y + 1);
+                    for (0..3) |ch| {
+                        const d = @abs(@as(i32, rgb[here + ch]) - @as(i32, rgb[below + ch]));
+                        if (d > 90) {
+                            std.debug.print("seam down at ({d},{d}): channel step {d}\n", .{ x, y, d });
+                            return error.SeamDown;
+                        }
+                    }
+                }
+            }
+        }
+        s.step(0.05);
+    }
+}
+
 const sine: [256]u8 = blk: {
     @setEvalBranchQuota(8000);
     var t: [256]u8 = undefined;
@@ -67,7 +107,11 @@ pub const State = struct {
             for (0..geometry.width) |x| {
                 const xi: u8 = @intCast(x * 4);
                 const yi: u8 = @intCast(y * 12);
-                const v: u16 = @as(u16, sine[xi +% t]) + sine[yi +% (t *% 2) +% self.phase] + sine[(xi +% yi) / 2 +% t];
+                // the diagonal term is halved at full width: xi + yi reaches 384, and wrapping it
+                // to a u8 before the halve breaks the periodicity the table relies on, putting a
+                // hard edge across the panel where the sum crosses 256 (the line x + 3y = 64)
+                const diagonal: u8 = @truncate((@as(u16, xi) + yi) / 2);
+                const v: u16 = @as(u16, sine[xi +% t]) + sine[yi +% (t *% 2) +% self.phase] + sine[diagonal +% t];
                 const c: u8 = @intCast(v / 3);
                 const i = geometry.pixelOffset(x, y);
                 rgb[i] = sine[c];
