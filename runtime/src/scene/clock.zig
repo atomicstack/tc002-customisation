@@ -11,6 +11,8 @@ const scene = @import("scene.zig");
 
 pub const Font = clockfont.Font;
 pub const ColourMode = enum(u8) { solid = 0, gradient = 1 };
+/// re-exported so callers reach every part of a clock style through this module
+pub const DigitStyle = clockfont.DigitStyle;
 pub const Gradient = enum(u8) { horizontal = 0, vertical = 1, diagonal = 2 };
 
 /// the default `spread`: the whole requested gradient is shown. a smaller value bounds how far
@@ -25,6 +27,7 @@ pub const params = [_]param.Param{
     .{ .name = "colour 2", .kind = .colour, .default = 0xffffff },
     .{ .name = "gradient", .kind = .choice, .choices = param.choicesOf(Gradient), .default = 0 },
     .{ .name = "spread", .kind = .number, .min = 0, .max = 255, .step = 15, .default = default_spread },
+    .{ .name = "digits", .kind = .choice, .choices = param.choicesOf(clockfont.DigitStyle), .default = 0 },
 };
 
 pub fn getParam(style: Style, index: usize) u32 {
@@ -35,6 +38,7 @@ pub fn getParam(style: Style, index: usize) u32 {
         3 => param.rgbValue(style.colour2),
         4 => @intFromEnum(style.gradient),
         5 => style.spread,
+        6 => @intFromEnum(style.digit),
         else => 0,
     };
 }
@@ -47,6 +51,7 @@ pub fn setParam(style: *Style, index: usize, value: u32) void {
         3 => style.colour2 = param.valueRgb(value),
         4 => style.gradient = @enumFromInt(@min(value, params[4].choices.len - 1)),
         5 => style.spread = @intCast(@min(value, 255)),
+        6 => style.digit = @enumFromInt(@min(value, params[6].choices.len - 1)),
         else => {},
     }
 }
@@ -58,6 +63,8 @@ pub const Style = struct {
     colour2: [3]u8 = .{ 255, 255, 255 },
     gradient: Gradient = .horizontal,
     spread: u8 = default_spread,
+    /// solid, hollow or with a shadow; only the fonts with a body take any notice
+    digit: clockfont.DigitStyle = .solid,
 
     /// the gradient end after the spread bound.
     pub fn effectiveColour2(self: Style) [3]u8 {
@@ -77,6 +84,7 @@ pub const Style = struct {
         if (p.colour2) |v| self.colour2 = v;
         if (p.gradient) |v| self.gradient = v;
         if (p.spread) |v| self.spread = v;
+        if (p.digit) |v| self.digit = v;
     }
 };
 
@@ -88,6 +96,7 @@ pub const StylePatch = struct {
     colour2: ?[3]u8 = null,
     gradient: ?Gradient = null,
     spread: ?u8 = null,
+    digit: ?clockfont.DigitStyle = null,
 };
 
 /// "hh:mm:ss" in the classic font is 47 px wide and 7 px tall; centred on the 52x16 panel.
@@ -183,8 +192,8 @@ pub const State = struct {
     }
 
     /// draw the lines and, for hires, the bar of the current second
-    fn paint(rgb: *geometry.Rgb, lines: []const Line, bar: ?i32, painter: anytype) void {
-        for (lines) |l| clockfont.blit(rgb, l.x, l.y, l.font, l.text, painter);
+    fn paint(rgb: *geometry.Rgb, lines: []const Line, bar: ?i32, painter: anytype, digit: clockfont.DigitStyle) void {
+        for (lines) |l| clockfont.blitStyled(rgb, l.x, l.y, l.font, l.text, painter, digit);
         if (bar) |fill| {
             var x: i32 = 0;
             while (x < fill) : (x += 1) rgb[geometry.pixelOffset(@intCast(x), @intCast(hires_bar_row))..][0..3].* = painter.at(x, hires_bar_row);
@@ -212,7 +221,7 @@ pub const State = struct {
         const hires = style.font == .hires;
         const bar: ?i32 = if (hires) @intCast(ms * geometry.width / 1000) else null;
         switch (style.mode) {
-            .solid => paint(rgb, lines, bar, clockfont.Solid{ .colour = style.colour }),
+            .solid => paint(rgb, lines, bar, clockfont.Solid{ .colour = style.colour }, style.digit),
             .gradient => {
                 var box = Box{ .x0 = geometry.width, .y0 = geometry.height, .x1 = -1, .y1 = -1 };
                 for (lines) |l| {
@@ -223,7 +232,7 @@ pub const State = struct {
                 }
                 if (hires) box = .{ .x0 = 0, .y0 = 0, .x1 = geometry.width - 1, .y1 = hires_ms_y + 4 }; // the bar spans the panel
                 const painter = GradientPainter{ .c1 = style.colour, .c2 = style.effectiveColour2(), .box = box, .dir = style.gradient };
-                paint(rgb, lines, bar, painter);
+                paint(rgb, lines, bar, painter, style.digit);
             },
         }
     }

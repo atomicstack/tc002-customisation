@@ -567,6 +567,7 @@ const Supervisor = struct {
                 3 => self.cfg.patch(.{ .clock_colour2 = rgb }),
                 4 => self.cfg.patch(.{ .clock_gradient = messages.enumFromInt(clockscene.Gradient, @as(u8, @truncate(v))) orelse return }),
                 5 => self.cfg.patch(.{ .clock_spread = @as(u8, @truncate(v)) }),
+                6 => self.cfg.patch(.{ .clock_digit = messages.enumFromInt(clockscene.DigitStyle, @as(u8, @truncate(v))) orelse return }),
                 else => return,
             },
             2 => switch (sp.index) { // ip

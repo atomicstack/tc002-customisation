@@ -7,6 +7,7 @@ const transition = @import("../panel/transition.zig");
 const config = @import("../supervisor/config.zig");
 const api = @import("../net/api.zig");
 const clock = @import("../scene/clock.zig");
+const clockfont = @import("../scene/clockfont.zig");
 const ip = @import("../scene/ip.zig");
 
 test "every message kind round-trips through a packet" {
@@ -88,7 +89,7 @@ test "every message kind round-trips through a packet" {
 test "fixed hex vectors" {
     var buf: [codec.max_message]u8 = undefined;
     const hb = try encodePacket(.{ .heartbeat = .{ .presented = 0x1122334455667788, .revision = 7, .state = 2 } }, 1, 2, &buf);
-    try std.testing.expectEqualSlices(u8, &unhex("54434931" ++ "01" ++ "01" ++ "0000" ++ "0000000000000001" ++ "00000002" ++ "001e" ++ "0000" ++ "1122334455667788" ++ "00000007" ++ "02" ++ "00000000" ++ "01" ++ "0000" ++ "00" ++ "ffffff" ++ "ffffff" ++ "00" ++ "ff" ++ "00"), hb);
+    try std.testing.expectEqualSlices(u8, &unhex("54434931" ++ "01" ++ "01" ++ "0000" ++ "0000000000000001" ++ "00000002" ++ "001f" ++ "0000" ++ "1122334455667788" ++ "00000007" ++ "02" ++ "00000000" ++ "01" ++ "0000" ++ "00" ++ "ffffff" ++ "ffffff" ++ "00" ++ "ff" ++ "00" ++ "00"), hb);
     const st = try encodePacket(.stop, 0, 9, &buf);
     try std.testing.expectEqualSlices(u8, &unhex("54434931" ++ "01" ++ "18" ++ "0000" ++ "0000000000000000" ++ "00000009" ++ "0000" ++ "0000"), st);
     const nt = try encodePacket(.{ .notify = Notify.init("hi", .{ 0xff, 0x80, 0x00 }, 300, .{ .has = 1, .effect = 7, .direction = 3, .duration_ms = 300 }) }, 0, 0, &buf);
@@ -108,7 +109,7 @@ test "patch wire forms map back to the api view" {
     try std.testing.expectEqual(@as(?clock.Font, null), sp.font);
     try std.testing.expectEqual(@as(?clock.ColourMode, .gradient), sp.mode);
     try std.testing.expectEqual([3]u8{ 1, 1, 1 }, sp.colour2.?);
-    try std.testing.expectEqual(@as(u8, 0x3f), ClockStyle.full(.{}).has);
+    try std.testing.expectEqual(ClockStyle.F.all, ClockStyle.full(.{}).has); // every field, digits included
     try std.testing.expectEqual(@as(?u8, 40), ClockStyle.fromPatch(.{ .spread = 40 }).toPatch().spread);
     try std.testing.expectEqual(@as(?u8, 3), a.brightness);
     try std.testing.expectEqualStrings("JST-9", a.timezone.?);
@@ -236,6 +237,7 @@ pub const ClockStyle = struct {
     colour2: [3]u8 = .{ 255, 255, 255 },
     gradient: u8 = 0,
     spread: u8 = 255,
+    digit: u8 = 0,
 
     pub const F = struct {
         pub const font: u8 = 1 << 0;
@@ -244,10 +246,11 @@ pub const ClockStyle = struct {
         pub const colour2: u8 = 1 << 3;
         pub const gradient: u8 = 1 << 4;
         pub const spread: u8 = 1 << 5;
-        pub const all: u8 = 0x3f;
+        pub const digit: u8 = 1 << 6;
+        pub const all: u8 = 0x7f;
     };
 
-    pub const wire_len = 11;
+    pub const wire_len = 12;
 
     pub fn fromPatch(p: clock.StylePatch) ClockStyle {
         var w = ClockStyle{};
@@ -267,6 +270,10 @@ pub const ClockStyle = struct {
             w.has |= F.colour2;
             w.colour2 = v;
         }
+        if (p.digit) |v| {
+            w.has |= F.digit;
+            w.digit = @intFromEnum(v);
+        }
         if (p.gradient) |v| {
             w.has |= F.gradient;
             w.gradient = @intFromEnum(v);
@@ -279,7 +286,7 @@ pub const ClockStyle = struct {
     }
 
     pub fn full(s: clock.Style) ClockStyle {
-        return .{ .has = F.all, .font = @intFromEnum(s.font), .mode = @intFromEnum(s.mode), .colour = s.colour, .colour2 = s.colour2, .gradient = @intFromEnum(s.gradient), .spread = s.spread };
+        return .{ .has = F.all, .font = @intFromEnum(s.font), .mode = @intFromEnum(s.mode), .colour = s.colour, .colour2 = s.colour2, .gradient = @intFromEnum(s.gradient), .spread = s.spread, .digit = @intFromEnum(s.digit) };
     }
 
     /// the patch view; fields with an unknown enum value are dropped.
@@ -292,6 +299,7 @@ pub const ClockStyle = struct {
             .colour2 = if (h & F.colour2 != 0) self.colour2 else null,
             .gradient = if (h & F.gradient != 0) enumFromInt(clock.Gradient, self.gradient) else null,
             .spread = if (h & F.spread != 0) self.spread else null,
+            .digit = if (h & F.digit != 0) enumFromInt(clockfont.DigitStyle, self.digit) else null,
         };
     }
 
@@ -303,10 +311,11 @@ pub const ClockStyle = struct {
         out[6..9].* = self.colour2;
         out[9] = self.gradient;
         out[10] = self.spread;
+        out[11] = self.digit;
     }
 
     fn get(b: []const u8) ClockStyle {
-        return .{ .has = b[0], .font = b[1], .mode = b[2], .colour = b[3..6].*, .colour2 = b[6..9].*, .gradient = b[9], .spread = b[10] };
+        return .{ .has = b[0], .font = b[1], .mode = b[2], .colour = b[3..6].*, .colour2 = b[6..9].*, .gradient = b[9], .spread = b[10], .digit = b[11] };
     }
 };
 pub const Result = struct { status: Status, revision: u32 };

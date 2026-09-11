@@ -367,6 +367,16 @@ ipc the same block, prefixed with a presence byte, rides on `set_base`,
 
 ### clock styles
 
+**digits** is `solid`, `outline` or `shadow`, and applies to the two faces with
+a body, `block` and `big`. outline keeps only the pixels of a stroke that touch
+an unlit one, hollowing the interior; shadow lays the same digits down again a
+pixel right and below at about a third strength, then draws the digit on top.
+the thinner faces have no interior to remove and no room to cast anything, so
+they ignore it and stay solid. it is a clock parameter like any other: on the
+panel, over `PUT /scene` as `clock.digits` and in the settings as
+`clock_digit`.
+
+
 a clock style is `{font, colour_mode, colour, colour2, gradient, spread}`:
 
 | font | digits | what is shown | width |
@@ -544,7 +554,7 @@ is `0x00RRGGBB`, a toggle is 0 or 1.
 
 | scene | parameters |
 |---|---|
-| clock | `face`, `colour`, `shade`, `colour 2`, `gradient`, `spread` |
+| clock | `face`, `colour`, `shade`, `colour 2`, `gradient`, `spread`, `digits` |
 | art | `scene` (the generator), then the showing generator's own |
 | cube | `palette`, `colour`, `hue drift`, `background`, `spin`, `speed`, `zoom` |
 | ip | `layout` |

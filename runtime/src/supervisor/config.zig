@@ -4,6 +4,7 @@
 const std = @import("std");
 const api = @import("../net/api.zig");
 const clock = @import("../scene/clock.zig");
+const clockfont = @import("../scene/clockfont.zig");
 const param = @import("../scene/param.zig");
 const ip = @import("../scene/ip.zig");
 const ntfy_url = @import("../ntfy/url.zig");
@@ -81,6 +82,7 @@ pub const Config = struct {
     clock_colour2: [3]u8 = .{ 255, 255, 255 },
     clock_gradient: u8 = 0,
     clock_spread: u8 = clock.default_spread,
+    clock_digit: u8 = 0,
     ip_mode: u8 = 0,
     /// the generators' own parameters: generic slots, because a generator is pluggable and has no
     /// settings fields of its own. the clock and the ip scene keep their named ones.
@@ -100,6 +102,7 @@ pub const Config = struct {
             .colour2 = self.clock_colour2,
             .gradient = enumOr(clock.Gradient, self.clock_gradient, .horizontal),
             .spread = self.clock_spread,
+            .digit = enumOr(clockfont.DigitStyle, self.clock_digit, .solid),
         };
     }
 
@@ -134,6 +137,7 @@ pub const Config = struct {
         if (p.clock_colour2) |v| next.clock_colour2 = v;
         if (p.clock_gradient) |v| next.clock_gradient = @intFromEnum(v);
         if (p.clock_spread) |v| next.clock_spread = v;
+        if (p.clock_digit) |v| next.clock_digit = @intFromEnum(v);
         if (p.ip_mode) |v| next.ip_mode = @intFromEnum(v);
         next.revision = self.revision + 1;
         self.* = next;
@@ -210,7 +214,7 @@ fn getText(in: []const u8, off: *usize) error{BadPayload}!Text {
 
 const text_wire = 1 + text_max;
 /// schema, revisions, brightness/base/generator, timezone, ntp, intervals, discovery, origins, mqtt
-pub const encoded_len = 1 + 4 + 4 + 3 + text_wire + 5 + 4 + 2 + 4 + 1 + text_wire + 1 + api.max_origins * text_wire + 1 + text_wire + 2 + 4 * text_wire + 1 + 11 + 1 + 5 * text_wire + 2 + 1 + param.owner_count * param.max_per_owner * 4;
+pub const encoded_len = 1 + 4 + 4 + 3 + text_wire + 5 + 4 + 2 + 4 + 1 + text_wire + 1 + api.max_origins * text_wire + 1 + text_wire + 2 + 4 * text_wire + 1 + 12 + 1 + 5 * text_wire + 2 + 1 + param.owner_count * param.max_per_owner * 4;
 
 pub fn encode(c: *const Config, out: *[encoded_len]u8) void {
     var o: usize = 0;
@@ -258,7 +262,8 @@ pub fn encode(c: *const Config, out: *[encoded_len]u8) void {
     out[o + 8] = c.clock_gradient;
     out[o + 9] = c.clock_spread;
     out[o + 10] = c.ip_mode;
-    o += 11;
+    out[o + 11] = c.clock_digit;
+    o += 12;
     out[o] = @intFromBool(c.ntfy.enabled);
     o += 1;
     putText(out, &o, c.ntfy.url);
@@ -325,7 +330,8 @@ pub fn decode(in: []const u8) error{BadPayload}!Config {
     c.clock_gradient = in[o + 8];
     c.clock_spread = in[o + 9];
     c.ip_mode = in[o + 10];
-    o += 11;
+    c.clock_digit = in[o + 11];
+    o += 12;
     c.ntfy.enabled = in[o] != 0;
     o += 1;
     c.ntfy.url = try getText(in, &o);
@@ -368,6 +374,7 @@ const FileForm = struct {
     clock_colour2: []const u8 = "ffffff",
     clock_gradient: []const u8 = "horizontal",
     clock_spread: u8 = clock.default_spread,
+    clock_digit: []const u8 = "solid",
     generator_params: [param.owner_count]param.Values = [_]param.Values{[_]u32{0} ** param.max_per_owner} ** param.owner_count,
     ip_mode: []const u8 = "lines",
     mqtt: struct {
@@ -421,6 +428,7 @@ pub fn toJson(c: *const Config, out: []u8) error{Overflow}![]u8 {
         .clock_colour2 = std.fmt.bufPrint(&colour2_buf, "{x:0>2}{x:0>2}{x:0>2}", .{ c.clock_colour2[0], c.clock_colour2[1], c.clock_colour2[2] }) catch unreachable,
         .clock_gradient = @tagName(enumOr(clock.Gradient, c.clock_gradient, .horizontal)),
         .clock_spread = c.clock_spread,
+        .clock_digit = @tagName(enumOr(clockfont.DigitStyle, c.clock_digit, .solid)),
         .generator_params = c.generator_params,
         .ip_mode = @tagName(enumOr(ip.Mode, c.ip_mode, .lines)),
         .revision = c.revision,
@@ -506,6 +514,7 @@ pub fn fromJson(bytes: []const u8, arena: []u8) error{ Invalid, TooLong }!Config
     c.clock_colour2 = api.parseColour(f.clock_colour2) orelse return error.Invalid;
     c.clock_gradient = @intFromEnum(api.enumByName(clock.Gradient, f.clock_gradient) orelse return error.Invalid);
     c.clock_spread = f.clock_spread;
+    c.clock_digit = @intFromEnum(api.enumByName(clockfont.DigitStyle, f.clock_digit) orelse return error.Invalid);
     c.generator_params = f.generator_params;
     c.ip_mode = @intFromEnum(api.enumByName(ip.Mode, f.ip_mode) orelse return error.Invalid);
     if (tz.resolve(f.timezone) == null) return error.Invalid;

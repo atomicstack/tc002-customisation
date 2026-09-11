@@ -97,6 +97,7 @@ pub const ConfigPatch = struct {
     clock_colour2: ?[3]u8 = null,
     clock_gradient: ?clock.Gradient = null,
     clock_spread: ?u8 = null,
+    clock_digit: ?clock.DigitStyle = null,
     ip_mode: ?ip.Mode = null,
 };
 
@@ -138,7 +139,7 @@ pub const Reject = struct { status: u16, code: []const u8, message: []const u8 }
 pub const Arena = [json.arena_size]u8;
 
 // json wire schemas (request bodies)
-const ClockBody = struct { font: ?[]const u8 = null, colour_mode: ?[]const u8 = null, colour: ?[]const u8 = null, colour2: ?[]const u8 = null, gradient: ?[]const u8 = null, spread: ?u8 = null };
+const ClockBody = struct { font: ?[]const u8 = null, colour_mode: ?[]const u8 = null, colour: ?[]const u8 = null, colour2: ?[]const u8 = null, gradient: ?[]const u8 = null, spread: ?u8 = null, digits: ?[]const u8 = null };
 const IpBody = struct { mode: ?[]const u8 = null };
 const SceneBody = struct { base: []const u8, generator: ?[]const u8 = null, seed: ?u32 = null, clock: ?ClockBody = null, ip: ?IpBody = null, transition: ?[]const u8 = null, direction: ?[]const u8 = null, transition_ms: ?u32 = null, exit: ?[]const u8 = null, request_id: []const u8, epoch: ?u32 = null };
 const ActionBody = struct { action: []const u8, brightness: ?u8 = null, seed: ?u32 = null, power: ?bool = null, request_id: []const u8, epoch: u32 };
@@ -162,6 +163,7 @@ const ConfigBody = struct {
     clock_colour2: ?[]const u8 = null,
     clock_gradient: ?[]const u8 = null,
     clock_spread: ?u8 = null,
+    clock_digit: ?[]const u8 = null,
     ip_mode: ?[]const u8 = null,
 };
 const SaveBody = struct { revision: ?u32 = null };
@@ -372,7 +374,7 @@ pub fn parseBody(kind: BodyKind, body: []const u8, arena: *Arena) Route {
             const rid = parseRequestId(b.request_id) orelse return bad("invalid_request_id", "request_id must be 1..16 hex digits");
             var style: ?clock.StylePatch = null;
             if (b.clock) |cb| {
-                switch (parseClockStyle(cb.font, cb.colour_mode, cb.colour, cb.colour2, cb.gradient, cb.spread)) {
+                switch (parseClockStyle(cb.font, cb.colour_mode, cb.colour, cb.colour2, cb.gradient, cb.spread, cb.digits)) {
                     .reject => |j| return .{ .reject = j },
                     .op => |op| style = op,
                 }
@@ -437,7 +439,7 @@ pub fn parseBody(kind: BodyKind, body: []const u8, arena: *Arena) Route {
             if (b.metrics_interval_s) |v| if (v != 0 and (v < 10 or v > 3600)) return bad("invalid_metrics_interval", "metrics_interval_s must be 0 (off) or 10..3600");
             if (b.discovery_prefix) |p| if (p.len == 0 or p.len > 64) return bad("invalid_discovery_prefix", "discovery_prefix must be 1..64 characters");
             const ntp: ?[4]u8 = if (b.ntp_server) |s| (parseIpv4(s) orelse return bad("invalid_ntp_server", "ntp_server must be a dotted ipv4 address")) else null;
-            const style = switch (parseClockStyle(b.clock_font, b.clock_colour_mode, b.clock_colour, b.clock_colour2, b.clock_gradient, b.clock_spread)) {
+            const style = switch (parseClockStyle(b.clock_font, b.clock_colour_mode, b.clock_colour, b.clock_colour2, b.clock_gradient, b.clock_spread, b.clock_digit)) {
                 .reject => |j| return .{ .reject = j },
                 .op => |op| op,
             };
@@ -450,6 +452,7 @@ pub fn parseBody(kind: BodyKind, body: []const u8, arena: *Arena) Route {
                 .clock_colour2 = style.colour2,
                 .clock_gradient = style.gradient,
                 .clock_spread = style.spread,
+                .clock_digit = style.digit,
                 .brightness = b.brightness,
                 .base = if (b.base) |t| (parseBase(t) orelse return bad("invalid_base", "base must be art, clock or ip")) else null,
                 .generator = if (b.generator) |g| (parseGenerator(g) orelse return bad("invalid_generator", "unknown generator")) else null,
@@ -498,13 +501,14 @@ pub fn parseBody(kind: BodyKind, body: []const u8, arena: *Arena) Route {
 
 /// the five clock style strings, shared by `/scene` and the settings patch.
 const StyleRoute = union(enum) { op: clock.StylePatch, reject: Reject };
-fn parseClockStyle(font_text: ?[]const u8, mode_text: ?[]const u8, colour_text: ?[]const u8, colour2_text: ?[]const u8, gradient_text: ?[]const u8, spread: ?u8) StyleRoute {
+fn parseClockStyle(font_text: ?[]const u8, mode_text: ?[]const u8, colour_text: ?[]const u8, colour2_text: ?[]const u8, gradient_text: ?[]const u8, spread: ?u8, digit_text: ?[]const u8) StyleRoute {
     var p = clock.StylePatch{ .spread = spread };
     if (font_text) |s| p.font = enumByName(clock.Font, s) orelse return .{ .reject = .{ .status = 400, .code = "invalid_font", .message = font_names_message } };
     if (mode_text) |s| p.mode = enumByName(clock.ColourMode, s) orelse return .{ .reject = .{ .status = 400, .code = "invalid_colour_mode", .message = "colour_mode must be solid or gradient" } };
     if (colour_text) |s| p.colour = parseColour(s) orelse return .{ .reject = .{ .status = 400, .code = "invalid_colour", .message = "colour must be rrggbb hex" } };
     if (colour2_text) |s| p.colour2 = parseColour(s) orelse return .{ .reject = .{ .status = 400, .code = "invalid_colour2", .message = "colour2 must be rrggbb hex" } };
     if (gradient_text) |s| p.gradient = enumByName(clock.Gradient, s) orelse return .{ .reject = .{ .status = 400, .code = "invalid_gradient", .message = "gradient must be horizontal, vertical or diagonal" } };
+    if (digit_text) |s| p.digit = enumByName(clock.DigitStyle, s) orelse return .{ .reject = .{ .status = 400, .code = "invalid_digits", .message = "digits must be solid, outline or shadow" } };
     return .{ .op = p };
 }
 
@@ -587,7 +591,7 @@ pub const scenes_body = "{\"bases\":[\"art\",\"clock\",\"ip\"],\"generators\":["
     "{\"index\":1,\"name\":\"plasma\",\"parameters\":" ++ paramsJson(&plasma.params) ++ "}," ++
     "{\"index\":2,\"name\":\"cube\",\"parameters\":" ++ paramsJson(&cube.params) ++ "}]," ++
     "\"parameters\":{\"art\":" ++ paramsJson(&scene.art_params) ++ ",\"clock\":" ++ paramsJson(&clock.params) ++ ",\"ip\":" ++ paramsJson(&ip.params) ++ "}," ++
-    "\"clock\":{\"fonts\":" ++ namesJson(clock.Font) ++ ",\"colour_modes\":[\"solid\",\"gradient\"],\"gradients\":[\"horizontal\",\"vertical\",\"diagonal\"],\"spread\":[0,255],\"max_spread\":255},\"ip\":{\"modes\":" ++ namesJson(ip.Mode) ++ "},\"notify\":{\"text_max\":128,\"duration_s\":[1,300]},\"frame\":{\"bytes\":2496,\"duration_s\":[1,300]},\"transitions\":{\"effects\":" ++ namesJson(transition.Effect) ++ ",\"directions\":" ++ namesJson(transition.Direction) ++ ",\"exits\":" ++ namesJson(transition.Exit) ++ ",\"duration_ms\":[0,5000]}}";
+    "\"clock\":{\"fonts\":" ++ namesJson(clock.Font) ++ ",\"colour_modes\":[\"solid\",\"gradient\"],\"digits\":" ++ namesJson(clock.DigitStyle) ++ ",\"gradients\":[\"horizontal\",\"vertical\",\"diagonal\"],\"spread\":[0,255],\"max_spread\":255},\"ip\":{\"modes\":" ++ namesJson(ip.Mode) ++ "},\"notify\":{\"text_max\":128,\"duration_s\":[1,300]},\"frame\":{\"bytes\":2496,\"duration_s\":[1,300]},\"transitions\":{\"effects\":" ++ namesJson(transition.Effect) ++ ",\"directions\":" ++ namesJson(transition.Direction) ++ ",\"exits\":" ++ namesJson(transition.Exit) ++ ",\"duration_ms\":[0,5000]}}";
 
 // tests
 

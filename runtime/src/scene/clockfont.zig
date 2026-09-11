@@ -18,6 +18,34 @@ pub const max_w = 10;
 /// one glyph: `w` columns, `h` rows, an alpha level per pixel (255 = fully lit).
 pub const Glyph = struct { w: u8, h: u8, a: [max_h][max_w]u8 };
 
+/// how the digits of a font with a body are drawn. `block` and `big` have an interior to hollow
+/// out and room to cast a shadow; the thinner fonts ignore this and stay solid.
+pub const DigitStyle = enum(u8) { solid = 0, outline = 1, shadow = 2 };
+
+pub fn hasBody(f: Font) bool {
+    return f == .block or f == .big;
+}
+
+/// the same glyph with its interior removed: a lit pixel survives only if it touches an unlit one,
+/// counting everything outside the glyph as unlit
+fn outlined(g: Glyph) Glyph {
+    var out = g;
+    for (0..g.h) |r| {
+        for (0..g.w) |c| {
+            if (g.a[r][c] == 0) continue;
+            const up = r > 0 and g.a[r - 1][c] != 0;
+            const down = r + 1 < g.h and g.a[r + 1][c] != 0;
+            const left = c > 0 and g.a[r][c - 1] != 0;
+            const right = c + 1 < g.w and g.a[r][c + 1] != 0;
+            if (up and down and left and right) out.a[r][c] = 0;
+        }
+    }
+    return out;
+}
+
+/// how much of the colour the shadow keeps
+const shadow_alpha: u8 = 90;
+
 const blank = Glyph{ .w = 0, .h = 0, .a = [_][max_w]u8{[_]u8{0} ** max_w} ** max_h };
 
 pub fn glyphHeight(f: Font) u8 {
@@ -247,16 +275,30 @@ pub fn scaled(colour: [3]u8, alpha: u8) [3]u8 {
 /// draw text with its top-left at (x0, y0); every lit pixel takes its colour from
 /// `painter.at(x, y)`, dimmed by the glyph's alpha. pixels outside the panel are skipped.
 pub fn blit(rgb: *geometry.Rgb, x0: i32, y0: i32, f: Font, text: []const u8, painter: anytype) void {
+    blitStyled(rgb, x0, y0, f, text, painter, .solid);
+}
+
+/// the same, drawn in one of the digit styles. a shadow is the glyph again, dimmed and offset,
+/// laid down first so the digit itself sits on top of it.
+pub fn blitStyled(rgb: *geometry.Rgb, x0: i32, y0: i32, f: Font, text: []const u8, painter: anytype, style: DigitStyle) void {
+    const effective: DigitStyle = if (hasBody(f)) style else .solid;
+    if (effective == .shadow) drawRun(rgb, x0 + 1, y0 + 1, f, text, painter, .solid, shadow_alpha);
+    drawRun(rgb, x0, y0, f, text, painter, effective, 255);
+}
+
+fn drawRun(rgb: *geometry.Rgb, x0: i32, y0: i32, f: Font, text: []const u8, painter: anytype, style: DigitStyle, strength: u8) void {
     var x = x0;
     for (text, 0..) |c, i| {
         if (i > 0) x += gap(f);
-        const g = glyph(f, c);
+        const raw = glyph(f, c);
+        const g = if (style == .outline) outlined(raw) else raw;
         for (0..g.h) |r| {
             const y = y0 + @as(i32, @intCast(r));
             if (y >= 0 and y < geometry.height) {
                 for (0..g.w) |col| {
-                    const a = g.a[r][col];
-                    if (a == 0) continue;
+                    const lit = g.a[r][col];
+                    if (lit == 0) continue;
+                    const a: u8 = @intCast(@as(u16, lit) * strength / 255);
                     const px = x + @as(i32, @intCast(col));
                     if (px < 0 or px >= geometry.width) continue;
                     const o = geometry.pixelOffset(@intCast(px), @intCast(y));
@@ -391,4 +433,58 @@ test "the blit stays inside the text box, clips at the panel edge, uses the pain
     try std.testing.expectEqual([3]u8{ 200, 100, 50 }, scaled(.{ 200, 100, 50 }, 255));
     try std.testing.expectEqual([3]u8{ 0, 0, 0 }, scaled(.{ 200, 100, 50 }, 0));
     try std.testing.expectEqual([3]u8{ 100, 50, 25 }, scaled(.{ 200, 100, 50 }, 128));
+}
+
+test "outline hollows a digit with a body and leaves a thin one alone" {
+    // block digits have a two-pixel stroke and an interior; the outline keeps the rim
+    const solid = glyph(.block, '8');
+    const rim = outlined(solid);
+    var solid_lit: usize = 0;
+    var rim_lit: usize = 0;
+    for (0..solid.h) |r| {
+        for (0..solid.w) |c| {
+            if (solid.a[r][c] != 0) solid_lit += 1;
+            if (rim.a[r][c] != 0) rim_lit += 1;
+        }
+    }
+    try std.testing.expect(rim_lit > 0 and rim_lit < solid_lit);
+    // every pixel the outline keeps was lit to begin with
+    for (0..solid.h) |r| {
+        for (0..solid.w) |c| {
+            if (rim.a[r][c] != 0) try std.testing.expect(solid.a[r][c] != 0);
+        }
+    }
+    // the thin fonts have no interior to remove, so the style cannot touch them
+    try std.testing.expect(!hasBody(.mini) and !hasBody(.classic) and !hasBody(.segment));
+    try std.testing.expect(hasBody(.block) and hasBody(.big));
+}
+
+test "the styles draw differently, and a shadow sits behind the digit" {
+    const white = Solid{ .colour = .{ 255, 255, 255 } };
+    var a: geometry.Rgb = geometry.black_rgb;
+    var b: geometry.Rgb = geometry.black_rgb;
+    var c: geometry.Rgb = geometry.black_rgb;
+    blitStyled(&a, 4, 2, .block, "8", white, .solid);
+    blitStyled(&b, 4, 2, .block, "8", white, .outline);
+    blitStyled(&c, 4, 2, .block, "8", white, .shadow);
+    try std.testing.expect(!std.mem.eql(u8, &a, &b));
+    try std.testing.expect(!std.mem.eql(u8, &a, &c));
+
+    // the shadow adds dimmed pixels the solid one does not have, and keeps the digit full strength
+    var dim_pixels: usize = 0;
+    var full_pixels: usize = 0;
+    for (0..geometry.width * geometry.height) |i| {
+        const v = c[i * 3];
+        if (v > 0 and v < 200) dim_pixels += 1;
+        if (v == 255) full_pixels += 1;
+    }
+    try std.testing.expect(dim_pixels > 0);
+    try std.testing.expect(full_pixels > 0);
+
+    // a font with no body ignores the style completely
+    var m1: geometry.Rgb = geometry.black_rgb;
+    var m2: geometry.Rgb = geometry.black_rgb;
+    blitStyled(&m1, 4, 2, .mini, "8", white, .solid);
+    blitStyled(&m2, 4, 2, .mini, "8", white, .shadow);
+    try std.testing.expectEqualSlices(u8, &m1, &m2);
 }
