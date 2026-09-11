@@ -1188,8 +1188,35 @@ tools/tc002-run.sh stop
 the english web control panel in [`panel/`](panel/) talks to the **stock**
 api; [`panel-v2/`](panel-v2/) is the same idea for this api, with a local
 proxy that holds the tokens, the transient and durable
-[clock styles](#clock-styles) and a live preview from `/screen` (simulated
-against the mock, fonts and gradients included).
+[clock styles](#clock-styles) and a live preview from `/screen`.
+
+### the preview renderer (`zig build wasm`)
+
+the console's preview is not a model of the renderer, it **is** the renderer:
+`src/wasm_main.zig` wraps `scene.Arbiter` and the modules under `src/scene/`
+and `src/panel/`, and `zig build wasm` cross-compiles them to
+wasm32-freestanding as `panel-v2/tc002-panel.wasm` (~55 kB, generated, not
+committed; `start-panel.sh` refreshes it on every start when zig is present).
+the scenes were already the right shape for it — pure, no allocator, no os —
+so nothing under `src/scene/` changed to make this work.
+
+the boundary is deliberately javascript-shaped: times cross as f64
+milliseconds rather than u64 nanoseconds (a u64 parameter reaches js as a
+BigInt, which infects every caller), strings and frames cross through one
+scratch buffer, and enums cross as their numeric value. `panel-v2/sim-wasm.js`
+maps a `/status` document onto arbiter commands and copies bytes out; it holds
+no pixel decisions of its own. the font, generator, clock font, gradient,
+digit style and ip layout lists the console offers are read out of the wasm at
+load, so a new enum variant in `src/scene/` appears in the console with no
+javascript edit at all.
+
+this replaced `panel-v2/sim.js`, a 600-line hand-written port of the same
+logic. the two agree byte-for-byte on every clock font, the ip `lines`
+layout, notifications (centred and scrolling) and the whole brightness curve —
+and `panel-v2/test_wasm.mjs` pins that. where they disagree, the port had
+drifted: it knew 2 of 3 generators and 4 of 6 clock fonts, drew all four ip
+layouts as `lines`, clamped clock gradients by a fixed ±96 where the runtime
+uses the style's own `spread`, and had no concept of the digit styles.
 
 ## memory audits
 

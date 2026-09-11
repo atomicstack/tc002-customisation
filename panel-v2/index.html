@@ -422,7 +422,7 @@ input[type=file]{font:12px var(--body);color:var(--muted);max-width:220px}
 
 </div>
 <div id="toast" role="status" aria-live="polite"></div>
-<script src="sim.js"></script>
+<script src="sim-wasm.js"></script>
 <script>
 const $ = id => document.getElementById(id);
 const S = window.TC002Sim;
@@ -640,7 +640,9 @@ async function pollScreen() {
 /* ---------- the preview ---------- */
 const ctx = $('matrix').getContext('2d');
 const LED_OFF = '#12151d';
-let lut = S.buildLut(100), lutBrightness = 100, lastStepMs = Date.now(), nextDrawAt = 0;
+// the lut is built on the first paint: it comes from the wasm, which is not loaded yet at
+// parse time. lutBrightness starts at a value no brightness can take so the first paint builds it
+let lut = null, lutBrightness = -1, lastStepMs = Date.now(), nextDrawAt = 0;
 function paint(rgb, brightness) {
   if (brightness !== lutBrightness) { lut = S.buildLut(brightness); lutBrightness = brightness; }
   ctx.fillStyle = '#07080c'; ctx.fillRect(0, 0, 520, 160);
@@ -1275,13 +1277,19 @@ $('reload').addEventListener('click', loadAll);
 $('host').addEventListener('keydown', e => { if (e.key === 'Enter') loadAll(); });
 
 /* ---------- boot ---------- */
-requestAnimationFrame(draw);
-(() => {
+// the preview is the runtime's own renderer compiled to wasm, so nothing can be drawn or
+// configured until it is instantiated; the whole boot waits on it rather than racing it
+S.ready().then(() => {
+  requestAnimationFrame(draw);
   try { const t = localStorage.getItem('tc002tab-v2'); if (t && document.querySelector(`.tabbar button[data-tab="${t}"]`)) showTab(t); } catch {}
   const q = new URLSearchParams(location.search).get('host');
   if (q) $('host').value = q; else { try { const h = localStorage.getItem('tc002host-v2'); if (h) $('host').value = h; } catch {} }
   loadAll();
-})();
+}, err => {
+  setConn('off', 'no renderer');
+  $('cap').textContent = 'tc002-panel.wasm did not load — run `zig build wasm` in runtime/';
+  toast('preview renderer unavailable: ' + err.message, true);
+});
 </script>
 </body>
 </html>

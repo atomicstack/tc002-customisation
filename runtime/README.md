@@ -22,6 +22,7 @@ cd runtime
 zig build            # zig-out/bin/tc002d, zig-out/bin/tc002-supervisor, zig-out/lib/libtc002-bootstrap.so (arm, static, no libc)
 zig build test       # host unit tests of every pure module
 zig build check      # elf sanity of the bootstrap: arm et_dyn, no dt_needed, has init_array
+zig build wasm       # the scene code as wasm for the console preview -> ../panel-v2/tc002-panel.wasm
 ```
 
 `-Dsupervisor_path=/res/bin/tc002-supervisor` selects the production exec path; the default is the

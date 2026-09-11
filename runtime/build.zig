@@ -67,6 +67,27 @@ pub fn build(b: *std.Build) void {
     bootstrap.root_module.addOptions("build_options", options);
     b.installArtifact(bootstrap);
 
+    // the panel console's renderer: the same scene modules the device runs, cross-compiled to
+    // wasm so the browser preview draws the device's own pixels instead of a javascript port that
+    // has to be re-synchronised by hand. `zig build wasm` refreshes the copy the console fetches.
+    const wasm = b.addExecutable(.{
+        .name = "tc002-panel",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/wasm_main.zig"),
+            .target = b.resolveTargetQuery(.{ .cpu_arch = .wasm32, .os_tag = .freestanding }),
+            .optimize = .ReleaseSmall,
+            .link_libc = false,
+            .strip = true,
+            .single_threaded = true,
+        }),
+    });
+    wasm.entry = .disabled; // a library of exports, not a program
+    wasm.rdynamic = true; // keep every `export fn` in the module's export table
+    const wasm_step = b.step("wasm", "build the console renderer and refresh panel-v2/tc002-panel.wasm");
+    const wasm_copy = b.addUpdateSourceFiles();
+    wasm_copy.addCopyFileToSource(wasm.getEmittedBin(), "../panel-v2/tc002-panel.wasm");
+    wasm_step.dependOn(&wasm_copy.step);
+
     // host tests of every pure module
     const tests = b.addTest(.{ .root_module = b.createModule(.{
         .root_source_file = b.path("src/root.zig"),

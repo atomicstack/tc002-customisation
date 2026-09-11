@@ -503,6 +503,11 @@ pub const Base = enum(u8) {
     canvas = 2,
 };
 
+/// how long a notification or a raw frame may be asked to stay up. the console cannot know how
+/// much of a running notification is left, so it asks for the maximum and lets the arbiter expire it.
+pub const min_duration_s: u16 = 1;
+pub const max_duration_s: u16 = 300;
+
 pub const Notify = struct { text: [128]u8, len: u8, colour: [3]u8, since_ns: u64, until_ns: u64, transition: transition.Spec };
 pub const Raw = struct { rgb: geometry.Rgb, until_ns: u64, transition: transition.Spec };
 
@@ -622,7 +627,7 @@ pub const Arbiter = struct {
     }
 
     fn validDuration(d: u16) bool {
-        return d >= 1 and d <= 300;
+        return d >= min_duration_s and d <= max_duration_s;
     }
 
     pub fn apply(self: *Arbiter, cmd: Command, now_ns: u64) Result {

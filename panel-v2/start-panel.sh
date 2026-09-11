@@ -16,6 +16,9 @@
 #                  a shared token file and point the console at it
 #   --open         open the console in the default browser once the proxy is up
 #
+# the preview renderer (panel-v2/tc002-panel.wasm) is rebuilt from runtime/src on every
+# start when zig is installed, so the console always previews the current scene code.
+#
 # apple's /usr/bin/python3 is used on purpose: on macos 15+ third-party binaries are gated for
 # local network access per binary, apple's are not (see CLAUDE.md / README).
 set -eu
@@ -38,6 +41,15 @@ while [ $# -gt 0 ]; do
     *) host="$1"; shift ;;
   esac
 done
+
+# the preview draws with the runtime's own renderer, cross-compiled to wasm from runtime/src.
+# it is generated, not committed, so refresh it here; without zig an existing build still serves.
+if command -v zig >/dev/null 2>&1; then
+  ( cd ../runtime && zig build wasm ) || { echo "start-panel.sh: zig build wasm failed" >&2; exit 1; }
+elif [ ! -f tc002-panel.wasm ]; then
+  echo "start-panel.sh: zig is not installed and tc002-panel.wasm has never been built;" >&2
+  echo "                the console will load but the preview cannot draw" >&2
+fi
 
 adb_cmd=(adb)
 [ -n "$serial" ] && adb_cmd+=(-s "$serial")
