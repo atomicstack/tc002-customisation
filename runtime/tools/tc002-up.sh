@@ -86,7 +86,7 @@ say "start (tz $tz)"
 "$RUN" start --profile dev --tz "$tz" 2>&1 | grep -E 'supervisor running|ready|exited|error' | sed 's/^/   /'
 sleep 2
 
-say "tokens -> $ROOT/tokens (mode 0600; the console's start.sh finds them there)"
+say "tokens -> $ROOT/tokens (mode 0600; the console's start-panel.sh finds them there)"
 adb pull /data/tc002/state/credentials/tokens "$ROOT/tokens" >/dev/null 2>&1 ||
     adb pull /tmp/tc002/credentials/tokens "$ROOT/tokens" >/dev/null 2>&1 ||
     die "could not pull the tokens (did the supervisor start?)"
@@ -113,5 +113,5 @@ d = json.load(sys.stdin)
 print("   renderer", d.get("renderer"), "| base", d.get("base"), "| clock font", (d.get("clock") or {}).get("font"), "| time", (d.get("time") or {}).get("state"), "| ip", (d.get("network") or {}).get("ip"))
 '
 echo
-echo "console:  $ROOT/panel-v2/start.sh --open"
+echo "console:  $ROOT/panel-v2/start-panel.sh --open"
 echo "stop:     $RUN stop"

@@ -130,7 +130,7 @@ command brings it up again, with the settings applied and the console's tokens p
 runtime/tools/tc002-up.sh                          # adb connect, build, push, start, settings, tokens
 runtime/tools/tc002-up.sh --tz Australia/Melbourne --font classic --no-build
 runtime/tools/tc002-demo.py -s <device-ip> --token-file tokens         # a demo reel of every transition; --only, --ms, --hold, --loop
-panel-v2/start.sh --open                           # the console, once the runtime is up
+panel-v2/start-panel.sh --open                     # the console, once the runtime is up
 runtime/tools/tc002-run.sh stop                    # back to the stock app
 ```
 

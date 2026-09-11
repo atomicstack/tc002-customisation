@@ -685,7 +685,7 @@ class StartScriptTests(unittest.TestCase):
             for _ in range(2):
                 s = socket.socket(); s.bind(("127.0.0.1", 0)); ports.append(s.getsockname()[1]); s.close()
             proxy_port, mock_port = ports
-            proc = subprocess.Popen(["/bin/bash", os.path.join(HERE, "start.sh"), "--mock", "--port", str(proxy_port),
+            proc = subprocess.Popen(["/bin/bash", os.path.join(HERE, "start-panel.sh"), "--mock", "--port", str(proxy_port),
                                      "--mock-port", str(mock_port), "--token-file", token_file],
                                     stdout=subprocess.PIPE, stderr=subprocess.STDOUT, start_new_session=True, cwd=d)
             try:

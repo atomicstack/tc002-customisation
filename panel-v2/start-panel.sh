@@ -1,8 +1,8 @@
 #!/bin/bash
-# start.sh: bring up the panel-v2 console with the tokens sorted out, so the invocation need not
+# start-panel.sh: bring up the panel-v2 console with the tokens sorted out, so the invocation need not
 # be remembered. runs the proxy in the foreground; ctrl-c stops everything it started.
 #
-#   panel-v2/start.sh [host[:port]] [--port N] [--token-file FILE] [--serial S] [--mock] [--open]
+#   panel-v2/start-panel.sh [host[:port]] [--port N] [--token-file FILE] [--serial S] [--mock] [--open]
 #
 #   host           the device address; when omitted and a device is attached over adb, the wlan0
 #                  address is read from it
@@ -34,7 +34,7 @@ while [ $# -gt 0 ]; do
     --mock-port) mock_port="$2"; shift 2 ;;
     --open) open_browser=1; shift ;;
     -h|--help) awk 'NR>1 && /^#/ {if ($0 ~ /^# apple/) exit; sub(/^# ?/, ""); print}' "$self"; exit 0 ;;
-    -*) echo "start.sh: unknown option $1" >&2; exit 2 ;;
+    -*) echo "start-panel.sh: unknown option $1" >&2; exit 2 ;;
     *) host="$1"; shift ;;
   esac
 done
@@ -62,17 +62,17 @@ else
   if [ -n "$token_file" ]; then
     serve_args+=(--token-file "$token_file")
   else
-    echo "start.sh: no token file found (./tokens or ../tokens); pulling the tokens over adb" >&2
+    echo "start-panel.sh: no token file found (./tokens or ../tokens); pulling the tokens over adb" >&2
     serve_args+=(--adb-pull)
     [ -n "$serial" ] && serve_args+=(--serial "$serial")
   fi
   if [ -z "$host" ]; then
     host="$("${adb_cmd[@]}" shell ifconfig wlan0 2>/dev/null | sed -n 's/.*inet addr:\([0-9.]*\).*/\1/p' | head -1 || true)"
     if [ -z "$host" ]; then
-      echo "start.sh: no device address: pass it as the first argument (adb could not read wlan0)" >&2
+      echo "start-panel.sh: no device address: pass it as the first argument (adb could not read wlan0)" >&2
       exit 1
     fi
-    echo "start.sh: device address from adb: $host" >&2
+    echo "start-panel.sh: device address from adb: $host" >&2
   fi
 fi
 

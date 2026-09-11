@@ -94,12 +94,12 @@ and a plain `http.server` will not work (see the
 **control the custom runtime**
 
 ```bash
-panel-v2/start.sh                  # device attached over adb: tokens pulled, address read from wlan0
-panel-v2/start.sh <device-ip> --open   # or name the device; --open launches the browser
-panel-v2/start.sh --mock           # no device: mock-device.py plus the proxy, for a look around
+panel-v2/start-panel.sh            # device attached over adb: tokens pulled, address read from wlan0
+panel-v2/start-panel.sh <device-ip> --open   # or name the device; --open launches the browser
+panel-v2/start-panel.sh --mock     # no device: mock-device.py plus the proxy, for a look around
 ```
 
-`start.sh` prints the console url (`http://127.0.0.1:8777/?host=<device-ip>`)
+`start-panel.sh` prints the console url (`http://127.0.0.1:8777/?host=<device-ip>`)
 and runs the proxy until ctrl-c; `--port`, `--token-file` and `--serial` cover
 the rest. by hand it is:
 
