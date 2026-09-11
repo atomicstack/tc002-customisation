@@ -31,10 +31,11 @@ CLOCK_FONTS = ["classic", "mini", "segment", "big", "block", "hires"]
 IP_MODES = ["lines", "mini", "scroll", "big"]
 CLOCK_COLOUR_MODES = ["solid", "gradient"]
 CLOCK_GRADIENTS = ["horizontal", "vertical", "diagonal"]
+CLOCK_DIGITS = ["solid", "outline", "shadow"]   # only the faces with a body (block, big) honour it
 CLOCK_MAX_SPREAD = 255          # the clamp is the `spread` parameter now, not a fixed 96
 DEFAULT_SPREAD = 255
 DEFAULT_CLOCK = {"font": "classic", "colour_mode": "solid", "colour": "ffffff", "colour2": "ffffff",
-                 "gradient": "horizontal", "spread": DEFAULT_SPREAD}
+                 "gradient": "horizontal", "spread": DEFAULT_SPREAD, "digits": "solid"}
 
 
 def choice(name, choices, default=0):
@@ -49,7 +50,8 @@ SCENES = {"bases": BASES,
               "clock": [choice("face", CLOCK_FONTS), {"name": "colour", "kind": "colour", "default": 0xffffff},
                         choice("shade", CLOCK_COLOUR_MODES), {"name": "colour 2", "kind": "colour", "default": 0xffffff},
                         choice("gradient", CLOCK_GRADIENTS),
-                        {"name": "spread", "kind": "number", "default": DEFAULT_SPREAD, "min": 0, "max": 255, "step": 15}],
+                        {"name": "spread", "kind": "number", "default": DEFAULT_SPREAD, "min": 0, "max": 255, "step": 15},
+                        choice("digits", CLOCK_DIGITS)],
               "ip": [choice("layout", IP_MODES)],
           },
           "clock": {"fonts": CLOCK_FONTS, "colour_modes": CLOCK_COLOUR_MODES, "gradients": CLOCK_GRADIENTS,
@@ -130,6 +132,9 @@ def parse_colour(s):
     return s.lower()
 
 
+SETTING_TO_STYLE = {"digit": "digits"}
+
+
 def parse_clock_style(fields):
     """the clock style fields by their bare names (font, colour_mode, colour, colour2, gradient, spread),
     validated with the runtime's codes; shared by the scene block and the settings patch. the
@@ -150,6 +155,9 @@ def parse_clock_style(fields):
         elif key == "gradient":
             if value not in CLOCK_GRADIENTS:
                 raise Reject(400, "invalid_gradient", "gradient must be horizontal, vertical or diagonal")
+        elif key == "digits":
+            if value not in CLOCK_DIGITS:
+                raise Reject(400, "invalid_digits", "digits must be solid, outline or shadow")
         elif key == "spread":
             # a u8 on the wire, so anything outside 0..255 fails the device's json parse
             if not isinstance(value, int) or isinstance(value, bool) or not 0 <= value <= 255:
@@ -511,7 +519,10 @@ class Device:
             nxt["discovery_prefix"] = body["discovery_prefix"]
         clock_keys = {k: v for k, v in body.items() if k.startswith("clock_")}
         if clock_keys:
-            nxt["clock"] = {**c["clock"], **parse_clock_style({k[len("clock_"):]: v for k, v in clock_keys.items()})}
+            # the settings call it clock_digit, the scene block calls it digits
+            style = parse_clock_style({SETTING_TO_STYLE.get(k[len("clock_"):], k[len("clock_"):]): v
+                                       for k, v in clock_keys.items()})
+            nxt["clock"] = {**c["clock"], **style}
         nxt["revision"] = c["revision"] + 1
         self.config = nxt
         # live effects, as the supervisor applies them
@@ -569,7 +580,8 @@ SCHEMAS = {
     "notify": ({"text", "colour", "duration_s", "transition", "direction", "transition_ms", "exit", "request_id", "epoch"}, {"text", "request_id", "epoch"}),
     "config": ({"brightness", "base", "generator", "timezone", "ntp_server", "ntp_interval_s", "frame_timeout_ms",
                 "metrics_interval_s", "discovery", "discovery_prefix", "expected_revision",
-                "clock_font", "clock_colour_mode", "clock_colour", "clock_colour2", "clock_gradient", "clock_spread", "ip_mode"}, set()),
+                "clock_font", "clock_colour_mode", "clock_colour", "clock_colour2", "clock_gradient", "clock_spread",
+                "clock_digit", "ip_mode"}, set()),
     "config/save": ({"revision"}, set()),
     "mock/persist": ({"enabled"}, {"enabled"}),
     "mqtt": ({"enabled", "host", "port", "username", "password", "client_id", "prefix", "tls"}, set()),

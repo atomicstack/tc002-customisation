@@ -240,6 +240,7 @@ input[type=file]{font:12px var(--body);color:var(--muted);max-width:220px}
             <input type="color" id="kcolour2" value="#ffffff" aria-label="gradient end colour" title="colour2 (gradient end)">
             <select id="kgrad" aria-label="gradient direction" title="gradient direction"></select>
           </span></div>
+        <div class="field"><label for="kdigits">Clock digits<span class="key">clock.digits · block and big faces have a body to style</span></label><select id="kdigits"></select></div>
         <div class="field"><label for="kspread">Clock spread<span class="key">clock.spread · how far the gradient's end may differ, per channel</span></label>
           <span class="rangewrap"><input type="range" id="kspread" min="0" max="255" step="15" value="255"><span class="val">255</span></span></div>
         <div class="field"><label for="seed">Seed<span class="key">POST /action reseed · empty = random</span></label>
@@ -297,6 +298,7 @@ input[type=file]{font:12px var(--body);color:var(--muted);max-width:220px}
         <div class="field"><label for="ccolour">Clock colour<span class="key">clock_colour</span></label><input type="color" id="ccolour" value="#ffffff"></div>
         <div class="field"><label for="ccolour2">Gradient end colour<span class="key">clock_colour2 · pulled towards clock_colour by the spread</span></label><input type="color" id="ccolour2" value="#ffffff"></div>
         <div class="field"><label for="cgrad">Gradient direction<span class="key">clock_gradient</span></label><select id="cgrad"></select></div>
+        <div class="field"><label for="cdigits">Clock digits<span class="key">clock_digit · block and big faces have a body to style</span></label><select id="cdigits"></select></div>
         <div class="field"><label for="cspread">Clock spread<span class="key">clock_spread · 0–255, the gradient's leash</span></label><input type="number" id="cspread" min="0" max="255" step="15"></div>
         <div class="field"><label for="ctz">Timezone<span class="key">timezone · posix rule, e.g. AEST-10AEDT,M10.1.0,M4.1.0/3</span></label><input type="text" id="ctz" placeholder="UTC0" spellcheck="false"></div>
         <div class="field"><label for="cntp">NTP server<span class="key">ntp_server · ipv4, null disables the sntp client</span></label><input type="text" id="cntp" placeholder="none"></div>
@@ -671,6 +673,7 @@ function showClockStyle(c) {
   $('kfont').value = c.font; segSet('kmode', c.colour_mode);
   $('kcolour').value = '#' + c.colour; $('kcolour2').value = '#' + c.colour2; $('kgrad').value = c.gradient;
   if (typeof c.spread === 'number') setRange('kspread', c.spread);
+  if (c.digits) $('kdigits').value = c.digits;
 }
 async function setClockStyle(patch, what) {
   if (!STATUS) return;
@@ -695,6 +698,7 @@ $('kcolour').addEventListener('change', () => setClockStyle({ colour: hexColour(
 $('kcolour2').addEventListener('change', () => setClockStyle({ colour2: hexColour($('kcolour2').value) }, `gradient end: ${hexColour($('kcolour2').value)}`));
 $('kgrad').addEventListener('change', () => setClockStyle({ gradient: $('kgrad').value }, `gradient: ${$('kgrad').value}`));
 $('kspread').addEventListener('change', () => setClockStyle({ spread: +$('kspread').value }, `spread: ${$('kspread').value}`));
+$('kdigits').addEventListener('change', () => setClockStyle({ digits: $('kdigits').value }, `digits: ${$('kdigits').value}`));
 function fillClockSelects() {
   const cat = (SCENES && SCENES.clock) || {};
   const fonts = cat.fonts || S.CLOCK_FONTS, modes = cat.colour_modes || ['solid', 'gradient'], grads = cat.gradients || ['horizontal', 'vertical', 'diagonal'];
@@ -702,6 +706,15 @@ function fillClockSelects() {
   fillSelect($('cfont'), fonts, $('cfont').value); fillSelect($('cmode'), modes, $('cmode').value); fillSelect($('cgrad'), grads, $('cgrad').value);
   const ipModes = (SCENES && SCENES.ip && SCENES.ip.modes) || ['lines', 'mini', 'scroll', 'big'];
   fillSelect($('kip'), ipModes, $('kip').value); fillSelect($('cip'), ipModes, $('cip').value);
+  // the digit styles come from the clock's own parameter table, the only place they are published
+  const table = (SCENES && SCENES.parameters && SCENES.parameters.clock) || [];
+  const digitParam = table.find(p => p.name === 'digits');
+  if (digitParam && digitParam.choices) {
+    const fallback = digitParam.choices[digitParam.default || 0];
+    for (const id of ['kdigits', 'cdigits']) fillSelect($(id), digitParam.choices, $(id).value || fallback);
+  } else {
+    for (const id of ['kdigits', 'cdigits']) $(id).closest('.field').hidden = true;   // an older runtime has no digit styles
+  }
   const range = cat.spread;   // [min, max] from /scenes; the device is the authority on the bounds
   if (Array.isArray(range) && range.length === 2) {
     for (const id of ['kspread', 'cspread']) { $(id).min = range[0]; $(id).max = range[1]; }
@@ -822,6 +835,7 @@ function showConfig(c) {
   const k = c.clock || S.DEFAULT_CLOCK_STYLE;   // a runtime without clock styles: show the defaults, patch nothing
   $('cfont').value = k.font; $('cmode').value = k.colour_mode; $('ccolour').value = '#' + k.colour; $('ccolour2').value = '#' + k.colour2; $('cgrad').value = k.gradient;
   if (typeof k.spread === 'number') $('cspread').value = k.spread;
+  if (k.digits) $('cdigits').value = k.digits;
   if (c.ip_mode) $('cip').value = c.ip_mode;
   // the device persists every accepted write before replying, so the two revisions match unless
   // that write failed: what is on screen is live but would not survive a restart
@@ -857,6 +871,7 @@ $('capply').addEventListener('click', async () => {
     if (hexColour($('ccolour2').value) !== k.colour2) patch.clock_colour2 = hexColour($('ccolour2').value);
     if ($('cgrad').value !== k.gradient) patch.clock_gradient = $('cgrad').value;
     if (typeof k.spread === 'number' && +$('cspread').value !== k.spread) patch.clock_spread = +$('cspread').value;
+    if (k.digits && $('cdigits').value !== k.digits) patch.clock_digit = $('cdigits').value;
   }
   if (CONFIG.ip_mode) {
     if ($('cip').value !== CONFIG.ip_mode) patch.ip_mode = $('cip').value;
