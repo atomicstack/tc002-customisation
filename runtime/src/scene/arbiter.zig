@@ -14,6 +14,7 @@ const tz = @import("tz.zig");
 const clock = @import("clock.zig");
 const ip = @import("ip.zig");
 const menu = @import("menu.zig");
+const pages = @import("pages.zig");
 
 const white = [3]u8{ 255, 255, 255 };
 const s_ns = std.time.ns_per_s;
@@ -234,6 +235,47 @@ test "a base change slides the way its button sits on the panel" {
     try std.testing.expectEqual(transition.Direction.left, a.takeTransition().?.direction);
     a.action(.middle, 0); // ip -> art, one to the left
     try std.testing.expectEqual(transition.Direction.right, a.takeTransition().?.direction);
+}
+
+test "the dial raises a page indicator in every scene it pages, and it fades away" {
+    // compared against the same scene drawn without an indicator, because popsquares already
+    // lights the whole bottom row and counting lit pixels would say nothing there
+    const row_of = struct {
+        fn get(rgb: *const geometry.Rgb) [geometry.width * 3]u8 {
+            var out: [geometry.width * 3]u8 = undefined;
+            for (0..geometry.width) |x| {
+                const i = geometry.pixelOffset(x, pages.row);
+                out[x * 3] = rgb[i];
+                out[x * 3 + 1] = rgb[i + 1];
+                out[x * 3 + 2] = rgb[i + 2];
+            }
+            return out;
+        }
+    };
+    var rgb: geometry.Rgb = undefined;
+    var plain: geometry.Rgb = undefined;
+    for ([_]Base{ .art, .clock, .ip }) |b| {
+        var a = Arbiter.init(b, .popsquares, 1, tz.utc);
+        a.action(.rotate_cw, 0); // the dial pages this scene, so the indicator comes up
+        a.tick(pages.fade_in_ns, 0);
+        a.render(0, &rgb);
+        a.renderBase(0, &plain);
+        try std.testing.expect(!std.mem.eql(u8, &row_of.get(&rgb), &row_of.get(&plain)));
+        try std.testing.expect(a.cadence(0) == .continuous);
+        // and it goes again on its own, giving the row back to the scene
+        a.tick(pages.total_ns, 0);
+        a.render(0, &rgb);
+        a.renderBase(0, &plain);
+        try std.testing.expectEqualSlices(u8, &row_of.get(&plain), &row_of.get(&rgb));
+    }
+    // a notification is not something the dial pages, so it never gets one
+    var a = fresh();
+    a.action(.rotate_cw, 0);
+    _ = a.apply(.{ .notify = .{ .text = "hi", .colour = white, .duration_s = 5 } }, 0);
+    a.tick(pages.fade_in_ns, 0);
+    a.render(0, &rgb);
+    a.renderNotify(&a.overlay.notify, &plain);
+    try std.testing.expectEqualSlices(u8, &plain, &rgb);
 }
 
 test "in the menu a clockwise detent moves right through the items" {
@@ -494,6 +536,8 @@ pub const Arbiter = struct {
     menu_request: ?menu.Request = null,
     /// the device readouts the info page shows, as last pushed
     device: menu.Status = .{},
+    /// when the dial last changed the page of the showing scene; the indicator fades from here
+    pages_at: ?u64 = null,
 
     pub fn init(base: Base, generator: scene.Generator, seed: u32, rule: tz.Rule) Arbiter {
         return .{ .base = base, .art = scene.Art.init(generator, seed), .clock = clock.State.init(rule) };
@@ -536,10 +580,16 @@ pub const Arbiter = struct {
         switch (o.overlay) {
             .notify => |n| self.renderNotify(&n, rgb),
             .raw => |r| rgb.* = r.rgb,
-            .stream_arming, .none => switch (o.base) {
-                .art => self.art.renderGenerator(o.generator, rgb),
-                .clock => self.clock.renderWith(o.clock_style, wall_ns, rgb),
-                .ip => self.ip.renderWith(o.ip_mode, self.last_tick_ns, rgb),
+            .stream_arming, .none => {
+                switch (o.base) {
+                    .art => self.art.renderGenerator(o.generator, rgb),
+                    .clock => self.clock.renderWith(o.clock_style, wall_ns, rgb),
+                    .ip => self.ip.renderWith(o.ip_mode, self.last_tick_ns, rgb),
+                }
+                // the same dots as the incoming layer, so a cross-fade leaves them crisp instead
+                // of diluting them into the scene underneath
+                const set = self.pageSet();
+                pages.draw(rgb, set.count, set.index, self.pagesAlpha(self.last_tick_ns));
             },
         }
         return true;
@@ -649,14 +699,33 @@ pub const Arbiter = struct {
             .right => _ = self.apply(.{ .set_base = .ip }, now_ns),
             // the knob pages through the current scene: generators in art, faces in the clock,
             // layouts in ip
-            .rotate_cw, .rotate_ccw => switch (self.base) {
-                .art => _ = self.apply(.{ .select_generator = self.art.neighbour(a == .rotate_cw) }, now_ns),
-                .clock => _ = self.apply(.{ .set_clock_style = .{ .font = cycle(clock.Font, self.clock.style.font, a == .rotate_cw) } }, now_ns),
-                .ip => _ = self.apply(.{ .set_ip_mode = cycle(ip.Mode, self.ip.mode, a == .rotate_cw) }, now_ns),
+            .rotate_cw, .rotate_ccw => {
+                switch (self.base) {
+                    .art => _ = self.apply(.{ .select_generator = self.art.neighbour(a == .rotate_cw) }, now_ns),
+                    .clock => _ = self.apply(.{ .set_clock_style = .{ .font = cycle(clock.Font, self.clock.style.font, a == .rotate_cw) } }, now_ns),
+                    .ip => _ = self.apply(.{ .set_ip_mode = cycle(ip.Mode, self.ip.mode, a == .rotate_cw) }, now_ns),
+                }
+                self.pages_at = now_ns;
+                self.dirty = true;
             },
             .knob_short => self.openMenu(now_ns),
             .knob_long => _ = self.apply(.arm_stream, now_ns),
         }
+    }
+
+    /// the pages the dial walks in the showing scene, and the one it is on
+    fn pageSet(self: *const Arbiter) struct { count: usize, index: usize } {
+        return switch (self.base) {
+            .art => .{ .count = @typeInfo(scene.Generator).@"enum".fields.len, .index = @intFromEnum(self.art.generator) },
+            .clock => .{ .count = @typeInfo(clock.Font).@"enum".fields.len, .index = @intFromEnum(self.clock.style.font) },
+            .ip => .{ .count = @typeInfo(ip.Mode).@"enum".fields.len, .index = @intFromEnum(self.ip.mode) },
+        };
+    }
+
+    /// how strongly the page indicator shows right now, 0 when it is not up
+    fn pagesAlpha(self: *const Arbiter, now_ns: u64) u8 {
+        const at = self.pages_at orelse return 0;
+        return pages.alphaAt(now_ns -| at);
     }
 
     pub fn menuOpen(self: *const Arbiter) bool {
@@ -813,7 +882,11 @@ pub const Arbiter = struct {
         switch (self.overlay) {
             .notify => |n| self.renderNotify(&n, rgb),
             .raw => |r| rgb.* = r.rgb,
-            .stream_arming, .none => self.renderBase(wall_ns, rgb),
+            .stream_arming, .none => {
+                self.renderBase(wall_ns, rgb);
+                const set = self.pageSet();
+                pages.draw(rgb, set.count, set.index, self.pagesAlpha(self.last_tick_ns));
+            },
         }
     }
 
@@ -835,6 +908,8 @@ pub const Arbiter = struct {
     pub fn cadence(self: *const Arbiter, wall_ns: u64) scene.Cadence {
         // the menu redraws steadily: a value may be scrolling and the commit and idle timers run
         if (self.menu_state != null) return .{ .continuous = 40 * std.time.ns_per_ms };
+        // a fading page indicator needs frames of its own, whatever the scene underneath wants
+        if (self.pagesAlpha(self.last_tick_ns) > 0) return .{ .continuous = 40 * std.time.ns_per_ms };
         return switch (self.overlay) {
             .notify => |n| if (font.textWidth(n.text[0..n.len]) > geometry.width) .{ .continuous = scroll_period_ns } else .idle,
             .raw => .idle,

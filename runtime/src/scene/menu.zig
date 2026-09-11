@@ -12,6 +12,7 @@ const geometry = @import("../panel/geometry.zig");
 const font = @import("font.zig");
 const clockfont = @import("clockfont.zig");
 const ip = @import("ip.zig");
+const pages = @import("pages.zig");
 const scene = @import("scene.zig");
 
 pub const Item = enum(u8) {
@@ -130,9 +131,11 @@ pub const Menu = struct {
     ready: Request = .none,
     last_input_ns: u64 = 0,
     scroll_start_ns: u64 = 0,
+    /// when the item last changed; the dot row fades in from there and away again
+    pages_at: u64 = 0,
 
     pub fn open(values: Values, status: Status, now: u64) Menu {
-        return .{ .values = values, .status = status, .last_input_ns = now, .scroll_start_ns = now };
+        return .{ .values = values, .status = status, .last_input_ns = now, .scroll_start_ns = now, .pages_at = now };
     }
 
     fn touch(self: *Menu, now: u64) void {
@@ -234,6 +237,7 @@ pub const Menu = struct {
                 .next, .prev => {
                     self.commitNow(); // a half-changed item is not abandoned by walking on
                     self.item = cycle(Item, self.item, ev == .next);
+                    self.pages_at = now;
                     return .none;
                 },
                 // the buttons change the showing item's value without entering adjusting
@@ -285,6 +289,11 @@ pub const Menu = struct {
         return self.state == .adjusting or self.state == .confirming or self.item == .info;
     }
 
+    /// the dot row is still fading, so the menu needs frames even if nothing else moves
+    pub fn indicatorShowing(self: *const Menu, now: u64) bool {
+        return pages.alphaAt(now -| self.pages_at) > 0;
+    }
+
     pub fn render(self: *const Menu, now: u64, rgb: *geometry.Rgb) void {
         @memset(rgb, 0);
         if (self.state == .confirming) {
@@ -302,12 +311,8 @@ pub const Menu = struct {
             const lit = @as(usize, self.values.brightness) * geometry.width / 100;
             for (0..lit) |x| setPixel(rgb, @intCast(x), 15, colour);
         } else {
-            // one dot per item, the current one lit
-            const gap = geometry.width / count;
-            for (0..count) |i| {
-                const x: i32 = @intCast(i * gap + 1);
-                setPixel(rgb, x, 15, if (i == @intFromEnum(self.item)) bright else .{ 40, 40, 40 });
-            }
+            // one dot per item, the current one solid, up only for a while after the last move
+            pages.draw(rgb, count, @intFromEnum(self.item), pages.alphaAt(now -| self.pages_at));
         }
     }
 
@@ -552,16 +557,28 @@ test "the info page walks its readouts and reads the pushed status" {
 test "a browsing frame shows the label, the value and the position dots" {
     var m = opened();
     var rgb: geometry.Rgb = undefined;
-    m.render(0, &rgb);
+    const up = pages.fade_in_ns + pages.hold_ns / 2; // while the indicator is up
+    m.render(up, &rgb);
     try std.testing.expect(!std.mem.eql(u8, &geometry.black_rgb, &rgb));
-    // the dot row carries one lit dot per item
+    // the dot row carries one dot per item
     var dots: usize = 0;
     for (0..geometry.width) |x| {
         const i = geometry.pixelOffset(x, 15);
         if (rgb[i] > 0 or rgb[i + 1] > 0 or rgb[i + 2] > 0) dots += 1;
     }
     try std.testing.expectEqual(count, dots);
+    // and it goes away on its own, leaving the row to the content
+    m.render(pages.total_ns, &rgb);
+    for (0..geometry.width) |x| {
+        const i = geometry.pixelOffset(x, 15);
+        try std.testing.expectEqual(@as(u8, 0), rgb[i] | rgb[i + 1] | rgb[i + 2]);
+    }
+    try std.testing.expect(!m.indicatorShowing(pages.total_ns));
+    // turning brings it back
+    _ = m.input(.next, pages.total_ns);
+    try std.testing.expect(m.indicatorShowing(pages.total_ns + pages.fade_in_ns));
     // adjusting the brightness replaces the dots with a bar and turns the value amber
+    m.item = .brightness;
     _ = m.input(.click, 0);
     var adj: geometry.Rgb = undefined;
     m.render(0, &adj);

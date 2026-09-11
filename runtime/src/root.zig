@@ -19,6 +19,7 @@ test {
     _ = @import("scene/clock.zig");
     _ = @import("scene/ip.zig");
     _ = @import("scene/menu.zig");
+    _ = @import("scene/pages.zig");
     _ = @import("input/evdev.zig");
     _ = @import("input/actions.zig");
     _ = @import("scene/arbiter.zig");

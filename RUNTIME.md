@@ -463,6 +463,21 @@ does not know is rejected with `400 rejected`.
 while the menu is open every control belongs to it; the table above applies
 only when it is closed.
 
+**the page indicator.** wherever the dial pages something, turning it raises a
+row of dots along the bottom: one per page, the one you are on solid and the
+rest pulled back towards the background. it covers the art generators, the
+clock faces, the ip layouts and the menu's own items. it is deliberately
+temporary, because a row left up permanently is a row of a 52x16 panel given
+away: it fades in over 150 ms, holds for 2.5 s and fades out over 600 ms.
+
+each dot picks its own colour from what is already underneath it, white on a
+dark background and black on a light one, so the white clock face and the
+brighter corners of the art do not swallow it. the whole row is blended over
+the scene by the fade, so a half-faded indicator is a hint rather than a mask.
+it is drawn on both sides of a cross-fade, so changing a face leaves the dots
+crisp instead of diluting them into the outgoing scene. a notification or a
+pushed frame never gets one, because the dial does not page those.
+
 the keycode assignment (`108,105,106,103` = left, middle, right, knob) was
 measured on 2026-09-09 from the renderer's press log while the buttons were
 pressed: the left button reports the kernel's "key down" 108, the middle one
@@ -517,7 +532,8 @@ the current item lit.
 opens on.
 
 - **the knob** turns to move between items, clockwise moving rightwards along
-  the dot row, and its click acts on the one showing: a toggle flips, an adjustable opens for editing (turn to change,
+  the dot row (which fades away a few seconds after the last turn, like every
+  other page indicator), and its click acts on the one showing: a toggle flips, an adjustable opens for editing (turn to change,
   click to finish), an action runs.
 - **the left and right buttons** change the showing item's value in place,
   without opening it for editing; **middle** backs out, and closes the menu
