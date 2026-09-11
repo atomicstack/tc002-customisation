@@ -607,8 +607,23 @@ is `0x00RRGGBB`, a toggle is 0 or 1.
 |---|---|
 | clock | `face`, `colour`, `shade`, `colour 2`, `gradient`, `spread`, `digits` |
 | art | `scene` (the generator), then the showing generator's own |
+| popsquares | `pop ms`, `alive`, `dim chance`, `dim floor`, `dim ceiling`, `tint`, `tint colour` |
 | cube | `palette`, `colour`, `hue drift`, `background`, `spin`, `speed`, `zoom` |
 | ip | `layout` |
+
+popsquares' table is the sliders of the `popsquares_tc002` processing sketch,
+which is where the generator came from. its other sliders — led gap, corner,
+off level, panel brightness and the glow — simulate the physical panel this
+runs on, so they have nothing to set here. the one change of unit is the
+sketch's `decay`, which counts levels lost per frame and therefore means
+something different at every frame rate: `pop ms` is the length of a whole pop
+instead, which says the same thing and survives a dropped frame (the sketch's
+0.1 to 8 is roughly 20 s down to 0.26 s). `alive` is the percentage of the
+panel that ever lights, `dim chance` how often a spent cell comes back part-lit
+rather than full, `dim floor` and `dim ceiling` the range it comes back into as
+a percentage of full, and `tint` the percentage of pops that use `tint colour`
+instead of white — rolled afresh on every pop, so the colour drifts around the
+panel.
 
 **over the api.** `GET /config` reports every generator's parameters as an
 object keyed by the names its table declares, values in the same shape a patch
@@ -628,8 +643,8 @@ to the renderer, so an http client needs no preview of its own.
 
 a generator whose slots have never been written takes the defaults its table
 declares rather than zeros: the cube starts blue at 100 per cent zoom, and an
-all-zero set is unreachable by editing (speed stops at 1, zoom at 40), so it is
-a safe marker for "never set".
+all-zero set is unreachable by editing (speed stops at 1, zoom at 40, a pop at
+250 ms), so it is a safe marker for "never set".
 
 the clock and the ip scene are fixed parts of the runtime and keep named
 settings; a **generator is pluggable**, so its parameters live in generic slots
@@ -875,7 +890,7 @@ sensor.
 | `clock_font`, `clock_colour_mode`, `clock_colour`, `clock_colour2`, `clock_gradient`, `clock_spread` | `classic\|mini\|segment\|big\|block\|hires`; `solid\|gradient`; `rrggbb`; `rrggbb`; `horizontal\|vertical\|diagonal`; 0–255 | applied at once; reported as a `clock` object in `/config` |
 | `ip_mode` | `lines\|mini\|scroll\|big` | the ip scene's layout, applied at once; see [ip layouts](#ip-layouts) |
 | `base` | `art`, `clock`, `ip` | applied at once |
-| `generator` | `popsquares`, `plasma` | applied at once |
+| `generator` | `popsquares`, `plasma`, `cube` | applied at once |
 | `timezone` | a posix tz rule (`AEST-10AEDT,M10.1.0,M4.1.0/3`) or an iana zone name (`Europe/Amsterdam`, case-insensitive), ≤ 64 characters; anything else is rejected | applied at once; a zone name follows that zone's current daylight-saving law |
 | `ntp.server`, `ntp.interval_s` (patch as `ntp_server`, `ntp_interval_s`) | dotted ipv4 or null; 300 or 600 | the sntp client restarts at once and syncs promptly; null disables it |
 | `night`, `night_brightness`, `night_lead_min` | bool; 1–100; 0–120 minutes | the [night brightness schedule](#the-night-brightness-schedule); reported as a `night` object in `/config` |

@@ -136,7 +136,6 @@ pub fn paramsFor(g: Generator) []const param.Param {
 /// the art base scene: one of the compile-time generators, selectable and reseedable.
 pub const Art = struct {
     generator: Generator,
-    options: popsquares.Options = .{},
     seed: u32,
     popsquares: popsquares.State,
     plasma: plasma.State,
@@ -146,17 +145,17 @@ pub const Art = struct {
         return .{
             .generator = g,
             .seed = seed,
-            .popsquares = popsquares.State.init(.{}, seed),
+            .popsquares = popsquares.State.init(seed),
             .plasma = plasma.State.init(seed),
             .cube = cube.State.init(seed),
         };
     }
 
+    /// a reseed lays out a new panel but keeps how each generator has been set up
     pub fn reseed(self: *Art, seed: u32) void {
         self.seed = seed;
-        self.popsquares = popsquares.State.init(self.options, seed);
+        self.popsquares = popsquares.State.initWith(self.popsquares.values, seed);
         self.plasma = plasma.State.init(seed);
-        // a reseed turns the cube to a new face but keeps how it has been set up
         const kept = self.cube.values;
         self.cube = cube.State.init(seed);
         self.cube.values = kept;
@@ -175,14 +174,6 @@ pub const Art = struct {
 
     pub fn nextGenerator(self: *Art, forward: bool) void {
         self.generator = self.neighbour(forward);
-    }
-
-    /// the parameters of the showing generator, after art's own
-    pub fn generatorParams(self: *const Art) []const param.Param {
-        return switch (self.generator) {
-            .popsquares => &popsquares.params,
-            .plasma => &plasma.params,
-        };
     }
 
     pub fn params(self: *const Art) []const param.Param {
@@ -219,7 +210,7 @@ pub const Art = struct {
     /// step one generator: the one showing, or an outgoing one kept moving through a transition
     pub fn stepGenerator(self: *Art, g: Generator, dt_s: f32) void {
         switch (g) {
-            .popsquares => self.popsquares.step(self.options, dt_s),
+            .popsquares => self.popsquares.step(dt_s),
             .plasma => self.plasma.step(dt_s),
             .cube => self.cube.step(dt_s),
         }
@@ -231,7 +222,7 @@ pub const Art = struct {
 
     pub fn renderGenerator(self: *const Art, g: Generator, rgb: *geometry.Rgb) void {
         switch (g) {
-            .popsquares => self.popsquares.render(self.options, rgb),
+            .popsquares => self.popsquares.render(rgb),
             .plasma => self.plasma.render(rgb),
             .cube => self.cube.render(rgb),
         }
