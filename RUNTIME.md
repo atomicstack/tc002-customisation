@@ -216,6 +216,57 @@ out at the next exchange. measured on 2026-09-07 against the home assistant
 host's chrony (stratum 3): first exchange −187 ms offset at 25 ms round trip,
 stepped; the following exchanges within ±10 ms at 2 ms round trip, slewed.
 
+### the night brightness schedule
+
+with `night` on, the supervisor dims the panel in the evening and brightens it
+again in the morning, following the sun where the device actually is. the
+daylight level is the settings' own `brightness`; `night_brightness` is the
+other end.
+
+the day is a polyline through four instants. dimming starts `night_lead_min`
+before sunset and is finished by civil dusk (the sun 6° below the horizon);
+brightening starts at civil dawn and is finished `night_lead_min` after
+sunrise. between them the brightness is interpolated, so the two ends mirror
+each other and both windows last as long as the twilight does — about 50
+minutes in amsterdam in september, over an hour in a scottish winter, half an
+hour at the equator. outside them the level is flat.
+
+`sys/solar.zig` computes the crossings from the low-precision sunrise equation:
+solar mean anomaly, the equation of the centre, the declination that follows,
+and the hour angle at which the sun reaches a given zenith (90.833° for
+sunrise and sunset, allowing for the sun's radius and refraction; 96° for
+civil twilight). `@sin` and `@cos` lower to libm calls this binary cannot
+link, so the sine is a truncated taylor series and the arccosine an
+abramowitz-and-stegun fit; against the noaa solar calculator's formulation,
+which shares none of its terms, it agrees within 80 s at the worst case tried.
+inside the polar circles a day may have no crossings at all: the panel then
+holds daylight through a polar summer and the night level through a polar
+night.
+
+**where the device is** comes from the timezone. tzdata gives every iana zone
+a reference point and `tools/gen-zones.py` carries it into the generated
+table, so `Europe/Amsterdam` also means 52.37° N, 4.90° E. `latitude` and
+`longitude` override that pair when the zone's reference city is far from you
+(`US/Pacific` runs from los angeles to seattle, an hour apart in midwinter) or
+when the timezone is a bare posix rule, which names no place at all. with
+neither, the schedule cannot run: the log says so and the menu's `night` item
+reads `no place` instead of `on`.
+
+the schedule drives the panel **transiently**, exactly as an api client does.
+nothing it decides is written to flash, so a ramp that runs every evening
+costs no jffs2 wear and the settings keep meaning the daylight brightness. it
+is consulted every ten seconds, which is finer than a ramp of tens of minutes
+over a hundred steps can move. a clock that has not been set yet (1970, before
+sntp has answered) holds daylight rather than guessing.
+
+a brightness that arrives from anywhere else — the knob, `PATCH /config`,
+`POST /action`, mqtt — **holds the schedule off until the next ramp begins**:
+turn it up at midnight and it stays up until dawn; turn it down in the
+afternoon and the evening ramp takes it from there. `/status` reports this as
+`night.held`. turning the schedule off hands the settings' own brightness
+back at once.
+
+
 ## the renderer (`tc002d`)
 
 ```
@@ -604,17 +655,20 @@ settings patch, so it persists and reaches netd like any other.
 
 ### the settings menu
 
-the knob's **long** press opens the device's own menu, so brightness and the
-two message services can be changed with nothing else to hand.
+the knob's **long** press opens the device's own menu, so brightness, the
+night schedule and the two message services can be changed with nothing else
+to hand.
 one item shows at a time, which is the only honest layout on 52x16: the item's
 name on the top rows, its value below, and a row of dots along the bottom with
 the current item lit.
 
 | item | what it does | persists |
 |---|---|---|
-| `bright` | brightness in ten steps, 10 to 100 | yes |
-| `sleep` | turns the display off and closes the menu | no, the panel comes back on a restart |
-| `seed` | reseeds the art at once | no, a seed is not a setting |
+| `brightness` | brightness in ten steps, 10 to 100 | yes |
+| `night` | the [night brightness schedule](#the-night-brightness-schedule) on or off; reads `no place` when it is on but the device has no location | yes |
+| `night level` | the night end of the ramp, in fives down to 5 and then 1 | yes |
+| `display off` | turns the display off and closes the menu | no, the panel comes back on a restart |
+| `new seed` | reseeds the art at once | no, a seed is not a setting |
 | `mqtt` | the broker connection on or off | yes |
 | `ntfy` | the subscriber on or off | yes |
 | `info` | the address, wifi, battery, time sync and uptime | read only |
@@ -790,6 +844,8 @@ lowercase code:
  "overlay":"none","brightness":100,"power":true,"presented":35990,"fps":59.9,
  "uptime_s":600,"memory_available_kb":16084,"cpu_pct":5,"restarts":0,
  "network":{"ip":"10.0.0.111"},"time":{"state":"unsynced","age_s":null},
+ "night":{"enabled":true,"phase":"to_night","held":false,
+          "today":{"dawn":1789101184,"sunrise":1789103263,"sunset":1789150014,"dusk":1789152094,"sun_up":false}},
  "config_revision":1,"saved_revision":1,"transport":"plaintext",
  "mqtt":{"enabled":false,"connected":false,"state":"disconnected","reconnect_delay_s":0,"reconnects":0,"last_error":""},
  "boot_id":"3fa1c2d4","sample_age_ms":1200}
@@ -801,7 +857,13 @@ lowercase code:
 display power switch; `clock` is the effective [clock style](#clock-styles). `boot_id` is random per supervisor start
 and is what groups the mqtt discovery entities. `time` is the sntp client's
 view: `state` and seconds since the last accepted reply (see
-[time](#time-sntp)).
+[time](#time-sntp)). `night` is the [brightness schedule](#the-night-brightness-schedule):
+`phase` is `day`, `to_night`, `night`, `to_day`, or `null` when the schedule
+is not running; `held` says a hand-set brightness is standing in its way; and
+`today` is the sun's own day where the device is, which is `null` with no
+location or before the clock has been set. the mqtt metrics carry the phase as
+`night` (`off` when it is not running), and home assistant gets it as a
+sensor.
 
 ### settings
 
@@ -816,6 +878,8 @@ view: `state` and seconds since the last accepted reply (see
 | `generator` | `popsquares`, `plasma` | applied at once |
 | `timezone` | a posix tz rule (`AEST-10AEDT,M10.1.0,M4.1.0/3`) or an iana zone name (`Europe/Amsterdam`, case-insensitive), ≤ 64 characters; anything else is rejected | applied at once; a zone name follows that zone's current daylight-saving law |
 | `ntp.server`, `ntp.interval_s` (patch as `ntp_server`, `ntp_interval_s`) | dotted ipv4 or null; 300 or 600 | the sntp client restarts at once and syncs promptly; null disables it |
+| `night`, `night_brightness`, `night_lead_min` | bool; 1–100; 0–120 minutes | the [night brightness schedule](#the-night-brightness-schedule); reported as a `night` object in `/config` |
+| `latitude`, `longitude` | −90–90 and −180–180 degrees, both together or neither | pins where the device is, overriding the timezone's reference point; `location_auto: true` (patch only) drops the pin again. `/config` reports the pinned pair, and the point they resolve to under `location` with its `source` |
 | `frame_timeout_ms` | 100–2000 | stored only: belongs to the unimplemented streaming feature |
 | `metrics_interval_s` | 0 (off) or 10–3600 | mqtt `metrics` cadence |
 | `discovery.enabled`, `discovery.prefix` (patch as `discovery`, `discovery_prefix`) | bool; ≤ 64 characters | home-assistant discovery on the next mqtt connection |

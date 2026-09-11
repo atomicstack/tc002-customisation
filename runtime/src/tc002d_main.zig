@@ -274,6 +274,7 @@ const Renderer = struct {
                     .ntfy_on = d.ntfy_on != 0,
                     .night_on = d.night_on != 0,
                     .night_level = d.night_level,
+                    .night_placed = d.night_placed != 0,
                 });
                 return;
             },

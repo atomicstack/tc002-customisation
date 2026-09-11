@@ -112,6 +112,8 @@ pub const Status = struct {
     ntfy_on: bool = false,
     night_on: bool = false,
     night_level: u8 = 10,
+    /// the schedule needs a place before it can work out when the sun sets there
+    night_placed: bool = false,
 };
 
 const ns_per_ms = 1_000_000;
@@ -420,7 +422,9 @@ pub const Menu = struct {
     fn valueText(self: *const Menu, buf: []u8) []const u8 {
         return switch (self.item) {
             .brightness => std.fmt.bufPrint(buf, "{d}%", .{self.settings.brightness}) catch "?",
-            .night => if (self.settings.night) "on" else "off",
+            // on with nowhere to be is the one state worth explaining: the timezone names no
+            // place (a bare posix rule) and no latitude and longitude have been set
+            .night => if (!self.settings.night) "off" else if (self.status.night_placed) "on" else "no place",
             .night_level => std.fmt.bufPrint(buf, "{d}%", .{self.settings.night_level}) catch "?",
             .mqtt => if (self.settings.mqtt) "on" else "off",
             .ntfy => if (self.settings.ntfy) "on" else "off",
@@ -598,6 +602,13 @@ test "a click acts on the item showing" {
 test "the night schedule's two items: a toggle and a level that reaches down to one" {
     var m = opened();
     m.item = .night;
+    var buf: [16]u8 = undefined;
+    m.settings.night = true;
+    try std.testing.expectEqualStrings("no place", m.valueText(&buf)); // on, but the timezone names nowhere
+    m.status.night_placed = true;
+    try std.testing.expectEqualStrings("on", m.valueText(&buf));
+    m.settings.night = false;
+    try std.testing.expectEqualStrings("off", m.valueText(&buf));
     try std.testing.expect(m.input(.click, 0) == .none); // adjustable, so it enters adjusting
     try std.testing.expect(m.input(.next, ms) == .night);
     try std.testing.expect(m.settings.night);

@@ -448,8 +448,10 @@ pub const DeviceStatus = struct {
     uptime_s: u32 = 0,
     night_on: u8 = 0,
     night_level: u8 = 10,
+    /// whether the schedule has a location to work from at all
+    night_placed: u8 = 0,
 
-    pub const wire_len = 1 + 1 + 1 + 2 + 1 + 1 + 1 + 4 + 2;
+    pub const wire_len = 1 + 1 + 1 + 2 + 1 + 1 + 1 + 4 + 3;
 };
 pub const Frame = struct { duration_s: u16, transition: Transition = .{}, rgb: geometry.Rgb };
 pub const Brightness = struct { value: u8 };
@@ -1102,6 +1104,7 @@ fn encodePayload(msg: Message, out: []u8) usize {
             std.mem.writeInt(u32, out[8..12], d.uptime_s, .big);
             out[12] = d.night_on;
             out[13] = d.night_level;
+            out[14] = d.night_placed;
             return DeviceStatus.wire_len;
         },
         .ready, .arm_stream, .time_corrected, .stop, .config_get, .status_get, .screen_get => return 0,
@@ -1430,6 +1433,7 @@ pub fn decodePacket(bytes: []const u8) Error!Packet {
                 .uptime_s = std.mem.readInt(u32, b[8..12], .big),
                 .night_on = b[12],
                 .night_level = b[13],
+                .night_placed = b[14],
             } };
         },
         .screen_get => blk: {

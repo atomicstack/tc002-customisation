@@ -35,7 +35,9 @@ commands:
   config-set key=value ...            patch settings; keys: brightness base generator timezone ntp_server
                                       ntp_interval_s frame_timeout_ms metrics_interval_s discovery discovery_prefix
                                       clock_font clock_colour_mode clock_colour clock_colour2 clock_gradient
-                                      clock_spread ip_mode; timezone takes a posix rule or an iana name (Europe/Amsterdam)
+                                      clock_spread ip_mode night night_brightness night_lead_min latitude
+                                      longitude location_auto; timezone takes a posix rule or an iana name
+                                      (Europe/Amsterdam), which also places the device for the night schedule
   config-save [revision]              write the settings file, optionally only at that revision
   mqtt                                broker settings (password never returned)
   mqtt-set key=value ...              keys: enabled host port username password client_id prefix tls
@@ -106,6 +108,8 @@ def kv(pairs):
             out[k] = v == "true"
         elif v.lstrip("-").isdigit():
             out[k] = int(v)
+        elif v.count(".") == 1 and v.replace(".", "").lstrip("-").isdigit():
+            out[k] = float(v)   # latitude and longitude; a dotted ipv4 has three dots and stays text
         else:
             out[k] = v
     return out

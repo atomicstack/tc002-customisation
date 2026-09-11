@@ -1483,6 +1483,7 @@ const Supervisor = struct {
             .uptime_s = st.uptime_s,
             .night_on = @intFromBool(self.cfg.night),
             .night_level = self.cfg.night_brightness,
+            .night_placed = @intFromBool(self.night.point != null),
         } });
     }
 
@@ -1511,6 +1512,9 @@ const Supervisor = struct {
     fn syncNight(self: *Supervisor) void {
         self.night.settings = self.cfg.nightSettings();
         self.night.point = self.cfg.point();
+        if (self.cfg.night and self.night.point == null) {
+            log.warn("night: enabled but nowhere: set latitude and longitude, or an iana timezone in place of \"{s}\"", .{self.cfg.timezone.slice()});
+        }
     }
 
     fn pollIp(self: *Supervisor, now: u64) void {
