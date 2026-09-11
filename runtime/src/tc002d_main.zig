@@ -249,6 +249,16 @@ const Renderer = struct {
                 self.reply(p.request_id, .applied, arb.revision);
                 return;
             },
+            .set_param => |sp| {
+                // the top bit says the parameter belongs to a named generator rather than to
+                // whatever scene happens to be showing
+                if (sp.base & 0x80 != 0) {
+                    arb.setGeneratorParam(sp.base & 0x7f, sp.index, sp.value);
+                } else if (messages.enumFromInt(arbiter.Base, sp.base)) |b| {
+                    if (b == arb.base) arb.setSceneParam(sp.index, sp.value);
+                }
+                return;
+            },
             .device_status => |d| {
                 arb.setDeviceStatus(.{
                     .address = arb.ip.addr,

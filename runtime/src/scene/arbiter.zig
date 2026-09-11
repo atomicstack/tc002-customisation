@@ -124,7 +124,9 @@ test "physical actions: buttons select the base, rotary and knob depend on the b
     try std.testing.expectEqual(scene.Generator.plasma, a.art.generator);
     try std.testing.expectEqual(@as(u8, 100), a.brightness);
     a.action(.rotate_cw, 0);
-    try std.testing.expectEqual(scene.Generator.popsquares, a.art.generator);
+    try std.testing.expectEqual(scene.Generator.cube, a.art.generator);
+    a.action(.rotate_cw, 0);
+    try std.testing.expectEqual(scene.Generator.popsquares, a.art.generator); // all the way round
     var before: geometry.Rgb = undefined;
     a.render(0, &before);
     // a short knob press opens the showing scene's settings, which take every control
@@ -739,7 +741,7 @@ pub const Arbiter = struct {
     /// what the showing scene can be told. art puts its generator first, then that generator's own.
     pub fn sceneParams(self: *const Arbiter) []const param.Param {
         return switch (self.base) {
-            .art => &scene.art_params, // a generator's own table joins this in a later pass
+            .art => self.art.params(),
             .clock => &clock.params,
             .ip => &ip.params,
         };
@@ -751,6 +753,18 @@ pub const Arbiter = struct {
             .clock => clock.getParam(self.clock.style, index),
             .ip => self.ip.getParam(index),
         };
+    }
+
+    /// a parameter of a named generator, whichever one is showing. art's own first parameter is
+    /// the generator selector, so the generator's own slots start one along.
+    pub fn setGeneratorParam(self: *Arbiter, owner: u8, slot: u8, value: u32) void {
+        if (owner >= @typeInfo(scene.Generator).@"enum".fields.len) return;
+        const g: scene.Generator = @enumFromInt(owner);
+        const was = self.art.generator;
+        self.art.generator = g;
+        self.art.setParam(@as(usize, slot) + scene.art_params.len, value);
+        self.art.generator = was;
+        if (g == was) self.dirty = true;
     }
 
     /// apply it to the showing scene at once: this is the preview, the settings follow on commit

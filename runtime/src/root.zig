@@ -21,6 +21,7 @@ test {
     _ = @import("scene/menu.zig");
     _ = @import("scene/pages.zig");
     _ = @import("scene/param.zig");
+    _ = @import("scene/cube.zig");
     _ = @import("input/evdev.zig");
     _ = @import("input/actions.zig");
     _ = @import("scene/arbiter.zig");

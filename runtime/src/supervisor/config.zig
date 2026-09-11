@@ -4,6 +4,7 @@
 const std = @import("std");
 const api = @import("../net/api.zig");
 const clock = @import("../scene/clock.zig");
+const param = @import("../scene/param.zig");
 const ip = @import("../scene/ip.zig");
 const ntfy_url = @import("../ntfy/url.zig");
 const tz = @import("../scene/tz.zig");
@@ -81,6 +82,9 @@ pub const Config = struct {
     clock_gradient: u8 = 0,
     clock_spread: u8 = clock.default_spread,
     ip_mode: u8 = 0,
+    /// the generators' own parameters: generic slots, because a generator is pluggable and has no
+    /// settings fields of its own. the clock and the ip scene keep their named ones.
+    generator_params: [param.owner_count]param.Values = [_]param.Values{[_]u32{0} ** param.max_per_owner} ** param.owner_count,
 
     /// the ip scene's layout (unknown stored values fall back to the default).
     pub fn ipMode(self: *const Config) ip.Mode {
@@ -206,7 +210,7 @@ fn getText(in: []const u8, off: *usize) error{BadPayload}!Text {
 
 const text_wire = 1 + text_max;
 /// schema, revisions, brightness/base/generator, timezone, ntp, intervals, discovery, origins, mqtt
-pub const encoded_len = 1 + 4 + 4 + 3 + text_wire + 5 + 4 + 2 + 4 + 1 + text_wire + 1 + api.max_origins * text_wire + 1 + text_wire + 2 + 4 * text_wire + 1 + 11 + 1 + 5 * text_wire + 2 + 1;
+pub const encoded_len = 1 + 4 + 4 + 3 + text_wire + 5 + 4 + 2 + 4 + 1 + text_wire + 1 + api.max_origins * text_wire + 1 + text_wire + 2 + 4 * text_wire + 1 + 11 + 1 + 5 * text_wire + 2 + 1 + param.owner_count * param.max_per_owner * 4;
 
 pub fn encode(c: *const Config, out: *[encoded_len]u8) void {
     var o: usize = 0;
@@ -266,6 +270,12 @@ pub fn encode(c: *const Config, out: *[encoded_len]u8) void {
     o += 2;
     out[o] = @intFromBool(c.ntfy.insecure);
     o += 1;
+    for (c.generator_params) |slots| {
+        for (slots) |v| {
+            std.mem.writeInt(u32, out[o..][0..4], v, .little);
+            o += 4;
+        }
+    }
     std.debug.assert(o == encoded_len);
 }
 
@@ -326,6 +336,13 @@ pub fn decode(in: []const u8) error{BadPayload}!Config {
     c.ntfy.duration_s = std.mem.readInt(u16, in[o..][0..2], .little);
     o += 2;
     c.ntfy.insecure = in[o] != 0;
+    o += 1;
+    for (&c.generator_params) |*slots| {
+        for (slots) |*v| {
+            v.* = std.mem.readInt(u32, in[o..][0..4], .little);
+            o += 4;
+        }
+    }
     return c;
 }
 
@@ -351,6 +368,7 @@ const FileForm = struct {
     clock_colour2: []const u8 = "ffffff",
     clock_gradient: []const u8 = "horizontal",
     clock_spread: u8 = clock.default_spread,
+    generator_params: [param.owner_count]param.Values = [_]param.Values{[_]u32{0} ** param.max_per_owner} ** param.owner_count,
     ip_mode: []const u8 = "lines",
     mqtt: struct {
         enabled: bool = false,
@@ -385,7 +403,7 @@ fn nameIndex(names: []const []const u8, name: []const u8) ?u8 {
     return null;
 }
 
-pub const file_max = 2048;
+pub const file_max = 4096; // the generators' parameter slots pushed the document past 2 kb
 
 /// render the config as json for the config file.
 pub fn toJson(c: *const Config, out: []u8) error{Overflow}![]u8 {
@@ -403,6 +421,7 @@ pub fn toJson(c: *const Config, out: []u8) error{Overflow}![]u8 {
         .clock_colour2 = std.fmt.bufPrint(&colour2_buf, "{x:0>2}{x:0>2}{x:0>2}", .{ c.clock_colour2[0], c.clock_colour2[1], c.clock_colour2[2] }) catch unreachable,
         .clock_gradient = @tagName(enumOr(clock.Gradient, c.clock_gradient, .horizontal)),
         .clock_spread = c.clock_spread,
+        .generator_params = c.generator_params,
         .ip_mode = @tagName(enumOr(ip.Mode, c.ip_mode, .lines)),
         .revision = c.revision,
         .brightness = c.brightness,
@@ -487,6 +506,7 @@ pub fn fromJson(bytes: []const u8, arena: []u8) error{ Invalid, TooLong }!Config
     c.clock_colour2 = api.parseColour(f.clock_colour2) orelse return error.Invalid;
     c.clock_gradient = @intFromEnum(api.enumByName(clock.Gradient, f.clock_gradient) orelse return error.Invalid);
     c.clock_spread = f.clock_spread;
+    c.generator_params = f.generator_params;
     c.ip_mode = @intFromEnum(api.enumByName(ip.Mode, f.ip_mode) orelse return error.Invalid);
     if (tz.resolve(f.timezone) == null) return error.Invalid;
     return c;

@@ -7,6 +7,7 @@ const param = @import("param.zig");
 const geometry = @import("../panel/geometry.zig");
 const popsquares = @import("popsquares.zig");
 const plasma = @import("plasma.zig");
+const cube = @import("cube.zig");
 
 /// how a scene wants to be redrawn.
 pub const Cadence = union(enum) {
@@ -21,7 +22,7 @@ pub const Cadence = union(enum) {
 /// normalized physical actions; no required action uses a button combination.
 pub const Action = enum { left, middle, right, knob_short, knob_long, rotate_cw, rotate_ccw };
 
-pub const Generator = enum(u8) { popsquares = 0, plasma = 1 };
+pub const Generator = enum(u8) { popsquares = 0, plasma = 1, cube = 2 };
 pub const generator_count: u8 = @typeInfo(Generator).@"enum".fields.len;
 
 pub const frame_period_ns: u64 = 16_666_667; // 60 hz
@@ -98,6 +99,21 @@ pub const art_params = [_]param.Param{
     .{ .name = "scene", .kind = .choice, .choices = param.choicesOf(Generator), .default = 0 },
 };
 
+// art's table is its own parameter followed by the showing generator's, concatenated at compile
+// time so no slice has to be built at runtime
+const params_popsquares = art_params ++ popsquares.params;
+const params_plasma = art_params ++ plasma.params;
+const params_cube = art_params ++ cube.params;
+
+/// what art can be told while this generator is showing
+pub fn paramsFor(g: Generator) []const param.Param {
+    return switch (g) {
+        .popsquares => &params_popsquares,
+        .plasma => &params_plasma,
+        .cube => &params_cube,
+    };
+}
+
 /// the art base scene: one of the compile-time generators, selectable and reseedable.
 pub const Art = struct {
     generator: Generator,
@@ -105,6 +121,7 @@ pub const Art = struct {
     seed: u32,
     popsquares: popsquares.State,
     plasma: plasma.State,
+    cube: cube.State,
 
     pub fn init(g: Generator, seed: u32) Art {
         return .{
@@ -112,6 +129,7 @@ pub const Art = struct {
             .seed = seed,
             .popsquares = popsquares.State.init(.{}, seed),
             .plasma = plasma.State.init(seed),
+            .cube = cube.State.init(seed),
         };
     }
 
@@ -119,6 +137,10 @@ pub const Art = struct {
         self.seed = seed;
         self.popsquares = popsquares.State.init(self.options, seed);
         self.plasma = plasma.State.init(seed);
+        // a reseed turns the cube to a new face but keeps how it has been set up
+        const kept = self.cube.values;
+        self.cube = cube.State.init(seed);
+        self.cube.values = kept;
     }
 
     pub fn select(self: *Art, g: Generator) void {
@@ -144,13 +166,31 @@ pub const Art = struct {
         };
     }
 
+    pub fn params(self: *const Art) []const param.Param {
+        return paramsFor(self.generator);
+    }
+
     pub fn getParam(self: *const Art, index: usize) u32 {
         if (index == 0) return @intFromEnum(self.generator);
-        return 0; // no generator declares one yet
+        const i = index - art_params.len;
+        return switch (self.generator) {
+            .popsquares => self.popsquares.getParam(i),
+            .plasma => self.plasma.getParam(i),
+            .cube => self.cube.getParam(i),
+        };
     }
 
     pub fn setParam(self: *Art, index: usize, value: u32) void {
-        if (index == 0) self.select(@enumFromInt(@min(value, art_params[0].choices.len - 1)));
+        if (index == 0) {
+            self.select(@enumFromInt(@min(value, art_params[0].choices.len - 1)));
+            return;
+        }
+        const i = index - art_params.len;
+        switch (self.generator) {
+            .popsquares => self.popsquares.setParam(i, value),
+            .plasma => self.plasma.setParam(i, value),
+            .cube => self.cube.setParam(i, value),
+        }
     }
 
     pub fn step(self: *Art, dt_s: f32) void {
@@ -162,6 +202,7 @@ pub const Art = struct {
         switch (g) {
             .popsquares => self.popsquares.step(self.options, dt_s),
             .plasma => self.plasma.step(dt_s),
+            .cube => self.cube.step(dt_s),
         }
     }
 
@@ -173,6 +214,7 @@ pub const Art = struct {
         switch (g) {
             .popsquares => self.popsquares.render(self.options, rgb),
             .plasma => self.plasma.render(rgb),
+            .cube => self.cube.render(rgb),
         }
     }
 

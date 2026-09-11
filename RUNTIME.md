@@ -277,6 +277,23 @@ a notification (start or end)
 or the showing clock's style changes; raw frames, reseeds and brightness
 switch at once. both durations are renderer options; 0 disables.
 
+### the cube
+
+a solid rotating cube, shaded rather than flat: each of the six faces takes one
+brightness from its own normal against a fixed light up, left and towards the
+viewer, so the form reads as three dimensional instead of a silhouette. back
+faces are culled, which for a convex solid is the whole of the depth problem,
+so at most three faces ever draw and none needs sorting. faces are filled by
+scanline; the trigonometry comes from a comptime table, so nothing calls libm
+at runtime.
+
+`palette` is `mono`, one colour separated by shading, or `poly`, a hue per
+face. `hue drift` walks the colour round the wheel, up to 60 degrees a second.
+`spin` is `single` (one axis), `series` (x, then y, then z, four seconds each)
+or `parallel` (all three at once at different rates), and `speed` multiplies
+the rate. the seed decides where it starts, so a reseed turns it to a new face
+and keeps the settings.
+
 ### transitions
 
 a scene change, a notification or a pushed frame may name how it arrives.
@@ -518,8 +535,20 @@ is `0x00RRGGBB`, a toggle is 0 or 1.
 | scene | parameters |
 |---|---|
 | clock | `face`, `colour`, `shade`, `colour 2`, `gradient`, `spread` |
-| art | `scene` (the generator); each generator's own table joins it as they gain one |
+| art | `scene` (the generator), then the showing generator's own |
+| cube | `palette`, `colour`, `hue drift`, `background`, `spin`, `speed` |
 | ip | `layout` |
+
+the clock and the ip scene are fixed parts of the runtime and keep named
+settings; a **generator is pluggable**, so its parameters live in generic slots
+(`generator_params`, eight `u32` each) which the supervisor replays to the
+renderer when it starts. `GET /scenes` carries every table with its kinds,
+ranges and choices, which is the contract the console builds its forms from:
+nothing outside the runtime needs to know what a cube is.
+
+the menus draw in the 3x5 `mini` font, the one the mini clock face and the
+mini ip layout use: thirteen characters across, and easier to read close up
+than the 5x7. that font gained a letter set for them.
 
 a **short press of the knob** opens the showing scene's table as a menu, one
 entry per screen with an `exit` at the end. a colour draws as a swatch rather

@@ -28,9 +28,9 @@ pub const Item = enum(u8) {
 
     pub fn label(self: Item) []const u8 {
         return switch (self) {
-            .brightness => "bright",
-            .display_off => "sleep",
-            .new_seed => "seed",
+            .brightness => "brightness",
+            .display_off => "display off",
+            .new_seed => "new seed",
             .mqtt => "mqtt",
             .ntfy => "ntfy",
             .info => "info",
@@ -357,32 +357,32 @@ pub const Menu = struct {
     pub fn render(self: *const Menu, now: u64, rgb: *geometry.Rgb) void {
         @memset(rgb, 0);
         if (self.state == .confirming) {
-            drawLine(rgb, 0, "reboot?", dim, now, self.scroll_start_ns);
-            font.blit(rgb, 6, 8, "no", if (self.confirm_yes) dim else bright);
-            font.blit(rgb, 28, 8, "yes", if (self.confirm_yes) warn else dim);
+            drawLine(rgb, 1, "reboot?", dim, now, self.scroll_start_ns);
+            clockfont.blit(rgb, 12, 9, .mini, "no", clockfont.Solid{ .colour = if (self.confirm_yes) dim else bright });
+            clockfont.blit(rgb, 30, 9, .mini, "yes", clockfont.Solid{ .colour = if (self.confirm_yes) warn else dim });
             return;
         }
         const colour = if (self.state == .adjusting) amber else bright;
         var buf: [24]u8 = undefined;
         if (self.kind == .scene) {
             const name = if (self.onExit()) "exit" else self.table[self.entry].name;
-            drawLine(rgb, 0, name, dim, now, self.scroll_start_ns);
+            drawLine(rgb, 1, name, dim, now, self.scroll_start_ns);
             if (self.current()) |p| {
                 if (p.kind == .colour) {
                     // a swatch, because six hex digits tell you nothing about a colour
                     swatch(rgb, param.valueRgb(self.values[self.entry]), self.state == .adjusting);
                 } else {
-                    drawLine(rgb, 8, p.valueText(self.values[self.entry], &buf), colour, now, self.scroll_start_ns);
+                    drawLine(rgb, 9, p.valueText(self.values[self.entry], &buf), colour, now, self.scroll_start_ns);
                 }
             } else {
-                drawLine(rgb, 8, "click", colour, now, self.scroll_start_ns);
+                drawLine(rgb, 9, "click", colour, now, self.scroll_start_ns);
             }
             pages.draw(rgb, self.entries(), self.entry, pages.alphaAt(now -| self.pages_at));
             return;
         }
-        drawLine(rgb, 0, self.item.label(), dim, now, self.scroll_start_ns);
+        drawLine(rgb, 1, self.item.label(), dim, now, self.scroll_start_ns);
         const text = self.valueText(&buf);
-        drawLine(rgb, 8, text, colour, now, self.scroll_start_ns);
+        drawLine(rgb, 9, text, colour, now, self.scroll_start_ns);
         if (self.state == .adjusting and self.item == .brightness) {
             const lit = @as(usize, self.settings.brightness) * geometry.width / 100;
             for (0..lit) |x| setPixel(rgb, @intCast(x), 15, colour);
@@ -445,30 +445,38 @@ fn setPixel(rgb: *geometry.Rgb, x: i32, y: i32, colour: [3]u8) void {
 
 /// a block of the colour itself, framed while it is being changed so the edit is obvious
 fn swatch(rgb: *geometry.Rgb, c: [3]u8, editing: bool) void {
-    const x0: usize = 8;
-    const x1: usize = geometry.width - 8;
-    for (8..14) |y| {
+    const x0: usize = 9;
+    const x1: usize = geometry.width - 9;
+    for (9..14) |y| {
         for (x0..x1) |x| setPixel(rgb, @intCast(x), @intCast(y), c);
     }
-    if (!editing) return;
-    for (x0 - 2..x1 + 2) |x| {
-        setPixel(rgb, @intCast(x), 7, amber);
-        setPixel(rgb, @intCast(x), 14, amber);
+    // always framed: a black colour is a legitimate choice and would otherwise look like an
+    // empty screen. the frame turns amber while it is being changed, like any other value.
+    const edge = if (editing) amber else dim;
+    for (x0 - 1..x1 + 1) |x| {
+        setPixel(rgb, @intCast(x), 8, edge);
+        setPixel(rgb, @intCast(x), 14, edge);
+    }
+    for (8..15) |y| {
+        setPixel(rgb, @intCast(x0 - 1), @intCast(y), edge);
+        setPixel(rgb, @intCast(x1), @intCast(y), edge);
     }
 }
 
-/// one line of text in the only font with letters, centred, scrolling when it is too wide
+/// one line in the 3x5 font, centred, scrolling when it is too wide. the menus use the same small
+/// font as the mini clock and the mini ip line: the 5x7 is uncomfortably large read close up.
 fn drawLine(rgb: *geometry.Rgb, y: i32, text: []const u8, colour: [3]u8, now: u64, since: u64) void {
-    const w: i32 = @intCast(font.textWidth(text));
+    const painter = clockfont.Solid{ .colour = colour };
+    const w: i32 = @intCast(clockfont.textWidth(.mini, text));
     if (w <= geometry.width) {
-        font.blit(rgb, @divTrunc(geometry.width - w, 2), y, text, colour);
+        clockfont.blit(rgb, @divTrunc(geometry.width - w, 2), y, .mini, text, painter);
         return;
     }
     const span = w + 8;
     const elapsed_ms = (now -| since) / ns_per_ms;
     const shift: i32 = @intCast((elapsed_ms / 40) % @as(u64, @intCast(span)));
-    font.blit(rgb, 1 - shift, y, text, colour);
-    font.blit(rgb, 1 - shift + span, y, text, colour);
+    clockfont.blit(rgb, 1 - shift, y, .mini, text, painter);
+    clockfont.blit(rgb, 1 - shift + span, y, .mini, text, painter);
 }
 
 // tests

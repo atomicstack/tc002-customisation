@@ -73,7 +73,17 @@ pub const Options = struct {
 /// what this generator can be told; nothing yet, but the menus and the api already walk it
 pub const params = [_]param.Param{};
 
+pub fn getParamOf(_: usize) u32 {
+    return 0;
+}
+
 pub const State = struct {
+    pub fn getParam(_: *const State, _: usize) u32 {
+        return 0;
+    }
+
+    pub fn setParam(_: *State, _: usize, _: u32) void {}
+
     level: [geometry.pixels]f32,
     rank: [geometry.pixels]f32,
     tinted: [geometry.pixels]bool,

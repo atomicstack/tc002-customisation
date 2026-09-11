@@ -84,7 +84,17 @@ const sine: [256]u8 = blk: {
 /// what this generator can be told; nothing yet, but the menus and the api already walk it
 pub const params = [_]param.Param{};
 
+pub fn getParamOf(_: usize) u32 {
+    return 0;
+}
+
 pub const State = struct {
+    pub fn getParam(_: *const State, _: usize) u32 {
+        return 0;
+    }
+
+    pub fn setParam(_: *State, _: usize, _: u32) void {}
+
     t: u32 = 0,
     acc: f32 = 0.0,
     phase: u8,

@@ -11,6 +11,10 @@ const actions = @import("../input/actions.zig");
 const clock = @import("../scene/clock.zig");
 const transition = @import("../panel/transition.zig");
 const ip = @import("../scene/ip.zig");
+const param = @import("../scene/param.zig");
+const cube = @import("../scene/cube.zig");
+const popsquares = @import("../scene/popsquares.zig");
+const plasma = @import("../scene/plasma.zig");
 const ntfy_url = @import("../ntfy/url.zig");
 
 pub const token_len = 32;
@@ -549,8 +553,41 @@ pub fn parseIpv4(text: []const u8) ?[4]u8 {
     return out;
 }
 
+/// one scene's declared parameters, as json: the contract the console builds its own ui from,
+/// so nothing outside the runtime needs to know what a cube is.
+fn paramsJson(comptime table: []const param.Param) []const u8 {
+    comptime {
+        var out: []const u8 = "[";
+        for (table, 0..) |p, i| {
+            if (i > 0) out = out ++ ",";
+            out = out ++ "{\"name\":\"" ++ p.name ++ "\",\"kind\":\"" ++ @tagName(p.kind) ++ "\",\"default\":" ++ std.fmt.comptimePrint("{d}", .{p.default});
+            if (!p.on_panel) out = out ++ ",\"on_panel\":false";
+            switch (p.kind) {
+                .choice => {
+                    out = out ++ ",\"choices\":[";
+                    for (p.choices, 0..) |c, k| {
+                        if (k > 0) out = out ++ ",";
+                        out = out ++ "\"" ++ c ++ "\"";
+                    }
+                    out = out ++ "]";
+                },
+                .number => out = out ++ std.fmt.comptimePrint(",\"min\":{d},\"max\":{d},\"step\":{d}", .{ p.min, p.max, p.step }),
+                .colour, .toggle => {},
+            }
+            out = out ++ "}";
+        }
+        const frozen = out ++ "]";
+        return frozen;
+    }
+}
+
 /// the `scenes` document is static.
-pub const scenes_body = "{\"bases\":[\"art\",\"clock\",\"ip\"],\"generators\":[{\"index\":0,\"name\":\"popsquares\",\"parameters\":{\"seed\":\"u32\"}},{\"index\":1,\"name\":\"plasma\",\"parameters\":{\"seed\":\"u32\"}}],\"clock\":{\"fonts\":" ++ namesJson(clock.Font) ++ ",\"colour_modes\":[\"solid\",\"gradient\"],\"gradients\":[\"horizontal\",\"vertical\",\"diagonal\"],\"spread\":[0,255],\"max_spread\":255},\"ip\":{\"modes\":" ++ namesJson(ip.Mode) ++ "},\"notify\":{\"text_max\":128,\"duration_s\":[1,300]},\"frame\":{\"bytes\":2496,\"duration_s\":[1,300]},\"transitions\":{\"effects\":" ++ namesJson(transition.Effect) ++ ",\"directions\":" ++ namesJson(transition.Direction) ++ ",\"exits\":" ++ namesJson(transition.Exit) ++ ",\"duration_ms\":[0,5000]}}";
+pub const scenes_body = "{\"bases\":[\"art\",\"clock\",\"ip\"],\"generators\":[" ++
+    "{\"index\":0,\"name\":\"popsquares\",\"parameters\":" ++ paramsJson(&popsquares.params) ++ "}," ++
+    "{\"index\":1,\"name\":\"plasma\",\"parameters\":" ++ paramsJson(&plasma.params) ++ "}," ++
+    "{\"index\":2,\"name\":\"cube\",\"parameters\":" ++ paramsJson(&cube.params) ++ "}]," ++
+    "\"parameters\":{\"art\":" ++ paramsJson(&scene.art_params) ++ ",\"clock\":" ++ paramsJson(&clock.params) ++ ",\"ip\":" ++ paramsJson(&ip.params) ++ "}," ++
+    "\"clock\":{\"fonts\":" ++ namesJson(clock.Font) ++ ",\"colour_modes\":[\"solid\",\"gradient\"],\"gradients\":[\"horizontal\",\"vertical\",\"diagonal\"],\"spread\":[0,255],\"max_spread\":255},\"ip\":{\"modes\":" ++ namesJson(ip.Mode) ++ "},\"notify\":{\"text_max\":128,\"duration_s\":[1,300]},\"frame\":{\"bytes\":2496,\"duration_s\":[1,300]},\"transitions\":{\"effects\":" ++ namesJson(transition.Effect) ++ ",\"directions\":" ++ namesJson(transition.Direction) ++ ",\"exits\":" ++ namesJson(transition.Exit) ++ ",\"duration_ms\":[0,5000]}}";
 
 // tests
 

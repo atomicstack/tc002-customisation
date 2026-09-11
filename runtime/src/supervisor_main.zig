@@ -20,6 +20,7 @@ const clock = @import("scene/clockfont.zig");
 const scene = @import("scene/scene.zig");
 const ip = @import("scene/ip.zig");
 const clockscene = @import("scene/clock.zig");
+const param = @import("scene/param.zig");
 const sntp = @import("supervisor/sntp.zig");
 const api = @import("net/api.zig");
 
@@ -530,6 +531,17 @@ const Supervisor = struct {
         log.info("reboot: /bin/reboot started as pid {d}", .{pid});
     }
 
+    /// the saved parameters of every generator, so the renderer's scenes match the settings. the
+    /// renderer applies each to the generator it belongs to, whichever one is showing.
+    fn sendGeneratorParams(self: *Supervisor) void {
+        for (self.cfg.generator_params, 0..) |slots, owner| {
+            for (slots, 0..) |v, slot| {
+                if (v == 0) continue; // a zero is the default; sending it would say nothing
+                self.send(.{ .set_param = .{ .base = 0x80 | @as(u8, @intCast(owner)), .index = @intCast(slot), .value = v } });
+            }
+        }
+    }
+
     /// a parameter of a base scene, changed from that scene's own menu on the panel. the renderer
     /// shows it already; here it becomes an ordinary settings patch, which persists itself.
     fn onSetParam(self: *Supervisor, sp: messages.SetParam) void {
@@ -537,9 +549,16 @@ const Supervisor = struct {
         const v = sp.value;
         const rgb = [3]u8{ @intCast((v >> 16) & 0xff), @intCast((v >> 8) & 0xff), @intCast(v & 0xff) };
         const patched = switch (sp.base) {
-            0 => switch (sp.index) { // art
+            0 => switch (sp.index) { // art: its own parameter, then the showing generator's slots
                 0 => self.cfg.patch(.{ .generator = messages.enumFromInt(scene.Generator, @as(u8, @truncate(v))) orelse return }),
-                else => return,
+                else => blk: {
+                    const owner: usize = self.cfg.generator;
+                    const slot = sp.index - 1;
+                    if (owner >= param.owner_count or slot >= param.max_per_owner) return;
+                    self.cfg.generator_params[owner][slot] = v;
+                    self.cfg.revision += 1;
+                    break :blk {};
+                },
             },
             1 => switch (sp.index) { // the clock, in its table's order
                 0 => self.cfg.patch(.{ .clock_font = messages.enumFromInt(clock.Font, @as(u8, @truncate(v))) orelse return }),
@@ -1293,6 +1312,7 @@ const Supervisor = struct {
                     self.send(.{ .set_timezone = config.Text.init(self.cfg.tzRule()) });
                     self.send(.{ .clock_style = messages.ClockStyle.full(self.cfg.clockStyle()) });
                     self.send(.{ .ip_mode = .{ .mode = self.cfg.ip_mode } });
+                    self.sendGeneratorParams();
                     // the renderer started dark: reveal the saved state with the power ramp
                     self.send(.{ .power = .{ .on = 1 } });
                     self.snapshot.epoch = lifecycle.epoch;

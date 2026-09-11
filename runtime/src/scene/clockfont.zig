@@ -64,6 +64,40 @@ const mini_colon = fromArt(1, 5, .{ ".", "#", ".", "#", "." });
 const mini_slash = fromArt(3, 5, .{ "..#", "..#", ".#.", "#..", "#.." });
 const mini_space = fromArt(3, 5, .{ "...", "...", "...", "...", "..." });
 const mini_dot = fromArt(1, 5, .{ ".", ".", ".", ".", "#" });
+const mini_percent = fromArt(3, 5, .{ "#.#", "..#", ".#.", "#..", "#.#" });
+const mini_question = fromArt(3, 5, .{ "##.", "..#", ".#.", "...", ".#." });
+const mini_dash = fromArt(3, 5, .{ "...", "...", "###", "...", "..." });
+
+// 3x5 letters, so the menus can use the same font as the mini clock and the mini ip line. one
+// case only: at three pixels wide there is no room for two, and these read as small capitals.
+const mini_letters = [26]Glyph{
+    fromArt(3, 5, .{ ".#.", "#.#", "###", "#.#", "#.#" }), // a
+    fromArt(3, 5, .{ "##.", "#.#", "##.", "#.#", "##." }), // b
+    fromArt(3, 5, .{ ".##", "#..", "#..", "#..", ".##" }), // c
+    fromArt(3, 5, .{ "##.", "#.#", "#.#", "#.#", "##." }), // d
+    fromArt(3, 5, .{ "###", "#..", "##.", "#..", "###" }), // e
+    fromArt(3, 5, .{ "###", "#..", "##.", "#..", "#.." }), // f
+    fromArt(3, 5, .{ ".##", "#..", "#.#", "#.#", ".##" }), // g
+    fromArt(3, 5, .{ "#.#", "#.#", "###", "#.#", "#.#" }), // h
+    fromArt(3, 5, .{ "###", ".#.", ".#.", ".#.", "###" }), // i
+    fromArt(3, 5, .{ "..#", "..#", "..#", "#.#", ".#." }), // j
+    fromArt(3, 5, .{ "#.#", "#.#", "##.", "#.#", "#.#" }), // k
+    fromArt(3, 5, .{ "#..", "#..", "#..", "#..", "###" }), // l
+    fromArt(3, 5, .{ "#.#", "###", "###", "#.#", "#.#" }), // m
+    fromArt(3, 5, .{ "#.#", "###", "###", "###", "#.#" }), // n
+    fromArt(3, 5, .{ ".#.", "#.#", "#.#", "#.#", ".#." }), // o
+    fromArt(3, 5, .{ "##.", "#.#", "##.", "#..", "#.." }), // p
+    fromArt(3, 5, .{ ".#.", "#.#", "#.#", "###", ".##" }), // q
+    fromArt(3, 5, .{ "##.", "#.#", "##.", "#.#", "#.#" }), // r
+    fromArt(3, 5, .{ ".##", "#..", ".#.", "..#", "##." }), // s
+    fromArt(3, 5, .{ "###", ".#.", ".#.", ".#.", ".#." }), // t
+    fromArt(3, 5, .{ "#.#", "#.#", "#.#", "#.#", ".##" }), // u
+    fromArt(3, 5, .{ "#.#", "#.#", "#.#", ".#.", ".#." }), // v
+    fromArt(3, 5, .{ "#.#", "#.#", "###", "###", "#.#" }), // w
+    fromArt(3, 5, .{ "#.#", "#.#", ".#.", "#.#", "#.#" }), // x
+    fromArt(3, 5, .{ "#.#", "#.#", ".##", "..#", "##." }), // y
+    fromArt(3, 5, .{ "###", "..#", ".#.", "#..", "###" }), // z
+};
 
 // segment: seven segments a..g on a 5x9 cell, digits from the usual table
 const Segments = packed struct(u7) { a: bool, b: bool, c: bool, d: bool, e: bool, f: bool, g: bool };
@@ -169,9 +203,14 @@ pub fn glyph(f: Font, c: u8) Glyph {
         .big => return if (c == ':') big_colon else classicGlyph(c, 2),
         .mini => {
             if (c >= '0' and c <= '9') return mini_digits[c - '0'];
+            if (c >= 'a' and c <= 'z') return mini_letters[c - 'a'];
+            if (c >= 'A' and c <= 'Z') return mini_letters[c - 'A'];
             if (c == ':') return mini_colon;
             if (c == '/') return mini_slash;
             if (c == '.') return mini_dot;
+            if (c == '%') return mini_percent;
+            if (c == '?') return mini_question;
+            if (c == '-') return mini_dash;
             return mini_space;
         },
         .segment => {
