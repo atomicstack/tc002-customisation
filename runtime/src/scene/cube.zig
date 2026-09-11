@@ -14,6 +14,7 @@ pub const params = [_]param.Param{
     .{ .name = "background", .kind = .colour, .default = 0x000000 },
     .{ .name = "spin", .kind = .choice, .choices = &.{ "single", "series", "parallel" }, .default = 2 },
     .{ .name = "speed", .kind = .number, .min = 1, .max = 20, .step = 1, .default = 6 },
+    .{ .name = "zoom", .kind = .number, .min = 40, .max = 200, .step = 10, .default = 100 },
 };
 
 const Palette = enum(u8) { mono = 0, poly = 1 };
@@ -79,6 +80,10 @@ const ambient: f32 = 0.28;
 /// the camera sits this far back, and the projection is scaled to fill the sixteen rows
 const camera: f32 = 4.2;
 const focal: f32 = 17.0;
+
+/// sub-rows sampled per output row. the edges are exact across a row and sampled down it, which
+/// is what turns a staircase of whole pixels into a slope.
+const samples: usize = 4;
 
 pub const State = struct {
     ax: u32 = 0,
@@ -169,12 +174,13 @@ pub const State = struct {
         return .{ .x = x3, .y = y3, .z = z2 };
     }
 
-    fn project(v: Vec) [2]f32 {
+    fn project(self: *const State, v: Vec) [2]f32 {
         const z = v.z + camera;
         const d = if (z < 0.5) 0.5 else z;
+        const f = focal * @as(f32, @floatFromInt(@max(1, self.values[6]))) / 100.0;
         return .{
-            @as(f32, geometry.width) / 2.0 + focal * v.x / d,
-            @as(f32, geometry.height) / 2.0 - focal * v.y / d,
+            @as(f32, geometry.width) / 2.0 + f * v.x / d,
+            @as(f32, geometry.height) / 2.0 - f * v.y / d,
         };
     }
 
@@ -198,6 +204,30 @@ pub const State = struct {
         return out;
     }
 
+    /// is this face turned towards the camera? for a convex solid that is the whole depth question
+    fn facing(self: *const State, turned: *const [8]Vec, f: Face) ?f32 {
+        const n = self.rotate(f.normal);
+        var centre = Vec{ .x = 0, .y = 0, .z = 0 };
+        for (f.idx) |i| {
+            centre.x += turned[i].x / 4.0;
+            centre.y += turned[i].y / 4.0;
+            centre.z += (turned[i].z + camera) / 4.0;
+        }
+        if (n.dot(centre) >= 0) return null;
+        return ambient + (1.0 - ambient) * @max(0.0, n.dot(light));
+    }
+
+    /// how many faces are drawn as it stands; never more than three once the rest are culled
+    pub fn visibleFaces(self: *const State) usize {
+        var turned: [8]Vec = undefined;
+        for (corners, 0..) |c, i| turned[i] = self.rotate(c);
+        var n: usize = 0;
+        for (faces) |f| {
+            if (self.facing(&turned, f) != null) n += 1;
+        }
+        return n;
+    }
+
     pub fn render(self: *const State, rgb: *geometry.Rgb) void {
         const bg = param.valueRgb(self.values[3]);
         for (0..geometry.width * geometry.height) |i| {
@@ -208,57 +238,66 @@ pub const State = struct {
         var turned: [8]Vec = undefined;
         for (corners, 0..) |c, i| turned[i] = self.rotate(c);
         for (faces, 0..) |f, fi| {
-            const n = self.rotate(f.normal);
-            // the face's own position decides whether it points at the camera
-            var centre = Vec{ .x = 0, .y = 0, .z = 0 };
-            for (f.idx) |i| {
-                centre.x += turned[i].x / 4.0;
-                centre.y += turned[i].y / 4.0;
-                centre.z += (turned[i].z + camera) / 4.0;
-            }
-            if (n.dot(centre) >= 0) continue; // turned away: nothing to draw
-            const lit = ambient + (1.0 - ambient) * @max(0.0, n.dot(light));
+            const lit = self.facing(&turned, f) orelse continue; // turned away: nothing to draw
             var quad: [4][2]f32 = undefined;
-            for (f.idx, 0..) |i, k| quad[k] = project(turned[i]);
+            for (f.idx, 0..) |i, k| quad[k] = self.project(turned[i]);
             fillQuad(rgb, quad, self.faceColour(fi, lit));
         }
     }
 };
 
-/// scanline fill of a convex quad, which is what a cube's face projects to
+/// fill a convex quad with soft edges: exact coverage across each sub-row, several sub-rows per
+/// output row. a cube at this size is mostly edges, and whole-pixel edges are what make it look
+/// like a staircase rather than a solid.
 fn fillQuad(rgb: *geometry.Rgb, q: [4][2]f32, colour: [3]u8) void {
+    var coverage = [_]u8{0} ** (geometry.width * geometry.height);
     var top: f32 = q[0][1];
     var bottom: f32 = q[0][1];
     for (q[1..]) |p| {
         top = @min(top, p[1]);
         bottom = @max(bottom, p[1]);
     }
-    var y: i32 = @intFromFloat(@floor(top));
-    const last: i32 = @intFromFloat(@ceil(bottom));
+    const first: i32 = @max(0, @as(i32, @intFromFloat(@floor(top))));
+    const last: i32 = @min(geometry.height - 1, @as(i32, @intFromFloat(@ceil(bottom))));
+    const per_sample: f32 = 255.0 / @as(f32, samples);
+    var y: i32 = first;
     while (y <= last) : (y += 1) {
-        if (y < 0 or y >= geometry.height) continue;
-        const row: f32 = @as(f32, @floatFromInt(y)) + 0.5;
-        var lo: f32 = 1e9;
-        var hi: f32 = -1e9;
-        for (0..4) |i| {
-            const a = q[i];
-            const b = q[(i + 1) % 4];
-            if ((a[1] <= row and b[1] > row) or (b[1] <= row and a[1] > row)) {
-                const t = (row - a[1]) / (b[1] - a[1]);
-                const x = a[0] + t * (b[0] - a[0]);
-                lo = @min(lo, x);
-                hi = @max(hi, x);
+        for (0..samples) |sub| {
+            const row = @as(f32, @floatFromInt(y)) + (@as(f32, @floatFromInt(sub)) + 0.5) / @as(f32, samples);
+            var lo: f32 = 1e9;
+            var hi: f32 = -1e9;
+            for (0..4) |i| {
+                const a = q[i];
+                const b = q[(i + 1) % 4];
+                if ((a[1] <= row and b[1] > row) or (b[1] <= row and a[1] > row)) {
+                    const t = (row - a[1]) / (b[1] - a[1]);
+                    const x = a[0] + t * (b[0] - a[0]);
+                    lo = @min(lo, x);
+                    hi = @max(hi, x);
+                }
+            }
+            if (hi <= lo) continue;
+            const from: i32 = @max(0, @as(i32, @intFromFloat(@floor(lo))));
+            const to: i32 = @min(geometry.width - 1, @as(i32, @intFromFloat(@ceil(hi))));
+            var x: i32 = from;
+            while (x <= to) : (x += 1) {
+                // how much of this pixel's width the span covers, so an edge lands part-lit
+                const left = @max(lo, @as(f32, @floatFromInt(x)));
+                const right = @min(hi, @as(f32, @floatFromInt(x)) + 1.0);
+                if (right <= left) continue;
+                const add = (right - left) * per_sample;
+                const o: usize = @intCast(y * geometry.width + x);
+                coverage[o] = @intFromFloat(@min(255.0, @as(f32, @floatFromInt(coverage[o])) + add));
             }
         }
-        if (hi < lo) continue;
-        var x: i32 = @intFromFloat(@floor(lo + 0.5));
-        const end: i32 = @intFromFloat(@floor(hi - 0.5));
-        while (x <= end) : (x += 1) {
-            if (x < 0 or x >= geometry.width) continue;
-            const o = geometry.pixelOffset(@intCast(x), @intCast(y));
-            rgb[o] = colour[0];
-            rgb[o + 1] = colour[1];
-            rgb[o + 2] = colour[2];
+    }
+    for (coverage, 0..) |a, i| {
+        if (a == 0) continue;
+        const o = i * 3;
+        for (0..3) |ch| {
+            const bg: u32 = rgb[o + ch];
+            const fg: u32 = colour[ch];
+            rgb[o + ch] = @intCast((bg * (255 - @as(u32, a)) + fg * @as(u32, a)) / 255);
         }
     }
 }
@@ -314,14 +353,42 @@ test "faces are shaded, so the form reads rather than showing as a silhouette" {
 
 test "back faces are culled, so at most three of the six ever draw" {
     var s = State.init(7);
-    var rgb: geometry.Rgb = undefined;
     var step: u32 = 0;
-    while (step < 30) : (step += 1) {
-        s.setParam(0, 1); // poly, so each visible face has its own hue
-        s.render(&rgb);
-        try std.testing.expect(shades(&rgb) <= 3);
+    while (step < 40) : (step += 1) {
+        const n = s.visibleFaces();
+        try std.testing.expect(n >= 1 and n <= 3);
         s.step(0.13);
     }
+}
+
+test "edges are softened rather than stepped" {
+    // a cube this size is mostly edge, and whole-pixel edges are what make it look like a
+    // staircase. the fill samples four sub-rows and takes exact coverage across each.
+    var s = State.init(5);
+    s.setParam(0, 0);
+    s.setParam(1, 0xffffff); // white on black, so any partial pixel is obvious
+    s.setParam(3, 0x000000);
+    s.step(0.37); // off-axis, so the edges are not all vertical or horizontal
+    var rgb: geometry.Rgb = undefined;
+    s.render(&rgb);
+    var partial: usize = 0;
+    for (0..geometry.width * geometry.height) |i| {
+        const v = rgb[i * 3];
+        if (v > 12 and v < 243) partial += 1;
+    }
+    try std.testing.expect(partial >= 8);
+}
+
+test "zoom changes how much of the panel the cube covers" {
+    var small = State.init(4);
+    small.setParam(6, 50);
+    var large = State.init(4);
+    large.setParam(6, 180);
+    var a: geometry.Rgb = undefined;
+    var b: geometry.Rgb = undefined;
+    small.render(&a);
+    large.render(&b);
+    try std.testing.expect(litPixels(&b) > litPixels(&a) * 2);
 }
 
 test "the background is painted and the palette changes what is drawn" {

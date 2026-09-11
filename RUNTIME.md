@@ -290,8 +290,14 @@ at runtime.
 `palette` is `mono`, one colour separated by shading, or `poly`, a hue per
 face. `hue drift` walks the colour round the wheel, up to 60 degrees a second.
 `spin` is `single` (one axis), `series` (x, then y, then z, four seconds each)
-or `parallel` (all three at once at different rates), and `speed` multiplies
-the rate. the seed decides where it starts, so a reseed turns it to a new face
+or `parallel` (all three at once at different rates), `speed` multiplies the
+rate and `zoom` scales the projection between 40 and 200 per cent.
+
+the edges are **softened**: a cube this size is mostly edge, and whole-pixel
+edges are what make it read as a staircase. each face is filled by taking exact
+coverage across four sub-rows per output row and blending by that coverage, so
+a diagonal lands part-lit rather than stepped. it costs one 832-byte coverage
+buffer per face and no supersampled frame. the seed decides where it starts, so a reseed turns it to a new face
 and keeps the settings.
 
 ### transitions
@@ -536,7 +542,7 @@ is `0x00RRGGBB`, a toggle is 0 or 1.
 |---|---|
 | clock | `face`, `colour`, `shade`, `colour 2`, `gradient`, `spread` |
 | art | `scene` (the generator), then the showing generator's own |
-| cube | `palette`, `colour`, `hue drift`, `background`, `spin`, `speed` |
+| cube | `palette`, `colour`, `hue drift`, `background`, `spin`, `speed`, `zoom` |
 | ip | `layout` |
 
 the clock and the ip scene are fixed parts of the runtime and keep named
