@@ -178,10 +178,14 @@ than blocking in `write(2)`; the file and the ring are equally affected.
 
 ### what it samples
 
-every 5 s the supervisor reads `MemAvailable` from `/proc/meminfo`, cpu
-utilisation from `/proc/stat`, and `VmRSS` of the three processes, and derives
-achieved fps from the renderer's `presented` counter over windows of at least
-2 s. that snapshot is what `/api/v1/status` and the mqtt `state` and `metrics`
+every 5 s the supervisor reads `MemAvailable`, `MemFree`, `MemTotal` and
+`Shmem` from `/proc/meminfo`, cpu utilisation from `/proc/stat`, `VmRSS` of the
+three processes, and `statfs` of `/data` and `/tmp`, and derives achieved fps
+from the renderer's `presented` counter over windows of at least 2 s. the
+`/data` figure is the **flash** one: jffs2 on mtd6 is the only durable storage
+and its usage appears nowhere in `/proc`. every used figure is reported with
+the total it is a fraction of (`memory_total_kb`, `tmpfs_total_kb`,
+`flash_total_kb`), because a bar needs a denominator. that snapshot is what `/api/v1/status` and the mqtt `state` and `metrics`
 topics report. two honesty notes: this 4.9 kernel reports `VmRSS` = 4 kb for
 every static process (it is wrong; use `tc002-memdump`), and the values are
 reported as-is with a `sample_age_ms`. `wlan0`'s address is polled every
@@ -854,9 +858,10 @@ once.
 opt-in with `discovery: true`. on every mqtt connection netd publishes one
 retained config per second under
 `<discovery_prefix>/<component>/tc002-<mac>/<key>/config` (the boot id stands
-in when there is no wlan0 mac): 24 read-only diagnostic `sensor` entities that
-read from the `metrics` topic (uptime, memory, cpu overall and per process,
-load, wifi, tmpfs, battery and usb power, renderer restarts, mqtt reconnects,
+in when there is no wlan0 mac): 30 read-only diagnostic `sensor` entities that
+read from the `metrics` topic (uptime, memory used and available and total, cpu
+overall and per process, load, wifi, tmpfs used and total, flash used and total
+and as a percentage, battery and usb power, renderer restarts, mqtt reconnects,
 scene, brightness, fps, frames presented, time sync state), one
 `binary_sensor` for display power that reads the retained `state` topic, and
 five `event` entities (left, middle and right buttons, the knob, the rotary)
