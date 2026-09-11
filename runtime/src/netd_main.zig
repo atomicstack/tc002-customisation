@@ -16,6 +16,7 @@ const config = @import("supervisor/config.zig");
 const geometry = @import("panel/geometry.zig");
 const transition = @import("panel/transition.zig");
 const ip = @import("scene/ip.zig");
+const param = @import("scene/param.zig");
 const scene = @import("scene/scene.zig");
 const actions = @import("input/actions.zig");
 const clock = @import("scene/clock.zig");
@@ -617,6 +618,32 @@ const Netd = struct {
         }
     }
 
+    /// the generators' own parameters, as a view: one object per generator keyed by the names its
+    /// table declares, values in the same shape a patch would send. a generator with no parameters
+    /// still appears, so a client can see the whole set.
+    fn generatorParamsJson(self: *Netd, o: *Out, c: *const config.Config) void {
+        _ = self;
+        o.add(",\"generators\":{");
+        inline for (@typeInfo(scene.Generator).@"enum".fields, 0..) |f, gi| {
+            if (gi > 0) o.add(",");
+            o.fmt("\"{s}\":{{", .{f.name});
+            const own = comptime scene.paramsFor(@enumFromInt(f.value))[scene.art_params.len..];
+            inline for (own, 0..) |pm, i| {
+                if (i > 0) o.add(",");
+                const v = if (gi < param.owner_count and i < param.max_per_owner) c.generator_params[gi][i] else 0;
+                o.fmt("\"{s}\":", .{pm.name});
+                switch (pm.kind) {
+                    .choice => o.str(if (v < pm.choices.len) pm.choices[v] else "?"),
+                    .toggle => o.add(if (v != 0) "\"on\"" else "\"off\""),
+                    .colour => o.fmt("\"{x:0>6}\"", .{v & 0xffffff}),
+                    .number => o.fmt("{d}", .{@as(i32, @bitCast(v))}),
+                }
+            }
+            o.add("}");
+        }
+        o.add("}");
+    }
+
     fn onSaveResult(self: *Netd, request_id: u64, r: messages.SaveResult, now: u64) void {
         const c = self.findConn(true, request_id) orelse return;
         switch (r.status) {
@@ -772,6 +799,7 @@ const Netd = struct {
         o.add("},\"clock\":");
         clockJson(o, messages.ClockStyle.full(c.clockStyle()));
         o.fmt(",\"ip_mode\":\"{s}\"", .{enumName(ip.Mode, c.ip_mode)});
+        self.generatorParamsJson(o, c);
         o.add(",\"allowed_origins\":[");
         for (c.origins[0..c.origin_count], 0..) |*org, i| {
             if (i > 0) o.add(",");

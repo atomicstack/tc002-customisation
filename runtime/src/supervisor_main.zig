@@ -535,8 +535,8 @@ const Supervisor = struct {
     /// renderer applies each to the generator it belongs to, whichever one is showing.
     fn sendGeneratorParams(self: *Supervisor) void {
         for (self.cfg.generator_params, 0..) |slots, owner| {
-            for (slots, 0..) |v, slot| {
-                if (v == 0) continue; // a zero is the default; sending it would say nothing
+            const declared = scene.paramsFor(@enumFromInt(@as(u8, @intCast(owner)))).len - scene.art_params.len;
+            for (slots[0..@min(declared, slots.len)], 0..) |v, slot| {
                 self.send(.{ .set_param = .{ .base = 0x80 | @as(u8, @intCast(owner)), .index = @intCast(slot), .value = v } });
             }
         }
@@ -659,6 +659,9 @@ const Supervisor = struct {
         if (!std.mem.eql(u8, before.timezone.slice(), c.timezone.slice())) self.send(.{ .set_timezone = config.Text.init(c.tzRule()) });
         if (!std.meta.eql(before.clockStyle(), c.clockStyle())) self.send(.{ .clock_style = messages.ClockStyle.full(c.clockStyle()) });
         if (before.ip_mode != c.ip_mode) self.send(.{ .ip_mode = .{ .mode = c.ip_mode } });
+        // a generator's parameters changed by an api patch have to reach the renderer too; the
+        // panel menu applies its own preview, an http client has none
+        if (!std.meta.eql(before.generator_params, c.generator_params)) self.sendGeneratorParams();
         if (!std.meta.eql(before.ntp_server, c.ntp_server) or before.ntp_interval_s != c.ntp_interval_s) self.sntp_link.configure(self, sys.monotonicNs()); // sntp
         self.snapshot.config_revision = c.revision;
         self.snapshot.saved_revision = c.saved_revision;

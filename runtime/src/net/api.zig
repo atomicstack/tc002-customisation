@@ -17,6 +17,15 @@ const popsquares = @import("../scene/popsquares.zig");
 const plasma = @import("../scene/plasma.zig");
 const ntfy_url = @import("../ntfy/url.zig");
 
+/// a generator parameter once its scene and name have been looked up in the declared tables
+pub const ResolvedParam = struct { owner: u8, slot: u8, value: u32 };
+/// the most a single settings patch may carry
+pub const max_params_per_patch = 8;
+
+/// where a request's resolved parameters live between parsing and the ipc encoding. one request
+/// is handled at a time, so a single buffer is enough.
+var arena_params: [max_params_per_patch]ResolvedParam = undefined;
+
 pub const token_len = 32;
 pub const Token = [token_len]u8;
 pub const Credentials = struct { control: Token, admin: Token };
@@ -98,6 +107,8 @@ pub const ConfigPatch = struct {
     clock_gradient: ?clock.Gradient = null,
     clock_spread: ?u8 = null,
     clock_digit: ?clock.DigitStyle = null,
+    /// resolved generator parameters: which generator, which slot in its table, and the value
+    generator_params: []const ResolvedParam = &.{},
     ip_mode: ?ip.Mode = null,
 };
 
@@ -141,6 +152,10 @@ pub const Arena = [json.arena_size]u8;
 // json wire schemas (request bodies)
 const ClockBody = struct { font: ?[]const u8 = null, colour_mode: ?[]const u8 = null, colour: ?[]const u8 = null, colour2: ?[]const u8 = null, gradient: ?[]const u8 = null, spread: ?u8 = null, digits: ?[]const u8 = null };
 const IpBody = struct { mode: ?[]const u8 = null };
+/// one generator parameter in a settings patch. the value is always a string and the scene's own
+/// table says how to read it: a choice by its name, a colour as rrggbb, a number in decimal, a
+/// toggle as on or off. `GET /scenes` publishes the table, so a client needs nothing else.
+const GenParamBody = struct { scene: []const u8, name: []const u8, value: []const u8 };
 const SceneBody = struct { base: []const u8, generator: ?[]const u8 = null, seed: ?u32 = null, clock: ?ClockBody = null, ip: ?IpBody = null, transition: ?[]const u8 = null, direction: ?[]const u8 = null, transition_ms: ?u32 = null, exit: ?[]const u8 = null, request_id: []const u8, epoch: ?u32 = null };
 const ActionBody = struct { action: []const u8, brightness: ?u8 = null, seed: ?u32 = null, power: ?bool = null, request_id: []const u8, epoch: u32 };
 const InputBody = struct { control: []const u8, event: []const u8, steps: u8 = 1, request_id: []const u8, epoch: u32 };
@@ -164,6 +179,7 @@ const ConfigBody = struct {
     clock_gradient: ?[]const u8 = null,
     clock_spread: ?u8 = null,
     clock_digit: ?[]const u8 = null,
+    generator_params: ?[]const GenParamBody = null,
     ip_mode: ?[]const u8 = null,
 };
 const SaveBody = struct { revision: ?u32 = null };
@@ -444,7 +460,12 @@ pub fn parseBody(kind: BodyKind, body: []const u8, arena: *Arena) Route {
                 .op => |op| op,
             };
             const ip_mode: ?ip.Mode = if (b.ip_mode) |t| (enumByName(ip.Mode, t) orelse return bad("invalid_ip_mode", "ip_mode must be lines, mini, scroll or big")) else null;
+            const gen_params = if (b.generator_params) |list| switch (parseGeneratorParams(list, arena_params[0..])) {
+                .reject => |j| return .{ .reject = j },
+                .op => |v| v,
+            } else &.{};
             return .{ .op = .{ .config_patch = .{
+                .generator_params = gen_params,
                 .ip_mode = ip_mode,
                 .clock_font = style.font,
                 .clock_colour_mode = style.mode,
@@ -501,6 +522,45 @@ pub fn parseBody(kind: BodyKind, body: []const u8, arena: *Arena) Route {
 
 /// the five clock style strings, shared by `/scene` and the settings patch.
 const StyleRoute = union(enum) { op: clock.StylePatch, reject: Reject };
+/// read a parameter's value the way its own kind says it should be read
+fn parseParamValue(p: param.Param, text: []const u8) ?u32 {
+    return switch (p.kind) {
+        .choice => blk: {
+            for (p.choices, 0..) |c, i| if (std.mem.eql(u8, c, text)) break :blk @as(u32, @intCast(i));
+            break :blk null;
+        },
+        .toggle => if (std.mem.eql(u8, text, "on") or std.mem.eql(u8, text, "true"))
+            @as(u32, 1)
+        else if (std.mem.eql(u8, text, "off") or std.mem.eql(u8, text, "false"))
+            @as(u32, 0)
+        else
+            null,
+        .colour => if (parseColour(text)) |c| param.rgbValue(c) else null,
+        .number => blk: {
+            const v = std.fmt.parseInt(i32, text, 10) catch break :blk null;
+            if (v < p.min or v > p.max) break :blk null;
+            break :blk @bitCast(v);
+        },
+    };
+}
+
+/// resolve `[{scene, name, value}]` against the declared tables, rejecting anything unknown
+fn parseGeneratorParams(body: []const GenParamBody, out: []ResolvedParam) ParamsRoute {
+    if (body.len > out.len) return .{ .reject = .{ .status = 400, .code = "too_many_params", .message = "at most eight generator parameters per request" } };
+    for (body, 0..) |entry, i| {
+        const g = enumByName(scene.Generator, entry.scene) orelse return .{ .reject = .{ .status = 400, .code = "invalid_scene", .message = "scene must name a generator" } };
+        const table = scene.paramsFor(g);
+        // art's own parameter sits at the front of that table; a generator's start after it
+        const own = table[scene.art_params.len..];
+        const slot = param.indexOf(own, entry.name) orelse return .{ .reject = .{ .status = 400, .code = "invalid_param", .message = "no such parameter on that scene" } };
+        const value = parseParamValue(own[slot], entry.value) orelse return .{ .reject = .{ .status = 400, .code = "invalid_param_value", .message = "the value does not fit that parameter" } };
+        out[i] = .{ .owner = @intFromEnum(g), .slot = @intCast(slot), .value = value };
+    }
+    return .{ .op = out[0..body.len] };
+}
+
+const ParamsRoute = union(enum) { op: []const ResolvedParam, reject: Reject };
+
 fn parseClockStyle(font_text: ?[]const u8, mode_text: ?[]const u8, colour_text: ?[]const u8, colour2_text: ?[]const u8, gradient_text: ?[]const u8, spread: ?u8, digit_text: ?[]const u8) StyleRoute {
     var p = clock.StylePatch{ .spread = spread };
     if (font_text) |s| p.font = enumByName(clock.Font, s) orelse return .{ .reject = .{ .status = 400, .code = "invalid_font", .message = font_names_message } };

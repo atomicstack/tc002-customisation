@@ -486,6 +486,10 @@ pub const ConfigPatch = struct {
     clock_gradient: u8 = 0,
     clock_spread: u8 = 0,
     clock_digit: u8 = 0,
+    /// generator parameters carried with the rest of a settings change, so one request is one
+    /// round trip and one revision
+    param_count: u8 = 0,
+    params: [api.max_params_per_patch]api.ResolvedParam = [_]api.ResolvedParam{.{ .owner = 0, .slot = 0, .value = 0 }} ** api.max_params_per_patch,
     ip_mode: u8 = 0,
 
     pub const F = struct {
@@ -510,7 +514,8 @@ pub const ConfigPatch = struct {
         pub const clock_digit: u32 = 1 << 18;
     };
 
-    pub const wire_len = 4 + 3 + 65 + 4 + 4 + 2 + 4 + 1 + 65 + 4 + 12;
+    pub const fixed_len = 4 + 3 + 65 + 4 + 4 + 2 + 4 + 1 + 65 + 4 + 12 + 1;
+    pub const wire_len = fixed_len + api.max_params_per_patch * 6;
 
     pub fn fromApi(p: api.ConfigPatch) error{TooLong}!ConfigPatch {
         var w = ConfigPatch{};
@@ -582,6 +587,8 @@ pub const ConfigPatch = struct {
             w.has |= F.clock_digit;
             w.clock_digit = @intFromEnum(v);
         }
+        w.param_count = @intCast(@min(p.generator_params.len, w.params.len));
+        for (p.generator_params[0..w.param_count], 0..) |rp, i| w.params[i] = rp;
         if (p.clock_spread) |v| {
             w.has |= F.clock_spread;
             w.clock_spread = v;
@@ -615,6 +622,7 @@ pub const ConfigPatch = struct {
             .clock_gradient = if (h & F.clock_gradient != 0) (enumFromInt(clock.Gradient, self.clock_gradient) orelse null) else null,
             .clock_spread = if (h & F.clock_spread != 0) self.clock_spread else null,
             .clock_digit = if (h & F.clock_digit != 0) enumFromInt(clockfont.DigitStyle, self.clock_digit) else null,
+            .generator_params = self.params[0..self.param_count],
             .ip_mode = if (h & F.ip_mode != 0) enumFromInt(ip.Mode, self.ip_mode) else null,
         };
     }
@@ -1120,6 +1128,14 @@ fn encodePayload(msg: Message, out: []u8) usize {
             out[o + 10] = p.ip_mode;
             out[o + 11] = p.clock_digit;
             o += 12;
+            out[o] = p.param_count;
+            o += 1;
+            for (p.params[0..p.param_count]) |rp| {
+                out[o] = rp.owner;
+                out[o + 1] = rp.slot;
+                std.mem.writeInt(u32, out[o + 2 ..][0..4], rp.value, .big);
+                o += 6;
+            }
             return o;
         },
         .config_save => |c| {
@@ -1414,7 +1430,10 @@ pub fn decodePacket(bytes: []const u8) Error!Packet {
             break :blk .{ .config = config.decode(b) catch return error.BadPayload };
         },
         .config_patch => blk: {
-            const b = try fixed(p, ConfigPatch.wire_len);
+            // the parameter list is variable, so the payload runs from the fixed part up to the
+            // whole struct rather than being one exact length
+            if (p.len < ConfigPatch.fixed_len or p.len > ConfigPatch.wire_len) return error.BadPayload;
+            const b = p;
             var w = ConfigPatch{};
             var o: usize = 0;
             w.has = std.mem.readInt(u32, b[o..][0..4], .little);
@@ -1445,6 +1464,15 @@ pub fn decodePacket(bytes: []const u8) Error!Packet {
             w.clock_spread = b[o + 9];
             w.ip_mode = b[o + 10];
             w.clock_digit = b[o + 11];
+            o += 12;
+            if (b.len < o + 1) return error.BadPayload;
+            w.param_count = @min(b[o], w.params.len);
+            o += 1;
+            if (b.len < o + @as(usize, w.param_count) * 6) return error.BadPayload;
+            for (0..w.param_count) |i| {
+                w.params[i] = .{ .owner = b[o], .slot = b[o + 1], .value = std.mem.readInt(u32, b[o + 2 ..][0..4], .big) };
+                o += 6;
+            }
             break :blk .{ .config_patch = w };
         },
         .config_save => blk: {

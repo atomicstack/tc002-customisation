@@ -6,6 +6,7 @@ const api = @import("../net/api.zig");
 const clock = @import("../scene/clock.zig");
 const clockfont = @import("../scene/clockfont.zig");
 const param = @import("../scene/param.zig");
+const scene = @import("../scene/scene.zig");
 const ip = @import("../scene/ip.zig");
 const ntfy_url = @import("../ntfy/url.zig");
 const tz = @import("../scene/tz.zig");
@@ -86,7 +87,7 @@ pub const Config = struct {
     ip_mode: u8 = 0,
     /// the generators' own parameters: generic slots, because a generator is pluggable and has no
     /// settings fields of its own. the clock and the ip scene keep their named ones.
-    generator_params: [param.owner_count]param.Values = [_]param.Values{[_]u32{0} ** param.max_per_owner} ** param.owner_count,
+    generator_params: [param.owner_count]param.Values = scene.generator_defaults,
 
     /// the ip scene's layout (unknown stored values fall back to the default).
     pub fn ipMode(self: *const Config) ip.Mode {
@@ -138,6 +139,10 @@ pub const Config = struct {
         if (p.clock_gradient) |v| next.clock_gradient = @intFromEnum(v);
         if (p.clock_spread) |v| next.clock_spread = v;
         if (p.clock_digit) |v| next.clock_digit = @intFromEnum(v);
+        for (p.generator_params) |rp| {
+            if (rp.owner >= param.owner_count or rp.slot >= param.max_per_owner) return error.Invalid;
+            next.generator_params[rp.owner][rp.slot] = rp.value;
+        }
         if (p.ip_mode) |v| next.ip_mode = @intFromEnum(v);
         next.revision = self.revision + 1;
         self.* = next;
@@ -343,11 +348,12 @@ pub fn decode(in: []const u8) error{BadPayload}!Config {
     o += 2;
     c.ntfy.insecure = in[o] != 0;
     o += 1;
-    for (&c.generator_params) |*slots| {
+    for (&c.generator_params, 0..) |*slots, gi| {
         for (slots) |*v| {
             v.* = std.mem.readInt(u32, in[o..][0..4], .little);
             o += 4;
         }
+        if (scene.slotsUnset(slots.*)) slots.* = scene.generator_defaults[gi];
     }
     return c;
 }
@@ -375,7 +381,7 @@ const FileForm = struct {
     clock_gradient: []const u8 = "horizontal",
     clock_spread: u8 = clock.default_spread,
     clock_digit: []const u8 = "solid",
-    generator_params: [param.owner_count]param.Values = [_]param.Values{[_]u32{0} ** param.max_per_owner} ** param.owner_count,
+    generator_params: [param.owner_count]param.Values = scene.generator_defaults,
     ip_mode: []const u8 = "lines",
     mqtt: struct {
         enabled: bool = false,
@@ -516,6 +522,9 @@ pub fn fromJson(bytes: []const u8, arena: []u8) error{ Invalid, TooLong }!Config
     c.clock_spread = f.clock_spread;
     c.clock_digit = @intFromEnum(api.enumByName(clockfont.DigitStyle, f.clock_digit) orelse return error.Invalid);
     c.generator_params = f.generator_params;
+    for (&c.generator_params, 0..) |*slots, i| if (scene.slotsUnset(slots.*)) {
+        slots.* = scene.generator_defaults[i];
+    };
     c.ip_mode = @intFromEnum(api.enumByName(ip.Mode, f.ip_mode) orelse return error.Invalid);
     if (tz.resolve(f.timezone) == null) return error.Invalid;
     return c;
@@ -636,4 +645,31 @@ test "origin policy is derived from the config" {
     try std.testing.expect(p.allows("http://a"));
     try std.testing.expect(!p.allows("http://b"));
     try std.testing.expect(p.allows(null));
+}
+
+test "a generator's parameters round-trip, and unset ones take the declared defaults" {
+    var c = Config{};
+    // a fresh config already holds what each generator says its defaults are
+    try std.testing.expectEqualSlices(u32, &scene.generator_defaults[2], &c.generator_params[2]);
+
+    // a patch writes named slots and leaves the rest alone
+    try c.patch(.{ .generator_params = &.{
+        .{ .owner = 2, .slot = 5, .value = 12 },
+        .{ .owner = 2, .slot = 6, .value = 150 },
+    } });
+    try std.testing.expectEqual(@as(u32, 12), c.generator_params[2][5]);
+    try std.testing.expectEqual(@as(u32, 150), c.generator_params[2][6]);
+    try std.testing.expectEqual(scene.generator_defaults[2][1], c.generator_params[2][1]);
+
+    // and it survives the file
+    var out: [file_max]u8 = undefined;
+    const text = try toJson(&c, &out);
+    var arena: [8192]u8 = undefined;
+    const back = try fromJson(text, &arena);
+    try std.testing.expectEqual(@as(u32, 12), back.generator_params[2][5]);
+    try std.testing.expectEqual(@as(u32, 150), back.generator_params[2][6]);
+
+    // a slot outside the table is refused rather than written past the end
+    try std.testing.expectError(error.Invalid, c.patch(.{ .generator_params = &.{.{ .owner = 9, .slot = 0, .value = 1 }} }));
+    try std.testing.expectError(error.Invalid, c.patch(.{ .generator_params = &.{.{ .owner = 2, .slot = 99, .value = 1 }} }));
 }

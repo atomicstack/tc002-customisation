@@ -105,6 +105,25 @@ const params_popsquares = art_params ++ popsquares.params;
 const params_plasma = art_params ++ plasma.params;
 const params_cube = art_params ++ cube.params;
 
+/// each generator's declared defaults, laid out the way the settings store them. a generator's
+/// parameters are not all zero by default (the cube starts blue, at 100% zoom), so a settings file
+/// that has never had them written must fall back to these rather than to zeros.
+pub const generator_defaults: [param.owner_count]param.Values = blk: {
+    var out: [param.owner_count]param.Values = undefined;
+    for (0..param.owner_count) |i| {
+        const own = paramsFor(@enumFromInt(@as(u8, @intCast(i))))[art_params.len..];
+        out[i] = param.defaults(own);
+    }
+    break :blk out;
+};
+
+/// a generator whose slots are all zero has never been written: no generator's defaults are all
+/// zero, and the minimums (speed 1, zoom 40) make an all-zero set impossible to reach by editing.
+pub fn slotsUnset(slots: param.Values) bool {
+    for (slots) |v| if (v != 0) return false;
+    return true;
+}
+
 /// what art can be told while this generator is showing
 pub fn paramsFor(g: Generator) []const param.Param {
     return switch (g) {

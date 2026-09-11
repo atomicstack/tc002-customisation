@@ -559,6 +559,27 @@ is `0x00RRGGBB`, a toggle is 0 or 1.
 | cube | `palette`, `colour`, `hue drift`, `background`, `spin`, `speed`, `zoom` |
 | ip | `layout` |
 
+**over the api.** `GET /config` reports every generator's parameters as an
+object keyed by the names its table declares, values in the same shape a patch
+sends them: a choice by name, a colour as `rrggbb`, a number in decimal, a
+toggle as `on` or `off`. `PATCH /config` takes them as a list, because the
+names are a scene's own and a strict parser cannot know them in advance:
+
+```json
+{"generator_params":[{"scene":"cube","name":"zoom","value":"150"},
+                     {"scene":"cube","name":"palette","value":"poly"}]}
+```
+
+at most eight per request. an unknown scene, an unknown name or a value that
+does not fit its kind is refused with `invalid_scene`, `invalid_param` or
+`invalid_param_value` and nothing is written. the change persists and is pushed
+to the renderer, so an http client needs no preview of its own.
+
+a generator whose slots have never been written takes the defaults its table
+declares rather than zeros: the cube starts blue at 100 per cent zoom, and an
+all-zero set is unreachable by editing (speed stops at 1, zoom at 40), so it is
+a safe marker for "never set".
+
 the clock and the ip scene are fixed parts of the runtime and keep named
 settings; a **generator is pluggable**, so its parameters live in generic slots
 (`generator_params`, eight `u32` each) which the supervisor replays to the
