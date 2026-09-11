@@ -394,6 +394,63 @@ class EndToEndTests(unittest.TestCase):
         status, doc = self.call("PATCH", "config", {"clock_digit": "embossed"})
         self.assertEqual((status, doc["error"]), (400, "invalid_digits"))
 
+    CUBE_DEFAULTS = {"palette": "mono", "colour": "30a0ff", "hue drift": 0, "background": "000000",
+                     "spin": "parallel", "speed": 6, "zoom": 100}
+
+    def test_generator_parameters_read_as_an_object_and_write_as_a_list(self):
+        # asymmetric on purpose: an object keyed by the scene's own names to read, a list to write,
+        # because a strict parser cannot know a scene's names in advance
+        _, cfg = self.call("GET", "config")
+        self.assertEqual(cfg["generators"]["popsquares"], {})
+        self.assertEqual(cfg["generators"]["plasma"], {})
+        self.assertEqual(cfg["generators"]["cube"], self.CUBE_DEFAULTS)
+        status, doc = self.call("PATCH", "config", {"generator_params": [
+            {"scene": "cube", "name": "zoom", "value": "150"},
+            {"scene": "cube", "name": "palette", "value": "poly"},
+        ]})
+        self.assertEqual(status, 200)
+        self.assertEqual(doc["generators"]["cube"]["zoom"], 150)
+        self.assertEqual(doc["generators"]["cube"]["palette"], "poly")
+        self.assertEqual(doc["revision"], cfg["revision"] + 1)   # one patch, one revision
+        self.assertEqual(doc["revision"], doc["saved_revision"])
+
+    def test_a_refused_generator_parameter_writes_nothing(self):
+        _, before = self.call("GET", "config")
+        for entry, code in (({"scene": "nope", "name": "zoom", "value": "1"}, "invalid_scene"),
+                            ({"scene": "cube", "name": "nope", "value": "1"}, "invalid_param"),
+                            ({"scene": "cube", "name": "zoom", "value": "9999"}, "invalid_param_value"),
+                            ({"scene": "cube", "name": "zoom", "value": "wide"}, "invalid_param_value"),
+                            ({"scene": "cube", "name": "palette", "value": "mauve"}, "invalid_param_value"),
+                            ({"scene": "cube", "name": "colour", "value": "teal"}, "invalid_param_value")):
+            status, doc = self.call("PATCH", "config", {"generator_params": [entry]})
+            self.assertEqual((status, doc["error"]), (400, code), entry)
+        # a good entry beside a bad one writes neither
+        status, doc = self.call("PATCH", "config", {"generator_params": [
+            {"scene": "cube", "name": "speed", "value": "9"},
+            {"scene": "cube", "name": "zoom", "value": "9999"},
+        ]})
+        self.assertEqual((status, doc["error"]), (400, "invalid_param_value"))
+        status, doc = self.call("PATCH", "config", {"generator_params":
+                                                    [{"scene": "cube", "name": "zoom", "value": "90"}] * 9})
+        self.assertEqual((status, doc["error"]), (400, "too_many_params"))
+        _, after = self.call("GET", "config")
+        self.assertEqual(after["generators"], before["generators"])
+        self.assertEqual(after["revision"], before["revision"])
+
+    def test_generator_parameters_take_every_kind(self):
+        status, doc = self.call("PATCH", "config", {"generator_params": [
+            {"scene": "cube", "name": "colour", "value": "#ff8000"},
+            {"scene": "cube", "name": "background", "value": "101010"},
+            {"scene": "cube", "name": "spin", "value": "single"},
+            {"scene": "cube", "name": "hue drift", "value": "30"},
+        ]})
+        self.assertEqual(status, 200)
+        cube = doc["generators"]["cube"]
+        self.assertEqual(cube["colour"], "ff8000")          # hex without the hash, as a patch sends it
+        self.assertEqual(cube["background"], "101010")
+        self.assertEqual(cube["spin"], "single")
+        self.assertEqual(cube["hue drift"], 30)
+
     def test_logs_page_through_the_ring(self):
         status, doc = self.call("GET", "logs?after=0")
         self.assertEqual(status, 200)

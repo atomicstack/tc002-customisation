@@ -163,6 +163,28 @@ input[type=file]{font:12px var(--body);color:var(--muted);max-width:220px}
   #host{width:100%}
   input[type=number],input[type=file]{width:100%}
 }
+
+/* layout b: the hero stays, everything else is one tab at a time */
+.hero{align-items:start}
+.heroscreen{display:flex;flex-direction:column;gap:10px}
+.heroscreen .quick{margin-top:2px}
+.tabbar{display:flex;gap:4px;margin:var(--gap) 0 0;border-bottom:1px solid var(--line);flex-wrap:wrap}
+.tabbar button{border:0;background:transparent;color:var(--muted);font:600 13px var(--body);padding:10px 16px;
+  cursor:pointer;border-bottom:2px solid transparent;border-radius:var(--radius-s) var(--radius-s) 0 0}
+.tabbar button:hover{color:var(--ink)}
+.tabbar button[aria-selected="true"]{color:var(--ink);border-bottom-color:var(--accent)}
+.tabpanel{display:grid;grid-template-columns:repeat(12,minmax(0,1fr));gap:var(--gap);margin-top:var(--gap)}
+.tabpanel[hidden]{display:none}
+[hidden]{display:none!important}   /* .field and .rows set display, which beats the attribute */
+/* a full-width card has room for two columns of rows */
+.card.wide .rows{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:0 var(--gap)}
+.card.wide .rows.genparams{grid-column:1/-1}
+.genparams .paramhead{grid-column:1/-1}
+.genparams{border-top:1px solid var(--line);margin-top:2px;padding-top:2px}
+.genparams .paramhead{display:flex;align-items:center;gap:8px;padding:9px 0 3px;color:var(--accent-text);
+  font:600 11px var(--display);letter-spacing:.16em;text-transform:uppercase}
+.genparams .paramhead .key{text-transform:none;letter-spacing:0}
+@container (max-width:860px){.card.wide .rows{grid-template-columns:minmax(0,1fr)}}
 </style>
 </head>
 <body>
@@ -178,9 +200,33 @@ input[type=file]{font:12px var(--body);color:var(--muted);max-width:220px}
   </header>
 
   <section class="hero">
-    <div class="screen">
-      <canvas id="matrix" width="520" height="160" aria-label="simulated 52 by 16 preview of what the runtime is drawing"></canvas>
-      <div class="cap" id="cap">simulated from /status · not connected</div>
+    <div class="card heroscreen">
+      <div class="screen">
+        <canvas id="matrix" width="520" height="160" aria-label="simulated 52 by 16 preview of what the runtime is drawing"></canvas>
+        <div class="cap" id="cap">simulated from /status · not connected</div>
+      </div>
+      <div class="quick" id="controlsCard">
+        <div class="lockmsg">the proxy has no control token: start serve.py with --token-file or --adb-pull</div>
+        <div class="rows">
+          <div class="field"><label for="power">Display power<span class="key">POST /action power · fades 600 ms</span></label><input type="checkbox" class="sw" id="power"></div>
+          <div class="field"><span class="lab">Buttons<span class="key">POST /input · click</span></span>
+          <div class="controls">
+            <button class="btn ghost sm" id="ctlLeft">◀ left</button>
+            <button class="btn ghost sm" id="ctlMiddle">● middle</button>
+            <button class="btn ghost sm" id="ctlRight">right ▶</button>
+          </div></div>
+          <div class="field"><span class="lab">Knob<span class="key">rotary cw/ccw · knob click/long</span></span>
+          <div class="controls">
+            <span class="knobwrap">
+              <button class="btn ghost sm" id="knobCcw" title="turn knob anticlockwise">↺</button>
+              <button class="knob" id="knobPress" title="press knob" aria-label="press knob"></button>
+              <button class="btn ghost sm" id="knobCw" title="turn knob clockwise">↻</button>
+            </span>
+            <label class="longpress"><input type="checkbox" class="sw" id="knobLong"> long</label>
+          </div></div>
+          <div class="field"><label for="ksteps">Steps<span class="key">rotary steps · 1–16</span></label><input type="number" id="ksteps" min="1" max="16" value="1"></div>
+        </div>
+      </div>
     </div>
     <div class="side">
       <section class="card">
@@ -190,47 +236,31 @@ input[type=file]{font:12px var(--body);color:var(--muted);max-width:220px}
     </div>
   </section>
 
-  <div class="grid">
-    <section class="card s5" id="controlsCard">
-      <h2>Controls</h2>
-      <div class="lockmsg">the proxy has no control token: start serve.py with --token-file or --adb-pull</div>
-      <div class="rows">
-        <div class="field"><span class="lab">Buttons<span class="key">POST /input · click</span></span>
-          <div class="controls">
-            <button class="btn ghost sm" id="ctlLeft">◀ left</button>
-            <button class="btn ghost sm" id="ctlMiddle">● middle</button>
-            <button class="btn ghost sm" id="ctlRight">right ▶</button>
-          </div></div>
-        <div class="field"><span class="lab">Knob<span class="key">rotary cw/ccw · knob click/long</span></span>
-          <div class="controls">
-            <span class="knobwrap">
-              <button class="btn ghost sm" id="knobCcw" title="turn knob anticlockwise">↺</button>
-              <button class="knob" id="knobPress" title="press knob" aria-label="press knob"></button>
-              <button class="btn ghost sm" id="knobCw" title="turn knob clockwise">↻</button>
-            </span>
-            <label class="longpress"><input type="checkbox" class="sw" id="knobLong"> long</label>
-          </div></div>
-        <div class="field"><label for="ksteps">Steps<span class="key">rotary steps · 1–16</span></label><input type="number" id="ksteps" min="1" max="16" value="1"></div>
-      </div>
-    </section>
+  <nav class="tabbar" role="tablist" aria-label="console sections">
+    <button type="button" role="tab" data-tab="scene" aria-selected="true">Scene</button>
+    <button type="button" role="tab" data-tab="send" aria-selected="false">Send</button>
+    <button type="button" role="tab" data-tab="device" aria-selected="false">Device</button>
+    <button type="button" role="tab" data-tab="logs" aria-selected="false">Logs</button>
+  </nav>
 
-    <section class="card s7" id="sceneCard">
+  <div class="tabpanel" data-panel="scene">
+<section class="card s12 wide" id="sceneCard">
       <h2>Scene</h2>
       <div class="lockmsg">the proxy has no control token: start serve.py with --token-file or --adb-pull</div>
       <div class="rows">
-        <div class="field"><label for="power">Display power<span class="key">POST /action power · fades 600 ms</span></label><input type="checkbox" class="sw" id="power"></div>
         <div class="field"><span class="lab">Base scene<span class="key">PUT /scene</span></span>
           <div class="seg" id="base" role="radiogroup" aria-label="base scene">
             <button type="button" data-v="art" role="radio" aria-checked="false">Art</button>
             <button type="button" data-v="clock" role="radio" aria-checked="false">Clock</button>
             <button type="button" data-v="ip" role="radio" aria-checked="false">IP</button>
           </div></div>
-        <div class="field"><label for="gen">Generator<span class="key">art only</span></label><select id="gen"></select></div>
-        <div class="field"><label for="kip">IP layout<span class="key">ip only · PUT /scene ip.mode · transient</span></label><select id="kip"></select></div>
+        <div class="field" data-base="art"><label for="gen">Generator<span class="key">art only · PUT /scene</span></label><select id="gen"></select></div>
+        <div class="rows genparams" id="genParams" data-base="art" hidden></div>
+        <div class="field" data-base="ip"><label for="kip">IP layout<span class="key">ip only · PUT /scene ip.mode · transient</span></label><select id="kip"></select></div>
         <div class="field"><label for="strans">Transition<span class="key">transition · default: fade · for the next scene change</span></label><select id="strans"></select></div>
         <div class="field"><label for="sdir">Direction<span class="key">direction · auto: the effect's own</span></label><select id="sdir"></select></div>
-        <div class="field"><label for="kfont">Clock font<span class="key">clock only · PUT /scene clock.font · transient</span></label><select id="kfont"></select></div>
-        <div class="field"><span class="lab">Clock colour<span class="key">clock.colour_mode · colour · colour2 · gradient</span></span>
+        <div class="field" data-base="clock"><label for="kfont">Clock font<span class="key">clock only · PUT /scene clock.font · transient</span></label><select id="kfont"></select></div>
+        <div class="field" data-base="clock"><span class="lab">Clock colour<span class="key">clock.colour_mode · colour · colour2 · gradient</span></span>
           <span class="inline">
             <span class="seg" id="kmode" role="radiogroup" aria-label="clock colour mode">
               <button type="button" data-v="solid" role="radio" aria-checked="false">Solid</button>
@@ -240,10 +270,10 @@ input[type=file]{font:12px var(--body);color:var(--muted);max-width:220px}
             <input type="color" id="kcolour2" value="#ffffff" aria-label="gradient end colour" title="colour2 (gradient end)">
             <select id="kgrad" aria-label="gradient direction" title="gradient direction"></select>
           </span></div>
-        <div class="field"><label for="kdigits">Clock digits<span class="key">clock.digits · block and big faces have a body to style</span></label><select id="kdigits"></select></div>
-        <div class="field"><label for="kspread">Clock spread<span class="key">clock.spread · how far the gradient's end may differ, per channel</span></label>
+        <div class="field" data-base="clock"><label for="kdigits">Clock digits<span class="key">clock.digits · block and big faces have a body to style</span></label><select id="kdigits"></select></div>
+        <div class="field" data-base="clock"><label for="kspread">Clock spread<span class="key">clock.spread · how far the gradient's end may differ, per channel</span></label>
           <span class="rangewrap"><input type="range" id="kspread" min="0" max="255" step="15" value="255"><span class="val">255</span></span></div>
-        <div class="field"><label for="seed">Seed<span class="key">POST /action reseed · empty = random</span></label>
+        <div class="field" data-base="art"><label for="seed">Seed<span class="key">POST /action reseed · empty = random</span></label>
           <span class="inline"><input type="number" id="seed" min="0" max="4294967295" placeholder="random"><button class="btn ghost sm" id="reseed">Reseed</button></span></div>
         <div class="field"><label for="bright">Brightness<span class="key">POST /action brightness · 1–100</span></label>
           <span class="rangewrap"><input type="range" id="bright" min="1" max="100" value="100" data-unit="%"><span class="val">100%</span></span></div>
@@ -251,7 +281,9 @@ input[type=file]{font:12px var(--body);color:var(--muted);max-width:220px}
       <div class="actions"><span class="note">live changes to the running renderer. the settings card below is what persists across restarts. a clock style set here lasts until the next settings change or renderer restart. spread is the leash on a gradient: the end colour is pulled towards the start until no channel differs by more than it, so a low spread reads as a shade shift rather than colour bands on 52 columns.</span></div>
     </section>
 
-    <section class="card s5" id="notificationCard">
+  </div>
+  <div class="tabpanel twoup" data-panel="send" hidden>
+<section class="card s7" id="notificationCard">
       <h2>Notification</h2>
       <div class="lockmsg">the proxy has no control token: start serve.py with --token-file or --adb-pull</div>
       <div class="rows">
@@ -265,8 +297,7 @@ input[type=file]{font:12px var(--body);color:var(--muted);max-width:220px}
       </div>
       <div class="actions"><button class="btn" id="nsend">Send notification</button></div>
     </section>
-
-    <section class="card s5" id="frameCard">
+<section class="card s5" id="frameCard">
       <h2>Frame</h2>
       <div class="lockmsg">the proxy has no control token: start serve.py with --token-file or --adb-pull</div>
       <div class="rows">
@@ -283,8 +314,9 @@ input[type=file]{font:12px var(--body);color:var(--muted);max-width:220px}
         <button class="btn ghost" id="fclear" disabled>Clear</button>
       </div>
     </section>
-
-    <section class="card s7" id="settingsCard">
+  </div>
+  <div class="tabpanel" data-panel="device" hidden>
+<section class="card s12 wide" id="settingsCard">
       <h2>Settings <span class="pill warn">admin</span></h2>
       <div class="lockmsg">the proxy has no admin token: start serve.py with --token-file or --adb-pull to edit settings</div>
       <div class="rows">
@@ -315,8 +347,7 @@ input[type=file]{font:12px var(--body);color:var(--muted);max-width:220px}
       </div>
       <div class="actions"><span class="note">every accepted change is written to the device's flash before it answers, so it survives a restart. no separate save.</span></div>
     </section>
-
-    <section class="card s5" id="mqttCard">
+<section class="card s12 wide" id="mqttCard">
       <h2>MQTT <span id="mqttstate" class="pill">unknown</span></h2>
       <div class="lockmsg">the proxy has no admin token: broker settings are read-only</div>
       <div class="rows">
@@ -336,8 +367,7 @@ input[type=file]{font:12px var(--body);color:var(--muted);max-width:220px}
       </div>
       <div class="actions"><span class="note">broker changes bump the settings revision and are written to flash at once.</span></div>
     </section>
-
-    <section class="card s5" id="ntfyCard">
+<section class="card s12 wide" id="ntfyCard">
       <h2>ntfy <span id="ntfystate" class="pill">unknown</span></h2>
       <div class="lockmsg">the proxy has no admin token: ntfy settings are read-only</div>
       <div class="rows">
@@ -358,8 +388,9 @@ input[type=file]{font:12px var(--body);color:var(--muted);max-width:220px}
       </div>
       <div class="actions"><span class="note">changes bump the settings revision and are written to flash at once. messages show as <i>title: message</i>, coloured by priority.</span></div>
     </section>
-
-    <section class="card s12" id="logsCard">
+  </div>
+  <div class="tabpanel" data-panel="logs" hidden>
+<section class="card s12" id="logsCard">
       <h2>Logs</h2>
       <div class="lockmsg">the proxy has no control token: start serve.py with --token-file or --adb-pull</div>
       <div class="actions">
@@ -369,6 +400,7 @@ input[type=file]{font:12px var(--body);color:var(--muted);max-width:220px}
       <pre id="logtext"></pre>
     </section>
   </div>
+
 </div>
 <div id="toast" role="status" aria-live="polite"></div>
 <script src="sim.js"></script>
@@ -517,6 +549,8 @@ function onStatus(prev) {
     }
     $('gen').value = s.generator;
   }
+  if (!prev || prev.base !== s.base) showBaseRows(s.base);
+  if (!prev || prev.base !== s.base || prev.generator !== s.generator) renderGenParams();
   if (s.overlay === 'none') { local.notify = null; local.frame = null; }
   if (s.ip_mode && (!prev || prev.ip_mode !== s.ip_mode)) $('kip').value = s.ip_mode;
   // the effective style: mirrored only when it changed, so an open colour picker is not clobbered
@@ -658,6 +692,117 @@ function transitionFields(effectId, dirId, exitId) {
 }
 fillTransitionSelects();
 
+/* ---------- tabs ---------- */
+// the hero stays put; everything else is one panel at a time, so no area scrolls off
+function showTab(name) {
+  for (const b of document.querySelectorAll('.tabbar button')) b.setAttribute('aria-selected', String(b.dataset.tab === name));
+  for (const p of document.querySelectorAll('.tabpanel')) p.hidden = p.dataset.panel !== name;
+  try { localStorage.setItem('tc002tab-v2', name); } catch {}
+}
+document.querySelector('.tabbar').addEventListener('click', e => {
+  const b = e.target.closest('button');
+  if (b) showTab(b.dataset.tab);
+});
+
+// the scene tab shows the showing scene's controls: a clock face does nothing while art runs
+function showBaseRows(base) {
+  for (const el of document.querySelectorAll('#sceneCard [data-base]')) el.hidden = el.dataset.base !== base;
+}
+
+/* ---------- a generator's own parameters ---------- */
+// every scene declares a table of what it can be told; the console walks it rather than knowing
+// what a cube is. the values are read from /config as an object and written back as a list, and
+// they are settings: they persist at once and need the admin token
+const PARAM_PATCH_MAX = 8;
+let paramQueue = new Map(), paramTimer = null;
+
+function paramValueOf(el, p) {
+  if (p.kind === 'toggle') return el.checked ? 'on' : 'off';
+  if (p.kind === 'colour') return hexColour(el.value);
+  return String(el.value);
+}
+function paramControl(p, value, onChange) {
+  let el;
+  if (p.kind === 'choice') {
+    el = document.createElement('select');
+    for (const c of p.choices || []) { const o = document.createElement('option'); o.value = c; o.textContent = c; el.append(o); }
+    if (value != null) el.value = String(value);
+  } else if (p.kind === 'toggle') {
+    el = document.createElement('input'); el.type = 'checkbox'; el.className = 'sw';
+    el.checked = String(value) === 'on' || value === true || value === 1;
+  } else if (p.kind === 'colour') {
+    el = document.createElement('input'); el.type = 'color';
+    el.value = '#' + String(value == null ? '000000' : value).replace('#', '');
+  } else {
+    el = document.createElement('input'); el.type = 'range';
+    el.min = p.min; el.max = p.max; el.step = p.step || 1;
+    el.value = value == null ? p.default : value;
+  }
+  el.addEventListener('change', () => onChange(paramValueOf(el, p)));
+  return el;
+}
+// the patch is one round trip for up to eight parameters, so edits made together travel together
+function queueParam(scene, name, value) {
+  paramQueue.set(`${scene}\u0000${name}`, { scene, name, value });
+  clearTimeout(paramTimer);
+  paramTimer = setTimeout(flushParams, 200);
+}
+async function flushParams() {
+  if (!paramQueue.size) return;
+  const all = [...paramQueue.values()];
+  paramQueue = new Map();
+  for (let i = 0; i < all.length; i += PARAM_PATCH_MAX) {
+    const batch = all.slice(i, i + PARAM_PATCH_MAX);
+    try {
+      const c = await call('PATCH', 'config', { generator_params: batch });
+      showConfig(c);
+      toast(batch.length === 1 ? `${batch[0].name}: ${batch[0].value}` : `${batch.length} ${batch[0].scene} parameters applied`);
+    } catch (e) {
+      toast(e.message, true);
+      loadConfig().catch(() => {});   // nothing was written: show what the device actually has
+      return;
+    }
+  }
+  refreshStatus(true);
+}
+// the table for the generator now selected, with the values the device reports for it
+function renderGenParams() {
+  const box = $('genParams');
+  box.innerHTML = '';
+  const name = $('gen').value;
+  const entry = SCENES && SCENES.generators && SCENES.generators.find(g => g.name === name);
+  const table = (entry && Array.isArray(entry.parameters)) ? entry.parameters : [];
+  const values = (CONFIG && CONFIG.generators && CONFIG.generators[name]) || {};
+  box.hidden = !(STATUS && STATUS.base === 'art');   // showBaseRows agrees; this covers the first paint
+  const head = document.createElement('div');
+  head.className = 'paramhead';
+  head.append(`${name} parameters`);
+  const key = document.createElement('span'); key.className = 'key';
+  key.textContent = table.length ? 'generator_params · settings: these persist at once' : 'this generator declares none of its own';
+  head.append(key);
+  box.append(head);
+  for (const p of table) {
+    const row = document.createElement('div'); row.className = 'field';
+    const lab = document.createElement('label'); lab.className = 'lab'; lab.textContent = p.name;
+    const k = document.createElement('span'); k.className = 'key';
+    k.textContent = p.kind === 'number' ? `${p.kind} · ${p.min}–${p.max}` : p.kind;
+    lab.append(k);
+    const control = paramControl(p, values[p.name], v => queueParam(name, p.name, v));
+    const id = `gp_${name}_${p.name}`.replace(/[^a-z0-9_]/gi, '_');
+    control.id = id; lab.htmlFor = id;
+    if (p.kind === 'number') {
+      const wrap = document.createElement('span'); wrap.className = 'rangewrap';
+      const out = document.createElement('span'); out.className = 'val'; out.textContent = control.value;
+      control.addEventListener('input', () => { out.textContent = control.value; syncRange(control); });
+      wrap.append(control, out); row.append(lab, wrap); syncRange(control);
+    } else {
+      row.append(lab, control);
+    }
+    box.append(row);
+  }
+  if (!TOKENS.admin) box.querySelectorAll('input,select').forEach(el => { el.disabled = true; });
+}
+
 /* ---------- scene ---------- */
 async function setScene(base) {
   try {
@@ -666,7 +811,7 @@ async function setScene(base) {
   } catch (e) { toast(e.message, true); }
 }
 $('base').addEventListener('click', e => { const b = e.target.closest('button'); if (b) setScene(b.dataset.v); });
-$('gen').addEventListener('change', () => { if (STATUS && STATUS.base === 'art') setScene('art'); });
+$('gen').addEventListener('change', () => { renderGenParams(); if (STATUS && STATUS.base === 'art') setScene('art'); });
 // the transient clock style: one field per change, merged over the effective style by the runtime;
 // the scene put repeats the current base so it never switches scenes on its own
 function showClockStyle(c) {
@@ -848,6 +993,7 @@ function showConfig(c) {
     crev.append(' · ', b);
   }
   try { local.tz = S.tzParse(c.timezone); } catch { local.tz = S.TZ_UTC; }
+  if (SCENES) renderGenParams();
 }
 async function loadConfig() { showConfig(await call('GET', 'config')); }
 $('capply').addEventListener('click', async () => {
@@ -1063,6 +1209,7 @@ $('host').addEventListener('keydown', e => { if (e.key === 'Enter') loadAll(); }
 /* ---------- boot ---------- */
 requestAnimationFrame(draw);
 (() => {
+  try { const t = localStorage.getItem('tc002tab-v2'); if (t && document.querySelector(`.tabbar button[data-tab="${t}"]`)) showTab(t); } catch {}
   const q = new URLSearchParams(location.search).get('host');
   if (q) $('host').value = q; else { try { const h = localStorage.getItem('tc002host-v2'); if (h) $('host').value = h; } catch {} }
   loadAll();

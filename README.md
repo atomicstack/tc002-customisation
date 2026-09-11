@@ -127,19 +127,24 @@ so the clock and ip are exact, notifications and frames are exact only when this
 (otherwise they are shown as unknown), and the art shows the same algorithm
 with a local seed. the controls card drives the physical buttons, knob and
 rotary remotely through `/input`; the scene card's power switch fades the
-display through `/action`; the scene card also sets a transient
-[clock style](RUNTIME.md#clock-styles) (font, solid or gradient colours)
-while the settings card holds the durable one; and the logs card follows
-the runtime's log ring through `/logs`. `mock-device.py` is a stand-in for developing without a
-device.
+display through `/action`. the page is a fixed hero, the preview with the
+readings and the controls that act on the device now, above four tabs: scene,
+send, device and logs. the scene tab shows the controls of the scene that is
+showing, so a clock face is not in the way while art runs, and a generator's
+own parameters are built from the table it declares in `/scenes`, which means a
+new generator arrives with working controls. `mock-device.py` is a stand-in for
+developing without a device.
 
-![the panel-v2 console: a simulated clock preview in the big font with a blue gradient, above cards for status, remote controls, scene and clock style, notifications, frames, settings, mqtt and the log ring](panel-v2/screenshots/console.png)
+![the panel-v2 console: the preview, the remote controls and the readings with bars for brightness, memory, flash and cpu, above the scene tab showing the cube generator's own parameters](panel-v2/screenshots/console.png)
+
+the device tab holds the durable settings, the broker and ntfy:
+
+![the device tab: settings, mqtt and ntfy, each with its apply button and the settings revision](panel-v2/screenshots/console-device.png)
 
 <img src="panel-v2/screenshots/console-narrow.png" width="330" alt="the panel-v2 console at phone width, stacked into a single column">
 
-(screenshots are against `mock-device.py` in the clock scene with timezone
-`AEST-10AEDT,M10.1.0,M4.1.0/3` applied and a transient `big` font with a
-vertical gradient, not a real device.)
+(screenshots are against `mock-device.py` in the art scene with the cube
+showing, not a real device.)
 
 **adopt a factory-fresh device**
 

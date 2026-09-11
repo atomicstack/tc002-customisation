@@ -135,6 +135,63 @@ def parse_colour(s):
 SETTING_TO_STYLE = {"digit": "digits"}
 
 
+GENERATOR_PARAMS = {"popsquares": [], "plasma": [], "cube": CUBE_PARAMS}
+MAX_PARAMS_PER_PATCH = 8
+
+
+def param_default(p):
+    """a parameter's default in the shape /config reports: a choice by name, a colour as six hex
+    digits, a number in decimal, a toggle as on or off."""
+    if p["kind"] == "choice":
+        return p["choices"][p["default"]]
+    if p["kind"] == "colour":
+        return "%06x" % p["default"]
+    if p["kind"] == "toggle":
+        return "on" if p["default"] else "off"
+    return p["default"]
+
+
+def parse_param_value(p, text):
+    """the value a patch sends, always a string, in the shape the report uses. None is a refusal."""
+    if not isinstance(text, str):
+        return None
+    if p["kind"] == "choice":
+        return text if text in p["choices"] else None
+    if p["kind"] == "toggle":
+        return "on" if text in ("on", "true") else "off" if text in ("off", "false") else None
+    if p["kind"] == "colour":
+        return parse_colour(text)
+    try:
+        v = int(text, 10)
+    except ValueError:
+        return None
+    return v if p["min"] <= v <= p["max"] else None
+
+
+def resolve_generator_params(entries):
+    """validate a whole list before anything is written: an unknown scene, an unknown name or a
+    value that does not fit its kind refuses the request and leaves the settings alone."""
+    if not isinstance(entries, list):
+        raise Reject(400, "invalid_json", "the body is not valid json for this schema")
+    if len(entries) > MAX_PARAMS_PER_PATCH:
+        raise Reject(400, "too_many_params", "at most eight generator parameters per request")
+    out = []
+    for entry in entries:
+        if not isinstance(entry, dict) or set(entry) != {"scene", "name", "value"}:
+            raise Reject(400, "invalid_json", "the body is not valid json for this schema")
+        table = GENERATOR_PARAMS.get(entry["scene"])
+        if table is None:
+            raise Reject(400, "invalid_scene", "scene must name a generator")
+        p = next((q for q in table if q["name"] == entry["name"]), None)
+        if p is None:
+            raise Reject(400, "invalid_param", "no such parameter on that scene")
+        value = parse_param_value(p, entry["value"])
+        if value is None:
+            raise Reject(400, "invalid_param_value", "the value does not fit that parameter")
+        out.append((entry["scene"], entry["name"], value))
+    return out
+
+
 def parse_clock_style(fields):
     """the clock style fields by their bare names (font, colour_mode, colour, colour2, gradient, spread),
     validated with the runtime's codes; shared by the scene block and the settings patch. the
@@ -189,7 +246,9 @@ class Device:
         self.config = {"revision": 0, "saved_revision": 0, "brightness": 100, "base": "art", "generator": "popsquares",
                        "timezone": "UTC0", "ntp_server": None, "ntp_interval_s": 300, "frame_timeout_ms": 500,
                        "metrics_interval_s": 30, "discovery": False, "discovery_prefix": "homeassistant", "origins": [],
-                       "clock": dict(DEFAULT_CLOCK), "ip_mode": "lines"}
+                       "clock": dict(DEFAULT_CLOCK), "ip_mode": "lines",
+                       "generators": {g: {p["name"]: param_default(p) for p in table}
+                                      for g, table in GENERATOR_PARAMS.items()}}
         self.mqtt = {"enabled": False, "host": "", "port": 1883, "username": "", "password": "", "client_id": "", "prefix": "", "tls": False}
         self.ntfy = {"enabled": False, "url": "", "topic": "", "token": "", "username": "", "password": "", "duration_s": 10, "insecure": False, "ca": ""}
         self.ntfy_messages = 0
@@ -276,6 +335,7 @@ class Device:
                 "ntp": {"server": c["ntp_server"], "interval_s": c["ntp_interval_s"]},
                 "frame_timeout_ms": c["frame_timeout_ms"], "metrics_interval_s": c["metrics_interval_s"],
                 "discovery": {"enabled": c["discovery"], "prefix": c["discovery_prefix"]}, "clock": dict(c["clock"]),
+                "generators": {g: dict(v) for g, v in c["generators"].items()},
                 "ip_mode": c["ip_mode"],
                 "allowed_origins": list(c["origins"])}
 
@@ -517,6 +577,12 @@ class Device:
             if not isinstance(body["discovery_prefix"], str) or not 1 <= len(body["discovery_prefix"]) <= 64:
                 raise Reject(400, "invalid_discovery_prefix", "discovery_prefix must be 1..64 characters")
             nxt["discovery_prefix"] = body["discovery_prefix"]
+        resolved = resolve_generator_params(body["generator_params"]) if "generator_params" in body else []
+        if resolved:
+            gens = {g: dict(v) for g, v in c["generators"].items()}
+            for scene_name, name, value in resolved:
+                gens[scene_name][name] = value
+            nxt["generators"] = gens
         clock_keys = {k: v for k, v in body.items() if k.startswith("clock_")}
         if clock_keys:
             # the settings call it clock_digit, the scene block calls it digits
@@ -581,7 +647,7 @@ SCHEMAS = {
     "config": ({"brightness", "base", "generator", "timezone", "ntp_server", "ntp_interval_s", "frame_timeout_ms",
                 "metrics_interval_s", "discovery", "discovery_prefix", "expected_revision",
                 "clock_font", "clock_colour_mode", "clock_colour", "clock_colour2", "clock_gradient", "clock_spread",
-                "clock_digit", "ip_mode"}, set()),
+                "clock_digit", "ip_mode", "generator_params"}, set()),
     "config/save": ({"revision"}, set()),
     "mock/persist": ({"enabled"}, {"enabled"}),
     "mqtt": ({"enabled", "host", "port", "username", "password", "client_id", "prefix", "tls"}, set()),
