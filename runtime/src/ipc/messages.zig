@@ -53,7 +53,7 @@ test "every message kind round-trips through a packet" {
         } },
         .config_get,
         .{ .config_patch = try ConfigPatch.fromApi(.{ .brightness = 3, .timezone = "UTC0", .expected_revision = 5 }) },
-        .{ .config_patch = try ConfigPatch.fromApi(.{ .clock_font = .big, .clock_colour_mode = .gradient, .clock_colour = .{ 1, 2, 3 }, .clock_colour2 = .{ 7, 8, 9 }, .clock_gradient = .vertical, .clock_spread = 128, .ip_mode = .big }) },
+        .{ .config_patch = try ConfigPatch.fromApi(.{ .clock_font = .big, .clock_colour_mode = .gradient, .clock_colour = .{ 1, 2, 3 }, .clock_colour2 = .{ 7, 8, 9 }, .clock_gradient = .vertical, .clock_spread = 128, .clock_digit = .shadow, .ip_mode = .big }) },
         .{ .ip_mode = .{ .mode = 2 } },
         .{ .set_base = .{ .base = 2, .generator = 0, .seed = 0, .ip_mode = 3 } },
         .{ .config_save = .{ .has_revision = 1, .revision = 6 } },
@@ -485,6 +485,7 @@ pub const ConfigPatch = struct {
     clock_colour2: [3]u8 = .{ 0, 0, 0 },
     clock_gradient: u8 = 0,
     clock_spread: u8 = 0,
+    clock_digit: u8 = 0,
     ip_mode: u8 = 0,
 
     pub const F = struct {
@@ -506,9 +507,10 @@ pub const ConfigPatch = struct {
         pub const clock_gradient: u32 = 1 << 15;
         pub const clock_spread: u32 = 1 << 16;
         pub const ip_mode: u32 = 1 << 17;
+        pub const clock_digit: u32 = 1 << 18;
     };
 
-    pub const wire_len = 4 + 3 + 65 + 4 + 4 + 2 + 4 + 1 + 65 + 4 + 11;
+    pub const wire_len = 4 + 3 + 65 + 4 + 4 + 2 + 4 + 1 + 65 + 4 + 12;
 
     pub fn fromApi(p: api.ConfigPatch) error{TooLong}!ConfigPatch {
         var w = ConfigPatch{};
@@ -576,6 +578,10 @@ pub const ConfigPatch = struct {
             w.has |= F.clock_gradient;
             w.clock_gradient = @intFromEnum(v);
         }
+        if (p.clock_digit) |v| {
+            w.has |= F.clock_digit;
+            w.clock_digit = @intFromEnum(v);
+        }
         if (p.clock_spread) |v| {
             w.has |= F.clock_spread;
             w.clock_spread = v;
@@ -608,6 +614,7 @@ pub const ConfigPatch = struct {
             .clock_colour2 = if (h & F.clock_colour2 != 0) self.clock_colour2 else null,
             .clock_gradient = if (h & F.clock_gradient != 0) (enumFromInt(clock.Gradient, self.clock_gradient) orelse null) else null,
             .clock_spread = if (h & F.clock_spread != 0) self.clock_spread else null,
+            .clock_digit = if (h & F.clock_digit != 0) enumFromInt(clockfont.DigitStyle, self.clock_digit) else null,
             .ip_mode = if (h & F.ip_mode != 0) enumFromInt(ip.Mode, self.ip_mode) else null,
         };
     }
@@ -1111,7 +1118,8 @@ fn encodePayload(msg: Message, out: []u8) usize {
             out[o + 8] = p.clock_gradient;
             out[o + 9] = p.clock_spread;
             out[o + 10] = p.ip_mode;
-            o += 11;
+            out[o + 11] = p.clock_digit;
+            o += 12;
             return o;
         },
         .config_save => |c| {
@@ -1436,6 +1444,7 @@ pub fn decodePacket(bytes: []const u8) Error!Packet {
             w.clock_gradient = b[o + 8];
             w.clock_spread = b[o + 9];
             w.ip_mode = b[o + 10];
+            w.clock_digit = b[o + 11];
             break :blk .{ .config_patch = w };
         },
         .config_save => blk: {

@@ -715,7 +715,7 @@ const Netd = struct {
 
     /// the clock style as `{"font","colour_mode","colour","colour2","gradient"}`.
     fn clockJson(o: *Out, s: messages.ClockStyle) void {
-        o.fmt("{{\"font\":\"{s}\",\"colour_mode\":\"{s}\",\"colour\":\"{x:0>2}{x:0>2}{x:0>2}\",\"colour2\":\"{x:0>2}{x:0>2}{x:0>2}\",\"gradient\":\"{s}\",\"spread\":{d}}}", .{ enumName(clock.Font, s.font), enumName(clock.ColourMode, s.mode), s.colour[0], s.colour[1], s.colour[2], s.colour2[0], s.colour2[1], s.colour2[2], enumName(clock.Gradient, s.gradient), s.spread });
+        o.fmt("{{\"font\":\"{s}\",\"colour_mode\":\"{s}\",\"colour\":\"{x:0>2}{x:0>2}{x:0>2}\",\"colour2\":\"{x:0>2}{x:0>2}{x:0>2}\",\"gradient\":\"{s}\",\"spread\":{d},\"digits\":\"{s}\"}}", .{ enumName(clock.Font, s.font), enumName(clock.ColourMode, s.mode), s.colour[0], s.colour[1], s.colour[2], s.colour2[0], s.colour2[1], s.colour2[2], enumName(clock.Gradient, s.gradient), s.spread, enumName(clock.DigitStyle, s.digit) });
     }
 
     /// fps is only meaningful against a continuous cadence: art with no overlay. otherwise null.
