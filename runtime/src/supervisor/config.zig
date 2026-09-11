@@ -10,6 +10,8 @@ const scene = @import("../scene/scene.zig");
 const ip = @import("../scene/ip.zig");
 const ntfy_url = @import("../ntfy/url.zig");
 const tz = @import("../scene/tz.zig");
+const solar = @import("../sys/solar.zig");
+const night = @import("night.zig");
 
 pub const text_max = 64;
 
@@ -85,6 +87,15 @@ pub const Config = struct {
     clock_spread: u8 = clock.default_spread,
     clock_digit: u8 = 0,
     ip_mode: u8 = 0,
+    /// the night brightness schedule: off by default, so a device that has never been told where
+    /// it is behaves exactly as it did before
+    night: bool = false,
+    night_brightness: u8 = 10,
+    /// how long before sunset the dimming starts, and how long after sunrise it finishes
+    night_lead_min: u8 = 20,
+    /// a location pinned by hand, in hundredths of a degree; null takes the timezone's own
+    latitude: ?i16 = null,
+    longitude: ?i16 = null,
     /// the generators' own parameters: generic slots, because a generator is pluggable and has no
     /// settings fields of its own. the clock and the ip scene keep their named ones.
     generator_params: [param.owner_count]param.Values = scene.generator_defaults,
@@ -111,6 +122,31 @@ pub const Config = struct {
     /// behind an iana zone name; "UTC0" if the stored text is neither.
     pub fn tzRule(self: *const Config) []const u8 {
         return tz.resolve(self.timezone.slice()) orelse "UTC0";
+    }
+
+    /// where the schedule thinks the device is: a location pinned by hand, or failing that the
+    /// reference point of the configured iana zone. null when neither is available, which is what
+    /// a bare posix rule and the `Etc/*` zones leave you with.
+    pub fn point(self: *const Config) ?solar.Point {
+        if (self.latitude) |lat| {
+            if (self.longitude) |lon| return .{ .lat_c = lat, .lon_c = lon };
+        }
+        const p = tz.pointFor(self.timezone.slice()) orelse return null;
+        return .{ .lat_c = p.lat_c, .lon_c = p.lon_c };
+    }
+
+    /// true when the location comes from the timezone rather than from a pinned pair
+    pub fn locationAuto(self: *const Config) bool {
+        return self.latitude == null or self.longitude == null;
+    }
+
+    pub fn nightSettings(self: *const Config) night.Settings {
+        return .{
+            .enabled = self.night,
+            .day = self.brightness,
+            .night = self.night_brightness,
+            .lead_s = @as(u32, self.night_lead_min) * 60,
+        };
     }
 
     pub const PatchError = error{ RevisionConflict, TooLong, Invalid };
@@ -144,6 +180,25 @@ pub const Config = struct {
             next.generator_params[rp.owner][rp.slot] = rp.value;
         }
         if (p.ip_mode) |v| next.ip_mode = @intFromEnum(v);
+        if (p.night) |v| next.night = v;
+        if (p.night_brightness) |v| {
+            if (v < 1 or v > 100) return error.Invalid;
+            next.night_brightness = v;
+        }
+        if (p.night_lead_min) |v| {
+            if (v > api.max_night_lead_min) return error.Invalid;
+            next.night_lead_min = v;
+        }
+        // dropping back to the timezone first, so a patch that sets both wins
+        if (p.location_auto) |v| if (v) {
+            next.latitude = null;
+            next.longitude = null;
+        };
+        if (p.location) |l| {
+            if (@abs(l.lat_c) > 9000 or @abs(l.lon_c) > 18000) return error.Invalid;
+            next.latitude = l.lat_c;
+            next.longitude = l.lon_c;
+        }
         next.revision = self.revision + 1;
         self.* = next;
     }
@@ -218,8 +273,9 @@ fn getText(in: []const u8, off: *usize) error{BadPayload}!Text {
 }
 
 const text_wire = 1 + text_max;
-/// schema, revisions, brightness/base/generator, timezone, ntp, intervals, discovery, origins, mqtt
-pub const encoded_len = 1 + 4 + 4 + 3 + text_wire + 5 + 4 + 2 + 4 + 1 + text_wire + 1 + api.max_origins * text_wire + 1 + text_wire + 2 + 4 * text_wire + 1 + 12 + 1 + 5 * text_wire + 2 + 1 + param.owner_count * param.max_per_owner * 4;
+/// schema, revisions, brightness/base/generator, timezone, ntp, intervals, discovery, origins,
+/// mqtt, the clock style, the night schedule
+pub const encoded_len = 1 + 4 + 4 + 3 + text_wire + 5 + 4 + 2 + 4 + 1 + text_wire + 1 + api.max_origins * text_wire + 1 + text_wire + 2 + 4 * text_wire + 1 + 12 + 8 + 1 + 5 * text_wire + 2 + 1 + param.owner_count * param.max_per_owner * 4;
 
 pub fn encode(c: *const Config, out: *[encoded_len]u8) void {
     var o: usize = 0;
@@ -269,6 +325,13 @@ pub fn encode(c: *const Config, out: *[encoded_len]u8) void {
     out[o + 10] = c.ip_mode;
     out[o + 11] = c.clock_digit;
     o += 12;
+    out[o] = @intFromBool(c.night);
+    out[o + 1] = c.night_brightness;
+    out[o + 2] = c.night_lead_min;
+    out[o + 3] = @intFromBool(c.latitude != null and c.longitude != null);
+    std.mem.writeInt(i16, out[o + 4 ..][0..2], c.latitude orelse 0, .little);
+    std.mem.writeInt(i16, out[o + 6 ..][0..2], c.longitude orelse 0, .little);
+    o += 8;
     out[o] = @intFromBool(c.ntfy.enabled);
     o += 1;
     putText(out, &o, c.ntfy.url);
@@ -337,6 +400,14 @@ pub fn decode(in: []const u8) error{BadPayload}!Config {
     c.ip_mode = in[o + 10];
     c.clock_digit = in[o + 11];
     o += 12;
+    c.night = in[o] != 0;
+    c.night_brightness = in[o + 1];
+    c.night_lead_min = in[o + 2];
+    if (in[o + 3] != 0) {
+        c.latitude = std.mem.readInt(i16, in[o + 4 ..][0..2], .little);
+        c.longitude = std.mem.readInt(i16, in[o + 6 ..][0..2], .little);
+    }
+    o += 8;
     c.ntfy.enabled = in[o] != 0;
     o += 1;
     c.ntfy.url = try getText(in, &o);
@@ -383,6 +454,11 @@ const FileForm = struct {
     clock_digit: []const u8 = "solid",
     generator_params: [param.owner_count]param.Values = scene.generator_defaults,
     ip_mode: []const u8 = "lines",
+    night: bool = false,
+    night_brightness: u8 = 10,
+    night_lead_min: u8 = 20,
+    latitude: ?i16 = null,
+    longitude: ?i16 = null,
     mqtt: struct {
         enabled: bool = false,
         host: []const u8 = "",
@@ -437,6 +513,11 @@ pub fn toJson(c: *const Config, out: []u8) error{Overflow}![]u8 {
         .clock_digit = @tagName(enumOr(clockfont.DigitStyle, c.clock_digit, .solid)),
         .generator_params = c.generator_params,
         .ip_mode = @tagName(enumOr(ip.Mode, c.ip_mode, .lines)),
+        .night = c.night,
+        .night_brightness = c.night_brightness,
+        .night_lead_min = c.night_lead_min,
+        .latitude = c.latitude,
+        .longitude = c.longitude,
         .revision = c.revision,
         .brightness = c.brightness,
         .base = base_names[@min(c.base, base_names.len - 1)],
@@ -492,6 +573,15 @@ pub fn fromJson(bytes: []const u8, arena: []u8) error{ Invalid, TooLong }!Config
     c.frame_timeout_ms = f.frame_timeout_ms;
     c.metrics_interval_s = f.metrics_interval_s;
     c.discovery = f.discovery;
+    c.night = f.night;
+    if (f.night_brightness < 1 or f.night_brightness > 100) return error.Invalid;
+    c.night_brightness = f.night_brightness;
+    if (f.night_lead_min > api.max_night_lead_min) return error.Invalid;
+    c.night_lead_min = f.night_lead_min;
+    if (f.latitude) |v| if (@abs(v) > 9000) return error.Invalid;
+    if (f.longitude) |v| if (@abs(v) > 18000) return error.Invalid;
+    c.latitude = f.latitude;
+    c.longitude = f.longitude;
     try c.discovery_prefix.set(f.discovery_prefix);
     if (f.origins.len > api.max_origins) return error.Invalid;
     for (f.origins, 0..) |o, i| try c.origins[i].set(o);
@@ -570,9 +660,47 @@ test "patches validate, bump the revision, and honour the expected revision" {
     try std.testing.expectEqualStrings("S3cret", c.mqtt.password.slice());
 }
 
+test "the night schedule's settings, and where the device thinks it is" {
+    var c = Config{};
+    try std.testing.expect(!c.night); // off until asked for, so nothing changes for anyone else
+    try std.testing.expect(c.point() == null); // and utc0 is nowhere
+
+    // the timezone alone places the device
+    try c.patch(.{ .timezone = "Australia/Sydney", .night = true, .night_brightness = 12, .night_lead_min = 30 });
+    try std.testing.expect(c.locationAuto());
+    try std.testing.expectEqual(@as(i16, -3387), c.point().?.lat_c);
+    const s = c.nightSettings();
+    try std.testing.expect(s.enabled);
+    try std.testing.expectEqual(@as(u8, 100), s.day); // daylight is the settings' own brightness
+    try std.testing.expectEqual(@as(u8, 12), s.night);
+    try std.testing.expectEqual(@as(u32, 30 * 60), s.lead_s);
+
+    // a pinned location wins, and giving it back to the timezone restores the zone's own point
+    try c.patch(.{ .location = .{ .lat_c = -3143, .lon_c = 15291 } });
+    try std.testing.expect(!c.locationAuto());
+    try std.testing.expectEqual(@as(i16, -3143), c.point().?.lat_c);
+    try c.patch(.{ .location_auto = true });
+    try std.testing.expectEqual(@as(i16, -3387), c.point().?.lat_c);
+    // both at once: the pinned pair wins over the fallback in the same patch
+    try c.patch(.{ .location_auto = true, .location = .{ .lat_c = 100, .lon_c = 200 } });
+    try std.testing.expectEqual(@as(i16, 100), c.point().?.lat_c);
+
+    // a bare posix rule names no place, so the schedule has nothing to go on without a pin
+    try c.patch(.{ .location_auto = true, .timezone = "AEST-10AEDT,M10.1.0,M4.1.0/3" });
+    try std.testing.expect(c.point() == null);
+
+    const before = c.revision;
+    try std.testing.expectError(error.Invalid, c.patch(.{ .night_brightness = 0 }));
+    try std.testing.expectError(error.Invalid, c.patch(.{ .night_brightness = 101 }));
+    try std.testing.expectError(error.Invalid, c.patch(.{ .night_lead_min = 121 }));
+    try std.testing.expectError(error.Invalid, c.patch(.{ .location = .{ .lat_c = 9001, .lon_c = 0 } }));
+    try std.testing.expectError(error.Invalid, c.patch(.{ .location = .{ .lat_c = 0, .lon_c = -18001 } }));
+    try std.testing.expectEqual(before, c.revision); // a rejected patch changes nothing
+}
+
 test "ipc encoding round-trips every field" {
     var c = Config{};
-    try c.patch(.{ .brightness = 7, .base = .clock, .generator = .plasma, .timezone = "EST5EDT,M3.2.0,M11.1.0", .ntp_server = .{ 1, 2, 3, 4 }, .ntp_interval_s = 600, .frame_timeout_ms = 250, .metrics_interval_s = 0, .discovery = true, .discovery_prefix = "ha", .clock_font = .segment, .clock_colour_mode = .gradient, .clock_colour = .{ 1, 2, 3 }, .clock_colour2 = .{ 4, 5, 6 }, .clock_gradient = .diagonal, .clock_spread = 12, .ip_mode = .scroll });
+    try c.patch(.{ .brightness = 7, .base = .clock, .generator = .plasma, .timezone = "EST5EDT,M3.2.0,M11.1.0", .ntp_server = .{ 1, 2, 3, 4 }, .ntp_interval_s = 600, .frame_timeout_ms = 250, .metrics_interval_s = 0, .discovery = true, .discovery_prefix = "ha", .clock_font = .segment, .clock_colour_mode = .gradient, .clock_colour = .{ 1, 2, 3 }, .clock_colour2 = .{ 4, 5, 6 }, .clock_gradient = .diagonal, .clock_spread = 12, .ip_mode = .scroll, .night = true, .night_brightness = 12, .night_lead_min = 35, .location = .{ .lat_c = -3387, .lon_c = 15122 } });
     try c.patchMqtt(.{ .enabled = true, .host = "10.0.0.2", .port = 8883, .username = "u", .password = "p", .client_id = "cid", .prefix = "tc002/x", .tls = true });
     c.origins[0] = Text.init("http://panel.local");
     c.origin_count = 1;
@@ -590,7 +718,7 @@ test "ipc encoding round-trips every field" {
 
 test "json persistence round-trips and rejects junk" {
     var c = Config{};
-    try c.patch(.{ .brightness = 33, .base = .ip, .timezone = "AEST-10AEDT,M10.1.0,M4.1.0/3", .ntp_server = .{ 10, 0, 0, 5 }, .clock_font = .big, .clock_colour = .{ 0xff, 0x80, 0x00 }, .clock_colour_mode = .gradient, .ip_mode = .big });
+    try c.patch(.{ .brightness = 33, .base = .ip, .timezone = "AEST-10AEDT,M10.1.0,M4.1.0/3", .ntp_server = .{ 10, 0, 0, 5 }, .clock_font = .big, .clock_colour = .{ 0xff, 0x80, 0x00 }, .clock_colour_mode = .gradient, .ip_mode = .big, .night = true, .night_brightness = 8, .night_lead_min = 0, .location = .{ .lat_c = 5151, .lon_c = -13 } });
     try c.patchMqtt(.{ .enabled = true, .host = "10.0.0.2", .username = "tc002", .password = "Pw1", .prefix = "tc002/dev" });
     c.origins[0] = Text.init("http://panel");
     c.origin_count = 1;
@@ -608,6 +736,11 @@ test "json persistence round-trips and rejects junk" {
     try std.testing.expectEqualStrings("Pw1", back.mqtt.password.slice());
     try std.testing.expectEqualStrings("http://panel", back.origins[0].slice());
     try std.testing.expectEqual(clock.Font.big, back.clockStyle().font);
+    try std.testing.expect(back.night);
+    try std.testing.expectEqual(@as(u8, 8), back.night_brightness);
+    try std.testing.expectEqual(@as(u8, 0), back.night_lead_min);
+    try std.testing.expectEqual(@as(i16, 5151), back.latitude.?);
+    try std.testing.expectEqual(@as(i16, -13), back.longitude.?);
     try std.testing.expectEqual(clock.ColourMode.gradient, back.clockStyle().mode);
     try std.testing.expectEqual(ip.Mode.big, back.ipMode());
     try std.testing.expectEqualStrings("alerts", back.ntfy.topic.slice());

@@ -294,7 +294,7 @@ test "in the menu a clockwise detent moves right through the items" {
     a.openMenu(0);
     try std.testing.expectEqual(menu.Item.brightness, a.menu_state.?.item);
     a.action(.rotate_cw, 0);
-    try std.testing.expectEqual(menu.Item.display_off, a.menu_state.?.item);
+    try std.testing.expectEqual(menu.Item.night, a.menu_state.?.item);
     a.action(.rotate_ccw, 0); // and counter-clockwise goes back
     try std.testing.expectEqual(menu.Item.brightness, a.menu_state.?.item);
     a.action(.rotate_ccw, 0); // wrapping backwards off the top lands on exit
@@ -798,6 +798,8 @@ pub const Arbiter = struct {
             .ip_mode = self.ip.mode,
             .mqtt = self.device.mqtt_on,
             .ntfy = self.device.ntfy_on,
+            .night = self.device.night_on,
+            .night_level = self.device.night_level,
         }, self.device, now_ns);
         self.dirty = true;
     }
@@ -848,6 +850,14 @@ pub const Arbiter = struct {
             },
             .mqtt => |on| {
                 self.device.mqtt_on = on;
+            },
+            // the schedule itself lives in the supervisor: the renderer only keeps what it shows,
+            // and the brightness it decides on arrives like any other
+            .night => |on| {
+                self.device.night_on = on;
+            },
+            .night_level => |v| {
+                self.device.night_level = v;
             },
             .ntfy => |on| {
                 self.device.ntfy_on = on;

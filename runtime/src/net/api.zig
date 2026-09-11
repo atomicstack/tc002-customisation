@@ -88,6 +88,12 @@ pub const Op = union(enum) {
     streams_delete,
 };
 
+/// a location pinned by hand, in hundredths of a degree
+pub const Location = struct { lat_c: i16, lon_c: i16 };
+
+/// two hours of lead is already longer than any twilight the night schedule adds it to
+pub const max_night_lead_min = 120;
+
 pub const ConfigPatch = struct {
     brightness: ?u8 = null,
     base: ?Base = null,
@@ -110,6 +116,12 @@ pub const ConfigPatch = struct {
     /// resolved generator parameters: which generator, which slot in its table, and the value
     generator_params: []const ResolvedParam = &.{},
     ip_mode: ?ip.Mode = null,
+    night: ?bool = null,
+    night_brightness: ?u8 = null,
+    night_lead_min: ?u8 = null,
+    location: ?Location = null,
+    /// true drops a pinned location and goes back to the timezone's own reference point
+    location_auto: ?bool = null,
 };
 
 /// a pem certificate for a self-hosted ntfy: at most this many bytes (a root ca is 1.3-2 kb)
@@ -181,6 +193,12 @@ const ConfigBody = struct {
     clock_digit: ?[]const u8 = null,
     generator_params: ?[]const GenParamBody = null,
     ip_mode: ?[]const u8 = null,
+    night: ?bool = null,
+    night_brightness: ?u8 = null,
+    night_lead_min: ?u8 = null,
+    latitude: ?f64 = null,
+    longitude: ?f64 = null,
+    location_auto: ?bool = null,
 };
 const SaveBody = struct { revision: ?u32 = null };
 const NtfyBody = struct { enabled: ?bool = null, url: ?[]const u8 = null, topic: ?[]const u8 = null, token: ?[]const u8 = null, username: ?[]const u8 = null, password: ?[]const u8 = null, duration_s: ?u16 = null, insecure: ?bool = null, ca: ?[]const u8 = null };
@@ -460,6 +478,12 @@ pub fn parseBody(kind: BodyKind, body: []const u8, arena: *Arena) Route {
                 .op => |op| op,
             };
             const ip_mode: ?ip.Mode = if (b.ip_mode) |t| (enumByName(ip.Mode, t) orelse return bad("invalid_ip_mode", "ip_mode must be lines, mini, scroll or big")) else null;
+            if (b.night_brightness) |v| if (v < 1 or v > 100) return bad("invalid_night_brightness", "night_brightness must be 1..100");
+            if (b.night_lead_min) |v| if (v > max_night_lead_min) return bad("invalid_night_lead", "night_lead_min must be 0..120");
+            const location = switch (parseLocation(b.latitude, b.longitude)) {
+                .reject => |j| return .{ .reject = j },
+                .op => |v| v,
+            };
             const gen_params = if (b.generator_params) |list| switch (parseGeneratorParams(list, arena_params[0..])) {
                 .reject => |j| return .{ .reject = j },
                 .op => |v| v,
@@ -485,6 +509,11 @@ pub fn parseBody(kind: BodyKind, body: []const u8, arena: *Arena) Route {
                 .discovery = b.discovery,
                 .discovery_prefix = b.discovery_prefix,
                 .expected_revision = b.expected_revision,
+                .night = b.night,
+                .night_brightness = b.night_brightness,
+                .night_lead_min = b.night_lead_min,
+                .location = location,
+                .location_auto = b.location_auto,
             } } };
         },
         .config_save => {
@@ -576,6 +605,18 @@ fn parseClockStyle(font_text: ?[]const u8, mode_text: ?[]const u8, colour_text: 
 /// renderer's default; an effect without a direction takes the effect's natural one; a
 /// missing duration is 500 ms; a missing exit backs out the way it came.
 const TransitionRoute = union(enum) { op: ?transition.Spec, reject: Reject };
+const LocationRoute = union(enum) { op: ?Location, reject: Reject };
+
+/// a location pinned by hand: degrees in, hundredths out. both halves or neither, because half a
+/// location is no location, and the timezone's own point is the fallback either way.
+fn parseLocation(lat: ?f64, lon: ?f64) LocationRoute {
+    if (lat == null and lon == null) return .{ .op = null };
+    const a = lat orelse return .{ .reject = .{ .status = 400, .code = "invalid_location", .message = "latitude and longitude go together" } };
+    const o = lon orelse return .{ .reject = .{ .status = 400, .code = "invalid_location", .message = "latitude and longitude go together" } };
+    if (!(a >= -90.0 and a <= 90.0)) return .{ .reject = .{ .status = 400, .code = "invalid_latitude", .message = "latitude must be -90..90" } };
+    if (!(o >= -180.0 and o <= 180.0)) return .{ .reject = .{ .status = 400, .code = "invalid_longitude", .message = "longitude must be -180..180" } };
+    return .{ .op = .{ .lat_c = @intFromFloat(@round(a * 100.0)), .lon_c = @intFromFloat(@round(o * 100.0)) } };
+}
 fn parseTransition(effect_text: ?[]const u8, direction_text: ?[]const u8, ms: ?u32, exit_text: ?[]const u8, natural: transition.Effect) TransitionRoute {
     if (effect_text == null and direction_text == null and ms == null and exit_text == null) return .{ .op = null };
     const exit = if (exit_text) |t| (enumByName(transition.Exit, t) orelse return .{ .reject = .{ .status = 400, .code = "invalid_exit", .message = "exit must be reverse, same or none" } }) else .reverse;
@@ -822,6 +863,31 @@ test "frames are raw octets with query parameters; oversized json is 413" {
     try expectReject(route(testReq(.POST, "/api/v1/frame", "duration_s=5", control_header, "application/json", null), &frame, &c, &origins, &arena), 415, "unsupported_media_type");
     const big = [_]u8{' '} ** (json.max_body + 1);
     try expectReject(route(testReq(.POST, "/api/v1/notify", "", control_header, "application/json", null), &big, &c, &origins, &arena), 413, "body_too_large");
+}
+
+test "the night schedule's fields, and a location that has to arrive in one piece" {
+    const c = testCreds();
+    var arena: Arena = undefined;
+    const origins = OriginPolicy{};
+    const req = testReq(.PATCH, "/api/v1/config", "", admin_header, "application/json", null);
+    const p = route(req, "{\"night\":true,\"night_brightness\":8,\"night_lead_min\":45,\"latitude\":-33.87,\"longitude\":151.215}", &c, &origins, &arena);
+    try std.testing.expectEqual(@as(?bool, true), p.op.config_patch.night);
+    try std.testing.expectEqual(@as(?u8, 8), p.op.config_patch.night_brightness);
+    try std.testing.expectEqual(@as(?u8, 45), p.op.config_patch.night_lead_min);
+    try std.testing.expectEqual(@as(i16, -3387), p.op.config_patch.location.?.lat_c);
+    try std.testing.expectEqual(@as(i16, 15122), p.op.config_patch.location.?.lon_c); // rounded, not truncated
+    const off = route(req, "{\"night\":false,\"location_auto\":true}", &c, &origins, &arena);
+    try std.testing.expectEqual(@as(?bool, false), off.op.config_patch.night);
+    try std.testing.expectEqual(@as(?bool, true), off.op.config_patch.location_auto);
+    try std.testing.expect(off.op.config_patch.location == null);
+
+    try expectReject(route(req, "{\"night_brightness\":0}", &c, &origins, &arena), 400, "invalid_night_brightness");
+    try expectReject(route(req, "{\"night_brightness\":101}", &c, &origins, &arena), 400, "invalid_night_brightness");
+    try expectReject(route(req, "{\"night_lead_min\":121}", &c, &origins, &arena), 400, "invalid_night_lead");
+    try expectReject(route(req, "{\"latitude\":-33.87}", &c, &origins, &arena), 400, "invalid_location");
+    try expectReject(route(req, "{\"longitude\":151.21}", &c, &origins, &arena), 400, "invalid_location");
+    try expectReject(route(req, "{\"latitude\":-91,\"longitude\":0}", &c, &origins, &arena), 400, "invalid_latitude");
+    try expectReject(route(req, "{\"latitude\":0,\"longitude\":181}", &c, &origins, &arena), 400, "invalid_longitude");
 }
 
 test "config, mqtt and streams routes" {

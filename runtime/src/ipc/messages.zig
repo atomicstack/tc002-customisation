@@ -53,7 +53,7 @@ test "every message kind round-trips through a packet" {
         } },
         .config_get,
         .{ .config_patch = try ConfigPatch.fromApi(.{ .brightness = 3, .timezone = "UTC0", .expected_revision = 5 }) },
-        .{ .config_patch = try ConfigPatch.fromApi(.{ .clock_font = .big, .clock_colour_mode = .gradient, .clock_colour = .{ 1, 2, 3 }, .clock_colour2 = .{ 7, 8, 9 }, .clock_gradient = .vertical, .clock_spread = 128, .clock_digit = .shadow, .ip_mode = .big }) },
+        .{ .config_patch = try ConfigPatch.fromApi(.{ .night = true, .night_brightness = 5, .night_lead_min = 60, .location = .{ .lat_c = -3387, .lon_c = 15122 }, .clock_font = .big, .clock_colour_mode = .gradient, .clock_colour = .{ 1, 2, 3 }, .clock_colour2 = .{ 7, 8, 9 }, .clock_gradient = .vertical, .clock_spread = 128, .clock_digit = .shadow, .ip_mode = .big }) },
         .{ .ip_mode = .{ .mode = 2 } },
         .{ .set_base = .{ .base = 2, .generator = 0, .seed = 0, .ip_mode = 3 } },
         .{ .config_save = .{ .has_revision = 1, .revision = 6 } },
@@ -74,7 +74,7 @@ test "every message kind round-trips through a packet" {
         .{ .set_param = .{ .base = 1, .index = 3, .value = 0xff8000 } },
         .{ .device_status = .{ .battery_pct = 80, .usb = 1, .wifi_quality = 49, .wifi_dbm = -61, .time_synced = 1, .mqtt_on = 1, .uptime_s = 90061 } },
         .status_get,
-        .{ .status = .{ .renderer_state = 2, .epoch = 3, .revision = 4, .presented = 5, .base = 1, .brightness = 77, .uptime_s = 8, .mem_available_kb = 14000, .cpu_pct = 12, .fps_x10 = 599, .ip_present = 1, .ip = .{ 10, 0, 0, 111 }, .config_revision = 2, .saved_revision = 1, .boot_id = 0xabcd, .sample_age_ms = 40, .mac = .{ 1, 2, 3, 4, 5, 6 }, .mac_present = 1, .load_1m_x100 = 123, .mem_free_kb = 4000, .wifi_level_dbm = -61, .wifi_quality = 49, .cpu_renderer_pct_x10 = 87, .tmpfs_used_kb = 1300, .battery_mv = 3987, .battery_pct = 80, .usb_present = 1, .clock = ClockStyle.full(.{ .font = .segment }), .mem_total_kb = 36240, .tmpfs_total_kb = 16504, .flash_total_kb = 8192, .flash_used_kb = 368 } },
+        .{ .status = .{ .renderer_state = 2, .epoch = 3, .revision = 4, .presented = 5, .base = 1, .brightness = 77, .uptime_s = 8, .mem_available_kb = 14000, .cpu_pct = 12, .fps_x10 = 599, .ip_present = 1, .ip = .{ 10, 0, 0, 111 }, .config_revision = 2, .saved_revision = 1, .boot_id = 0xabcd, .sample_age_ms = 40, .mac = .{ 1, 2, 3, 4, 5, 6 }, .mac_present = 1, .load_1m_x100 = 123, .mem_free_kb = 4000, .wifi_level_dbm = -61, .wifi_quality = 49, .cpu_renderer_pct_x10 = 87, .tmpfs_used_kb = 1300, .battery_mv = 3987, .battery_pct = 80, .usb_present = 1, .clock = ClockStyle.full(.{ .font = .segment }), .mem_total_kb = 36240, .tmpfs_total_kb = 16504, .flash_total_kb = 8192, .flash_used_kb = 368, .night_phase = 2, .night_override = 1 } },
     };
     var buf: [codec.max_message]u8 = undefined;
     for (all) |m| {
@@ -100,8 +100,17 @@ test "fixed hex vectors" {
 }
 
 test "patch wire forms map back to the api view" {
-    const w = try ConfigPatch.fromApi(.{ .brightness = 3, .timezone = "JST-9", .ntp_server = .{ 9, 9, 9, 9 }, .clock_font = .mini, .clock_colour = .{ 5, 6, 7 } });
+    const w = try ConfigPatch.fromApi(.{ .brightness = 3, .timezone = "JST-9", .ntp_server = .{ 9, 9, 9, 9 }, .clock_font = .mini, .clock_colour = .{ 5, 6, 7 }, .night = true, .night_brightness = 9, .night_lead_min = 45, .location = .{ .lat_c = -3387, .lon_c = 15122 } });
     const a = w.toApi();
+    try std.testing.expectEqual(@as(?bool, true), a.night);
+    try std.testing.expectEqual(@as(?u8, 9), a.night_brightness);
+    try std.testing.expectEqual(@as(?u8, 45), a.night_lead_min);
+    try std.testing.expectEqual(@as(i16, 15122), a.location.?.lon_c);
+    try std.testing.expectEqual(@as(?bool, null), a.location_auto);
+    // dropping a pinned location travels as its own flag, with no coordinates to carry
+    const auto = (try ConfigPatch.fromApi(.{ .location_auto = true })).toApi();
+    try std.testing.expectEqual(@as(?bool, true), auto.location_auto);
+    try std.testing.expect(auto.location == null);
     try std.testing.expectEqual(@as(?clock.Font, .mini), a.clock_font);
     try std.testing.expectEqual([3]u8{ 5, 6, 7 }, a.clock_colour.?);
     try std.testing.expectEqual(@as(?clock.Gradient, null), a.clock_gradient);
@@ -420,7 +429,7 @@ pub const MenuRequest = struct {
     kind: u8,
     value: u32 = 0,
 
-    pub const Kind = enum(u8) { brightness = 0, clock_font = 1, generator = 2, ip_mode = 3, mqtt = 4, ntfy = 5, power_off = 6, reboot = 7 };
+    pub const Kind = enum(u8) { brightness = 0, clock_font = 1, generator = 2, ip_mode = 3, mqtt = 4, ntfy = 5, power_off = 6, reboot = 7, night = 8, night_level = 9 };
 };
 
 /// a parameter of one of the base scenes, by the scene and its index in that scene's table. the
@@ -437,8 +446,10 @@ pub const DeviceStatus = struct {
     mqtt_on: u8 = 0,
     ntfy_on: u8 = 0,
     uptime_s: u32 = 0,
+    night_on: u8 = 0,
+    night_level: u8 = 10,
 
-    pub const wire_len = 1 + 1 + 1 + 2 + 1 + 1 + 1 + 4;
+    pub const wire_len = 1 + 1 + 1 + 2 + 1 + 1 + 1 + 4 + 2;
 };
 pub const Frame = struct { duration_s: u16, transition: Transition = .{}, rgb: geometry.Rgb };
 pub const Brightness = struct { value: u8 };
@@ -491,6 +502,11 @@ pub const ConfigPatch = struct {
     param_count: u8 = 0,
     params: [api.max_params_per_patch]api.ResolvedParam = [_]api.ResolvedParam{.{ .owner = 0, .slot = 0, .value = 0 }} ** api.max_params_per_patch,
     ip_mode: u8 = 0,
+    night: u8 = 0,
+    night_brightness: u8 = 0,
+    night_lead_min: u8 = 0,
+    latitude: i16 = 0,
+    longitude: i16 = 0,
 
     pub const F = struct {
         pub const brightness: u32 = 1 << 0;
@@ -512,9 +528,14 @@ pub const ConfigPatch = struct {
         pub const clock_spread: u32 = 1 << 16;
         pub const ip_mode: u32 = 1 << 17;
         pub const clock_digit: u32 = 1 << 18;
+        pub const night: u32 = 1 << 19;
+        pub const night_brightness: u32 = 1 << 20;
+        pub const night_lead_min: u32 = 1 << 21;
+        pub const location: u32 = 1 << 22;
+        pub const location_auto: u32 = 1 << 23;
     };
 
-    pub const fixed_len = 4 + 3 + 65 + 4 + 4 + 2 + 4 + 1 + 65 + 4 + 12 + 1;
+    pub const fixed_len = 4 + 3 + 65 + 4 + 4 + 2 + 4 + 1 + 65 + 4 + 12 + 7 + 1;
     pub const wire_len = fixed_len + api.max_params_per_patch * 6;
 
     pub fn fromApi(p: api.ConfigPatch) error{TooLong}!ConfigPatch {
@@ -597,6 +618,26 @@ pub const ConfigPatch = struct {
             w.has |= F.ip_mode;
             w.ip_mode = @intFromEnum(v);
         }
+        if (p.night) |v| {
+            w.has |= F.night;
+            w.night = @intFromBool(v);
+        }
+        if (p.night_brightness) |v| {
+            w.has |= F.night_brightness;
+            w.night_brightness = v;
+        }
+        if (p.night_lead_min) |v| {
+            w.has |= F.night_lead_min;
+            w.night_lead_min = v;
+        }
+        if (p.location) |v| {
+            w.has |= F.location;
+            w.latitude = v.lat_c;
+            w.longitude = v.lon_c;
+        }
+        if (p.location_auto) |v| if (v) {
+            w.has |= F.location_auto;
+        };
         return w;
     }
 
@@ -624,6 +665,11 @@ pub const ConfigPatch = struct {
             .clock_digit = if (h & F.clock_digit != 0) enumFromInt(clockfont.DigitStyle, self.clock_digit) else null,
             .generator_params = self.params[0..self.param_count],
             .ip_mode = if (h & F.ip_mode != 0) enumFromInt(ip.Mode, self.ip_mode) else null,
+            .night = if (h & F.night != 0) self.night != 0 else null,
+            .night_brightness = if (h & F.night_brightness != 0) self.night_brightness else null,
+            .night_lead_min = if (h & F.night_lead_min != 0) self.night_lead_min else null,
+            .location = if (h & F.location != 0) .{ .lat_c = self.latitude, .lon_c = self.longitude } else null,
+            .location_auto = if (h & F.location_auto != 0) true else null,
         };
     }
 };
@@ -961,8 +1007,11 @@ pub const StatusSnapshot = struct {
     tmpfs_total_kb: u32 = 0,
     flash_total_kb: u32 = 0,
     flash_used_kb: u32 = 0,
+    // v6: the night brightness schedule, as the supervisor is running it
+    night_phase: u8 = 0, // 0 not running, then day, to_night, night, to_day
+    night_override: u8 = 0, // a brightness set by hand is standing in the schedule's way
 
-    pub const wire_len = 1 + 4 + 4 + 8 + 4 + 4 + 4 + 1 + 4 + 4 + 4 + 4 + 2 + 1 + 4 + 1 + 4 + 4 + 4 + 4 + 4 + (6 + 1 + 2 + 4 + 2 + 1 + 2 + 2 + 2 + 4 + 2 + 1 + 1) + 1 + ClockStyle.wire_len + 1 + NtfyStatus.wire_len + 4 * 4;
+    pub const wire_len = 2 + 1 + 4 + 4 + 8 + 4 + 4 + 4 + 1 + 4 + 4 + 4 + 4 + 2 + 1 + 4 + 1 + 4 + 4 + 4 + 4 + 4 + (6 + 1 + 2 + 4 + 2 + 1 + 2 + 2 + 2 + 4 + 2 + 1 + 1) + 1 + ClockStyle.wire_len + 1 + NtfyStatus.wire_len + 4 * 4;
 };
 
 pub const Message = union(Kind) {
@@ -1051,6 +1100,8 @@ fn encodePayload(msg: Message, out: []u8) usize {
             out[6] = d.mqtt_on;
             out[7] = d.ntfy_on;
             std.mem.writeInt(u32, out[8..12], d.uptime_s, .big);
+            out[12] = d.night_on;
+            out[13] = d.night_level;
             return DeviceStatus.wire_len;
         },
         .ready, .arm_stream, .time_corrected, .stop, .config_get, .status_get, .screen_get => return 0,
@@ -1128,6 +1179,12 @@ fn encodePayload(msg: Message, out: []u8) usize {
             out[o + 10] = p.ip_mode;
             out[o + 11] = p.clock_digit;
             o += 12;
+            out[o] = p.night;
+            out[o + 1] = p.night_brightness;
+            out[o + 2] = p.night_lead_min;
+            std.mem.writeInt(i16, out[o + 3 ..][0..2], p.latitude, .little);
+            std.mem.writeInt(i16, out[o + 5 ..][0..2], p.longitude, .little);
+            o += 7;
             out[o] = p.param_count;
             o += 1;
             for (p.params[0..p.param_count]) |rp| {
@@ -1254,6 +1311,9 @@ fn encodePayload(msg: Message, out: []u8) usize {
                 std.mem.writeInt(u32, out[o..][0..4], v, .big);
                 o += 4;
             }
+            out[o] = st.night_phase;
+            out[o + 1] = st.night_override;
+            o += 2;
             return o;
         },
         .result => |r| {
@@ -1368,6 +1428,8 @@ pub fn decodePacket(bytes: []const u8) Error!Packet {
                 .mqtt_on = b[6],
                 .ntfy_on = b[7],
                 .uptime_s = std.mem.readInt(u32, b[8..12], .big),
+                .night_on = b[12],
+                .night_level = b[13],
             } };
         },
         .screen_get => blk: {
@@ -1465,6 +1527,12 @@ pub fn decodePacket(bytes: []const u8) Error!Packet {
             w.ip_mode = b[o + 10];
             w.clock_digit = b[o + 11];
             o += 12;
+            w.night = b[o];
+            w.night_brightness = b[o + 1];
+            w.night_lead_min = b[o + 2];
+            w.latitude = std.mem.readInt(i16, b[o + 3 ..][0..2], .little);
+            w.longitude = std.mem.readInt(i16, b[o + 5 ..][0..2], .little);
+            o += 7;
             if (b.len < o + 1) return error.BadPayload;
             w.param_count = @min(b[o], w.params.len);
             o += 1;
@@ -1597,6 +1665,9 @@ pub fn decodePacket(bytes: []const u8) Error!Packet {
                 f.* = std.mem.readInt(u32, b[o..][0..4], .big);
                 o += 4;
             }
+            st.night_phase = b[o];
+            st.night_override = b[o + 1];
+            o += 2;
             break :blk .{ .status = st };
         },
         .ready => blk: {

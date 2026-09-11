@@ -174,6 +174,8 @@ const Renderer = struct {
             .ip_mode => |v| .{ .kind = @intFromEnum(K.ip_mode), .value = @intFromEnum(v) },
             .mqtt => |on| .{ .kind = @intFromEnum(K.mqtt), .value = @intFromBool(on) },
             .ntfy => |on| .{ .kind = @intFromEnum(K.ntfy), .value = @intFromBool(on) },
+            .night => |on| .{ .kind = @intFromEnum(K.night), .value = @intFromBool(on) },
+            .night_level => |v| .{ .kind = @intFromEnum(K.night_level), .value = v },
             .power_off => .{ .kind = @intFromEnum(K.power_off) },
             .reboot => .{ .kind = @intFromEnum(K.reboot) },
             // a reseed is not a setting and a close is nobody else's business
@@ -270,6 +272,8 @@ const Renderer = struct {
                     .uptime_s = d.uptime_s,
                     .mqtt_on = d.mqtt_on != 0,
                     .ntfy_on = d.ntfy_on != 0,
+                    .night_on = d.night_on != 0,
+                    .night_level = d.night_level,
                 });
                 return;
             },

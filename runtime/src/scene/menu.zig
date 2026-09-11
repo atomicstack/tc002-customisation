@@ -18,6 +18,8 @@ const scene = @import("scene.zig");
 
 pub const Item = enum(u8) {
     brightness = 0,
+    night,
+    night_level,
     display_off,
     new_seed,
     mqtt,
@@ -29,6 +31,8 @@ pub const Item = enum(u8) {
     pub fn label(self: Item) []const u8 {
         return switch (self) {
             .brightness => "brightness",
+            .night => "night",
+            .night_level => "night level",
             .display_off => "display off",
             .new_seed => "new seed",
             .mqtt => "mqtt",
@@ -42,7 +46,7 @@ pub const Item = enum(u8) {
     /// items whose value the knob or the left/right buttons can change
     fn adjustable(self: Item) bool {
         return switch (self) {
-            .brightness, .mqtt, .ntfy, .info => true,
+            .brightness, .night, .night_level, .mqtt, .ntfy, .info => true,
             else => false,
         };
     }
@@ -70,6 +74,8 @@ pub const Request = union(enum) {
     /// a parameter of the showing scene, by its index in that scene's table
     scene_param: struct { index: u8, value: u32 },
     brightness: u8,
+    night: bool,
+    night_level: u8,
     clock_font: clockfont.Font,
     generator: scene.Generator,
     ip_mode: ip.Mode,
@@ -83,6 +89,8 @@ pub const Request = union(enum) {
 /// the settings the menu shows and edits, as they are when it opens
 pub const Values = struct {
     brightness: u8 = 100,
+    night: bool = false,
+    night_level: u8 = 10,
     clock_font: clockfont.Font = .classic,
     generator: scene.Generator = .popsquares,
     ip_mode: ip.Mode = .lines,
@@ -99,9 +107,11 @@ pub const Status = struct {
     wifi_dbm: i16 = -32768,
     time_synced: bool = false,
     uptime_s: u32 = 0,
-    /// the two settings the menu toggles; pushed with the rest so the menu opens showing the truth
+    /// the settings the menu toggles; pushed with the rest so the menu opens showing the truth
     mqtt_on: bool = false,
     ntfy_on: bool = false,
+    night_on: bool = false,
+    night_level: u8 = 10,
 };
 
 const ns_per_ms = 1_000_000;
@@ -209,6 +219,20 @@ pub const Menu = struct {
                 self.settings.brightness = next;
                 self.stage(.{ .brightness = next }, now);
                 return .{ .brightness = next };
+            },
+            .night => {
+                self.settings.night = !self.settings.night;
+                self.stage(.{ .night = self.settings.night }, now);
+                return .{ .night = self.settings.night };
+            },
+            .night_level => {
+                // in fives, but the last step down is to 1: the panel is still legible there and a
+                // dark bedroom is what the whole schedule is for
+                const v = self.settings.night_level;
+                const next: u8 = if (forward) (if (v < 5) 5 else @min(100, v + 5)) else (if (v <= 5) 1 else v - 5);
+                self.settings.night_level = next;
+                self.stage(.{ .night_level = next }, now);
+                return .{ .night_level = next };
             },
             .mqtt => {
                 self.settings.mqtt = !self.settings.mqtt;
@@ -383,8 +407,9 @@ pub const Menu = struct {
         drawLine(rgb, 1, self.item.label(), dim, now, self.scroll_start_ns);
         const text = self.valueText(&buf);
         drawLine(rgb, 9, text, colour, now, self.scroll_start_ns);
-        if (self.state == .adjusting and self.item == .brightness) {
-            const lit = @as(usize, self.settings.brightness) * geometry.width / 100;
+        if (self.state == .adjusting and (self.item == .brightness or self.item == .night_level)) {
+            const level = if (self.item == .brightness) self.settings.brightness else self.settings.night_level;
+            const lit = @as(usize, level) * geometry.width / 100;
             for (0..lit) |x| setPixel(rgb, @intCast(x), 15, colour);
         } else {
             // one dot per item, the current one solid, up only for a while after the last move
@@ -395,6 +420,8 @@ pub const Menu = struct {
     fn valueText(self: *const Menu, buf: []u8) []const u8 {
         return switch (self.item) {
             .brightness => std.fmt.bufPrint(buf, "{d}%", .{self.settings.brightness}) catch "?",
+            .night => if (self.settings.night) "on" else "off",
+            .night_level => std.fmt.bufPrint(buf, "{d}%", .{self.settings.night_level}) catch "?",
             .mqtt => if (self.settings.mqtt) "on" else "off",
             .ntfy => if (self.settings.ntfy) "on" else "off",
             .info => self.readoutText(buf),
@@ -551,8 +578,7 @@ test "the knob walks the list, wrapping, and exit sits one click back from the t
 
 test "a click acts on the item showing" {
     var m = opened();
-    _ = m.input(.next, 0); // display off
-    try std.testing.expectEqual(Item.display_off, m.item);
+    m.item = .display_off;
     try std.testing.expect(m.input(.click, 0) == .power_off);
 
     m = opened();
@@ -567,6 +593,33 @@ test "a click acts on the item showing" {
     m.item = .brightness; // an adjustable enters adjusting rather than acting
     try std.testing.expect(m.input(.click, 0) == .none);
     try std.testing.expectEqual(State.adjusting, m.state);
+}
+
+test "the night schedule's two items: a toggle and a level that reaches down to one" {
+    var m = opened();
+    m.item = .night;
+    try std.testing.expect(m.input(.click, 0) == .none); // adjustable, so it enters adjusting
+    try std.testing.expect(m.input(.next, ms) == .night);
+    try std.testing.expect(m.settings.night);
+    try std.testing.expect(m.input(.next, 2 * ms) == .night); // and back off again
+    try std.testing.expect(!m.settings.night);
+
+    m = opened();
+    m.item = .night_level;
+    m.settings.night_level = 10;
+    _ = m.input(.click, 0);
+    var t: u64 = 0;
+    for (0..3) |_| {
+        t += 40 * ms;
+        _ = m.input(.prev, t);
+    }
+    try std.testing.expectEqual(@as(u8, 1), m.settings.night_level); // 10, 5, 1, and it stops there
+    _ = m.input(.next, t + ms);
+    try std.testing.expectEqual(@as(u8, 5), m.settings.night_level);
+    // one request when it settles, like every other value
+    _ = m.tick(t + ms + commit_delay_ns);
+    const settled = m.takeReady();
+    try std.testing.expect(settled == .night_level and settled.night_level == 5);
 }
 
 test "a knob spin previews every step but sends one request when it settles" {

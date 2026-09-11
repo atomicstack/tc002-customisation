@@ -22,6 +22,7 @@ const ip = @import("scene/ip.zig");
 const clockscene = @import("scene/clock.zig");
 const param = @import("scene/param.zig");
 const sntp = @import("supervisor/sntp.zig");
+const night = @import("supervisor/night.zig");
 const api = @import("net/api.zig");
 
 const linux = std.os.linux;
@@ -34,9 +35,17 @@ pub const std_options: std.Options = .{ .enable_segfault_handler = false };
 
 const ns_per_s = std.time.ns_per_s;
 
+/// the wall clock in whole seconds, which is what the sun is on
+fn unixNow() i64 {
+    return @intCast(sys.realtimeNs() / ns_per_s);
+}
+
 const Tag = enum(u64) { timer = 1, signals = 2, ipc = 3, keys = 4, netd = 5, mcu = 6, logs = 7, sntp = 8, ntfy = 9 };
 
 const tick_ns: u64 = 100_000_000;
+/// how often the night schedule is consulted: a ramp of tens of minutes over a hundred steps moves
+/// no faster than this, and asking costs a few dozen floating point operations
+const night_poll_ns: u64 = 10 * ns_per_s;
 const property_timeout_ns: u64 = 2 * ns_per_s;
 const ipc_packets_per_iteration = 32;
 const relay_timeout_ns: u64 = 2 * ns_per_s;
@@ -370,6 +379,9 @@ const Supervisor = struct {
     /// the children's stdout and stderr: drained into the ring and echoed to our own stderr
     log_pipe: ?[2]sys.Fd = null,
     sntp_link: SntpLink = .{},
+    /// the night brightness schedule; the phase it is in lives in the snapshot
+    night: night.Schedule = .{},
+    next_night_poll: u64 = 0,
 
     fn send(self: *Supervisor, msg: messages.Message) void {
         self.request_id += 1;
@@ -606,11 +618,13 @@ const Supervisor = struct {
                 self.rebootNow();
                 return;
             },
-            .brightness, .clock_font, .generator, .ip_mode, .mqtt, .ntfy => {},
+            .brightness, .clock_font, .generator, .ip_mode, .mqtt, .ntfy, .night, .night_level => {},
         }
         const before = self.cfg;
         const patched = switch (kind) {
             .brightness => self.cfg.patch(.{ .brightness = @truncate(m.value) }),
+            .night => self.cfg.patch(.{ .night = m.value != 0 }),
+            .night_level => self.cfg.patch(.{ .night_brightness = @truncate(m.value) }),
             .clock_font => self.cfg.patch(.{ .clock_font = messages.enumFromInt(clock.Font, @as(u8, @truncate(m.value))) orelse return }),
             .generator => self.cfg.patch(.{ .generator = messages.enumFromInt(scene.Generator, @as(u8, @truncate(m.value))) orelse return }),
             .ip_mode => self.cfg.patch(.{ .ip_mode = messages.enumFromInt(ip.Mode, @as(u8, @truncate(m.value))) orelse return }),
@@ -654,7 +668,10 @@ const Supervisor = struct {
     /// live effects of a settings change: the renderer gets transient commands, netd the full config.
     fn applyConfigLive(self: *Supervisor, before: config.Config) void {
         const c = &self.cfg;
-        if (before.brightness != c.brightness) self.send(.{ .brightness = .{ .value = c.brightness } });
+        if (before.brightness != c.brightness) {
+            self.send(.{ .brightness = .{ .value = c.brightness } });
+            self.night.hold(unixNow()); // set by hand, so the schedule stands aside until the next ramp
+        }
         if (before.base != c.base or before.generator != c.generator) self.send(.{ .set_base = .{ .base = c.base, .generator = c.generator, .seed = 0 } });
         if (!std.mem.eql(u8, before.timezone.slice(), c.timezone.slice())) self.send(.{ .set_timezone = config.Text.init(c.tzRule()) });
         if (!std.meta.eql(before.clockStyle(), c.clockStyle())) self.send(.{ .clock_style = messages.ClockStyle.full(c.clockStyle()) });
@@ -663,6 +680,16 @@ const Supervisor = struct {
         // panel menu applies its own preview, an http client has none
         if (!std.meta.eql(before.generator_params, c.generator_params)) self.sendGeneratorParams();
         if (!std.meta.eql(before.ntp_server, c.ntp_server) or before.ntp_interval_s != c.ntp_interval_s) self.sntp_link.configure(self, sys.monotonicNs()); // sntp
+        const was_running = self.night.settings.enabled and self.night.point != null;
+        self.syncNight();
+        self.next_night_poll = 0; // a settings change takes effect now rather than at the next tick
+        if (was_running and !(self.night.settings.enabled and self.night.point != null)) {
+            // the schedule was driving the panel and has just stopped: give the settings' own
+            // brightness back, because nothing else will
+            self.night.override_until = null;
+            self.snapshot.night_phase = 0;
+            if (self.snapshot.brightness != c.brightness) self.send(.{ .brightness = .{ .value = c.brightness } });
+        }
         self.snapshot.config_revision = c.revision;
         self.snapshot.saved_revision = c.saved_revision;
     }
@@ -948,6 +975,8 @@ const Supervisor = struct {
                     self.sendNetd(.{ .log_lines = page }, p.request_id);
                 },
                 .set_base, .notify, .frame, .brightness, .reseed, .arm_stream, .screen_get, .inject_input, .power, .clock_style, .ip_mode => {
+                    // a brightness from an api client or mqtt is as hand-set as the knob is
+                    if (p.message == .brightness) self.night.hold(unixNow());
                     if (self.child_fd == null or lifecycle.state != .running) {
                         self.relayResult(p.request_id, .unavailable, self.snapshot.revision);
                         continue;
@@ -1452,7 +1481,36 @@ const Supervisor = struct {
             .mqtt_on = @intFromBool(self.cfg.mqtt.enabled),
             .ntfy_on = @intFromBool(self.cfg.ntfy.enabled),
             .uptime_s = st.uptime_s,
+            .night_on = @intFromBool(self.cfg.night),
+            .night_level = self.cfg.night_brightness,
         } });
+    }
+
+    /// the night brightness schedule. it drives the panel transiently, exactly as an api client
+    /// would: the settings keep the daylight brightness, and nothing is written to flash by a ramp
+    /// that runs every evening.
+    fn pollNight(self: *Supervisor, now: u64) void {
+        if (now < self.next_night_poll) return;
+        self.next_night_poll = now + night_poll_ns;
+        if (self.snapshot.renderer_state != 2) return;
+        const unix = unixNow();
+        const want = self.night.target(unix); // null while a hand-set brightness still stands
+        const plan = self.night.plan(unix);
+        const phase: u8 = if (plan) |p| @as(u8, @intFromEnum(p.phase)) + 1 else 0;
+        if (phase != self.snapshot.night_phase) {
+            if (plan) |p| log.info("night: {s}, brightness {d}{s}", .{ p.phase.text(), p.brightness, if (want == null) " (held)" else "" });
+        }
+        self.snapshot.night_phase = phase;
+        self.snapshot.night_override = @intFromBool(self.night.override_until != null);
+        const value = want orelse return;
+        if (value == self.snapshot.brightness) return;
+        self.send(.{ .brightness = .{ .value = value } });
+    }
+
+    /// the schedule works from copies of the settings, refreshed whenever they change
+    fn syncNight(self: *Supervisor) void {
+        self.night.settings = self.cfg.nightSettings();
+        self.night.point = self.cfg.point();
     }
 
     fn pollIp(self: *Supervisor, now: u64) void {
@@ -1639,8 +1697,9 @@ fn run(cfg_in: cli.Config, environ: anytype, args: []const [:0]const u8) !u8 {
             log.info("mcu link {s} at {d} baud, polling every {d} s", .{ cfg.mcu_path, cfg.mcu_baud, cfg.mcu_poll_s });
         } else |e| log.warn("mcu link unavailable ({s}: {s}); battery telemetry stays unknown", .{ cfg.mcu_path, sys.errText(e) });
     }
-    // 9. the sntp client, on the configured server (none by default)
+    // 9. the sntp client, on the configured server (none by default), and the night schedule
     s.sntp_link.configure(&s, sys.monotonicNs());
+    s.syncNight();
 
     var events: [8]sys.Event = undefined;
     while (true) {
@@ -1653,6 +1712,7 @@ fn run(cfg_in: cli.Config, environ: anytype, args: []const [:0]const u8) !u8 {
         s.pollLifecycle(now);
         s.pollIp(now);
         s.pushDeviceStatus(now);
+        s.pollNight(now);
         s.drainNetd(now);
         s.pollNetd(now);
         s.drainNtfy(now);

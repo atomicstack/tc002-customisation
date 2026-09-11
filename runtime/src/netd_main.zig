@@ -20,6 +20,8 @@ const param = @import("scene/param.zig");
 const scene = @import("scene/scene.zig");
 const actions = @import("input/actions.zig");
 const clock = @import("scene/clock.zig");
+const solar = @import("sys/solar.zig");
+const night = @import("supervisor/night.zig");
 
 const linux = std.os.linux;
 
@@ -727,6 +729,20 @@ const Netd = struct {
         };
     }
 
+    fn nightPhaseName(p: u8) []const u8 {
+        return switch (p) {
+            1...4 => night.Phase.text(@enumFromInt(p - 1)),
+            else => "unknown",
+        };
+    }
+
+    /// hundredths of a degree as a decimal, without pulling in float formatting
+    fn degreesJson(o: *Out, hundredths: i16) void {
+        const sign = if (hundredths < 0) "-" else "";
+        const v: u32 = @abs(hundredths);
+        o.fmt("{s}{d}.{d:0>2}", .{ sign, v / 100, v % 100 });
+    }
+
     fn timeStateName(s: u8) []const u8 {
         return switch (s) {
             0 => "unsynced",
@@ -765,12 +781,35 @@ const Netd = struct {
         o.add("},\"clock\":");
         clockJson(o, st.clock);
         o.fmt(",\"ip_mode\":\"{s}\"", .{enumName(ip.Mode, st.ip_mode)});
+        o.add(",\"night\":");
+        self.nightStatusJson(o, &st);
         o.add(",\"ntfy\":");
         self.ntfyStatusJson(o);
         o.fmt(",\"config_revision\":{d},\"saved_revision\":{d},\"transport\":\"plaintext\",\"mqtt\":", .{ st.config_revision, st.saved_revision });
         self.mqttStatusJson(o, now);
         o.fmt(",\"boot_id\":\"{x:0>8}\",\"sample_age_ms\":{d},", .{ st.boot_id, st.sample_age_ms + @as(u32, @intCast(@min((now -| self.status_at_ns) / 1_000_000, 0xffffffff))) });
         self.telemetryJson(o);
+        o.add("}");
+    }
+
+    /// what the night schedule is doing, and the crossings it is working from. the phase comes
+    /// from the supervisor, which owns the schedule; the sun is recomputed here from the same
+    /// settings and the same clock, so it costs nothing to carry it over the wire.
+    fn nightStatusJson(self: *Netd, o: *Out, st: *const messages.StatusSnapshot) void {
+        const c = &self.cfg;
+        o.fmt("{{\"enabled\":{},\"phase\":", .{c.night});
+        if (st.night_phase == 0) o.add("null") else o.fmt("\"{s}\"", .{nightPhaseName(st.night_phase)});
+        o.fmt(",\"held\":{}", .{st.night_override != 0});
+        const point = c.point();
+        if (point != null and st.time_state != 0) {
+            const d = solar.day(@intCast(sys.realtimeNs() / std.time.ns_per_s), point.?);
+            o.add(",\"today\":{");
+            inline for (.{ "dawn", "sunrise", "sunset", "dusk" }, .{ d.dawn, d.sunrise, d.sunset, d.dusk }, 0..) |name, at, i| {
+                if (i > 0) o.add(",");
+                if (at) |t| o.fmt("\"{s}\":{d}", .{ name, t }) else o.fmt("\"{s}\":null", .{name});
+            }
+            o.fmt(",\"sun_up\":{}}}", .{d.sun_up});
+        } else o.add(",\"today\":null");
         o.add("}");
     }
 
@@ -799,6 +838,20 @@ const Netd = struct {
         o.add("},\"clock\":");
         clockJson(o, messages.ClockStyle.full(c.clockStyle()));
         o.fmt(",\"ip_mode\":\"{s}\"", .{enumName(ip.Mode, c.ip_mode)});
+        o.fmt(",\"night\":{{\"enabled\":{},\"brightness\":{d},\"lead_min\":{d}}},\"latitude\":", .{ c.night, c.night_brightness, c.night_lead_min });
+        if (c.latitude) |v| degreesJson(o, v) else o.add("null");
+        o.add(",\"longitude\":");
+        if (c.longitude) |v| degreesJson(o, v) else o.add("null");
+        // and where those two resolve to, which is the timezone's own reference point when they
+        // are not set. read-only: a patch sets latitude and longitude, or location_auto.
+        o.add(",\"location\":");
+        if (c.point()) |pt| {
+            o.add("{\"latitude\":");
+            degreesJson(o, pt.lat_c);
+            o.add(",\"longitude\":");
+            degreesJson(o, pt.lon_c);
+            o.fmt(",\"source\":\"{s}\"}}", .{if (c.locationAuto()) "timezone" else "set"});
+        } else o.add("null");
         self.generatorParamsJson(o, c);
         o.add(",\"allowed_origins\":[");
         for (c.origins[0..c.origin_count], 0..) |*org, i| {
@@ -864,7 +917,7 @@ const Netd = struct {
         if (st.cpu_pct == 255) o.add("\"cpu_pct\":null,") else o.fmt("\"cpu_pct\":{d},", .{st.cpu_pct});
         o.fmt("\"rss_kb\":{{\"supervisor\":{d},\"renderer\":{d},\"netd\":{d}}},\"renderer_restarts\":{d},\"mqtt_reconnects\":{d},\"scene\":\"{s}\",\"brightness\":{d},\"power\":{},", .{ st.rss_supervisor_kb, st.rss_renderer_kb, st.rss_netd_kb, st.restarts, self.client.reconnects, baseName(st.base), st.brightness, st.power != 0 });
         self.fpsJson(o);
-        o.fmt("\"presented\":{d},\"http_requests\":{d},\"http_rejected\":{d},\"mqtt_commands\":{d},\"mqtt_dropped\":{d},\"time\":{{\"state\":\"{s}\"}},", .{ st.presented, self.http_requests, self.http_rejected, self.mqtt_commands, self.mqtt_dropped, timeStateName(st.time_state) });
+        o.fmt("\"presented\":{d},\"http_requests\":{d},\"http_rejected\":{d},\"mqtt_commands\":{d},\"mqtt_dropped\":{d},\"time\":{{\"state\":\"{s}\"}},\"night\":\"{s}\",", .{ st.presented, self.http_requests, self.http_rejected, self.mqtt_commands, self.mqtt_dropped, timeStateName(st.time_state), if (st.night_phase == 0) "off" else nightPhaseName(st.night_phase) });
         self.telemetryJson(o);
         o.add("}");
     }
@@ -1284,6 +1337,7 @@ const Netd = struct {
         .{ .key = "mqtt_reconnects", .name = "mqtt reconnects", .template = "{{ value_json.mqtt_reconnects }}", .unit = "", .device_class = "", .state_class = "total" },
         .{ .key = "scene", .name = "scene", .template = "{{ value_json.scene }}", .unit = "", .device_class = "", .state_class = "" },
         .{ .key = "brightness", .name = "brightness", .template = "{{ value_json.brightness }}", .unit = "%", .device_class = "", .state_class = "measurement" },
+        .{ .key = "night", .name = "night schedule", .template = "{{ value_json.night }}", .unit = "", .device_class = "", .state_class = "" },
         .{ .key = "fps", .name = "achieved fps", .template = "{{ value_json.fps if value_json.fps is not none else 'unknown' }}", .unit = "fps", .device_class = "", .state_class = "measurement" },
         .{ .key = "presented", .name = "frames presented", .template = "{{ value_json.presented }}", .unit = "", .device_class = "", .state_class = "total_increasing" },
         .{ .key = "time_state", .name = "time sync", .template = "{{ value_json.time.state }}", .unit = "", .device_class = "", .state_class = "" },
