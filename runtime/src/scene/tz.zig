@@ -179,6 +179,45 @@ pub fn resolve(text: []const u8) ?[]const u8 {
     return null;
 }
 
+/// where a timezone setting puts the device: the reference point tzdata gives the iana zone, in
+/// hundredths of a degree. null when the text is a bare posix rule (which names no place), an
+/// unknown zone, or one of the `Etc/*` pseudo-zones, which have no location of their own.
+pub fn pointFor(text: []const u8) ?zones.Point {
+    var rest: []const u8 = zones.blob;
+    var i: usize = 0;
+    while (rest.len > 0) : (i += 1) {
+        const n = std.mem.indexOfScalar(u8, rest, 0) orelse break;
+        const after_name = rest[n + 1 ..];
+        const m = std.mem.indexOfScalar(u8, after_name, 0) orelse break;
+        if (std.ascii.eqlIgnoreCase(rest[0..n], text)) {
+            const p = zones.points[i];
+            return if (p.lat_c == zones.unplaced) null else p;
+        }
+        rest = after_name[m + 1 ..];
+    }
+    return null;
+}
+
+test "a zone name places the device, a bare rule does not" {
+    const syd = pointFor("Australia/Sydney").?;
+    try std.testing.expectEqual(@as(i16, -3387), syd.lat_c);
+    try std.testing.expectEqual(@as(i16, 15122), syd.lon_c);
+    // a link zone takes the coordinates of the zone it points at
+    try std.testing.expectEqual(syd, pointFor("australia/nsw").?);
+    const lon = pointFor("Europe/London").?;
+    try std.testing.expectEqual(@as(i16, 5151), lon.lat_c);
+    try std.testing.expectEqual(@as(i16, -13), lon.lon_c);
+    try std.testing.expect(pointFor("AEST-10AEDT,M10.1.0,M4.1.0/3") == null); // a rule names no place
+    try std.testing.expect(pointFor("Etc/UTC") == null); // a pseudo-zone has none either
+    try std.testing.expect(pointFor("Mars/Olympus") == null);
+    // every placed zone is on the planet
+    for (zones.points) |pt| {
+        if (pt.lat_c == zones.unplaced) continue;
+        try std.testing.expect(pt.lat_c >= -9000 and pt.lat_c <= 9000);
+        try std.testing.expect(pt.lon_c >= -18000 and pt.lon_c <= 18000);
+    }
+}
+
 test "zone names resolve to rules that parse and follow their daylight saving" {
     try std.testing.expectEqualStrings("CET-1CEST,M3.5.0,M10.5.0/3", resolve("Europe/Amsterdam").?);
     try std.testing.expectEqualStrings("AEST-10AEDT,M10.1.0,M4.1.0/3", resolve("australia/melbourne").?);

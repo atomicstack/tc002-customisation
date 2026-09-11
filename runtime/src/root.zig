@@ -2,6 +2,7 @@
 test {
     _ = @import("sys/civil.zig");
     _ = @import("sys/log.zig");
+    _ = @import("sys/solar.zig");
     _ = @import("panel/geometry.zig");
     _ = @import("panel/pack.zig");
     _ = @import("panel/presenter.zig");
@@ -41,4 +42,5 @@ test {
     _ = @import("supervisor/mcu.zig");
     _ = @import("supervisor/logring.zig");
     _ = @import("supervisor/sntp.zig");
+    _ = @import("supervisor/night.zig");
 }
