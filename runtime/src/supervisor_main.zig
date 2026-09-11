@@ -1095,7 +1095,17 @@ const Supervisor = struct {
         if (sys.readFile("/proc/meminfo", &proc_buf)) |text| {
             self.snapshot.mem_free_kb = @intCast(@min(procValue(text, "MemFree:") orelse 0, 0xffffffff));
             self.snapshot.tmpfs_used_kb = @intCast(@min(procValue(text, "Shmem:") orelse 0xffffffff, 0xffffffff));
+            // the total the used and available figures are a fraction of; without it nothing
+            // downstream can draw a bar
+            self.snapshot.mem_total_kb = @intCast(@min(procValue(text, "MemTotal:") orelse 0, 0xffffffff));
         } else |_| {}
+        // the flash partition, which is the only durable storage and appears nowhere in /proc,
+        // and the size of the tmpfs the runtime lives in
+        if (sys.fsUsage("/data")) |u| {
+            self.snapshot.flash_total_kb = u.total_kb;
+            self.snapshot.flash_used_kb = u.used_kb;
+        } else |_| {}
+        if (sys.fsUsage("/tmp")) |u| self.snapshot.tmpfs_total_kb = u.total_kb else |_| {}
         if (sys.readFile("/proc/loadavg", &proc_buf)) |text| {
             // "0.12 0.08 0.05 1/78 1234"
             if (std.mem.indexOfScalar(u8, text, ' ')) |sp| {

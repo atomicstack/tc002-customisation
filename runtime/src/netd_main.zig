@@ -729,7 +729,7 @@ const Netd = struct {
         o.add("{");
         o.fmt("\"epoch\":{d},\"revision\":{d},\"renderer\":\"{s}\",\"base\":\"{s}\",\"generator\":\"{s}\",\"overlay\":\"{s}\",\"brightness\":{d},\"power\":{},\"presented\":{d},", .{ st.epoch, st.revision, rendererName(st.renderer_state), baseName(st.base), generatorName(st.generator), overlayName(st.overlay), st.brightness, st.power != 0, st.presented });
         self.fpsJson(o);
-        o.fmt("\"uptime_s\":{d},\"memory_available_kb\":{d},", .{ st.uptime_s, st.mem_available_kb });
+        o.fmt("\"uptime_s\":{d},\"memory_available_kb\":{d},\"memory_total_kb\":{d},", .{ st.uptime_s, st.mem_available_kb, st.mem_total_kb });
         if (st.cpu_pct == 255) o.add("\"cpu_pct\":null,") else o.fmt("\"cpu_pct\":{d},", .{st.cpu_pct});
         o.fmt("\"restarts\":{d},\"network\":{{\"ip\":", .{st.restarts});
         if (st.ip_present != 0) o.fmt("\"{d}.{d}.{d}.{d}\"", .{ st.ip[0], st.ip[1], st.ip[2], st.ip[3] }) else o.add("null");
@@ -847,8 +847,9 @@ const Netd = struct {
         var id: [24]u8 = undefined;
         o.fmt("\"device_id\":\"{s}\",", .{self.deviceId(&id)});
         if (st.load_1m_x100 == 0xffff) o.add("\"load_1m\":null,") else o.fmt("\"load_1m\":{d}.{d:0>2},", .{ st.load_1m_x100 / 100, st.load_1m_x100 % 100 });
-        o.fmt("\"memory_free_kb\":{d},", .{st.mem_free_kb});
+        o.fmt("\"memory_free_kb\":{d},\"memory_total_kb\":{d},", .{ st.mem_free_kb, st.mem_total_kb });
         if (st.tmpfs_used_kb == 0xffffffff) o.add("\"tmpfs_used_kb\":null,") else o.fmt("\"tmpfs_used_kb\":{d},", .{st.tmpfs_used_kb});
+        o.fmt("\"tmpfs_total_kb\":{d},\"flash_used_kb\":{d},\"flash_total_kb\":{d},", .{ st.tmpfs_total_kb, st.flash_used_kb, st.flash_total_kb });
         o.add("\"wifi\":{\"rssi_dbm\":");
         if (st.wifi_level_dbm == -32768) o.add("null") else o.fmt("{d}", .{st.wifi_level_dbm});
         o.add(",\"quality\":");
@@ -1261,6 +1262,11 @@ const Netd = struct {
         .{ .key = "load_1m", .name = "load average 1m", .template = "{{ value_json.load_1m }}", .unit = "", .device_class = "", .state_class = "measurement" },
         .{ .key = "memory_free", .name = "memory free", .template = "{{ value_json.memory_free_kb }}", .unit = "kB", .device_class = "data_size", .state_class = "measurement" },
         .{ .key = "tmpfs_used", .name = "tmpfs and shmem used", .template = "{{ value_json.tmpfs_used_kb }}", .unit = "kB", .device_class = "data_size", .state_class = "measurement" },
+        .{ .key = "memory_total", .name = "memory total", .template = "{{ value_json.memory_total_kb }}", .unit = "kB", .device_class = "data_size", .state_class = "measurement" },
+        .{ .key = "memory_used_pct", .name = "memory used", .template = "{{ (100 * (value_json.memory_total_kb - value_json.memory_available_kb) / value_json.memory_total_kb) | round(0) if value_json.memory_total_kb else 'unknown' }}", .unit = "%", .device_class = "", .state_class = "measurement" },
+        .{ .key = "flash_used", .name = "flash used", .template = "{{ value_json.flash_used_kb }}", .unit = "kB", .device_class = "data_size", .state_class = "measurement" },
+        .{ .key = "flash_total", .name = "flash total", .template = "{{ value_json.flash_total_kb }}", .unit = "kB", .device_class = "data_size", .state_class = "measurement" },
+        .{ .key = "flash_used_pct", .name = "flash used", .template = "{{ (100 * value_json.flash_used_kb / value_json.flash_total_kb) | round(0) if value_json.flash_total_kb else 'unknown' }}", .unit = "%", .device_class = "", .state_class = "measurement" },
         .{ .key = "wifi_rssi", .name = "wifi signal", .template = "{{ value_json.wifi.rssi_dbm }}", .unit = "dBm", .device_class = "signal_strength", .state_class = "measurement" },
         .{ .key = "wifi_quality", .name = "wifi link quality", .template = "{{ value_json.wifi.quality }}", .unit = "", .device_class = "", .state_class = "measurement" },
         .{ .key = "cpu_supervisor", .name = "supervisor cpu", .template = "{{ value_json.cpu_pct_by_process.supervisor }}", .unit = "%", .device_class = "", .state_class = "measurement" },

@@ -422,6 +422,41 @@ pub fn dropPrivileges(uid: u32, gid: u32) Error!void {
 }
 
 /// read a whole small file (procfs or a config file) into `buf`.
+/// the 32-bit `statfs` a 4.9 arm kernel fills in. jffs2 reports usable blocks here, which is the
+/// only place the flash partition's size and usage can be read: nothing in /proc carries it.
+pub const Statfs = extern struct {
+    kind: u32,
+    bsize: u32,
+    blocks: u32,
+    bfree: u32,
+    bavail: u32,
+    files: u32,
+    ffree: u32,
+    fsid: [2]u32,
+    namelen: u32,
+    frsize: u32,
+    flags: u32,
+    spare: [4]u32,
+};
+
+pub fn statfs(path: [*:0]const u8) Error!Statfs {
+    var s: Statfs = undefined;
+    _ = try check(linux.syscall2(.statfs, @intFromPtr(path), @intFromPtr(&s)));
+    return s;
+}
+
+/// a filesystem's size and how much of it is in use, in kilobytes
+pub fn fsUsage(path: [*:0]const u8) Error!struct { total_kb: u32, used_kb: u32 } {
+    const s = try statfs(path);
+    const per_kb: u64 = @as(u64, s.bsize) / 1024;
+    const total: u64 = @as(u64, s.blocks) * per_kb;
+    const free: u64 = @as(u64, s.bfree) * per_kb;
+    return .{
+        .total_kb = @intCast(@min(total, 0xffffffff)),
+        .used_kb = @intCast(@min(total -| free, 0xffffffff)),
+    };
+}
+
 pub fn readFile(path: [*:0]const u8, buf: []u8) Error![]u8 {
     const fd = try open(path, .{ .ACCMODE = .RDONLY, .CLOEXEC = true }, 0);
     defer close(fd);

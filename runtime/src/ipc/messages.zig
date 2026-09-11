@@ -73,7 +73,7 @@ test "every message kind round-trips through a packet" {
         .{ .set_param = .{ .base = 1, .index = 3, .value = 0xff8000 } },
         .{ .device_status = .{ .battery_pct = 80, .usb = 1, .wifi_quality = 49, .wifi_dbm = -61, .time_synced = 1, .mqtt_on = 1, .uptime_s = 90061 } },
         .status_get,
-        .{ .status = .{ .renderer_state = 2, .epoch = 3, .revision = 4, .presented = 5, .base = 1, .brightness = 77, .uptime_s = 8, .mem_available_kb = 14000, .cpu_pct = 12, .fps_x10 = 599, .ip_present = 1, .ip = .{ 10, 0, 0, 111 }, .config_revision = 2, .saved_revision = 1, .boot_id = 0xabcd, .sample_age_ms = 40, .mac = .{ 1, 2, 3, 4, 5, 6 }, .mac_present = 1, .load_1m_x100 = 123, .mem_free_kb = 4000, .wifi_level_dbm = -61, .wifi_quality = 49, .cpu_renderer_pct_x10 = 87, .tmpfs_used_kb = 1300, .battery_mv = 3987, .battery_pct = 80, .usb_present = 1, .clock = ClockStyle.full(.{ .font = .segment }) } },
+        .{ .status = .{ .renderer_state = 2, .epoch = 3, .revision = 4, .presented = 5, .base = 1, .brightness = 77, .uptime_s = 8, .mem_available_kb = 14000, .cpu_pct = 12, .fps_x10 = 599, .ip_present = 1, .ip = .{ 10, 0, 0, 111 }, .config_revision = 2, .saved_revision = 1, .boot_id = 0xabcd, .sample_age_ms = 40, .mac = .{ 1, 2, 3, 4, 5, 6 }, .mac_present = 1, .load_1m_x100 = 123, .mem_free_kb = 4000, .wifi_level_dbm = -61, .wifi_quality = 49, .cpu_renderer_pct_x10 = 87, .tmpfs_used_kb = 1300, .battery_mv = 3987, .battery_pct = 80, .usb_present = 1, .clock = ClockStyle.full(.{ .font = .segment }), .mem_total_kb = 36240, .tmpfs_total_kb = 16504, .flash_total_kb = 8192, .flash_used_kb = 368 } },
     };
     var buf: [codec.max_message]u8 = undefined;
     for (all) |m| {
@@ -932,8 +932,13 @@ pub const StatusSnapshot = struct {
     ntfy: NtfyStatus = .{},
     // v4: the clock style as the renderer reports it (mask ignored)
     clock: ClockStyle = .{},
+    // v5: the totals the used figures are a fraction of, and the flash partition
+    mem_total_kb: u32 = 0,
+    tmpfs_total_kb: u32 = 0,
+    flash_total_kb: u32 = 0,
+    flash_used_kb: u32 = 0,
 
-    pub const wire_len = 1 + 4 + 4 + 8 + 4 + 4 + 4 + 1 + 4 + 4 + 4 + 4 + 2 + 1 + 4 + 1 + 4 + 4 + 4 + 4 + 4 + (6 + 1 + 2 + 4 + 2 + 1 + 2 + 2 + 2 + 4 + 2 + 1 + 1) + 1 + ClockStyle.wire_len + 1 + NtfyStatus.wire_len;
+    pub const wire_len = 1 + 4 + 4 + 8 + 4 + 4 + 4 + 1 + 4 + 4 + 4 + 4 + 2 + 1 + 4 + 1 + 4 + 4 + 4 + 4 + 4 + (6 + 1 + 2 + 4 + 2 + 1 + 2 + 2 + 2 + 4 + 2 + 1 + 1) + 1 + ClockStyle.wire_len + 1 + NtfyStatus.wire_len + 4 * 4;
 };
 
 pub const Message = union(Kind) {
@@ -1212,6 +1217,10 @@ fn encodePayload(msg: Message, out: []u8) usize {
             o += 1;
             st.ntfy.put(out[o .. o + NtfyStatus.wire_len]);
             o += NtfyStatus.wire_len;
+            inline for (.{ st.mem_total_kb, st.tmpfs_total_kb, st.flash_total_kb, st.flash_used_kb }) |v| {
+                std.mem.writeInt(u32, out[o..][0..4], v, .big);
+                o += 4;
+            }
             return o;
         },
         .result => |r| {
@@ -1537,6 +1546,11 @@ pub fn decodePacket(bytes: []const u8) Error!Packet {
             st.ip_mode = b[o];
             o += 1;
             st.ntfy = try NtfyStatus.get(b[o .. o + NtfyStatus.wire_len]);
+            o += NtfyStatus.wire_len;
+            inline for (.{ &st.mem_total_kb, &st.tmpfs_total_kb, &st.flash_total_kb, &st.flash_used_kb }) |f| {
+                f.* = std.mem.readInt(u32, b[o..][0..4], .big);
+                o += 4;
+            }
             break :blk .{ .status = st };
         },
         .ready => blk: {
