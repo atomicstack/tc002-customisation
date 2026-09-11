@@ -166,6 +166,17 @@ input[type=file]{font:12px var(--body);color:var(--muted);max-width:220px}
 
 /* layout b: the hero stays, everything else is one tab at a time */
 .hero{align-items:start}
+/* the readout is the tallest thing on the page and it was pushing the tabs under the fold on a
+   laptop. above the stacking breakpoint it reads as two columns: the label floor that wide forms
+   need would wrap every value here, and the api-name line truncates rather than growing a row */
+@container (min-width:1080px){
+  /* 1080 is where each half of the readout still clears 260 px: below it the labels get crushed */
+  .hero{grid-template-columns:minmax(0,1fr) minmax(0,1fr)}   /* even: the canvas is capped at 560 px anyway */
+  .side .card .rows{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:0 var(--gap)}
+  .side .card .field{gap:10px}
+  .side .card .field>.lab{min-width:0}
+  .side .card .field .key{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+}
 .heroscreen{display:flex;flex-direction:column;gap:10px}
 .heroscreen .quick{margin-top:2px}
 .tabbar{display:flex;gap:4px;margin:var(--gap) 0 0;border-bottom:1px solid var(--line);flex-wrap:wrap}
@@ -538,7 +549,9 @@ function renderNow(s) {
   for (const [label, fn, key, barFn] of NOW_ROWS) {
     const row = document.createElement('div'); row.className = 'field';
     const lab = document.createElement('span'); lab.className = 'lab'; lab.textContent = label;
-    const k = document.createElement('span'); k.className = 'key'; k.textContent = key; lab.append(k);
+    const k = document.createElement('span'); k.className = 'key'; k.textContent = key;
+    k.title = key;   // the two-column readout truncates these; the full name is a hover away
+    lab.append(k);
     const val = document.createElement('span'); val.className = 'val'; val.textContent = fn(s);
     row.append(lab, val);
     const bar = barFn && barFn(s);
