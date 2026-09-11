@@ -17,17 +17,43 @@ import http.server, json, os, re, secrets, socketserver, sys, threading, time
 from urllib.parse import urlsplit, parse_qs
 
 BASES = ["art", "clock", "ip"]
-GENERATORS = ["popsquares", "plasma"]
+GENERATORS = ["popsquares", "plasma", "cube"]
+CUBE_PARAMS = [
+    {"name": "palette", "kind": "choice", "default": 0, "choices": ["mono", "poly"]},
+    {"name": "colour", "kind": "colour", "default": 0x30a0ff},
+    {"name": "hue drift", "kind": "number", "default": 0, "min": 0, "max": 60, "step": 5},
+    {"name": "background", "kind": "colour", "default": 0},
+    {"name": "spin", "kind": "choice", "default": 2, "choices": ["single", "series", "parallel"]},
+    {"name": "speed", "kind": "number", "default": 6, "min": 1, "max": 20, "step": 1},
+    {"name": "zoom", "kind": "number", "default": 100, "min": 40, "max": 200, "step": 10},
+]
 CLOCK_FONTS = ["classic", "mini", "segment", "big", "block", "hires"]
 IP_MODES = ["lines", "mini", "scroll", "big"]
 CLOCK_COLOUR_MODES = ["solid", "gradient"]
 CLOCK_GRADIENTS = ["horizontal", "vertical", "diagonal"]
-CLOCK_MAX_SPREAD = 96
-DEFAULT_CLOCK = {"font": "classic", "colour_mode": "solid", "colour": "ffffff", "colour2": "ffffff", "gradient": "horizontal"}
+CLOCK_MAX_SPREAD = 255          # the clamp is the `spread` parameter now, not a fixed 96
+DEFAULT_SPREAD = 255
+DEFAULT_CLOCK = {"font": "classic", "colour_mode": "solid", "colour": "ffffff", "colour2": "ffffff",
+                 "gradient": "horizontal", "spread": DEFAULT_SPREAD}
+
+
+def choice(name, choices, default=0):
+    return {"name": name, "kind": "choice", "default": default, "choices": list(choices)}
+# every scene declares what it can be told; popsquares and plasma declare nothing of their own
 SCENES = {"bases": BASES,
-          "generators": [{"index": 0, "name": "popsquares", "parameters": {"seed": "u32"}},
-                         {"index": 1, "name": "plasma", "parameters": {"seed": "u32"}}],
-          "clock": {"fonts": CLOCK_FONTS, "colour_modes": CLOCK_COLOUR_MODES, "gradients": CLOCK_GRADIENTS, "max_spread": CLOCK_MAX_SPREAD},
+          "generators": [{"index": 0, "name": "popsquares", "parameters": []},
+                         {"index": 1, "name": "plasma", "parameters": []},
+                         {"index": 2, "name": "cube", "parameters": CUBE_PARAMS}],
+          "parameters": {
+              "art": [choice("scene", GENERATORS)],
+              "clock": [choice("face", CLOCK_FONTS), {"name": "colour", "kind": "colour", "default": 0xffffff},
+                        choice("shade", CLOCK_COLOUR_MODES), {"name": "colour 2", "kind": "colour", "default": 0xffffff},
+                        choice("gradient", CLOCK_GRADIENTS),
+                        {"name": "spread", "kind": "number", "default": DEFAULT_SPREAD, "min": 0, "max": 255, "step": 15}],
+              "ip": [choice("layout", IP_MODES)],
+          },
+          "clock": {"fonts": CLOCK_FONTS, "colour_modes": CLOCK_COLOUR_MODES, "gradients": CLOCK_GRADIENTS,
+                    "spread": [0, 255], "max_spread": CLOCK_MAX_SPREAD},
           "ip": {"modes": IP_MODES},
           "notify": {"text_max": 128, "duration_s": [1, 300]}, "frame": {"bytes": 2496, "duration_s": [1, 300]},
           "transitions": {"effects": ["fade", "cut", "slide", "swipe_out", "swipe_in", "collapse", "expand", "wipe", "dissolve",
@@ -105,7 +131,7 @@ def parse_colour(s):
 
 
 def parse_clock_style(fields):
-    """the five clock style strings by their bare names (font, colour_mode, colour, colour2, gradient),
+    """the clock style fields by their bare names (font, colour_mode, colour, colour2, gradient, spread),
     validated with the runtime's codes; shared by the scene block and the settings patch. the
     caller strips the `clock_` prefix of the settings keys. unknown keys are the scene block's
     strict schema."""
@@ -124,6 +150,10 @@ def parse_clock_style(fields):
         elif key == "gradient":
             if value not in CLOCK_GRADIENTS:
                 raise Reject(400, "invalid_gradient", "gradient must be horizontal, vertical or diagonal")
+        elif key == "spread":
+            # a u8 on the wire, so anything outside 0..255 fails the device's json parse
+            if not isinstance(value, int) or isinstance(value, bool) or not 0 <= value <= 255:
+                raise Reject(400, "invalid_json", "the body is not valid json for this schema")
         else:
             raise Reject(400, "unknown_field", "the body contains a field the schema does not define")
         out[key] = value
@@ -539,7 +569,7 @@ SCHEMAS = {
     "notify": ({"text", "colour", "duration_s", "transition", "direction", "transition_ms", "exit", "request_id", "epoch"}, {"text", "request_id", "epoch"}),
     "config": ({"brightness", "base", "generator", "timezone", "ntp_server", "ntp_interval_s", "frame_timeout_ms",
                 "metrics_interval_s", "discovery", "discovery_prefix", "expected_revision",
-                "clock_font", "clock_colour_mode", "clock_colour", "clock_colour2", "clock_gradient", "ip_mode"}, set()),
+                "clock_font", "clock_colour_mode", "clock_colour", "clock_colour2", "clock_gradient", "clock_spread", "ip_mode"}, set()),
     "config/save": ({"revision"}, set()),
     "mock/persist": ({"enabled"}, {"enabled"}),
     "mqtt": ({"enabled", "host", "port", "username", "password", "client_id", "prefix", "tls"}, set()),

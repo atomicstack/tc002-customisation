@@ -333,6 +333,43 @@ class EndToEndTests(unittest.TestCase):
         self.assertIn(st["cpu_pct"], range(0, 101))
         self.assertIn(st["brightness"], range(1, 101))
 
+    def test_scenes_publishes_a_parameter_table_for_every_scene(self):
+        # the catalogue is what a client builds its forms from: name, kind, range or choices
+        _, sc = self.call("GET", "scenes")
+        self.assertEqual([g["name"] for g in sc["generators"]], ["popsquares", "plasma", "cube"])
+        self.assertEqual([p["name"] for p in sc["parameters"]["art"]], ["scene"])
+        self.assertEqual([p["name"] for p in sc["parameters"]["clock"]],
+                         ["face", "colour", "shade", "colour 2", "gradient", "spread"])
+        self.assertEqual([p["name"] for p in sc["parameters"]["ip"]], ["layout"])
+        spread = sc["parameters"]["clock"][-1]
+        self.assertEqual((spread["kind"], spread["min"], spread["max"], spread["step"]), ("number", 0, 255, 15))
+        cube = next(g for g in sc["generators"] if g["name"] == "cube")
+        self.assertEqual([p["name"] for p in cube["parameters"]],
+                         ["palette", "colour", "hue drift", "background", "spin", "speed", "zoom"])
+        # popsquares and plasma declare none of their own
+        self.assertEqual(sc["generators"][0]["parameters"], [])
+        self.assertEqual(sc["clock"]["spread"], [0, 255])
+
+    def test_clock_spread_is_both_a_setting_and_a_transient_scene_field(self):
+        _, cfg = self.call("GET", "config")
+        status, doc = self.call("PATCH", "config", {"clock_spread": 120, "expected_revision": cfg["revision"]})
+        self.assertEqual((status, doc["clock"]["spread"]), (200, 120))
+        _, st = self.call("GET", "status")
+        self.assertEqual(st["clock"]["spread"], 120)
+        status, _ = self.call("PUT", "scene", {"base": "clock", "clock": {"spread": 30},
+                                               "request_id": "5b1", "epoch": st["epoch"]})
+        self.assertEqual(status, 200)
+        _, st2 = self.call("GET", "status")
+        self.assertEqual(st2["clock"]["spread"], 30)
+        _, cfg2 = self.call("GET", "config")
+        self.assertEqual(cfg2["clock"]["spread"], 120)   # the durable default is untouched
+        # spread is a u8 on the wire, so anything outside 0..255 is refused
+        status, _ = self.call("PUT", "scene", {"base": "clock", "clock": {"spread": 300},
+                                               "request_id": "5b2", "epoch": st2["epoch"]})
+        self.assertEqual(status, 400)
+        status, _ = self.call("PATCH", "config", {"clock_spread": -1})
+        self.assertEqual(status, 400)
+
     def test_logs_page_through_the_ring(self):
         status, doc = self.call("GET", "logs?after=0")
         self.assertEqual(status, 200)
@@ -377,7 +414,8 @@ class EndToEndTests(unittest.TestCase):
             self.assertEqual(e.code, 503)
             self.assertEqual(json.loads(e.read())["error"], "not_implemented")
 
-    DEFAULT_CLOCK = {"font": "classic", "colour_mode": "solid", "colour": "ffffff", "colour2": "ffffff", "gradient": "horizontal"}
+    DEFAULT_CLOCK = {"font": "classic", "colour_mode": "solid", "colour": "ffffff", "colour2": "ffffff",
+                     "gradient": "horizontal", "spread": 255}
 
     def test_ntfy_settings_round_trip_without_secrets(self):
         status, doc = self.call("PUT", "ntfy", {"enabled": True, "url": "https://ntfy.sh", "topic": "tc002", "token": "tk_x", "duration_s": 8})
@@ -397,7 +435,7 @@ class EndToEndTests(unittest.TestCase):
     def test_scenes_status_and_config_carry_the_clock_style(self):
         _, scenes = self.call("GET", "scenes")
         self.assertEqual(scenes["clock"], {"fonts": ["classic", "mini", "segment", "big", "block", "hires"], "colour_modes": ["solid", "gradient"],
-                                           "gradients": ["horizontal", "vertical", "diagonal"], "max_spread": 96})
+                                           "gradients": ["horizontal", "vertical", "diagonal"], "spread": [0, 255], "max_spread": 255})
         self.device.config["clock"] = dict(self.DEFAULT_CLOCK); self.device.clock = dict(self.DEFAULT_CLOCK)
         _, st = self.call("GET", "status")
         self.assertEqual(st["clock"], self.DEFAULT_CLOCK)
@@ -413,7 +451,8 @@ class EndToEndTests(unittest.TestCase):
         _, st2 = self.call("GET", "status")
         self.assertEqual(st2["base"], "clock")
         # a partial block merges over the current style; colour2 is reported as requested, before the spread clamp
-        self.assertEqual(st2["clock"], {"font": "big", "colour_mode": "gradient", "colour": "ff8000", "colour2": "ffc000", "gradient": "horizontal"})
+        self.assertEqual(st2["clock"], {"font": "big", "colour_mode": "gradient", "colour": "ff8000", "colour2": "ffc000",
+                                        "gradient": "horizontal", "spread": 255})
         _, cfg = self.call("GET", "config")
         self.assertEqual(cfg["clock"], self.DEFAULT_CLOCK)   # the durable defaults are untouched
         for block, code in (({"font": "comic"}, "invalid_font"), ({"colour_mode": "rainbow"}, "invalid_colour_mode"),
@@ -440,7 +479,8 @@ class EndToEndTests(unittest.TestCase):
         status, doc = self.call("PATCH", "config", {"expected_revision": cfg["revision"], "clock_font": "segment", "clock_colour_mode": "gradient",
                                                     "clock_colour": "00ff80", "clock_gradient": "vertical"})
         self.assertEqual(status, 200)
-        want = {"font": "segment", "colour_mode": "gradient", "colour": "00ff80", "colour2": "ffffff", "gradient": "vertical"}
+        want = {"font": "segment", "colour_mode": "gradient", "colour": "00ff80", "colour2": "ffffff",
+                "gradient": "vertical", "spread": 255}
         self.assertEqual(doc["clock"], want)
         self.assertEqual(doc["revision"], cfg["revision"] + 1)
         _, st = self.call("GET", "status")

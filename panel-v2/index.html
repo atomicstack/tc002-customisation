@@ -240,12 +240,14 @@ input[type=file]{font:12px var(--body);color:var(--muted);max-width:220px}
             <input type="color" id="kcolour2" value="#ffffff" aria-label="gradient end colour" title="colour2 (gradient end)">
             <select id="kgrad" aria-label="gradient direction" title="gradient direction"></select>
           </span></div>
+        <div class="field"><label for="kspread">Clock spread<span class="key">clock.spread · how far the gradient's end may differ, per channel</span></label>
+          <span class="rangewrap"><input type="range" id="kspread" min="0" max="255" step="15" value="255"><span class="val">255</span></span></div>
         <div class="field"><label for="seed">Seed<span class="key">POST /action reseed · empty = random</span></label>
           <span class="inline"><input type="number" id="seed" min="0" max="4294967295" placeholder="random"><button class="btn ghost sm" id="reseed">Reseed</button></span></div>
         <div class="field"><label for="bright">Brightness<span class="key">POST /action brightness · 1–100</span></label>
           <span class="rangewrap"><input type="range" id="bright" min="1" max="100" value="100" data-unit="%"><span class="val">100%</span></span></div>
       </div>
-      <div class="actions"><span class="note">live changes to the running renderer. the settings card below is what persists across restarts. a clock style set here lasts until the next settings change or renderer restart; a gradient's end colour is kept within <span id="kspread">96</span> of 255 per channel of its start, so it reads as a shade shift on 52 columns.</span></div>
+      <div class="actions"><span class="note">live changes to the running renderer. the settings card below is what persists across restarts. a clock style set here lasts until the next settings change or renderer restart. spread is the leash on a gradient: the end colour is pulled towards the start until no channel differs by more than it, so a low spread reads as a shade shift rather than colour bands on 52 columns.</span></div>
     </section>
 
     <section class="card s5" id="notificationCard">
@@ -293,8 +295,9 @@ input[type=file]{font:12px var(--body);color:var(--muted);max-width:220px}
         <div class="field"><label for="cip">IP layout<span class="key">ip_mode · applied at once</span></label><select id="cip"></select></div>
         <div class="field"><label for="cmode">Clock colour mode<span class="key">clock_colour_mode</span></label><select id="cmode"></select></div>
         <div class="field"><label for="ccolour">Clock colour<span class="key">clock_colour</span></label><input type="color" id="ccolour" value="#ffffff"></div>
-        <div class="field"><label for="ccolour2">Gradient end colour<span class="key">clock_colour2 · clamped to max_spread of clock_colour</span></label><input type="color" id="ccolour2" value="#ffffff"></div>
+        <div class="field"><label for="ccolour2">Gradient end colour<span class="key">clock_colour2 · pulled towards clock_colour by the spread</span></label><input type="color" id="ccolour2" value="#ffffff"></div>
         <div class="field"><label for="cgrad">Gradient direction<span class="key">clock_gradient</span></label><select id="cgrad"></select></div>
+        <div class="field"><label for="cspread">Clock spread<span class="key">clock_spread · 0–255, the gradient's leash</span></label><input type="number" id="cspread" min="0" max="255" step="15"></div>
         <div class="field"><label for="ctz">Timezone<span class="key">timezone · posix rule, e.g. AEST-10AEDT,M10.1.0,M4.1.0/3</span></label><input type="text" id="ctz" placeholder="UTC0" spellcheck="false"></div>
         <div class="field"><label for="cntp">NTP server<span class="key">ntp_server · ipv4, null disables the sntp client</span></label><input type="text" id="cntp" placeholder="none"></div>
         <div class="field"><label for="cntpi">NTP interval<span class="key">ntp_interval_s</span></label>
@@ -667,6 +670,7 @@ $('gen').addEventListener('change', () => { if (STATUS && STATUS.base === 'art')
 function showClockStyle(c) {
   $('kfont').value = c.font; segSet('kmode', c.colour_mode);
   $('kcolour').value = '#' + c.colour; $('kcolour2').value = '#' + c.colour2; $('kgrad').value = c.gradient;
+  if (typeof c.spread === 'number') setRange('kspread', c.spread);
 }
 async function setClockStyle(patch, what) {
   if (!STATUS) return;
@@ -690,6 +694,7 @@ $('kmode').addEventListener('click', e => { const b = e.target.closest('button')
 $('kcolour').addEventListener('change', () => setClockStyle({ colour: hexColour($('kcolour').value) }, `colour: ${hexColour($('kcolour').value)}`));
 $('kcolour2').addEventListener('change', () => setClockStyle({ colour2: hexColour($('kcolour2').value) }, `gradient end: ${hexColour($('kcolour2').value)}`));
 $('kgrad').addEventListener('change', () => setClockStyle({ gradient: $('kgrad').value }, `gradient: ${$('kgrad').value}`));
+$('kspread').addEventListener('change', () => setClockStyle({ spread: +$('kspread').value }, `spread: ${$('kspread').value}`));
 function fillClockSelects() {
   const cat = (SCENES && SCENES.clock) || {};
   const fonts = cat.fonts || S.CLOCK_FONTS, modes = cat.colour_modes || ['solid', 'gradient'], grads = cat.gradients || ['horizontal', 'vertical', 'diagonal'];
@@ -697,7 +702,10 @@ function fillClockSelects() {
   fillSelect($('cfont'), fonts, $('cfont').value); fillSelect($('cmode'), modes, $('cmode').value); fillSelect($('cgrad'), grads, $('cgrad').value);
   const ipModes = (SCENES && SCENES.ip && SCENES.ip.modes) || ['lines', 'mini', 'scroll', 'big'];
   fillSelect($('kip'), ipModes, $('kip').value); fillSelect($('cip'), ipModes, $('cip').value);
-  $('kspread').textContent = String(cat.max_spread == null ? S.CLOCK_MAX_SPREAD : cat.max_spread);
+  const range = cat.spread;   // [min, max] from /scenes; the device is the authority on the bounds
+  if (Array.isArray(range) && range.length === 2) {
+    for (const id of ['kspread', 'cspread']) { $(id).min = range[0]; $(id).max = range[1]; }
+  }
 }
 $('reseed').addEventListener('click', async () => {
   const seedText = $('seed').value.trim();
@@ -813,6 +821,7 @@ function showConfig(c) {
   $('cdisc').checked = !!c.discovery.enabled; $('cdp').value = c.discovery.prefix;
   const k = c.clock || S.DEFAULT_CLOCK_STYLE;   // a runtime without clock styles: show the defaults, patch nothing
   $('cfont').value = k.font; $('cmode').value = k.colour_mode; $('ccolour').value = '#' + k.colour; $('ccolour2').value = '#' + k.colour2; $('cgrad').value = k.gradient;
+  if (typeof k.spread === 'number') $('cspread').value = k.spread;
   if (c.ip_mode) $('cip').value = c.ip_mode;
   // the device persists every accepted write before replying, so the two revisions match unless
   // that write failed: what is on screen is live but would not survive a restart
@@ -847,6 +856,7 @@ $('capply').addEventListener('click', async () => {
     if (hexColour($('ccolour').value) !== k.colour) patch.clock_colour = hexColour($('ccolour').value);
     if (hexColour($('ccolour2').value) !== k.colour2) patch.clock_colour2 = hexColour($('ccolour2').value);
     if ($('cgrad').value !== k.gradient) patch.clock_gradient = $('cgrad').value;
+    if (typeof k.spread === 'number' && +$('cspread').value !== k.spread) patch.clock_spread = +$('cspread').value;
   }
   if (CONFIG.ip_mode) {
     if ($('cip').value !== CONFIG.ip_mode) patch.ip_mode = $('cip').value;
