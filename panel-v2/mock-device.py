@@ -118,6 +118,43 @@ def load_or_create_tokens(path):
     return data[:32].hex(), data[32:].hex()
 
 
+# the timezone's reference point, as tzdata gives one to every iana zone; the mock knows one zone
+# and falls back to it, which is enough to exercise a location whose source is the timezone
+TZ_POINT = (52.37, 4.90)           # europe/amsterdam
+NIGHT_PHASES = ("day", "to_night", "night", "to_day")
+
+
+def solar_day(now, lat, lon):
+    """dawn, sunrise, sunset, dusk as epoch seconds for the day `now` falls in, from the same
+    low-precision sunrise equation the runtime uses (sys/solar.zig). close enough for a stand-in."""
+    import math
+    day = math.floor(now / 86400)
+    n = day - 10957 + 0.0008          # julian day 2451545.0 is epoch day 10957
+    j_star = n - lon / 360.0
+    m = math.radians((357.5291 + 0.98560028 * j_star) % 360)
+    c = 1.9148 * math.sin(m) + 0.02 * math.sin(2 * m) + 0.0003 * math.sin(3 * m)
+    lam = math.radians((math.degrees(m) + c + 180 + 102.9372) % 360)
+    j_transit = 2451545.0 + j_star + 0.0053 * math.sin(m) - 0.0069 * math.sin(2 * lam)
+    decl = math.asin(math.sin(lam) * math.sin(math.radians(23.4397)))
+
+    def crossing(zenith):
+        cos_w = ((math.cos(math.radians(zenith)) - math.sin(math.radians(lat)) * math.sin(decl))
+                 / (math.cos(math.radians(lat)) * math.cos(decl)))
+        if cos_w > 1 or cos_w < -1:
+            return None                # the sun never reaches that angle here today
+        w = math.degrees(math.acos(cos_w)) / 360.0
+        rise = (j_transit - w - 2440587.5) * 86400
+        set_ = (j_transit + w - 2440587.5) * 86400
+        return int(rise), int(set_)
+
+    day_pair = crossing(90.833)        # the sun's radius and refraction
+    civil_pair = crossing(96.0)
+    sunrise, sunset = day_pair if day_pair else (None, None)
+    dawn, dusk = civil_pair if civil_pair else (None, None)
+    sun_up = bool(sunrise and sunset and sunrise <= now < sunset)
+    return {"dawn": dawn, "sunrise": sunrise, "sunset": sunset, "dusk": dusk, "sun_up": sun_up}
+
+
 def parse_ipv4(s):
     parts = s.split(".")
     if len(parts) != 4 or not all(p.isdigit() and 0 < len(p) <= 3 and int(p) <= 255 for p in parts):
@@ -247,11 +284,15 @@ class Device:
                        "timezone": "UTC0", "ntp_server": None, "ntp_interval_s": 300, "frame_timeout_ms": 500,
                        "metrics_interval_s": 30, "discovery": False, "discovery_prefix": "homeassistant", "origins": [],
                        "clock": dict(DEFAULT_CLOCK), "ip_mode": "lines",
+                       "night": False, "night_brightness": 5, "night_lead_min": 30,
+                       "latitude": None, "longitude": None,
                        "generators": {g: {p["name"]: param_default(p) for p in table}
                                       for g, table in GENERATOR_PARAMS.items()}}
         self.mqtt = {"enabled": False, "host": "", "port": 1883, "username": "", "password": "", "client_id": "", "prefix": "", "tls": False}
         self.ntfy = {"enabled": False, "url": "", "topic": "", "token": "", "username": "", "password": "", "duration_s": 10, "insecure": False, "ca": ""}
         self.ntfy_messages = 0
+        # a hand-set brightness stands in the schedule's way until the next ramp begins
+        self.night_held = False
         # the device persists every accepted settings write before replying; off simulates that
         # write failing, which is the only way revision and saved_revision can drift apart
         self.persist = True
@@ -318,7 +359,8 @@ class Device:
                 "tmpfs_used_kb": 1024, "tmpfs_total_kb": 17920,
                 "flash_used_kb": 2304, "flash_total_kb": 61440,
                 "cpu_pct": 5, "restarts": self.restarts,
-                "network": {"ip": "10.0.0.111"}, "time": {"state": "unsynced", "age_s": None},
+                "network": {"ip": "10.0.0.111"}, "time": {"state": "synced", "age_s": 44},
+                "night": self.night_status(),
                 "config_revision": self.config["revision"], "saved_revision": self.config["saved_revision"],
                 "transport": "plaintext", "mqtt": self.mqtt_status(), "ntfy": self.ntfy_doc()["status"],
                 "boot_id": self.boot_id, "sample_age_ms": 200}
@@ -328,6 +370,33 @@ class Device:
         next_seq = lines[-1]["seq"] if lines else after
         return {"next": next_seq, "lines": lines}
 
+    def point(self):
+        """where the device is: the pinned pair, else the timezone's reference point."""
+        c = self.config
+        if c["latitude"] is not None and c["longitude"] is not None:
+            return c["latitude"], c["longitude"], "set"
+        return TZ_POINT[0], TZ_POINT[1], "timezone"
+
+    def night_status(self):
+        """what the schedule is doing, and the crossings it works from."""
+        c = self.config
+        lat, lon, _ = self.point()
+        if not c["night"]:
+            return {"enabled": False, "phase": None, "held": self.night_held, "today": None}
+        now = time.time()
+        today = solar_day(now, lat, lon)
+        phase = "day"
+        lead = c["night_lead_min"] * 60
+        if today["sunset"] and today["dusk"] and today["sunset"] - lead <= now < today["dusk"]:
+            phase = "to_night"
+        elif today["dawn"] and today["sunrise"] and today["dawn"] <= now < today["sunrise"] + lead:
+            phase = "to_day"
+        elif today["dusk"] and now >= today["dusk"]:
+            phase = "night"
+        elif today["dawn"] and now < today["dawn"]:
+            phase = "night"
+        return {"enabled": True, "phase": phase, "held": self.night_held, "today": today}
+
     def config_doc(self):
         c = self.config
         return {"revision": c["revision"], "saved_revision": c["saved_revision"], "brightness": c["brightness"],
@@ -335,6 +404,9 @@ class Device:
                 "ntp": {"server": c["ntp_server"], "interval_s": c["ntp_interval_s"]},
                 "frame_timeout_ms": c["frame_timeout_ms"], "metrics_interval_s": c["metrics_interval_s"],
                 "discovery": {"enabled": c["discovery"], "prefix": c["discovery_prefix"]}, "clock": dict(c["clock"]),
+                "night": {"enabled": c["night"], "brightness": c["night_brightness"], "lead_min": c["night_lead_min"]},
+                "latitude": c["latitude"], "longitude": c["longitude"],
+                "location": {"latitude": self.point()[0], "longitude": self.point()[1], "source": self.point()[2]},
                 "generators": {g: dict(v) for g, v in c["generators"].items()},
                 "ip_mode": c["ip_mode"],
                 "allowed_origins": list(c["origins"])}
@@ -438,6 +510,7 @@ class Device:
             if not isinstance(v, int) or v < 1 or v > 100:
                 raise Reject(400, "invalid_brightness", "brightness must be 1..100")
             self.brightness = v
+            self.night_held = True     # a hand-set brightness holds the schedule until the next ramp
             self.log(f"brightness: {v}")
             return self.bump()
         if kind == "reseed":
@@ -583,6 +656,31 @@ class Device:
             for scene_name, name, value in resolved:
                 gens[scene_name][name] = value
             nxt["generators"] = gens
+        if "night" in body:
+            if not isinstance(body["night"], bool):
+                raise Reject(400, "invalid_json", "the body is not valid json for this schema")
+            nxt["night"] = body["night"]
+        if "night_brightness" in body:
+            v = body["night_brightness"]
+            if not isinstance(v, int) or isinstance(v, bool) or not 1 <= v <= 100:
+                raise Reject(400, "invalid_night_brightness", "night_brightness must be 1..100")
+            nxt["night_brightness"] = v
+        if "night_lead_min" in body:
+            v = body["night_lead_min"]
+            if not isinstance(v, int) or isinstance(v, bool) or not 0 <= v <= 120:
+                raise Reject(400, "invalid_night_lead", "night_lead_min must be 0..120")
+            nxt["night_lead_min"] = v
+        if "latitude" in body or "longitude" in body:
+            lat, lon = body.get("latitude"), body.get("longitude")
+            if lat is None or lon is None:
+                raise Reject(400, "invalid_location", "latitude and longitude go together")
+            if not isinstance(lat, (int, float)) or not -90 <= lat <= 90:
+                raise Reject(400, "invalid_latitude", "latitude must be -90..90")
+            if not isinstance(lon, (int, float)) or not -180 <= lon <= 180:
+                raise Reject(400, "invalid_longitude", "longitude must be -180..180")
+            nxt["latitude"], nxt["longitude"] = float(lat), float(lon)
+        if body.get("location_auto"):
+            nxt["latitude"], nxt["longitude"] = None, None
         clock_keys = {k: v for k, v in body.items() if k.startswith("clock_")}
         if clock_keys:
             # the settings call it clock_digit, the scene block calls it digits
@@ -596,6 +694,9 @@ class Device:
             self.brightness = nxt["brightness"]; self.bump()
         if nxt["base"] != c["base"] or nxt["generator"] != c["generator"]:
             self.base, self.generator, self.overlay = nxt["base"], nxt["generator"], "none"; self.bump()
+        if nxt["night"] != c["night"]:
+            # switching the schedule hands brightness back, so nothing is standing in its way
+            self.night_held = False
         if nxt["clock"] != c["clock"]:
             # the supervisor sends the whole durable style, so a transient scene block is replaced
             self.clock = dict(nxt["clock"]); self.bump()
@@ -647,7 +748,8 @@ SCHEMAS = {
     "config": ({"brightness", "base", "generator", "timezone", "ntp_server", "ntp_interval_s", "frame_timeout_ms",
                 "metrics_interval_s", "discovery", "discovery_prefix", "expected_revision",
                 "clock_font", "clock_colour_mode", "clock_colour", "clock_colour2", "clock_gradient", "clock_spread",
-                "clock_digit", "ip_mode", "generator_params"}, set()),
+                "clock_digit", "ip_mode", "generator_params",
+                "night", "night_brightness", "night_lead_min", "latitude", "longitude", "location_auto"}, set()),
     "config/save": ({"revision"}, set()),
     "mock/persist": ({"enabled"}, {"enabled"}),
     "mqtt": ({"enabled", "host", "port", "username", "password", "client_id", "prefix", "tls"}, set()),

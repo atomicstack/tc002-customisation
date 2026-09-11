@@ -179,6 +179,7 @@ input[type=file]{font:12px var(--body);color:var(--muted);max-width:220px}
 /* a full-width card has room for two columns of rows */
 .card.wide .rows{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:0 var(--gap)}
 .card.wide .rows.genparams{grid-column:1/-1}
+.card.wide .field.span2{grid-column:1/-1}
 .genparams .paramhead{grid-column:1/-1}
 .genparams{border-top:1px solid var(--line);margin-top:2px;padding-top:2px}
 .genparams .paramhead{display:flex;align-items:center;gap:8px;padding:9px 0 3px;color:var(--accent-text);
@@ -332,7 +333,14 @@ input[type=file]{font:12px var(--body);color:var(--muted);max-width:220px}
         <div class="field"><label for="cgrad">Gradient direction<span class="key">clock_gradient</span></label><select id="cgrad"></select></div>
         <div class="field"><label for="cdigits">Clock digits<span class="key">clock_digit · block and big faces have a body to style</span></label><select id="cdigits"></select></div>
         <div class="field"><label for="cspread">Clock spread<span class="key">clock_spread · 0–255, the gradient's leash</span></label><input type="number" id="cspread" min="0" max="255" step="15"></div>
-        <div class="field"><label for="ctz">Timezone<span class="key">timezone · posix rule, e.g. AEST-10AEDT,M10.1.0,M4.1.0/3</span></label><input type="text" id="ctz" placeholder="UTC0" spellcheck="false"></div>
+        <div class="field"><label for="ctz">Timezone<span class="key">timezone · a zone name (Europe/Amsterdam) or a posix rule (AEST-10AEDT,M10.1.0,M4.1.0/3)</span></label><input type="text" id="ctz" placeholder="UTC0" spellcheck="false"></div>
+        <div class="field"><label for="cnight">Night dimming<span class="key">night · follows the sun where the device is</span></label><input type="checkbox" class="sw" id="cnight"></div>
+        <div class="field"><label for="cnightb">Night brightness<span class="key">night_brightness · 1–100, the other end of the ramp</span></label><input type="number" id="cnightb" min="1" max="100"></div>
+        <div class="field"><label for="cnightl">Ramp lead<span class="key">night_lead_min · 0–120 minutes before sunset, and after sunrise</span></label><input type="number" id="cnightl" min="0" max="120"></div>
+        <div class="field"><label for="clat">Latitude<span class="key">latitude · −90–90, with a longitude or neither</span></label><input type="number" id="clat" min="-90" max="90" step="0.01" placeholder="auto"></div>
+        <div class="field"><label for="clon">Longitude<span class="key">longitude · −180–180</span></label><input type="number" id="clon" min="-180" max="180" step="0.01" placeholder="auto"></div>
+        <div class="field span2"><span class="lab">Location in use<span class="key">location · read-only, with where it came from</span></span>
+          <span class="inline"><span class="val" id="cloc">—</span><button class="btn ghost sm" id="clocauto">Use the timezone's</button></span></div>
         <div class="field"><label for="cntp">NTP server<span class="key">ntp_server · ipv4, null disables the sntp client</span></label><input type="text" id="cntp" placeholder="none"></div>
         <div class="field"><label for="cntpi">NTP interval<span class="key">ntp_interval_s</span></label>
           <select id="cntpi"><option value="300">300 s</option><option value="600">600 s</option></select></div>
@@ -497,6 +505,18 @@ const NOW_ROWS = [
   }],
   ['cpu', s => s.cpu_pct == null ? '—' : `${s.cpu_pct}%`, 'cpu_pct',
     s => (s.cpu_pct == null ? null : { metric: 'cpu', pct: s.cpu_pct, tone: pressure(s.cpu_pct) })],
+  ['night', s => {
+    const n = s.night;
+    if (!n) return '—';
+    if (!n.enabled) return 'off';
+    return `${n.phase || 'no place'}${n.held ? ' · held' : ''}`;
+  }, 'night.phase · held'],
+  ['sun', s => {
+    const t = s.night && s.night.today;
+    if (!t) return '—';
+    const at = v => (typeof v === 'number' ? new Date(v * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '—');
+    return `${at(t.dawn)} ${at(t.sunrise)} ${at(t.sunset)} ${at(t.dusk)}`;
+  }, 'dawn · sunrise · sunset · dusk, your local time'],
   ['time', s => {
     if (!s.time) return '—';
     const age = typeof s.time.age_s === 'number' ? ` · ${s.time.age_s} s` : '';
@@ -975,6 +995,19 @@ function showConfig(c) {
   $('cbright').value = c.brightness; $('cbase').value = c.base;
   fillSelect($('cgen'), SCENES ? SCENES.generators.map(g => g.name) : S.GENERATORS, c.generator);
   $('ctz').value = c.timezone; $('cntp').value = c.ntp.server || ''; $('cntpi').value = String(c.ntp.interval_s);
+  if (c.night) {
+    $('cnight').checked = !!c.night.enabled;
+    $('cnightb').value = c.night.brightness;
+    $('cnightl').value = c.night.lead_min;
+  }
+  $('clat').value = c.latitude == null ? '' : c.latitude;
+  $('clon').value = c.longitude == null ? '' : c.longitude;
+  // the point the two resolve to: the pin, or the timezone's own reference city
+  const loc = $('cloc');
+  loc.textContent = c.location
+    ? `${(+c.location.latitude).toFixed(2)}, ${(+c.location.longitude).toFixed(2)} · ${c.location.source}`
+    : 'nowhere: the schedule cannot run';
+  $('clocauto').disabled = !c.location || c.location.source !== 'set';
   $('cft').value = c.frame_timeout_ms; $('cmi').value = c.metrics_interval_s;
   $('cdisc').checked = !!c.discovery.enabled; $('cdp').value = c.discovery.prefix;
   const k = c.clock || S.DEFAULT_CLOCK_STYLE;   // a runtime without clock styles: show the defaults, patch nothing
@@ -996,6 +1029,14 @@ function showConfig(c) {
   if (SCENES) renderGenParams();
 }
 async function loadConfig() { showConfig(await call('GET', 'config')); }
+// dropping the pin hands the timezone's reference point back
+$('clocauto').addEventListener('click', async () => {
+  try {
+    showConfig(await call('PATCH', 'config', { location_auto: true }));
+    toast('location: back to the timezone\u2019s');
+    refreshStatus(true);
+  } catch (e) { toast(e.message, true); }
+});
 $('capply').addEventListener('click', async () => {
   if (!CONFIG) return;
   const patch = { expected_revision: CONFIG.revision };
@@ -1004,6 +1045,20 @@ $('capply').addEventListener('click', async () => {
   if ($('cgen').value !== CONFIG.generator) patch.generator = $('cgen').value;
   const tz = $('ctz').value.trim(); if (tz !== CONFIG.timezone) patch.timezone = tz;
   const ntp = $('cntp').value.trim(); if ((ntp || null) !== CONFIG.ntp.server) patch.ntp_server = ntp || null;
+  if (CONFIG.night) {
+    if ($('cnight').checked !== !!CONFIG.night.enabled) patch.night = $('cnight').checked;
+    const nb = +$('cnightb').value; if (nb !== CONFIG.night.brightness) patch.night_brightness = nb;
+    const nl = +$('cnightl').value; if (nl !== CONFIG.night.lead_min) patch.night_lead_min = nl;
+  }
+  // latitude and longitude travel together or not at all, as the device demands
+  const lat = $('clat').value.trim(), lon = $('clon').value.trim();
+  const latNow = CONFIG.latitude == null ? '' : String(CONFIG.latitude);
+  const lonNow = CONFIG.longitude == null ? '' : String(CONFIG.longitude);
+  if (lat !== latNow || lon !== lonNow) {
+    if (lat === '' && lon === '') patch.location_auto = true;
+    else if (lat === '' || lon === '') return toast('a latitude needs a longitude, and the other way round', true);
+    else { patch.latitude = +lat; patch.longitude = +lon; }
+  }
   const ntpi = +$('cntpi').value; if (ntpi !== CONFIG.ntp.interval_s) patch.ntp_interval_s = ntpi;
   const ft = +$('cft').value; if (ft !== CONFIG.frame_timeout_ms) patch.frame_timeout_ms = ft;
   const mi = +$('cmi').value; if (mi !== CONFIG.metrics_interval_s) patch.metrics_interval_s = mi;

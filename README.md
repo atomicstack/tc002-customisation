@@ -137,7 +137,8 @@ developing without a device.
 
 ![the panel-v2 console: the preview, the remote controls and the readings with bars for brightness, memory, flash and cpu, above the scene tab showing the cube generator's own parameters](panel-v2/screenshots/console.png)
 
-the device tab holds the durable settings, the broker and ntfy:
+the device tab holds the durable settings, the night dimming schedule with
+the place it follows the sun from, the broker and ntfy:
 
 ![the device tab: settings, mqtt and ntfy, each with its apply button and the settings revision](panel-v2/screenshots/console-device.png)
 

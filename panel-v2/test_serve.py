@@ -451,6 +451,63 @@ class EndToEndTests(unittest.TestCase):
         self.assertEqual(cube["spin"], "single")
         self.assertEqual(cube["hue drift"], 30)
 
+    def test_config_carries_the_night_schedule_and_where_the_device_is(self):
+        _, cfg = self.call("GET", "config")
+        self.assertEqual(cfg["night"], {"enabled": False, "brightness": 5, "lead_min": 30})
+        self.assertIsNone(cfg["latitude"])
+        self.assertIsNone(cfg["longitude"])
+        # with no pin the location comes from the timezone, and says so
+        self.assertEqual(cfg["location"]["source"], "timezone")
+        status, doc = self.call("PATCH", "config", {"night": True, "night_brightness": 8, "night_lead_min": 45,
+                                                    "latitude": -33.87, "longitude": 151.215})
+        self.assertEqual(status, 200)
+        self.assertEqual(doc["night"], {"enabled": True, "brightness": 8, "lead_min": 45})
+        self.assertAlmostEqual(doc["latitude"], -33.87, places=2)
+        self.assertEqual(doc["location"]["source"], "set")
+        self.assertAlmostEqual(doc["location"]["longitude"], 151.215, places=2)
+        # location_auto drops the pin and hands the timezone's point back
+        status, doc = self.call("PATCH", "config", {"location_auto": True})
+        self.assertEqual(status, 200)
+        self.assertIsNone(doc["latitude"])
+        self.assertEqual(doc["location"]["source"], "timezone")
+        self.call("PATCH", "config", {"night": False, "night_brightness": 5, "night_lead_min": 30})
+
+    def test_the_night_schedule_refuses_what_it_cannot_use(self):
+        for body, code in (({"night_brightness": 0}, "invalid_night_brightness"),
+                           ({"night_brightness": 101}, "invalid_night_brightness"),
+                           ({"night_lead_min": 121}, "invalid_night_lead"),
+                           ({"latitude": 10}, "invalid_location"),
+                           ({"longitude": 10}, "invalid_location"),
+                           ({"latitude": 91, "longitude": 0}, "invalid_latitude"),
+                           ({"latitude": 0, "longitude": 181}, "invalid_longitude")):
+            status, doc = self.call("PATCH", "config", body)
+            self.assertEqual((status, doc["error"]), (400, code), body)
+
+    def test_status_reports_the_phase_and_the_sun_s_own_day(self):
+        self.call("PATCH", "config", {"night": True, "latitude": 52.37, "longitude": 4.90})
+        try:
+            _, st = self.call("GET", "status")
+            self.assertEqual(st["night"]["enabled"], True)
+            self.assertIn(st["night"]["phase"], ("day", "to_night", "night", "to_day"))
+            self.assertIs(st["night"]["held"], False)
+            today = st["night"]["today"]
+            self.assertIn(today["sun_up"], (True, False))
+            crossings = [today[k] for k in ("dawn", "sunrise", "sunset", "dusk")]
+            self.assertEqual(crossings, sorted(crossings), "the day runs dawn, sunrise, sunset, dusk")
+            for t in crossings:
+                self.assertGreater(t, 1_700_000_000)
+            # a hand-set brightness stands in the schedule's way until the next ramp
+            _, st2 = self.call("GET", "status")
+            self.call("POST", "action", {"action": "brightness", "brightness": 42,
+                                         "request_id": "9a1", "epoch": st2["epoch"]})
+            _, st3 = self.call("GET", "status")
+            self.assertIs(st3["night"]["held"], True)
+        finally:
+            self.call("PATCH", "config", {"night": False, "location_auto": True})
+        _, off = self.call("GET", "status")
+        self.assertEqual(off["night"]["enabled"], False)
+        self.assertIsNone(off["night"]["phase"])
+
     def test_logs_page_through_the_ring(self):
         status, doc = self.call("GET", "logs?after=0")
         self.assertEqual(status, 200)
