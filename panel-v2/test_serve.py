@@ -321,6 +321,18 @@ class EndToEndTests(unittest.TestCase):
         self.assertNotEqual(st5["generator"], generator_before)
         self.assertEqual(st5["brightness"], st4["brightness"])
 
+    def test_status_carries_a_total_for_every_used_figure(self):
+        # a bar needs a denominator: the runtime reports memory, tmpfs and flash as used and total
+        # (RUNTIME.md, "what it samples")
+        _, st = self.call("GET", "status")
+        for key in ("memory_available_kb", "memory_total_kb", "tmpfs_total_kb", "flash_used_kb", "flash_total_kb"):
+            self.assertIsInstance(st.get(key), int, key)
+        self.assertGreater(st["memory_total_kb"], st["memory_available_kb"])
+        self.assertGreater(st["flash_total_kb"], st["flash_used_kb"])
+        self.assertGreaterEqual(st["tmpfs_total_kb"], st["tmpfs_used_kb"] or 0)
+        self.assertIn(st["cpu_pct"], range(0, 101))
+        self.assertIn(st["brightness"], range(1, 101))
+
     def test_logs_page_through_the_ring(self):
         status, doc = self.call("GET", "logs?after=0")
         self.assertEqual(status, 200)

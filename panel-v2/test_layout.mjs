@@ -158,6 +158,35 @@ test('every select is named by the row it sits in', { skip: chromeAvailable ? fa
     unnamed.map(u => `${u.card}/${u.select}`).join(', ')}`);
 });
 
+// the now card draws a bar for the figures that are a fraction of something: brightness and cpu are
+// percentages already, memory and flash are a used figure over the total the device reports with it
+test('the now card fills each metric bar to the fraction the device reports', { skip: chromeAvailable ? false : 'google chrome is not installed' }, async () => {
+  await cdp.setWidth(1200);
+  const st = await cdp.eval(`fetch('/api/127.0.0.1:${mockPort}/v1/status', { cache: 'no-store' }).then(r => r.json())`);
+  const expected = {
+    brightness: st.brightness,
+    cpu: st.cpu_pct,
+    memory: 100 * (st.memory_total_kb - st.memory_available_kb) / st.memory_total_kb,
+    flash: 100 * st.flash_used_kb / st.flash_total_kb,
+  };
+  const drawn = await cdp.eval(`
+    (() => {
+      const out = {};
+      for (const bar of document.querySelectorAll('#now .bar')) {
+        const track = bar.getBoundingClientRect().width;
+        const fill = bar.firstElementChild.getBoundingClientRect().width;
+        out[bar.dataset.metric] = track ? 100 * fill / track : null;
+      }
+      return out;
+    })()
+  `);
+  assert.deepEqual(Object.keys(drawn).sort(), ['brightness', 'cpu', 'flash', 'memory'], 'one bar per metric');
+  for (const [metric, want] of Object.entries(expected)) {
+    assert.ok(Math.abs(drawn[metric] - want) <= 1.5,
+      `the ${metric} bar is ${drawn[metric]?.toFixed(1)}% wide, the device reports ${want.toFixed(1)}%`);
+  }
+});
+
 // the widths that matter: 1440 and 1200 put the five-column cards at their narrowest useful size,
 // 950 is just past the breakpoint where cards stop spanning the full grid, 700 and 390 are the
 // stacked layouts

@@ -139,6 +139,10 @@ input[type=color]{width:44px;height:28px;padding:2px;border:1px solid var(--line
 input[type=file]{font:12px var(--body);color:var(--muted);max-width:220px}
 .counter{font-family:var(--data);font-size:11px;color:var(--muted);margin-left:6px}
 .inline{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.bar{flex:1 0 100%;height:5px;margin:7px 0 1px;border-radius:3px;background:var(--surface-2);border:1px solid var(--line-2);overflow:hidden}
+.bar>span{display:block;height:100%;background:var(--accent);border-radius:3px 0 0 3px;transition:width .25s}
+.bar.warn>span{background:var(--warn)}
+.bar.bad>span{background:var(--danger)}
 .rev{font-family:var(--data);font-size:12px;color:var(--muted)}
 .rev b{color:var(--warn);font-weight:600}
 .rev.bad b{color:var(--danger)}
@@ -420,18 +424,42 @@ async function command(method, path, makeBody, contentType, makeQuery) {
 }
 
 /* ---------- status polling and the now card ---------- */
+// kB as the device reports it, read as mb once it is worth it
+function dataSize(kb) {
+  if (kb == null) return '—';
+  return kb >= 1024 ? `${(kb / 1024).toFixed(1)} MB` : `${kb} kB`;
+}
+// a bar is drawn for a figure that is a fraction of something: {pct, tone}. `pressure` colours the
+// bar as it fills, for the metrics where full is bad; brightness is a setting, so it stays plain
+const pressure = pct => (pct >= 90 ? 'bad' : pct >= 75 ? 'warn' : '');
+const fraction = (used, total) => (typeof used === 'number' && typeof total === 'number' && total > 0 ? 100 * used / total : null);
+const memoryUsedKb = s => (typeof s.memory_total_kb === 'number' && typeof s.memory_available_kb === 'number'
+  ? s.memory_total_kb - s.memory_available_kb : null);
+
 const NOW_ROWS = [
   ['base', s => `${s.base}${s.base === 'art' ? ' · ' + s.generator : ''}`, 'base · generator'],
   ['overlay', s => s.overlay, 'overlay'],
-  ['brightness', s => `${s.brightness}%`, 'brightness'],
+  ['brightness', s => `${s.brightness}%`, 'brightness', s => ({ metric: 'brightness', pct: s.brightness })],
   ['power', s => s.power === undefined ? '—' : (s.power ? 'on' : 'off'), 'power'],
   ['clock', s => describeClock(s.clock), 'clock · font · colour_mode · colours'],
   ['fps', s => s.fps == null ? '—' : String(s.fps), 'fps · art only'],
   ['presented', s => String(s.presented), 'frames presented'],
   ['uptime', s => `${Math.floor(s.uptime_s / 3600)}h ${Math.floor(s.uptime_s / 60) % 60}m`, 'uptime_s'],
   ['ip', s => (s.network && s.network.ip) || 'none', 'network.ip'],
-  ['memory', s => `${s.memory_available_kb} kB`, 'memory_available_kb'],
-  ['cpu', s => s.cpu_pct == null ? '—' : `${s.cpu_pct}%`, 'cpu_pct'],
+  ['memory', s => {
+    const used = memoryUsedKb(s);
+    return used == null ? `${dataSize(s.memory_available_kb)} free` : `${dataSize(used)} of ${dataSize(s.memory_total_kb)}`;
+  }, 'memory_total_kb − memory_available_kb', s => {
+    const pct = fraction(memoryUsedKb(s), s.memory_total_kb);
+    return pct == null ? null : { metric: 'memory', pct, tone: pressure(pct) };
+  }],
+  ['flash', s => (typeof s.flash_used_kb === 'number' && typeof s.flash_total_kb === 'number'
+    ? `${dataSize(s.flash_used_kb)} of ${dataSize(s.flash_total_kb)}` : '—'), 'flash_used_kb · flash_total_kb', s => {
+    const pct = fraction(s.flash_used_kb, s.flash_total_kb);
+    return pct == null ? null : { metric: 'flash', pct, tone: pressure(pct) };
+  }],
+  ['cpu', s => s.cpu_pct == null ? '—' : `${s.cpu_pct}%`, 'cpu_pct',
+    s => (s.cpu_pct == null ? null : { metric: 'cpu', pct: s.cpu_pct, tone: pressure(s.cpu_pct) })],
   ['time', s => {
     if (!s.time) return '—';
     const age = typeof s.time.age_s === 'number' ? ` · ${s.time.age_s} s` : '';
@@ -450,12 +478,24 @@ function describeClock(c) {
 const sameClock = (a, b) => JSON.stringify(a || null) === JSON.stringify(b || null);
 function renderNow(s) {
   const box = $('now'); box.innerHTML = '';
-  for (const [label, fn, key] of NOW_ROWS) {
+  for (const [label, fn, key, barFn] of NOW_ROWS) {
     const row = document.createElement('div'); row.className = 'field';
     const lab = document.createElement('span'); lab.className = 'lab'; lab.textContent = label;
     const k = document.createElement('span'); k.className = 'key'; k.textContent = key; lab.append(k);
     const val = document.createElement('span'); val.className = 'val'; val.textContent = fn(s);
-    row.append(lab, val); box.append(row);
+    row.append(lab, val);
+    const bar = barFn && barFn(s);
+    if (bar) {
+      // the reading is already in the text beside it, so the bar is decorative to a screen reader
+      const track = document.createElement('div');
+      track.className = 'bar' + (bar.tone ? ' ' + bar.tone : '');
+      track.dataset.metric = bar.metric;
+      track.setAttribute('aria-hidden', 'true');
+      const fill = document.createElement('span');
+      fill.style.width = `${Math.max(0, Math.min(100, bar.pct))}%`;
+      track.append(fill); row.append(track);
+    }
+    box.append(row);
   }
   const r = $('renderer'); r.textContent = s.renderer;
   r.className = 'pill ' + (s.renderer === 'running' ? 'on' : s.renderer === 'none' ? 'off' : 'warn');
