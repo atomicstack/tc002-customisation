@@ -3,6 +3,7 @@
 //! scenes are pure: they take a seed and elapsed time, render into an rgb buffer, and handle
 //! normalized actions. they can never open hardware or network resources.
 const std = @import("std");
+const param = @import("param.zig");
 const geometry = @import("../panel/geometry.zig");
 const popsquares = @import("popsquares.zig");
 const plasma = @import("plasma.zig");
@@ -92,6 +93,11 @@ test "reseeding art changes the popsquares output" {
     try std.testing.expect(!std.mem.eql(u8, &a, &b));
 }
 
+/// art's own parameter, ahead of whichever generator is showing: the generator itself
+pub const art_params = [_]param.Param{
+    .{ .name = "scene", .kind = .choice, .choices = param.choicesOf(Generator), .default = 0 },
+};
+
 /// the art base scene: one of the compile-time generators, selectable and reseedable.
 pub const Art = struct {
     generator: Generator,
@@ -128,6 +134,23 @@ pub const Art = struct {
 
     pub fn nextGenerator(self: *Art, forward: bool) void {
         self.generator = self.neighbour(forward);
+    }
+
+    /// the parameters of the showing generator, after art's own
+    pub fn generatorParams(self: *const Art) []const param.Param {
+        return switch (self.generator) {
+            .popsquares => &popsquares.params,
+            .plasma => &plasma.params,
+        };
+    }
+
+    pub fn getParam(self: *const Art, index: usize) u32 {
+        if (index == 0) return @intFromEnum(self.generator);
+        return 0; // no generator declares one yet
+    }
+
+    pub fn setParam(self: *Art, index: usize, value: u32) void {
+        if (index == 0) self.select(@enumFromInt(@min(value, art_params[0].choices.len - 1)));
     }
 
     pub fn step(self: *Art, dt_s: f32) void {

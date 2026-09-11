@@ -70,6 +70,7 @@ test "every message kind round-trips through a packet" {
         .{ .ntfy_status = .{ .state = 2, .messages = 9, .err = config.Text.init("dns failed") } },
         .{ .menu_request = .{ .kind = @intFromEnum(MenuRequest.Kind.brightness), .value = 70 } },
         .{ .menu_request = .{ .kind = @intFromEnum(MenuRequest.Kind.reboot) } },
+        .{ .set_param = .{ .base = 1, .index = 3, .value = 0xff8000 } },
         .{ .device_status = .{ .battery_pct = 80, .usb = 1, .wifi_quality = 49, .wifi_dbm = -61, .time_synced = 1, .mqtt_on = 1, .uptime_s = 90061 } },
         .status_get,
         .{ .status = .{ .renderer_state = 2, .epoch = 3, .revision = 4, .presented = 5, .base = 1, .brightness = 77, .uptime_s = 8, .mem_available_kb = 14000, .cpu_pct = 12, .fps_x10 = 599, .ip_present = 1, .ip = .{ 10, 0, 0, 111 }, .config_revision = 2, .saved_revision = 1, .boot_id = 0xabcd, .sample_age_ms = 40, .mac = .{ 1, 2, 3, 4, 5, 6 }, .mac_present = 1, .load_1m_x100 = 123, .mem_free_kb = 4000, .wifi_level_dbm = -61, .wifi_quality = 49, .cpu_renderer_pct_x10 = 87, .tmpfs_used_kb = 1300, .battery_mv = 3987, .battery_pct = 80, .usb_present = 1, .clock = ClockStyle.full(.{ .font = .segment }) } },
@@ -219,6 +220,7 @@ pub const Kind = enum(u8) {
     // the on-device settings menu: the renderer asks, the supervisor answers with a push
     menu_request = 48,
     device_status = 49,
+    set_param = 50,
 };
 
 pub const Status = enum(u8) { applied = 0, rejected = 1, overload = 2, stale_epoch = 3, expired = 4, unavailable = 5, timeout = 6, conflict = 7 };
@@ -411,6 +413,10 @@ pub const MenuRequest = struct {
 
     pub const Kind = enum(u8) { brightness = 0, clock_font = 1, generator = 2, ip_mode = 3, mqtt = 4, ntfy = 5, power_off = 6, reboot = 7 };
 };
+
+/// a parameter of one of the base scenes, by the scene and its index in that scene's table. the
+/// renderer has already previewed it; the supervisor decides what it means for the settings.
+pub const SetParam = struct { base: u8, index: u8, value: u32 };
 
 /// what the menu's info page reads. the supervisor has all of it and pushes it every few seconds.
 pub const DeviceStatus = struct {
@@ -967,6 +973,7 @@ pub const Message = union(Kind) {
     ntfy_status: NtfyStatus,
     menu_request: MenuRequest,
     device_status: DeviceStatus,
+    set_param: SetParam,
 };
 
 pub const Packet = struct { request_id: u64, epoch: u32, message: Message };
@@ -999,6 +1006,12 @@ fn encodePayload(msg: Message, out: []u8) usize {
             out[0] = m.kind;
             std.mem.writeInt(u32, out[1..5], m.value, .big);
             return 5;
+        },
+        .set_param => |sp| {
+            out[0] = sp.base;
+            out[1] = sp.index;
+            std.mem.writeInt(u32, out[2..6], sp.value, .big);
+            return 6;
         },
         .device_status => |d| {
             out[0] = d.battery_pct;
@@ -1297,6 +1310,10 @@ pub fn decodePacket(bytes: []const u8) Error!Packet {
         .menu_request => blk: {
             const b = try fixed(p, 5);
             break :blk .{ .menu_request = .{ .kind = b[0], .value = std.mem.readInt(u32, b[1..5], .big) } };
+        },
+        .set_param => blk: {
+            const b = try fixed(p, 6);
+            break :blk .{ .set_param = .{ .base = b[0], .index = b[1], .value = std.mem.readInt(u32, b[2..6], .big) } };
         },
         .device_status => blk: {
             const b = try fixed(p, DeviceStatus.wire_len);

@@ -2,6 +2,7 @@
 //! on the cortex-a7 and deterministic for a seed. it exists to prove the scene interface with a
 //! second generator.
 const std = @import("std");
+const param = @import("param.zig");
 const geometry = @import("../panel/geometry.zig");
 const scene = @import("scene.zig");
 
@@ -79,6 +80,9 @@ const sine: [256]u8 = blk: {
     }
     break :blk t;
 };
+
+/// what this generator can be told; nothing yet, but the menus and the api already walk it
+pub const params = [_]param.Param{};
 
 pub const State = struct {
     t: u32 = 0,

@@ -19,6 +19,7 @@ const tz = @import("scene/tz.zig");
 const clock = @import("scene/clockfont.zig");
 const scene = @import("scene/scene.zig");
 const ip = @import("scene/ip.zig");
+const clockscene = @import("scene/clock.zig");
 const sntp = @import("supervisor/sntp.zig");
 const api = @import("net/api.zig");
 
@@ -527,6 +528,43 @@ const Supervisor = struct {
             sys.exit(127);
         }
         log.info("reboot: /bin/reboot started as pid {d}", .{pid});
+    }
+
+    /// a parameter of a base scene, changed from that scene's own menu on the panel. the renderer
+    /// shows it already; here it becomes an ordinary settings patch, which persists itself.
+    fn onSetParam(self: *Supervisor, sp: messages.SetParam) void {
+        const before = self.cfg;
+        const v = sp.value;
+        const rgb = [3]u8{ @intCast((v >> 16) & 0xff), @intCast((v >> 8) & 0xff), @intCast(v & 0xff) };
+        const patched = switch (sp.base) {
+            0 => switch (sp.index) { // art
+                0 => self.cfg.patch(.{ .generator = messages.enumFromInt(scene.Generator, @as(u8, @truncate(v))) orelse return }),
+                else => return,
+            },
+            1 => switch (sp.index) { // the clock, in its table's order
+                0 => self.cfg.patch(.{ .clock_font = messages.enumFromInt(clock.Font, @as(u8, @truncate(v))) orelse return }),
+                1 => self.cfg.patch(.{ .clock_colour = rgb }),
+                2 => self.cfg.patch(.{ .clock_colour_mode = messages.enumFromInt(clockscene.ColourMode, @as(u8, @truncate(v))) orelse return }),
+                3 => self.cfg.patch(.{ .clock_colour2 = rgb }),
+                4 => self.cfg.patch(.{ .clock_gradient = messages.enumFromInt(clockscene.Gradient, @as(u8, @truncate(v))) orelse return }),
+                5 => self.cfg.patch(.{ .clock_spread = @as(u8, @truncate(v)) }),
+                else => return,
+            },
+            2 => switch (sp.index) { // ip
+                0 => self.cfg.patch(.{ .ip_mode = messages.enumFromInt(ip.Mode, @as(u8, @truncate(v))) orelse return }),
+                else => return,
+            },
+            else => return,
+        };
+        patched catch |e| {
+            log.warn("scene parameter {d}.{d} rejected: {s}", .{ sp.base, sp.index, @errorName(e) });
+            self.cfg = before;
+            return;
+        };
+        self.snapshot.config_revision = self.cfg.revision;
+        self.sendNetd(.{ .config = self.cfg }, 0);
+        self.persistSettings();
+        log.info("scene parameter {d}.{d} set, revision {d}", .{ sp.base, sp.index, self.cfg.revision });
     }
 
     /// the on-device menu changed something. the renderer has already previewed it; here it is
@@ -1278,6 +1316,7 @@ const Supervisor = struct {
                 },
                 .input => |i| self.sendNetd(.{ .input = i }, 0),
                 .menu_request => |m| self.onMenuRequest(m, now),
+                .set_param => |sp| self.onSetParam(sp),
                 else => log.warn("unexpected {s} from renderer", .{@tagName(p.message)}),
             }
         }

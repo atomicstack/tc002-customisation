@@ -4,6 +4,7 @@
 //! 5x7 font on one line and scrolls it when it is wider than the panel; `big` uses the 10x14
 //! digits and scrolls. the static modes redraw only on a change, the scrolling ones once per step.
 const std = @import("std");
+const param = @import("param.zig");
 const geometry = @import("../panel/geometry.zig");
 const font = @import("font.zig");
 const clockfont = @import("clockfont.zig");
@@ -13,6 +14,12 @@ const scene = @import("scene.zig");
 pub const scroll_period_ns: u64 = 33_333_333;
 
 pub const Mode = enum(u8) { lines = 0, mini = 1, scroll = 2, big = 3 };
+
+/// what the ip scene can be told
+pub const params = [_]param.Param{
+    .{ .name = "layout", .kind = .choice, .choices = param.choicesOf(Mode), .default = 0 },
+    // the scene's colour has nowhere durable to live yet, so it waits for the generic slots
+};
 
 pub const State = struct {
     addr: ?[4]u8 = null,
@@ -24,6 +31,22 @@ pub const State = struct {
         const changed = !std.meta.eql(self.addr, addr);
         self.addr = addr;
         return changed;
+    }
+
+    pub fn getParam(self: *const State, index: usize) u32 {
+        return switch (index) {
+            0 => @intFromEnum(self.mode),
+            1 => param.rgbValue(self.colour),
+            else => 0,
+        };
+    }
+
+    pub fn setParam(self: *State, index: usize, value: u32) void {
+        switch (index) {
+            0 => _ = self.setMode(@enumFromInt(@min(value, params[0].choices.len - 1))),
+            1 => self.colour = param.valueRgb(value),
+            else => {},
+        }
     }
 
     /// returns true when the mode actually changed.

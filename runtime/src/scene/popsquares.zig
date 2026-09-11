@@ -5,6 +5,7 @@
 //! pure and deterministic for a given seed. ported from led/popsquares.c, itself a port of the
 //! pixdeck plugin and the popsquares_tc002 processing sketch.
 const std = @import("std");
+const param = @import("param.zig");
 const geometry = @import("../panel/geometry.zig");
 const scene = @import("scene.zig");
 
@@ -68,6 +69,9 @@ pub const Options = struct {
     tint_frac: f32 = 0.15,
     tint: [3]u8 = .{ 58, 110, 165 },
 };
+
+/// what this generator can be told; nothing yet, but the menus and the api already walk it
+pub const params = [_]param.Param{};
 
 pub const State = struct {
     level: [geometry.pixels]f32,

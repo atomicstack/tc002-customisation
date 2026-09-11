@@ -2,6 +2,7 @@
 //! gradient, redrawn at wall-second boundaries. wall time comes in as nanoseconds since the unix
 //! epoch; the timezone is a validated posix rule.
 const std = @import("std");
+const param = @import("param.zig");
 const geometry = @import("../panel/geometry.zig");
 const font = @import("font.zig");
 const clockfont = @import("clockfont.zig");
@@ -15,6 +16,40 @@ pub const Gradient = enum(u8) { horizontal = 0, vertical = 1, diagonal = 2 };
 /// the default `spread`: the whole requested gradient is shown. a smaller value bounds how far
 /// any channel of the end colour may sit from the start colour, for a subtler ramp.
 pub const default_spread: u8 = 255;
+
+/// what the clock can be told, for the settings menus and the api. the order is the storage order.
+pub const params = [_]param.Param{
+    .{ .name = "face", .kind = .choice, .choices = param.choicesOf(Font), .default = 0 },
+    .{ .name = "colour", .kind = .colour, .default = 0xffffff },
+    .{ .name = "shade", .kind = .choice, .choices = param.choicesOf(ColourMode), .default = 0 },
+    .{ .name = "colour 2", .kind = .colour, .default = 0xffffff },
+    .{ .name = "gradient", .kind = .choice, .choices = param.choicesOf(Gradient), .default = 0 },
+    .{ .name = "spread", .kind = .number, .min = 0, .max = 255, .step = 15, .default = default_spread },
+};
+
+pub fn getParam(style: Style, index: usize) u32 {
+    return switch (index) {
+        0 => @intFromEnum(style.font),
+        1 => param.rgbValue(style.colour),
+        2 => @intFromEnum(style.mode),
+        3 => param.rgbValue(style.colour2),
+        4 => @intFromEnum(style.gradient),
+        5 => style.spread,
+        else => 0,
+    };
+}
+
+pub fn setParam(style: *Style, index: usize, value: u32) void {
+    switch (index) {
+        0 => style.font = @enumFromInt(@min(value, params[0].choices.len - 1)),
+        1 => style.colour = param.valueRgb(value),
+        2 => style.mode = @enumFromInt(@min(value, params[2].choices.len - 1)),
+        3 => style.colour2 = param.valueRgb(value),
+        4 => style.gradient = @enumFromInt(@min(value, params[4].choices.len - 1)),
+        5 => style.spread = @intCast(@min(value, 255)),
+        else => {},
+    }
+}
 
 pub const Style = struct {
     font: Font = .classic,

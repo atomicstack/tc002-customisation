@@ -13,14 +13,12 @@ const font = @import("font.zig");
 const clockfont = @import("clockfont.zig");
 const ip = @import("ip.zig");
 const pages = @import("pages.zig");
+const param = @import("param.zig");
 const scene = @import("scene.zig");
 
 pub const Item = enum(u8) {
     brightness = 0,
     display_off,
-    clock_face,
-    art_scene,
-    ip_layout,
     new_seed,
     mqtt,
     ntfy,
@@ -32,9 +30,6 @@ pub const Item = enum(u8) {
         return switch (self) {
             .brightness => "bright",
             .display_off => "sleep",
-            .clock_face => "face",
-            .art_scene => "art",
-            .ip_layout => "ip",
             .new_seed => "seed",
             .mqtt => "mqtt",
             .ntfy => "ntfy",
@@ -47,7 +42,7 @@ pub const Item = enum(u8) {
     /// items whose value the knob or the left/right buttons can change
     fn adjustable(self: Item) bool {
         return switch (self) {
-            .brightness, .clock_face, .art_scene, .ip_layout, .mqtt, .ntfy, .info => true,
+            .brightness, .mqtt, .ntfy, .info => true,
             else => false,
         };
     }
@@ -62,6 +57,9 @@ const readout_count = @typeInfo(Readout).@"enum".fields.len;
 
 pub const State = enum { browsing, adjusting, confirming };
 
+/// which menu this is: the device's own settings, or the parameters of the showing scene
+pub const Kind = enum { device, scene };
+
 /// an input, whatever produced it: the knob turns and clicks, the buttons step and back out
 pub const Input = enum { next, prev, click, step_up, step_down, back };
 
@@ -69,6 +67,8 @@ pub const Input = enum { next, prev, click, step_up, step_down, back };
 pub const Request = union(enum) {
     none,
     close,
+    /// a parameter of the showing scene, by its index in that scene's table
+    scene_param: struct { index: u8, value: u32 },
     brightness: u8,
     clock_font: clockfont.Font,
     generator: scene.Generator,
@@ -116,9 +116,15 @@ const amber: [3]u8 = .{ 255, 128, 0 };
 const warn: [3]u8 = .{ 255, 32, 32 };
 
 pub const Menu = struct {
+    kind: Kind = .device,
+    /// scene menus only: the table being walked and the values as they stand
+    table: []const param.Param = &.{},
+    values: param.Values = [_]u32{0} ** param.max_per_owner,
+    /// scene menus only: which entry is showing; table.len is the exit at the end
+    entry: usize = 0,
     item: Item = .brightness,
     state: State = .browsing,
-    values: Values = .{},
+    settings: Values = .{},
     status: Status = .{},
     readout: Readout = .address,
     /// the highlighted answer of the reboot dialogue; it starts on no every time
@@ -135,7 +141,29 @@ pub const Menu = struct {
     pages_at: u64 = 0,
 
     pub fn open(values: Values, status: Status, now: u64) Menu {
-        return .{ .values = values, .status = status, .last_input_ns = now, .scroll_start_ns = now, .pages_at = now };
+        return .{ .kind = .device, .settings = values, .status = status, .last_input_ns = now, .scroll_start_ns = now, .pages_at = now };
+    }
+
+    /// the settings of whatever scene is showing, walked straight off its declared table
+    pub fn openScene(table: []const param.Param, values: param.Values, now: u64) Menu {
+        return .{ .kind = .scene, .table = table, .values = values, .last_input_ns = now, .scroll_start_ns = now, .pages_at = now };
+    }
+
+    /// how many things this menu walks, the exit included
+    pub fn entries(self: *const Menu) usize {
+        return switch (self.kind) {
+            .device => count,
+            .scene => self.table.len + 1,
+        };
+    }
+
+    fn onExit(self: *const Menu) bool {
+        return self.kind == .scene and self.entry >= self.table.len;
+    }
+
+    fn current(self: *const Menu) ?param.Param {
+        if (self.kind != .scene or self.onExit()) return null;
+        return self.table[self.entry];
     }
 
     fn touch(self: *Menu, now: u64) void {
@@ -166,38 +194,31 @@ pub const Menu = struct {
 
     /// step the current item's value; the change previews at once and is staged for the commit
     fn step(self: *Menu, forward: bool, now: u64) Request {
+        if (self.kind == .scene) {
+            const p = self.current() orelse return .none;
+            const next = p.stepped(self.values[self.entry], forward);
+            self.values[self.entry] = next;
+            const r = Request{ .scene_param = .{ .index = @intCast(self.entry), .value = next } };
+            self.stage(r, now);
+            return r;
+        }
         switch (self.item) {
             .brightness => {
-                const v = self.values.brightness;
+                const v = self.settings.brightness;
                 const next: u8 = if (forward) (if (v >= 100) 100 else v + 10) else (if (v <= 10) 10 else v - 10);
-                self.values.brightness = next;
+                self.settings.brightness = next;
                 self.stage(.{ .brightness = next }, now);
                 return .{ .brightness = next };
             },
-            .clock_face => {
-                self.values.clock_font = cycle(clockfont.Font, self.values.clock_font, forward);
-                self.stage(.{ .clock_font = self.values.clock_font }, now);
-                return .{ .clock_font = self.values.clock_font };
-            },
-            .art_scene => {
-                self.values.generator = cycle(scene.Generator, self.values.generator, forward);
-                self.stage(.{ .generator = self.values.generator }, now);
-                return .{ .generator = self.values.generator };
-            },
-            .ip_layout => {
-                self.values.ip_mode = cycle(ip.Mode, self.values.ip_mode, forward);
-                self.stage(.{ .ip_mode = self.values.ip_mode }, now);
-                return .{ .ip_mode = self.values.ip_mode };
-            },
             .mqtt => {
-                self.values.mqtt = !self.values.mqtt;
-                self.stage(.{ .mqtt = self.values.mqtt }, now);
-                return .{ .mqtt = self.values.mqtt };
+                self.settings.mqtt = !self.settings.mqtt;
+                self.stage(.{ .mqtt = self.settings.mqtt }, now);
+                return .{ .mqtt = self.settings.mqtt };
             },
             .ntfy => {
-                self.values.ntfy = !self.values.ntfy;
-                self.stage(.{ .ntfy = self.values.ntfy }, now);
-                return .{ .ntfy = self.values.ntfy };
+                self.settings.ntfy = !self.settings.ntfy;
+                self.stage(.{ .ntfy = self.settings.ntfy }, now);
+                return .{ .ntfy = self.settings.ntfy };
             },
             .info => {
                 self.readout = cycle(Readout, self.readout, forward);
@@ -209,6 +230,7 @@ pub const Menu = struct {
 
     pub fn input(self: *Menu, ev: Input, now: u64) Request {
         self.touch(now);
+        if (self.kind == .scene and self.state != .confirming) return self.sceneInput(ev, now);
         switch (self.state) {
             .confirming => {
                 switch (ev) {
@@ -269,6 +291,44 @@ pub const Menu = struct {
         }
     }
 
+    /// a scene menu walks its table: the same gestures, fewer kinds of thing to land on
+    fn sceneInput(self: *Menu, ev: Input, now: u64) Request {
+        switch (self.state) {
+            .adjusting => switch (ev) {
+                .next, .step_up => return self.step(true, now),
+                .prev, .step_down => return self.step(false, now),
+                .click, .back => {
+                    self.state = .browsing;
+                    self.commitNow();
+                    return .none;
+                },
+            },
+            else => switch (ev) {
+                .next, .prev => {
+                    self.commitNow();
+                    const n = self.entries();
+                    self.entry = if (ev == .next) (self.entry + 1) % n else (self.entry + n - 1) % n;
+                    self.pages_at = now;
+                    return .none;
+                },
+                .step_up => return self.step(true, now),
+                .step_down => return self.step(false, now),
+                .back => {
+                    self.commitNow();
+                    return .close;
+                },
+                .click => {
+                    if (self.onExit()) {
+                        self.commitNow();
+                        return .close;
+                    }
+                    self.state = .adjusting;
+                    return .none;
+                },
+            },
+        }
+    }
+
     /// time passing: a staged change settles, and an untouched menu closes
     pub fn tick(self: *Menu, now: u64) Request {
         if (self.commit_at) |at| if (now >= at) self.commitNow();
@@ -302,13 +362,29 @@ pub const Menu = struct {
             font.blit(rgb, 28, 8, "yes", if (self.confirm_yes) warn else dim);
             return;
         }
-        drawLine(rgb, 0, self.item.label(), dim, now, self.scroll_start_ns);
-        var buf: [24]u8 = undefined;
-        const text = self.valueText(&buf);
         const colour = if (self.state == .adjusting) amber else bright;
+        var buf: [24]u8 = undefined;
+        if (self.kind == .scene) {
+            const name = if (self.onExit()) "exit" else self.table[self.entry].name;
+            drawLine(rgb, 0, name, dim, now, self.scroll_start_ns);
+            if (self.current()) |p| {
+                if (p.kind == .colour) {
+                    // a swatch, because six hex digits tell you nothing about a colour
+                    swatch(rgb, param.valueRgb(self.values[self.entry]), self.state == .adjusting);
+                } else {
+                    drawLine(rgb, 8, p.valueText(self.values[self.entry], &buf), colour, now, self.scroll_start_ns);
+                }
+            } else {
+                drawLine(rgb, 8, "click", colour, now, self.scroll_start_ns);
+            }
+            pages.draw(rgb, self.entries(), self.entry, pages.alphaAt(now -| self.pages_at));
+            return;
+        }
+        drawLine(rgb, 0, self.item.label(), dim, now, self.scroll_start_ns);
+        const text = self.valueText(&buf);
         drawLine(rgb, 8, text, colour, now, self.scroll_start_ns);
         if (self.state == .adjusting and self.item == .brightness) {
-            const lit = @as(usize, self.values.brightness) * geometry.width / 100;
+            const lit = @as(usize, self.settings.brightness) * geometry.width / 100;
             for (0..lit) |x| setPixel(rgb, @intCast(x), 15, colour);
         } else {
             // one dot per item, the current one solid, up only for a while after the last move
@@ -318,12 +394,9 @@ pub const Menu = struct {
 
     fn valueText(self: *const Menu, buf: []u8) []const u8 {
         return switch (self.item) {
-            .brightness => std.fmt.bufPrint(buf, "{d}%", .{self.values.brightness}) catch "?",
-            .clock_face => @tagName(self.values.clock_font),
-            .art_scene => @tagName(self.values.generator),
-            .ip_layout => @tagName(self.values.ip_mode),
-            .mqtt => if (self.values.mqtt) "on" else "off",
-            .ntfy => if (self.values.ntfy) "on" else "off",
+            .brightness => std.fmt.bufPrint(buf, "{d}%", .{self.settings.brightness}) catch "?",
+            .mqtt => if (self.settings.mqtt) "on" else "off",
+            .ntfy => if (self.settings.ntfy) "on" else "off",
             .info => self.readoutText(buf),
             .display_off => "click",
             .new_seed => "click",
@@ -370,6 +443,20 @@ fn setPixel(rgb: *geometry.Rgb, x: i32, y: i32, colour: [3]u8) void {
     rgb[i + 2] = colour[2];
 }
 
+/// a block of the colour itself, framed while it is being changed so the edit is obvious
+fn swatch(rgb: *geometry.Rgb, c: [3]u8, editing: bool) void {
+    const x0: usize = 8;
+    const x1: usize = geometry.width - 8;
+    for (8..14) |y| {
+        for (x0..x1) |x| setPixel(rgb, @intCast(x), @intCast(y), c);
+    }
+    if (!editing) return;
+    for (x0 - 2..x1 + 2) |x| {
+        setPixel(rgb, @intCast(x), 7, amber);
+        setPixel(rgb, @intCast(x), 14, amber);
+    }
+}
+
 /// one line of text in the only font with letters, centred, scrolling when it is too wide
 fn drawLine(rgb: *geometry.Rgb, y: i32, text: []const u8, colour: [3]u8, now: u64, since: u64) void {
     const w: i32 = @intCast(font.textWidth(text));
@@ -390,6 +477,57 @@ const ms = 1_000_000;
 
 fn opened() Menu {
     return Menu.open(.{ .brightness = 50, .clock_font = .block, .generator = .popsquares, .ip_mode = .lines, .mqtt = true, .ntfy = false }, .{}, 0);
+}
+
+const demo_table = [_]param.Param{
+    .{ .name = "shape", .kind = .choice, .choices = &.{ "cube", "ball" }, .default = 0 },
+    .{ .name = "speed", .kind = .number, .min = 1, .max = 5, .step = 1, .default = 2 },
+    .{ .name = "colour", .kind = .colour, .default = 0xff0000 },
+};
+
+test "a scene menu walks a table it has never seen before" {
+    var m = Menu.openScene(&demo_table, .{ 0, 2, 0xff0000, 0, 0, 0, 0, 0 }, 0);
+    try std.testing.expectEqual(@as(usize, 4), m.entries()); // three parameters and the exit
+    try std.testing.expectEqualStrings("shape", m.table[m.entry].name);
+
+    // click to edit, turn to change: the preview comes straight back
+    const first = m.input(.click, 0);
+    try std.testing.expect(first == .none);
+    try std.testing.expectEqual(State.adjusting, m.state);
+    const preview = m.input(.next, ms);
+    try std.testing.expect(preview == .scene_param and preview.scene_param.value == 1);
+    try std.testing.expectEqual(@as(u32, 1), m.values[0]);
+    // and, as everywhere else, one request when it settles rather than one per detent
+    try std.testing.expect(m.takeReady() == .none);
+    _ = m.tick(ms + commit_delay_ns);
+    const settled = m.takeReady();
+    try std.testing.expect(settled == .scene_param and settled.scene_param.index == 0);
+
+    // a number stops at its ends
+    _ = m.input(.click, 0); // back to browsing
+    _ = m.input(.next, 0); // speed
+    for (0..6) |_| _ = m.input(.step_up, 0);
+    try std.testing.expectEqual(@as(u32, 5), m.values[1]);
+
+    // the exit is the last entry and closes
+    m.entry = m.table.len;
+    try std.testing.expect(m.input(.click, 0) == .close);
+}
+
+test "a colour parameter draws the colour rather than its digits" {
+    var m = Menu.openScene(&demo_table, .{ 0, 2, 0x00ff00, 0, 0, 0, 0, 0 }, 0);
+    m.entry = 2;
+    var rgb: geometry.Rgb = undefined;
+    m.render(pages.fade_in_ns, &rgb);
+    const o = geometry.pixelOffset(geometry.width / 2, 10);
+    try std.testing.expectEqual([3]u8{ 0, 255, 0 }, [3]u8{ rgb[o], rgb[o + 1], rgb[o + 2] });
+    // turning walks the wheel, so the swatch changes but stays fully saturated
+    _ = m.input(.click, 0);
+    _ = m.input(.next, ms);
+    m.render(pages.fade_in_ns, &rgb);
+    const after = [3]u8{ rgb[o], rgb[o + 1], rgb[o + 2] };
+    try std.testing.expect(!std.mem.eql(u8, &[3]u8{ 0, 255, 0 }, &after));
+    try std.testing.expectEqual(@as(u8, 255), @max(after[0], @max(after[1], after[2])));
 }
 
 test "the knob walks the list, wrapping, and exit sits one click back from the top" {
@@ -418,7 +556,7 @@ test "a click acts on the item showing" {
     try std.testing.expect(m.input(.click, 0) == .reseed);
 
     m = opened();
-    m.item = .clock_face; // an adjustable enters adjusting rather than acting
+    m.item = .brightness; // an adjustable enters adjusting rather than acting
     try std.testing.expect(m.input(.click, 0) == .none);
     try std.testing.expectEqual(State.adjusting, m.state);
 }
@@ -433,7 +571,7 @@ test "a knob spin previews every step but sends one request when it settles" {
         const r = m.input(.next, t);
         try std.testing.expect(r == .brightness); // the preview follows every detent
     }
-    try std.testing.expectEqual(@as(u8, 80), m.values.brightness);
+    try std.testing.expectEqual(@as(u8, 80), m.settings.brightness);
     // nothing has gone up yet, and nothing goes up until the value settles
     _ = m.tick(t + 100 * ms);
     try std.testing.expect(m.takeReady() == .none);
@@ -460,30 +598,30 @@ test "every detent previews but only the settled value is ever handed over" {
     try std.testing.expectEqual(@as(usize, 0), handed);
     _ = m.tick(t + commit_delay_ns);
     try std.testing.expect(m.takeReady() != .none);
-    try std.testing.expectEqual(@as(u8, 100), m.values.brightness);
+    try std.testing.expectEqual(@as(u8, 100), m.settings.brightness);
 }
 
 test "brightness stops at its ends" {
     var m = opened();
-    m.values.brightness = 20;
+    m.settings.brightness = 20;
     _ = m.input(.click, 0);
     _ = m.input(.prev, 0);
     _ = m.input(.prev, 0);
-    try std.testing.expectEqual(@as(u8, 10), m.values.brightness);
-    m.values.brightness = 90;
+    try std.testing.expectEqual(@as(u8, 10), m.settings.brightness);
+    m.settings.brightness = 90;
     _ = m.input(.next, 0);
     _ = m.input(.next, 0);
-    try std.testing.expectEqual(@as(u8, 100), m.values.brightness);
+    try std.testing.expectEqual(@as(u8, 100), m.settings.brightness);
 }
 
 test "the buttons change a value in place without entering adjusting" {
     var m = opened();
-    m.item = .ip_layout;
+    m.item = .mqtt;
     const r = m.input(.step_up, 0);
-    try std.testing.expect(r == .ip_mode and r.ip_mode == .mini);
+    try std.testing.expect(r == .mqtt and r.mqtt == false); // opened() has mqtt on
     try std.testing.expectEqual(State.browsing, m.state); // still browsing
     _ = m.tick(commit_delay_ns);
-    try std.testing.expect(m.takeReady() == .ip_mode);
+    try std.testing.expect(m.takeReady() == .mqtt);
     // and middle backs out of the menu entirely
     try std.testing.expect(m.input(.back, 0) == .close);
 }

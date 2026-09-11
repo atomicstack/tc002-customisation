@@ -161,6 +161,11 @@ const Renderer = struct {
 
     /// the settings the on-device menu changed: the supervisor validates, applies and persists
     fn sendMenuRequest(self: *Renderer, r: menu.Request) void {
+        if (r == .scene_param) {
+            // the scene it belongs to is whatever is showing: the menu is that scene's own
+            self.send(.{ .set_param = .{ .base = @intFromEnum(arb.base), .index = r.scene_param.index, .value = r.scene_param.value } }, 0);
+            return;
+        }
         const K = messages.MenuRequest.Kind;
         const m: messages.MenuRequest = switch (r) {
             .brightness => |v| .{ .kind = @intFromEnum(K.brightness), .value = v },
@@ -172,7 +177,7 @@ const Renderer = struct {
             .power_off => .{ .kind = @intFromEnum(K.power_off) },
             .reboot => .{ .kind = @intFromEnum(K.reboot) },
             // a reseed is not a setting and a close is nobody else's business
-            .none, .close, .reseed => return,
+            .none, .close, .reseed, .scene_param => return,
         };
         self.send(.{ .menu_request = m }, 0);
     }

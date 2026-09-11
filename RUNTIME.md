@@ -457,8 +457,8 @@ does not know is rejected with `400 rejected`.
 | middle button (release) | select `art` | select `art` |
 | right button (release) | select `ip` | select `ip` |
 | knob rotate | next / previous generator | next / previous clock face in the clock; next / previous layout in ip |
-| knob short press | open the [settings menu](#the-settings-menu) | open the settings menu |
-| knob long press (700 ms) | arm streaming | arm streaming |
+| knob short press | the showing scene's own settings | the showing scene's own settings |
+| knob long press (700 ms) | the [device menu](#the-settings-menu) | the device menu |
 
 while the menu is open every control belongs to it; the table above applies
 only when it is closed.
@@ -506,10 +506,36 @@ controls can be driven remotely (`POST /input`, `cmd/input`): an injected
 `click` is a press and a release through the same mapper, so it produces the
 same actions and the same outward events as a finger would.
 
+### scene parameters
+
+every scene declares a table of what it can be told: a name, a kind (`choice`,
+`number`, `colour` or `toggle`), its range and its default. nothing outside the
+scene knows what any of it means, so the on-panel menus walk a table they have
+never seen, and a new scene writes one table rather than touching five places.
+a value is always a `u32`: a choice is its index, a number is itself, a colour
+is `0x00RRGGBB`, a toggle is 0 or 1.
+
+| scene | parameters |
+|---|---|
+| clock | `face`, `colour`, `shade`, `colour 2`, `gradient`, `spread` |
+| art | `scene` (the generator); each generator's own table joins it as they gain one |
+| ip | `layout` |
+
+a **short press of the knob** opens the showing scene's table as a menu, one
+entry per screen with an `exit` at the end. a colour draws as a swatch rather
+than six hex digits, and turning the dial walks a hue wheel of 32 positions at
+full saturation, snapped to those positions so repeated turns do not drift.
+saturation, value and an exact hex belong to the console; a parameter can say
+so with `on_panel = false`.
+
+a change previews on the scene at once and is written once it settles, the same
+700 ms rule the device menu uses. the supervisor turns it into an ordinary
+settings patch, so it persists and reaches netd like any other.
+
 ### the settings menu
 
-the knob's short press opens a menu on the panel itself, so brightness, the
-faces and the two message services can be changed with nothing else to hand.
+the knob's **long** press opens the device's own menu, so brightness and the
+two message services can be changed with nothing else to hand.
 one item shows at a time, which is the only honest layout on 52x16: the item's
 name on the top rows, its value below, and a row of dots along the bottom with
 the current item lit.
@@ -518,9 +544,6 @@ the current item lit.
 |---|---|---|
 | `bright` | brightness in ten steps, 10 to 100 | yes |
 | `sleep` | turns the display off and closes the menu | no, the panel comes back on a restart |
-| `face` | the clock face | yes |
-| `art` | the art generator | yes |
-| `ip` | the ip layout | yes |
 | `seed` | reseeds the art at once | no, a seed is not a setting |
 | `mqtt` | the broker connection on or off | yes |
 | `ntfy` | the subscriber on or off | yes |
@@ -529,7 +552,8 @@ the current item lit.
 | `exit` | closes the menu | n/a |
 
 `exit` is last, so it is one counter-clockwise click from the item the menu
-opens on.
+opens on. the clock face, the art generator and the ip layout used to live here
+and are now parameters of their own scenes, reached by the short press.
 
 - **the knob** turns to move between items, clockwise moving rightwards along
   the dot row (which fades away a few seconds after the last turn, like every

@@ -15,6 +15,7 @@ const clock = @import("clock.zig");
 const ip = @import("ip.zig");
 const menu = @import("menu.zig");
 const pages = @import("pages.zig");
+const param = @import("param.zig");
 
 const white = [3]u8{ 255, 255, 255 };
 const s_ns = std.time.ns_per_s;
@@ -126,9 +127,10 @@ test "physical actions: buttons select the base, rotary and knob depend on the b
     try std.testing.expectEqual(scene.Generator.popsquares, a.art.generator);
     var before: geometry.Rgb = undefined;
     a.render(0, &before);
-    // the knob click opens the settings menu, which takes every control until it closes
+    // a short knob press opens the showing scene's settings, which take every control
     a.action(.knob_short, 0);
     try std.testing.expect(a.menuOpen());
+    try std.testing.expectEqual(menu.Kind.scene, a.menu_state.?.kind);
     var after: geometry.Rgb = undefined;
     a.render(0, &after);
     try std.testing.expect(!std.mem.eql(u8, &before, &after));
@@ -136,7 +138,12 @@ test "physical actions: buttons select the base, rotary and knob depend on the b
     try std.testing.expect(a.base == .art);
     a.action(.middle, 0); // middle backs out
     try std.testing.expect(!a.menuOpen());
+    // and a long press opens the device's own menu instead
     a.action(.knob_long, 0);
+    try std.testing.expect(a.menuOpen());
+    try std.testing.expectEqual(menu.Kind.device, a.menu_state.?.kind);
+    a.action(.middle, 0);
+    _ = a.apply(.arm_stream, 0); // the stream is armed through the api now, not the knob
     try std.testing.expect(a.overlay == .stream_arming);
     _ = a.apply(.{ .notify = .{ .text = "x", .colour = white, .duration_s = 5 } }, 0);
     a.action(.left, 0); // a scene-changing action cancels the overlay
@@ -708,8 +715,9 @@ pub const Arbiter = struct {
                 self.pages_at = now_ns;
                 self.dirty = true;
             },
-            .knob_short => self.openMenu(now_ns),
-            .knob_long => _ = self.apply(.arm_stream, now_ns),
+            // a short press is the showing scene's own settings; a long one the device's
+            .knob_short => self.openSceneMenu(now_ns),
+            .knob_long => self.openMenu(now_ns),
         }
     }
 
@@ -728,8 +736,44 @@ pub const Arbiter = struct {
         return pages.alphaAt(now_ns -| at);
     }
 
+    /// what the showing scene can be told. art puts its generator first, then that generator's own.
+    pub fn sceneParams(self: *const Arbiter) []const param.Param {
+        return switch (self.base) {
+            .art => &scene.art_params, // a generator's own table joins this in a later pass
+            .clock => &clock.params,
+            .ip => &ip.params,
+        };
+    }
+
+    pub fn getSceneParam(self: *const Arbiter, index: usize) u32 {
+        return switch (self.base) {
+            .art => self.art.getParam(index),
+            .clock => clock.getParam(self.clock.style, index),
+            .ip => self.ip.getParam(index),
+        };
+    }
+
+    /// apply it to the showing scene at once: this is the preview, the settings follow on commit
+    pub fn setSceneParam(self: *Arbiter, index: usize, value: u32) void {
+        switch (self.base) {
+            .art => self.art.setParam(index, value),
+            .clock => clock.setParam(&self.clock.style, index, value),
+            .ip => self.ip.setParam(index, value),
+        }
+        self.dirty = true;
+    }
+
     pub fn menuOpen(self: *const Arbiter) bool {
         return self.menu_state != null;
+    }
+
+    /// the settings of whatever is showing, opened by a short press of the knob
+    pub fn openSceneMenu(self: *Arbiter, now_ns: u64) void {
+        const table = self.sceneParams();
+        var values: param.Values = [_]u32{0} ** param.max_per_owner;
+        for (table, 0..) |_, i| values[i] = self.getSceneParam(i);
+        self.menu_state = menu.Menu.openScene(table, values, now_ns);
+        self.dirty = true;
     }
 
     pub fn openMenu(self: *Arbiter, now_ns: u64) void {
@@ -774,6 +818,9 @@ pub const Arbiter = struct {
             .close => {
                 self.menu_state = null;
                 return;
+            },
+            .scene_param => |sp| {
+                self.setSceneParam(sp.index, sp.value);
             },
             .brightness => |v| {
                 self.brightness = v;
