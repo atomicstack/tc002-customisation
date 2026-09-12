@@ -257,6 +257,7 @@ class Device:
         self.overlay, self.overlay_until = "none", 0.0
         self.presented_base, self.presented_at = 0, self.started
         self.restarts = 0
+        self.seed = secrets.randbelow(1 << 32)   # the art scene's seed, as /status reports it
         self.log_seq = 0
         self.log_lines = []
         for line in SEED_LOG_LINES:
@@ -332,7 +333,7 @@ class Device:
         self.tick()
         fps = 59.9 if self.base == "art" and self.overlay == "none" else None
         return {"epoch": self.epoch, "revision": self.revision, "renderer": "running", "base": self.base,
-                "generator": self.generator, "overlay": self.overlay, "brightness": self.brightness,
+                "generator": self.generator, "seed": self.seed, "overlay": self.overlay, "brightness": self.brightness,
                 "power": self.power,
                 "clock": dict(self.clock), "ip_mode": self.ip_mode,
                 "presented": self.presented(), "fps": fps, "uptime_s": int(time.monotonic() - self.started),
@@ -495,7 +496,11 @@ class Device:
             self.log(f"brightness: {v}")
             return self.bump()
         if kind == "reseed":
-            self.log("reseed")
+            v = body.get("seed")
+            if v is not None and (not isinstance(v, int) or v < 0 or v > 0xffffffff):
+                raise Reject(400, "invalid_seed", "seed must be 0..4294967295")
+            self.seed = secrets.randbelow(1 << 32) if v is None else v
+            self.log(f"reseed: {self.seed}")
             return self.bump()
         if kind == "arm_stream":
             self.log("stream arming")
@@ -541,10 +546,10 @@ class Device:
             return self.set_overlay("stream_arming", 2)
         if event in ("click", "release"):
             if control in ("left", "middle", "right"):
-                self.base = {"left": "clock", "middle": "art", "right": "ip"}[control]
+                self.base = BASES[{"left": 0, "middle": 1, "right": 2}[control]]
                 self.overlay = "none"
             elif control == "knob" and self.base == "art":
-                pass  # reseed the art; the mock does not track a seed to change
+                self.seed = secrets.randbelow(1 << 32)   # a knob click reseeds the art
         elif event in STEPPED_EVENTS:
             if self.base == "art":
                 idx = GENERATORS.index(self.generator)

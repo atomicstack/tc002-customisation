@@ -368,6 +368,40 @@ class EndToEndTests(unittest.TestCase):
         _, sc = self.call("GET", "scenes")
         self.assertEqual(sc, generated)
 
+    def test_status_reports_the_art_seed_and_reseed_changes_it(self):
+        # the console runs the same generators in its preview; without the seed it cannot
+        # reproduce what the panel is drawing, only the algorithm
+        _, before = self.call("GET", "status")
+        self.assertIsInstance(before["seed"], int)
+        self.assertGreaterEqual(before["seed"], 0)
+        self.assertLessEqual(before["seed"], 0xffffffff)
+
+        status, _ = self.call("POST", "action", {"action": "reseed", "seed": 123456,
+                                                 "request_id": "5e1", "epoch": before["epoch"]})
+        self.assertEqual(status, 200)
+        _, named = self.call("GET", "status")
+        self.assertEqual(named["seed"], 123456)
+
+        self.call("POST", "action", {"action": "reseed", "request_id": "5e2", "epoch": before["epoch"]})
+        _, random_seed = self.call("GET", "status")
+        self.assertNotEqual(random_seed["seed"], 123456, "a reseed with no seed should pick one")
+
+        status, doc = self.call("POST", "action", {"action": "reseed", "seed": -1,
+                                                   "request_id": "5e3", "epoch": before["epoch"]})
+        self.assertEqual((status, doc["error"]), (400, "invalid_seed"))
+
+    def test_the_three_buttons_select_the_first_three_bases_in_order(self):
+        # the base enum is numbered in the panel's own left/middle/right order, so the buttons
+        # read it positionally rather than naming a base that may retire (right was `ip`)
+        _, sc = self.call("GET", "scenes")
+        _, st = self.call("GET", "status")
+        for control, index in (("left", 0), ("middle", 1), ("right", 2)):
+            self.call("POST", "input", {"control": control, "event": "click",
+                                        "request_id": f"6{index}", "epoch": st["epoch"]})
+            _, now = self.call("GET", "status")
+            self.assertEqual(now["base"], sc["bases"][index],
+                             f"the {control} button should select {sc['bases'][index]}")
+
     def test_clock_spread_is_both_a_setting_and_a_transient_scene_field(self):
         _, cfg = self.call("GET", "config")
         status, doc = self.call("PATCH", "config", {"clock_spread": 120, "expected_revision": cfg["revision"]})

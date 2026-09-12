@@ -1018,7 +1018,7 @@ lowercase code:
 ### the status document
 
 ```json
-{"epoch":1,"revision":12,"renderer":"running","base":"art","generator":"popsquares",
+{"epoch":1,"revision":12,"renderer":"running","base":"art","generator":"popsquares","seed":3735928559,
  "overlay":"none","brightness":100,"power":true,"presented":35990,"fps":59.9,
  "uptime_s":600,"memory_available_kb":16084,"cpu_pct":5,"restarts":0,
  "network":{"ip":"10.0.0.111"},"time":{"state":"unsynced","age_s":null},
@@ -1031,7 +1031,12 @@ lowercase code:
 ```
 
 `fps` is a number only while art is running with no overlay, otherwise
-`null` (there is no frame rate to report for a clock). `renderer` is `none`,
+`null` (there is no frame rate to report for a clock). `seed` is the art
+scene's current seed, as `POST /action reseed` last set it or as the renderer
+picked it at start. it is reported because a client that runs the same
+generators — the console's preview compiles them to wasm — can reproduce what
+the panel is drawing from it, and cannot without it. it travels renderer →
+supervisor → netd on the heartbeat, so it is as fresh as the last beat. `renderer` is `none`,
 `starting`, `running` or `stopping`. `power` (after `brightness`) is the
 display power switch; `clock` is the effective [clock style](#clock-styles). `boot_id` is random per supervisor start
 and is what groups the mqtt discovery entities. `time` is the sntp client's

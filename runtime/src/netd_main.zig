@@ -909,7 +909,7 @@ const Netd = struct {
     fn statusJson(self: *Netd, o: *Out, now: u64) void {
         const st = self.status;
         o.add("{");
-        o.fmt("\"epoch\":{d},\"revision\":{d},\"renderer\":\"{s}\",\"base\":\"{s}\",\"generator\":\"{s}\",\"overlay\":\"{s}\",\"brightness\":{d},\"power\":{},\"presented\":{d},", .{ st.epoch, st.revision, rendererName(st.renderer_state), baseName(st.base), generatorName(st.generator), overlayName(st.overlay), st.brightness, st.power != 0, st.presented });
+        o.fmt("\"epoch\":{d},\"revision\":{d},\"renderer\":\"{s}\",\"base\":\"{s}\",\"generator\":\"{s}\",\"seed\":{d},\"overlay\":\"{s}\",\"brightness\":{d},\"power\":{},\"presented\":{d},", .{ st.epoch, st.revision, rendererName(st.renderer_state), baseName(st.base), generatorName(st.generator), st.seed, overlayName(st.overlay), st.brightness, st.power != 0, st.presented });
         self.fpsJson(o);
         o.fmt("\"uptime_s\":{d},\"memory_available_kb\":{d},\"memory_total_kb\":{d},", .{ st.uptime_s, st.mem_available_kb, st.mem_total_kb });
         if (st.cpu_pct == 255) o.add("\"cpu_pct\":null,") else o.fmt("\"cpu_pct\":{d},", .{st.cpu_pct});

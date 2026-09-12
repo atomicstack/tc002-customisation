@@ -1261,6 +1261,8 @@ const Supervisor = struct {
         self.snapshot.generator = h.generator;
         self.snapshot.overlay = h.overlay;
         self.snapshot.brightness = h.brightness;
+        // a reseed goes through arb.apply, which bumps the revision, so `changed` already covers it
+        self.snapshot.seed = h.seed;
         self.snapshot.epoch = lifecycle.epoch;
         self.snapshot.renderer_state = 2;
         if (self.hb_presented_at_ns != 0 and now > self.hb_presented_at_ns and now - self.hb_presented_at_ns >= 2 * ns_per_s) {
