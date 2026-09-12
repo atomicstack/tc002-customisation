@@ -129,7 +129,9 @@ command brings it up again, with the settings applied and the console's tokens p
 ```bash
 runtime/tools/tc002-up.sh                          # adb connect, build, push, start, settings, tokens
 runtime/tools/tc002-up.sh --tz Australia/Melbourne --font classic --no-build
-runtime/tools/tc002-demo.py -s <device-ip> --token-file tokens         # a demo reel of every transition; --only, --ms, --hold, --loop
+runtime/tools/tc002-demo-transitions.py -s <device-ip> --token-file tokens   # a demo reel of every transition; --only, --ms, --hold, --loop
+runtime/tools/tc002-demo-shapes.py -s <device-ip> --token-file tokens        # the canvas primitives; and -text, -charts, -icons,
+                                                                            # -images, -layout, -tiles, -dashboard alongside it
 panel-v2/start-panel.sh --open                     # the console, once the runtime is up
 runtime/tools/tc002-run.sh stop                    # back to the stock app
 ```

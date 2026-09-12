@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""tc002-demo.py: a demo reel of every transition effect, played on the device over the http api
+"""tc002-demo-transitions.py: a demo reel of every transition effect, played on the device over the http api
 from this machine. each effect gets a scene change (clock <-> art) that arrives with the effect,
 then a labelled notification that arrives with it and leaves with its paired exit the other way.
 the reel ends by putting back the scene that was showing; durable settings are never touched.
 
-  tc002-demo.py -s <device-ip> [--token-file FILE | --token HEX] [options]
+  tc002-demo-transitions.py -s <device-ip> [--token-file FILE | --token HEX] [options]
 
   --ms N          transition duration in ms, 0..5000 (default 800)
   --hold S        seconds each notification stays before it leaves, 1..300 (default 2)
@@ -50,7 +50,7 @@ OTHER_BASE = {"clock": "art", "art": "clock", "ip": "clock"}
 
 
 def die(msg):
-    sys.exit(f"tc002-demo.py: {msg}")
+    sys.exit(f"tc002-demo-transitions.py: {msg}")
 
 
 def request(args, token, method, path, body=None, query=""):
