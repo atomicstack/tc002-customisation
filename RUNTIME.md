@@ -1143,26 +1143,66 @@ once.
  "memory_available_kb":16084,"cpu_pct":5,"rss_kb":{"supervisor":4,"renderer":4,"netd":4},
  "renderer_restarts":0,"mqtt_reconnects":0,"scene":"art","brightness":100,"fps":59.9,
  "presented":35990,"http_requests":12,"http_rejected":1,"mqtt_commands":3,"mqtt_dropped":0,
- "time":{"state":"unsynced"}}
+ "time":{"state":"unsynced"},
+ "net":{"interface":"wlan0","rx_bytes":530478830,"tx_bytes":48216323,
+            "rx_packets":2290185,"tx_packets":297493,"rx_errors":0,"rx_dropped":1344978,
+            "tx_errors":0,"tx_dropped":0,"rx_bytes_per_s":5809,"tx_bytes_per_s":1102},
+ "memory_cached_kb":12560,"memory_dirty_kb":0,"memory_writeback_kb":0,"memory_slab_kb":8576,
+ "config_saves":{"count":1,"failures":0,"bytes":910,"last_ms":2}}
 ```
 
 (the `rss_kb` values are the kernel's unreliable 4 kb figure; see
 [memory audits](#memory-audits).)
+
+#### the device counters, and what they are not
+
+the same block is in `GET /status`, so the console sees it too.
+
+- **`net`** is one interface, `wlan0`, straight out of `/proc/net/dev` under the kernel's own
+  field names. the counters are the kernel's `unsigned long`, 32 bits on this cpu, so they wrap
+  where it wraps. the two `_per_s` figures are derived in the supervisor from its own sample
+  interval and are **`null`, never zero**, until a second sample exists or if a counter goes
+  backwards, which is what an interface reset looks like from here. it is `net`, not `network`:
+  the status document's `network` object is the ip address and was there first.
+- **`rx_dropped` is not packet loss.** this device reports over 1.3 million dropped receives
+  against 2.3 million received packets and zero receive errors, so whatever the driver counts
+  there, it is not an application-visible fault. it is published under the driver's name, its
+  discovery entity is called "wifi frames the driver dropped", and nothing derives a loss
+  percentage from it.
+- **`config_saves`** counts what the runtime writes to the settings file: attempts, failures,
+  serialised bytes and the duration of the last one. **this is not flash wear.** it excludes
+  jffs2 metadata, compression and garbage collection, and every other process on the device.
+  mtd6 exposes geometry, ecc and bad-block fields but no programmed-byte or erase totals, so no
+  lifetime estimate is derivable on this build and none is offered.
+- **headroom**: the metrics document measured 1,114 bytes against its 1,536-byte cap once these
+  counters were added, and `GET /status` 1,654 against 3,584. an overflow stops publication
+  entirely, so netd now logs it rather than counting a silent drop, and the status route answers
+  500 rather than sending a truncated body that is not json.
+- **what is deliberately absent**, having been measured rather than assumed on linux 4.9.84:
+  `bpf` and `perf_event_open` both return `ENOSYS`, there are no kprobes, `/proc/self/io` does
+  not exist, and vmstat carries gauges only — no `pgfault`, `pgalloc` or `pgscan` rates. the
+  sigmastar miu bandwidth counter at `/sys/devices/system/miu/miu_bw0` does work, but a read
+  blocks around ten seconds inside the vendor driver and needs a global sysfs flag flipped and
+  restored, so the runtime does not use it.
 
 ### home-assistant discovery
 
 opt-in with `discovery: true`. on every mqtt connection netd publishes one
 retained config per second under
 `<discovery_prefix>/<component>/tc002-<mac>/<key>/config` (the boot id stands
-in when there is no wlan0 mac): 30 read-only diagnostic `sensor` entities that
-read from the `metrics` topic (uptime, memory used and available and total, cpu
-overall and per process, load, wifi, tmpfs used and total, flash used and total
+in when there is no wlan0 mac): 43 read-only diagnostic `sensor` entities that
+read from the `metrics` topic (uptime, memory used and available and total and
+cached and dirty and slab, cpu
+overall and per process, load, wifi signal and quality and byte rates and totals
+and error and dropped counts, settings saves and failures and bytes written,
+tmpfs used and total, flash used and total
 and as a percentage, battery and usb power, renderer restarts, mqtt reconnects,
 scene, brightness, fps, frames presented, time sync state), one
 `binary_sensor` for display power that reads the retained `state` topic, and
 five `event` entities (left, middle and right buttons, the knob, the rotary)
 fed by the momentary `input/<control>` topics with `event_types` press/release
-(plus `long` for the knob, `cw`/`ccw` for the rotary). they are grouped into
+(plus `long` for the knob, `cw`/`ccw` for the rotary). forty-nine entities at
+one per second means a full pass takes about that many seconds. they are grouped into
 one device, linked to the `availability` topic, and the metrics sensors expire
 after three metrics intervals. a home-assistant birth message
 (`<discovery_prefix>/status` = `online`) repeats the pass; turning discovery

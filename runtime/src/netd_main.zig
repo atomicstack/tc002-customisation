@@ -607,7 +607,7 @@ const Netd = struct {
                 if (c.awaiting == .status) {
                     var o = Out{ .buf = &json_buf };
                     self.statusJson(&o, now);
-                    self.respond(c, 200, "application/json", o.slice());
+                    if (o.overflow) self.respondError(c, 500, "internal", "the status document did not fit") else self.respond(c, 200, "application/json", o.slice());
                     self.flushConn(c, now);
                 }
             }
@@ -1089,6 +1089,17 @@ const Netd = struct {
         if (st.battery_pct == 255) o.add("null") else o.fmt("{d}", .{st.battery_pct});
         o.add(",\"usb_present\":");
         if (st.usb_present == 255) o.add("null") else o.add(if (st.usb_present != 0) "true" else "false");
+        // the interface counters under the kernel's own names. `rx_dropped` is the driver's
+        // counter and not application packet loss: this device reports over a third of received
+        // frames there while erroring on none of them.
+        o.fmt("}},\"net\":{{\"interface\":\"wlan0\",\"rx_bytes\":{d},\"tx_bytes\":{d},\"rx_packets\":{d},\"tx_packets\":{d},\"rx_errors\":{d},\"rx_dropped\":{d},\"tx_errors\":{d},\"tx_dropped\":{d},\"rx_bytes_per_s\":", .{ st.net_rx_bytes, st.net_tx_bytes, st.net_rx_packets, st.net_tx_packets, st.net_rx_errors, st.net_rx_dropped, st.net_tx_errors, st.net_tx_dropped });
+        if (st.net_rx_bps == 0xffffffff) o.add("null") else o.fmt("{d}", .{st.net_rx_bps});
+        o.add(",\"tx_bytes_per_s\":");
+        if (st.net_tx_bps == 0xffffffff) o.add("null") else o.fmt("{d}", .{st.net_tx_bps});
+        o.fmt("}},\"memory_cached_kb\":{d},\"memory_dirty_kb\":{d},\"memory_writeback_kb\":{d},\"memory_slab_kb\":{d},", .{ st.mem_cached_kb, st.mem_dirty_kb, st.mem_writeback_kb, st.mem_slab_kb });
+        // settings writes, counted where the runtime makes them. not flash wear: see runtime.md
+        o.fmt("\"config_saves\":{{\"count\":{d},\"failures\":{d},\"bytes\":{d},\"last_ms\":", .{ st.saves, st.save_failures, st.save_bytes });
+        if (st.save_last_ms == 0xffff) o.add("null") else o.fmt("{d}", .{st.save_last_ms});
         o.add("}");
     }
 
@@ -1431,14 +1442,20 @@ const Netd = struct {
         if (self.m_connected and self.state_dirty and now - self.last_state_pub_ns >= state_coalesce_ns) {
             var o = Out{ .buf = &json_buf };
             self.statusJson(&o, now);
-            self.mqttPublish("state", o.slice(), 0, true);
+            if (!o.overflow) self.mqttPublish("state", o.slice(), 0, true) else self.mqtt_dropped += 1;
             self.state_dirty = false;
             self.last_state_pub_ns = now;
         }
         if (self.m_connected and self.cfg.metrics_interval_s != 0 and self.next_metrics_ns != 0 and now >= self.next_metrics_ns) {
             var o = Out{ .buf = json_buf[0..1536] };
             self.metricsJson(&o, now);
-            if (!o.overflow) self.mqttPublish("metrics", o.slice(), 0, false) else self.mqtt_dropped += 1;
+            // a document that outgrows its buffer stops publishing entirely, so say so rather than
+            // counting a silent drop: it measured 1,114 bytes of 1,536 when the device counters
+            // were added, and the next block of that size is what would fill it
+            if (!o.overflow) self.mqttPublish("metrics", o.slice(), 0, false) else {
+                self.mqtt_dropped += 1;
+                log.err("the metrics document did not fit {d} bytes and was not published", .{o.buf.len});
+            }
             self.next_metrics_ns = now + @as(u64, self.cfg.metrics_interval_s) * ns_per_s;
         }
     }
@@ -1483,6 +1500,21 @@ const Netd = struct {
         .{ .key = "presented", .name = "frames presented", .template = "{{ value_json.presented }}", .unit = "", .device_class = "", .state_class = "total_increasing" },
         .{ .key = "time_state", .name = "time sync", .template = "{{ value_json.time.state }}", .unit = "", .device_class = "", .state_class = "" },
         .{ .key = "load_1m", .name = "load average 1m", .template = "{{ value_json.load_1m }}", .unit = "", .device_class = "", .state_class = "measurement" },
+        // the device's own counters. the rate pair reads null until a second sample exists, and
+        // "frames the driver dropped" is deliberately not called packet loss -- see runtime.md
+        .{ .key = "net_rx_rate", .name = "wifi receive rate", .template = "{{ value_json.net.rx_bytes_per_s }}", .unit = "B/s", .device_class = "data_rate", .state_class = "measurement" },
+        .{ .key = "net_tx_rate", .name = "wifi transmit rate", .template = "{{ value_json.net.tx_bytes_per_s }}", .unit = "B/s", .device_class = "data_rate", .state_class = "measurement" },
+        .{ .key = "net_rx_bytes", .name = "wifi received", .template = "{{ value_json.net.rx_bytes }}", .unit = "B", .device_class = "data_size", .state_class = "total_increasing" },
+        .{ .key = "net_tx_bytes", .name = "wifi transmitted", .template = "{{ value_json.net.tx_bytes }}", .unit = "B", .device_class = "data_size", .state_class = "total_increasing" },
+        .{ .key = "net_rx_dropped", .name = "wifi frames the driver dropped", .template = "{{ value_json.net.rx_dropped }}", .unit = "", .device_class = "", .state_class = "total_increasing" },
+        .{ .key = "net_rx_errors", .name = "wifi receive errors", .template = "{{ value_json.net.rx_errors }}", .unit = "", .device_class = "", .state_class = "total_increasing" },
+        .{ .key = "net_tx_errors", .name = "wifi transmit errors", .template = "{{ value_json.net.tx_errors }}", .unit = "", .device_class = "", .state_class = "total_increasing" },
+        .{ .key = "memory_cached", .name = "memory cached", .template = "{{ value_json.memory_cached_kb }}", .unit = "kB", .device_class = "data_size", .state_class = "measurement" },
+        .{ .key = "memory_dirty", .name = "memory dirty", .template = "{{ value_json.memory_dirty_kb }}", .unit = "kB", .device_class = "data_size", .state_class = "measurement" },
+        .{ .key = "memory_slab", .name = "memory slab", .template = "{{ value_json.memory_slab_kb }}", .unit = "kB", .device_class = "data_size", .state_class = "measurement" },
+        .{ .key = "config_saves", .name = "settings saves", .template = "{{ value_json.config_saves.count }}", .unit = "", .device_class = "", .state_class = "total_increasing" },
+        .{ .key = "config_save_failures", .name = "settings save failures", .template = "{{ value_json.config_saves.failures }}", .unit = "", .device_class = "", .state_class = "total_increasing" },
+        .{ .key = "config_save_bytes", .name = "settings bytes written", .template = "{{ value_json.config_saves.bytes }}", .unit = "B", .device_class = "data_size", .state_class = "total_increasing" },
         .{ .key = "memory_free", .name = "memory free", .template = "{{ value_json.memory_free_kb }}", .unit = "kB", .device_class = "data_size", .state_class = "measurement" },
         .{ .key = "tmpfs_used", .name = "tmpfs and shmem used", .template = "{{ value_json.tmpfs_used_kb }}", .unit = "kB", .device_class = "data_size", .state_class = "measurement" },
         .{ .key = "memory_total", .name = "memory total", .template = "{{ value_json.memory_total_kb }}", .unit = "kB", .device_class = "data_size", .state_class = "measurement" },

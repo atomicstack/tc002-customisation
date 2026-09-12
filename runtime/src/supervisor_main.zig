@@ -22,6 +22,7 @@ const ip = @import("scene/ip.zig");
 const clockscene = @import("scene/clock.zig");
 const param = @import("scene/param.zig");
 const sntp = @import("supervisor/sntp.zig");
+const metrics = @import("supervisor/metrics.zig");
 const night = @import("supervisor/night.zig");
 const canvas = @import("scene/canvas.zig");
 const api = @import("net/api.zig");
@@ -377,6 +378,8 @@ const Supervisor = struct {
     boot_id: u32 = 0,
     proc_cpu_prev: [3]u64 = .{ 0, 0, 0 },
     proc_cpu_prev_ns: u64 = 0,
+    net_prev: metrics.Net = .{},
+    net_prev_ns: u64 = 0,
     mcu_link: McuLink = .{},
     /// the children's stdout and stderr: drained into the ring and echoed to our own stderr
     log_pipe: ?[2]sys.Fd = null,
@@ -523,10 +526,18 @@ const Supervisor = struct {
         const tmp = self.statePathIn(&tmp_buf, "config/config.json.tmp");
         const path = self.statePathIn(&path_buf, "config/config.json");
         const text = config.toJson(&self.cfg, &config_buf) catch return .rejected;
+        // counted here because here is where the runtime writes to flash. these are application
+        // writes of the settings file and nothing more: jffs2 metadata, compression and garbage
+        // collection are not in them, and this build exposes no mtd erase counters to add.
+        const began = sys.monotonicNs();
+        self.snapshot.saves +|= 1;
         sys.saveFileAtomic(dir, tmp, path, text) catch |e| {
+            self.snapshot.save_failures +|= 1;
             log.err("configuration save failed: {s}", .{sys.errText(e)});
             return .unavailable;
         };
+        self.snapshot.save_bytes +|= @intCast(@min(text.len, 0xffffffff));
+        self.snapshot.save_last_ms = @intCast(@min((sys.monotonicNs() -| began) / std.time.ns_per_ms, 0xfffe));
         self.cfg.saved_revision = self.cfg.revision;
         log.info("configuration saved, revision {d}", .{self.cfg.revision});
         return .applied;
@@ -1150,6 +1161,12 @@ const Supervisor = struct {
         return @intCast(@min(procValue(text, "VmRSS:") orelse 0, 0xffffffff));
     }
 
+    /// the interface counters are the kernel's own unsigned long, which is 32 bits on this cpu;
+    /// the parse keeps them wide, and this is where they meet the wire
+    fn clamp32(v: u64) u32 {
+        return @intCast(@min(v, 0xffffffff));
+    }
+
     fn sample(self: *Supervisor, now: u64) void {
         if (sys.readFile("/proc/meminfo", &proc_buf)) |text| {
             self.snapshot.mem_available_kb = @intCast(@min(procValue(text, "MemAvailable:") orelse 0, 0xffffffff));
@@ -1181,6 +1198,11 @@ const Supervisor = struct {
             // the total the used and available figures are a fraction of; without it nothing
             // downstream can draw a bar
             self.snapshot.mem_total_kb = @intCast(@min(procValue(text, "MemTotal:") orelse 0, 0xffffffff));
+            const m = metrics.parseMeminfo(text);
+            self.snapshot.mem_cached_kb = m.cached_kb;
+            self.snapshot.mem_dirty_kb = m.dirty_kb;
+            self.snapshot.mem_writeback_kb = m.writeback_kb;
+            self.snapshot.mem_slab_kb = m.slab_kb;
         } else |_| {}
         // the flash partition, which is the only durable storage and appears nowhere in /proc,
         // and the size of the tmpfs the runtime lives in
@@ -1198,6 +1220,23 @@ const Supervisor = struct {
                     const frac = std.fmt.parseInt(u16, one[dot + 1 ..][0..@min(2, one.len - dot - 1)], 10) catch 0;
                     self.snapshot.load_1m_x100 = @min(whole * 100 + frac, 0xfffe);
                 }
+            }
+        } else |_| {}
+        if (sys.readFile("/proc/net/dev", &proc_buf)) |text| {
+            if (metrics.parseNetDev(text, "wlan0")) |n| {
+                self.snapshot.net_rx_bytes = clamp32(n.rx_bytes);
+                self.snapshot.net_tx_bytes = clamp32(n.tx_bytes);
+                self.snapshot.net_rx_packets = clamp32(n.rx_packets);
+                self.snapshot.net_tx_packets = clamp32(n.tx_packets);
+                self.snapshot.net_rx_errors = clamp32(n.rx_errors);
+                self.snapshot.net_rx_dropped = clamp32(n.rx_dropped);
+                self.snapshot.net_tx_errors = clamp32(n.tx_errors);
+                self.snapshot.net_tx_dropped = clamp32(n.tx_dropped);
+                const interval = if (self.net_prev_ns != 0 and now > self.net_prev_ns) now - self.net_prev_ns else 0;
+                self.snapshot.net_rx_bps = metrics.perSecond(n.rx_bytes, self.net_prev.rx_bytes, interval);
+                self.snapshot.net_tx_bps = metrics.perSecond(n.tx_bytes, self.net_prev.tx_bytes, interval);
+                self.net_prev = n;
+                self.net_prev_ns = now;
             }
         } else |_| {}
         if (sys.readFile("/proc/net/wireless", &proc_buf)) |text| {

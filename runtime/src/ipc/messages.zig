@@ -85,7 +85,7 @@ test "every message kind round-trips through a packet" {
         .{ .set_param = .{ .base = 1, .index = 3, .value = 0xff8000 } },
         .{ .device_status = .{ .battery_pct = 80, .usb = 1, .wifi_quality = 49, .wifi_dbm = -61, .time_synced = 1, .mqtt_on = 1, .uptime_s = 90061 } },
         .status_get,
-        .{ .status = .{ .renderer_state = 2, .epoch = 3, .revision = 4, .presented = 5, .base = 1, .brightness = 77, .uptime_s = 8, .mem_available_kb = 14000, .cpu_pct = 12, .fps_x10 = 599, .ip_present = 1, .ip = .{ 10, 0, 0, 111 }, .config_revision = 2, .saved_revision = 1, .boot_id = 0xabcd, .sample_age_ms = 40, .mac = .{ 1, 2, 3, 4, 5, 6 }, .mac_present = 1, .load_1m_x100 = 123, .mem_free_kb = 4000, .wifi_level_dbm = -61, .wifi_quality = 49, .cpu_renderer_pct_x10 = 87, .tmpfs_used_kb = 1300, .battery_mv = 3987, .battery_pct = 80, .usb_present = 1, .clock = ClockStyle.full(.{ .font = .segment }), .mem_total_kb = 36240, .tmpfs_total_kb = 16504, .flash_total_kb = 8192, .flash_used_kb = 368, .night_phase = 2, .night_override = 1, .seed = 0xc0ffee, .menu = 1, .menu_item = 6, .menu_state = 1 } },
+        .{ .status = .{ .renderer_state = 2, .epoch = 3, .revision = 4, .presented = 5, .base = 1, .brightness = 77, .uptime_s = 8, .mem_available_kb = 14000, .cpu_pct = 12, .fps_x10 = 599, .ip_present = 1, .ip = .{ 10, 0, 0, 111 }, .config_revision = 2, .saved_revision = 1, .boot_id = 0xabcd, .sample_age_ms = 40, .mac = .{ 1, 2, 3, 4, 5, 6 }, .mac_present = 1, .load_1m_x100 = 123, .mem_free_kb = 4000, .wifi_level_dbm = -61, .wifi_quality = 49, .cpu_renderer_pct_x10 = 87, .tmpfs_used_kb = 1300, .battery_mv = 3987, .battery_pct = 80, .usb_present = 1, .clock = ClockStyle.full(.{ .font = .segment }), .mem_total_kb = 36240, .tmpfs_total_kb = 16504, .flash_total_kb = 8192, .flash_used_kb = 368, .night_phase = 2, .night_override = 1, .seed = 0xc0ffee, .menu = 1, .menu_item = 6, .menu_state = 1, .net_rx_bytes = 525283638, .net_tx_bytes = 48021332, .net_rx_packets = 2277879, .net_tx_packets = 295533, .net_rx_errors = 0, .net_rx_dropped = 1339872, .net_tx_errors = 0, .net_tx_dropped = 0, .net_rx_bps = 2033, .net_tx_bps = 236, .mem_cached_kb = 11772, .mem_dirty_kb = 0, .mem_writeback_kb = 0, .mem_slab_kb = 8528, .saves = 91, .save_failures = 0, .save_bytes = 40131, .save_last_ms = 12 } },
     };
     var buf: [codec.max_message]u8 = undefined;
     for (all) |m| {
@@ -1086,8 +1086,32 @@ pub const StatusSnapshot = struct {
     menu: u8 = 0,
     menu_item: u8 = 0,
     menu_state: u8 = 0,
+    // v9: the device's own counters. the interface totals are the kernel's own 32-bit ones, so
+    // they wrap where it wraps; the two rates are derived here and are `unknown_rate` until a
+    // second sample exists. `net_rx_dropped` is the driver's counter under the driver's name and
+    // is not application packet loss -- this device reports over a third of received frames there.
+    net_rx_bytes: u32 = 0,
+    net_tx_bytes: u32 = 0,
+    net_rx_packets: u32 = 0,
+    net_tx_packets: u32 = 0,
+    net_rx_errors: u32 = 0,
+    net_rx_dropped: u32 = 0,
+    net_tx_errors: u32 = 0,
+    net_tx_dropped: u32 = 0,
+    net_rx_bps: u32 = 0xffffffff,
+    net_tx_bps: u32 = 0xffffffff,
+    mem_cached_kb: u32 = 0,
+    mem_dirty_kb: u32 = 0,
+    mem_writeback_kb: u32 = 0,
+    mem_slab_kb: u32 = 0,
+    // configuration saves: application writes to the settings file, counted where they happen.
+    // not flash wear -- this build exposes no programmed-byte or erase totals to derive that from.
+    saves: u32 = 0,
+    save_failures: u32 = 0,
+    save_bytes: u32 = 0,
+    save_last_ms: u16 = 0xffff,
 
-    pub const wire_len = 4 + 3 + 2 + 1 + 4 + 4 + 8 + 4 + 4 + 4 + 1 + 4 + 4 + 4 + 4 + 2 + 1 + 4 + 1 + 4 + 4 + 4 + 4 + 4 + (6 + 1 + 2 + 4 + 2 + 1 + 2 + 2 + 2 + 4 + 2 + 1 + 1) + 1 + ClockStyle.wire_len + 1 + NtfyStatus.wire_len + 4 * 4;
+    pub const wire_len = 4 + 3 + 2 + 1 + 4 + 4 + 8 + 4 + 4 + 4 + 1 + 4 + 4 + 4 + 4 + 2 + 1 + 4 + 1 + 4 + 4 + 4 + 4 + 4 + (6 + 1 + 2 + 4 + 2 + 1 + 2 + 2 + 2 + 4 + 2 + 1 + 1) + 1 + ClockStyle.wire_len + 1 + NtfyStatus.wire_len + 4 * 4 + (10 * 4) + (4 * 4) + (4 + 4 + 4 + 2);
 };
 
 pub const Message = union(Kind) {
@@ -1440,6 +1464,18 @@ fn encodePayload(msg: Message, out: []u8) usize {
             out[o + 1] = st.menu_item;
             out[o + 2] = st.menu_state;
             o += 3;
+            inline for (.{
+                st.net_rx_bytes,   st.net_tx_bytes,   st.net_rx_packets, st.net_tx_packets,
+                st.net_rx_errors,  st.net_rx_dropped, st.net_tx_errors,  st.net_tx_dropped,
+                st.net_rx_bps,     st.net_tx_bps,     st.mem_cached_kb,  st.mem_dirty_kb,
+                st.mem_writeback_kb, st.mem_slab_kb,  st.saves,          st.save_failures,
+                st.save_bytes,
+            }) |v| {
+                std.mem.writeInt(u32, out[o..][0..4], v, .big);
+                o += 4;
+            }
+            std.mem.writeInt(u16, out[o..][0..2], st.save_last_ms, .big);
+            o += 2;
             return o;
         },
         .result => |r| {
@@ -1851,6 +1887,18 @@ pub fn decodePacket(bytes: []const u8) Error!Packet {
             st.menu = b[o];
             st.menu_item = b[o + 1];
             st.menu_state = b[o + 2];
+            o += 3;
+            inline for (.{
+                &st.net_rx_bytes,   &st.net_tx_bytes,   &st.net_rx_packets, &st.net_tx_packets,
+                &st.net_rx_errors,  &st.net_rx_dropped, &st.net_tx_errors,  &st.net_tx_dropped,
+                &st.net_rx_bps,     &st.net_tx_bps,     &st.mem_cached_kb,  &st.mem_dirty_kb,
+                &st.mem_writeback_kb, &st.mem_slab_kb,  &st.saves,          &st.save_failures,
+                &st.save_bytes,
+            }) |f| {
+                f.* = std.mem.readInt(u32, b[o..][0..4], .big);
+                o += 4;
+            }
+            st.save_last_ms = std.mem.readInt(u16, b[o..][0..2], .big);
             o += 3;
             break :blk .{ .status = st };
         },
