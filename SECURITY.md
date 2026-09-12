@@ -9,8 +9,10 @@ These are properties of the device, not of anything installed on the Mac:
 1. **No authentication on any endpoint.** Anyone on the LAN can read and write
    every setting, including triggering `/resetConfig` and `/update`. `/update`
    takes the firmware **download URL and checksum from the request body**, so
-   it will fetch and flash whatever it is pointed at; whether the image is
-   signature-checked before flashing was not established. `/setSn` likewise
+   it will fetch and flash whatever it is pointed at, and the flasher
+   **checks no signature**, only a device code, a crc and an md5 that anyone
+   can compute ([`FIRMWARE.md`](FIRMWARE.md#the-updateimg-container)), so a
+   LAN neighbour can put arbitrary code on the device. `/setSn` likewise
    lets anyone rewrite the device serial.
 2. **Credentials are returned in plaintext.** `/getCalendar` returns calendar
    `password` fields and `/getSocial` returns OAuth `token` values in clear

@@ -52,8 +52,10 @@ make the takeover possible without touching flash:
 - the loader reads **`/tmp/EasyUI.cfg` before `/res/etc/EasyUI.cfg`** (it logs
   `load /tmp/EasyUI.cfg ok!`), so a copy with `startupLibPath` pointing at the
   bootstrap is enough.
-- `zkdaemon` reflashes the app partition if `sys.zkapp.state` is not `running`
-  within about 15 s of boot ([`DEVICE.md`](DEVICE.md)). the supervisor's very
+- `zkdaemon` triggers a reflash of the app partition (by restarting the
+  loader with the upgrade properties set; it only works if an `update.img`
+  is on the udisk, see [`FIRMWARE.md`](FIRMWARE.md#zkdaemon-the-boot-check-and-the-reset-key))
+  if `sys.zkapp.state` is not `running` 15 s after boot. the supervisor's very
   first action is a bounded `/bin/setprop sys.zkapp.state running` (2 s
   timeout); if that fails it exits with code 2 rather than carry on. measured:
   accepted 10 ms after entry.
@@ -2058,11 +2060,17 @@ all on a warm device that had been up for days, under the lock, on
   brings the stock app back, so the runtime is still started by hand. a
   self-starting runtime means rewriting the `res` partition, since nothing in
   the boot chain reads a writable location; the design, the evidence and the
-  risks are in the vault note `tc002-customisation/2026-09-09/boot-persistence`.
-  the paired-slot install, the vendor image builder and the recovery rehearsal
-  do not exist. cold boot against zkdaemon's 15 s check, the upgrade-hook
-  ordering (the loader `dlopen`s the app **before** it checks for an upgrade,
-  which would strand the vendor flasher) and anything on mtd3 are unmeasured.
+  risks are in the vault note `tc002-customisation/2026-09-09/boot-persistence`
+  and, from 2026-09-12, in [`FIRMWARE.md`](FIRMWARE.md): the vendor image
+  format is decoded and reproduced by
+  [`tc002-update-img.py`](tc002-update-img.py), the flasher writes mtd3 from
+  linux with no signature check, and the loader's ordering is now known: it
+  `dlopen`s the app **before** the upgrade check, so this bootstrap's
+  exec-in-constructor disables every vendor recovery route, and the dhcp
+  client is a thread of the loader, so a cold boot through the bootstrap
+  would come up without an address. both need fixing in the bootstrap and
+  the supervisor before anything is flashed; the paired-slot install and the
+  recovery rehearsal do not exist yet.
 - **confinement.** netd is uid 1001, but `/dev/socket/property_service` is
   world-writable on this init, so the uid change alone does not deny it the
   property service. recorded as a gap, not claimed as isolated.

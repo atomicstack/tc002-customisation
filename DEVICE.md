@@ -202,4 +202,18 @@ adb shell setprop ctl.restart zkswe
 followed by `setprop ctl.start zkswe` does restart the app.)
 
 **Recovery:** hold the reset button during power-up to restore factory
-firmware.
+firmware. What that actually does (`zkdaemon`, read from the binary): after
+5 s on gpio 2 it stops the app, **wipes `/data`** (settings, wifi
+credentials), and restarts the app with the upgrade properties pointing at
+`/mnt/storage/update.img`; the loader then flashes that image if it is
+present, otherwise nothing is reflashed and only the configuration is reset.
+The same properties are set by the boot check when the app has not reported
+`running` after 15 s. So the "factory firmware" is whatever `update.img` sits
+on the UDISK partition, and recovery depends on the app loader still
+reaching its upgrade check. The image format, the flasher and what a custom
+image must respect are in [`FIRMWARE.md`](FIRMWARE.md);
+[`tc002-update-img.py`](tc002-update-img.py) inspects and builds them.
+
+Note that on this unit the USB gadget is configured as `adb`
+(`/sys/class/zkswe_usb/zkswe0/functions`), not mass storage; adb over the
+cable was not tried.
