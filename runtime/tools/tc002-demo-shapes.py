@@ -51,10 +51,12 @@ REEL = [
         for x in range(0, 48, 2)
     ]),
     ("bars", "a value 0..100 in its box, with a background for the empty part", [
-        {"type": "text", "at": [0, 0], "font": "mini", "colour": "606060", "text": "cpu mem disk"},
-        {"type": "bar", "at": [0, 7], "size": [52, 2], "value": 25, "colour": "40ff40", "background": "102010"},
-        {"type": "bar", "at": [0, 10], "size": [52, 2], "value": 60, "colour": "ffc000", "background": "201810"},
-        {"type": "bar", "at": [0, 13], "size": [52, 2], "value": 93, "colour": "ff4040", "background": "201010"},
+        {"type": "text", "at": [0, 1], "font": "mini", "colour": "606060", "text": "cpu"},
+        {"type": "bar", "at": [16, 2], "size": [36, 3], "value": 25, "colour": "40ff40", "background": "102010"},
+        {"type": "text", "at": [0, 6], "font": "mini", "colour": "606060", "text": "mem"},
+        {"type": "bar", "at": [16, 7], "size": [36, 3], "value": 60, "colour": "ffc000", "background": "201810"},
+        {"type": "text", "at": [0, 11], "font": "mini", "colour": "606060", "text": "disk"},
+        {"type": "bar", "at": [16, 12], "size": [36, 3], "value": 93, "colour": "ff4040", "background": "201010"},
     ]),
     ("bars-vertical", "vertical bars fill from the bottom, which is where a level belongs", [
         {"type": "bar", "at": [2 + i * 7, 0], "size": [5, 16], "value": v, "colour": "30a0ff", "background": "101820"}

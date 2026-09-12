@@ -21,7 +21,8 @@ NAME = "tc002-demo-text.py"
 REEL = [
     ("fonts", "all four: small has every character, mini is the menus', block and big are digits only", [
         {"type": "text", "at": [0, 0], "font": "mini", "colour": "808080", "text": "mini 3x5 abc"},
-        {"type": "text", "at": [0, 6], "font": "small", "colour": "ffffff", "text": "small 5x7"},
+        {"type": "text", "at": [0, 6], "font": "small", "colour": "ffffff", "text": "small"},
+        {"type": "text", "at": [34, 8], "font": "mini", "colour": "808080", "text": "5x7"},
     ]),
     ("digits", "block and big carry digits and a colon, for a number read across a room", [
         {"type": "text", "at": [0, 0], "font": "block", "colour": "40a0ff", "text": "12:34"},
@@ -39,7 +40,7 @@ REEL = [
     ("clipped", "a box narrower than its string cuts it off rather than running over its neighbour", [
         {"type": "text", "at": [0, 4], "size": [24, 8], "font": "small", "colour": "ffffff", "text": "clipped here"},
         {"type": "rect", "at": [24, 0], "size": [28, 16], "colour": "202020", "filled": True},
-        {"type": "text", "at": [26, 4], "font": "mini", "colour": "808080", "text": "the box"},
+        {"type": "text", "at": [25, 4], "font": "mini", "colour": "808080", "text": "the box"},
     ]),
     ("scroll", "anything too wide can scroll instead, a pixel every 33 ms", [
         {"type": "text", "at": [0, 1], "size": [52, 7], "font": "small", "colour": "40ffc0",
@@ -51,19 +52,19 @@ REEL = [
          "animate": {"kind": "scramble", "ms": 2500}},
     ]),
     ("typewriter", "a character at a time, then it holds", [
-        {"type": "text", "at": [0, 1], "font": "mini", "colour": "40ff40", "text": "typing this out",
+        {"type": "text", "at": [0, 1], "font": "small", "colour": "40ff40", "text": "typing",
          "animate": {"kind": "typewriter", "ms": 2000}},
-        {"type": "text", "at": [0, 9], "font": "small", "colour": "40ff40", "text": "one by one",
+        {"type": "text", "at": [0, 10], "font": "mini", "colour": "40ff40", "text": "one by one",
          "animate": {"kind": "typewriter", "ms": 3000}},
     ]),
     ("hue", "the colour walks the wheel; the element keeps whatever it was given as its starting point", [
-        {"type": "text", "at": [2, 1], "font": "small", "colour": "ff0000", "text": "hue shift",
+        {"type": "text", "at": [2, 1], "font": "small", "colour": "ff0000", "text": "hue",
          "animate": {"kind": "hue", "ms": 3000}},
-        {"type": "text", "at": [2, 9], "font": "small", "colour": "00ff00", "text": "out of step",
+        {"type": "text", "at": [2, 9], "font": "small", "colour": "00ff00", "text": "shift",
          "animate": {"kind": "hue", "ms": 3000, "phase": 50}},
     ]),
     ("pulse", "brightness rides up and down, never quite to nothing", [
-        {"type": "text", "at": [4, 4], "font": "small", "colour": "40a0ff", "text": "breathing",
+        {"type": "text", "at": [6, 4], "font": "small", "colour": "40a0ff", "text": "breathe",
          "animate": {"kind": "pulse", "ms": 1800}},
     ]),
     ("blink", "on for its duty, dark for the rest; three of them out of step", [
@@ -71,7 +72,7 @@ REEL = [
          "animate": {"kind": "blink", "ms": 1200, "amount": 50}},
         {"type": "text", "at": [18, 5], "font": "mini", "colour": "ffc000", "text": "two",
          "animate": {"kind": "blink", "ms": 1200, "amount": 50, "phase": 33}},
-        {"type": "text", "at": [36, 5], "font": "mini", "colour": "40ff40", "text": "three",
+        {"type": "text", "at": [33, 5], "font": "mini", "colour": "40ff40", "text": "three",
          "animate": {"kind": "blink", "ms": 1200, "amount": 50, "phase": 66}},
     ]),
     ("bounce", "up and down, or across with axis x; the phase keeps a row from moving in lockstep", [
@@ -83,15 +84,15 @@ REEL = [
          "animate": {"kind": "bounce", "ms": 1400, "amount": 4, "phase": 66}},
     ]),
     ("bounce-x", "the same motion along the other axis", [
-        {"type": "text", "at": [16, 5], "font": "small", "colour": "c040ff", "text": "sideways",
+        {"type": "text", "at": [14, 5], "font": "small", "colour": "c040ff", "text": "side",
          "animate": {"kind": "bounce", "ms": 1600, "amount": 6, "axis": "x"}},
     ]),
     ("all-at-once", "five animations on one panel, each on its own clock", [
         {"type": "text", "at": [0, 0], "font": "mini", "colour": "ff0000", "text": "hue", "animate": {"kind": "hue", "ms": 2000}},
-        {"type": "text", "at": [16, 0], "font": "mini", "colour": "ffffff", "text": "blink", "animate": {"kind": "blink", "ms": 900}},
-        {"type": "text", "at": [38, 0], "font": "mini", "colour": "40ff40", "text": "pls", "animate": {"kind": "pulse", "ms": 1500}},
-        {"type": "text", "at": [0, 6], "font": "small", "colour": "40a0ff", "text": "SETTLED", "animate": {"kind": "scramble", "ms": 2500}},
-        {"type": "text", "at": [2, 12], "font": "mini", "colour": "ffc000", "text": "bouncing", "animate": {"kind": "bounce", "ms": 1100, "amount": 2}},
+        {"type": "text", "at": [18, 0], "font": "mini", "colour": "ffffff", "text": "blink", "animate": {"kind": "blink", "ms": 900}},
+        {"type": "text", "at": [41, 0], "font": "mini", "colour": "40ff40", "text": "pls", "animate": {"kind": "pulse", "ms": 1500}},
+        {"type": "text", "at": [0, 7], "font": "small", "colour": "40a0ff", "text": "SETTLE", "animate": {"kind": "scramble", "ms": 2500}},
+        {"type": "text", "at": [41, 9], "font": "mini", "colour": "ffc000", "text": "bnc", "animate": {"kind": "bounce", "ms": 1100, "amount": 2}},
     ]),
 ]
 

@@ -28,7 +28,7 @@ def tile(at, size, icon, label, value, colour, accent="404040", **extra):
 
 REEL = [
     ("full-width", "the whole panel: glyph left, label over value", [
-        tile([0, 0], [52, 16], "thermometer", "living room", "21.4C", "ff8000"),
+        tile([0, 0], [52, 16], "thermometer", "lounge", "21.4C", "ff8000"),
     ]),
     ("halves", "two across: still wide enough for the label", [
         tile([0, 0], [26, 16], "thermometer", "in", "21.4", "ff8000"),
@@ -48,7 +48,7 @@ REEL = [
             ("bulb", "on", "6", "ffff80"),
         ))
     ]),
-    ("rows", "or stacked: two full-width tiles, one above the other", [
+    ("rows", "stacked, and 8 px is too short for two lines, so each keeps its reading", [
         {"type": "tile", "row": 0, "of": 2, "icon": "house", "label": "inside", "value_text": "21.4C", "colour": "ff8000", "accent": "404040"},
         {"type": "tile", "row": 1, "of": 2, "icon": "cloud-snow", "label": "outside", "value_text": "-1.2C", "colour": "40c0ff", "accent": "404040"},
     ]),

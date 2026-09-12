@@ -24,9 +24,9 @@ def weather():
     return [
         {"type": "text", "at": [0, 0], "font": "mini", "colour": "506070", "text": "amsterdam"},
         {"id": "ic", "type": "icon", "at": [44, 0], "icon": "cloud-rain", "colour": "40a0ff"},
-        {"id": "t", "type": "text", "at": [0, 5], "font": "big", "colour": "ffffff", "text": "9"},
-        {"id": "u", "type": "text", "at": [22, 6], "font": "mini", "colour": "808080", "text": "deg"},
-        {"id": "g", "type": "sparkline", "at": [22, 11], "size": [30, 5], "style": "bars", "colour": "205070",
+        {"id": "t", "type": "text", "at": [0, 5], "font": "block", "colour": "ffffff", "text": "9"},
+        {"id": "u", "type": "text", "at": [16, 6], "font": "mini", "colour": "808080", "text": "deg"},
+        {"id": "g", "type": "sparkline", "at": [28, 11], "size": [24, 5], "style": "bars", "colour": "205070",
          "min": 0, "max": 100, "data": [40, 45, 50, 60, 55, 50, 45]},
     ]
 
@@ -36,7 +36,7 @@ def energy():
         {"type": "text", "at": [0, 0], "font": "mini", "colour": "506070", "text": "power"},
         {"id": "now", "type": "text", "at": [0, 5], "font": "small", "colour": "ffc000", "text": "0.0kW"},
         {"id": "bar", "type": "bar", "at": [0, 13], "size": [52, 3], "value": 0, "colour": "ffc000", "background": "201800"},
-        {"id": "sun", "type": "tile", "at": [30, 0], "size": [22, 12], "icon": "sun", "label": "solar",
+        {"id": "sun", "type": "tile", "at": [30, 0], "size": [22, 12], "icon": "sun", "label": "sun",
          "value_text": "0.0", "colour": "40ff80", "accent": "404040"},
     ]
 
@@ -45,9 +45,8 @@ def transport():
     return [
         {"type": "icon", "at": [0, 0], "icon": "train", "colour": "40a0ff"},
         {"type": "text", "at": [10, 0], "font": "mini", "colour": "506070", "text": "centraal"},
-        {"id": "a", "type": "text", "at": [10, 6], "font": "small", "colour": "ffffff", "text": "--"},
-        {"id": "b", "type": "text", "at": [10, 11], "font": "mini", "colour": "808080", "text": "--"},
-        {"id": "w", "type": "icon", "at": [42, 4], "icon": "clock", "colour": "404040"},
+        {"id": "b", "type": "text", "at": [44, 0], "font": "mini", "colour": "808080", "text": "--"},
+        {"id": "a", "type": "text", "at": [10, 7], "font": "small", "colour": "ffffff", "text": "--"},
     ]
 
 
@@ -62,7 +61,7 @@ def server():
 REEL = [
     ("weather", "a reading big enough to read across the room, an icon and a history", weather),
     ("energy", "a live figure, a bar for the fraction and a tile for the other source", energy),
-    ("transport", "two departures and a state glyph, which is mostly text and patches cheaply", transport),
+    ("transport", "the next departure and the one after it: mostly text, and it patches cheaply", transport),
     ("server", "three tiles, the shape a status board takes", server),
 ]
 
@@ -79,7 +78,7 @@ FEEDS = {
     ],
     "transport": lambda i: [
         {"id": "a", "text": f"{4 + i} min"},
-        {"id": "b", "text": f"then {12 + i}"},
+        {"id": "b", "text": f"{12 + i}"},
     ],
     "server": lambda i: [
         {"id": "c", "text": str(20 + (i * 13) % 70)},

@@ -17,6 +17,8 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import tc002demo  # noqa: e402
 
 NAME = "tc002-demo-layout.py"
+# running off the edge is this step's whole subject, so the linter leaves it alone
+LINT_ALLOW = {"clipping"}
 SHADES = ("40a0ff", "ff8040", "40ff80", "ffc000", "c040ff", "ff4080")
 
 REEL = [
@@ -47,7 +49,7 @@ REEL = [
     ]),
     ("box-effects", "a box is not just a position: it aligns what is in it and cuts off what is not", [
         {"type": "rect", "at": [0, 0], "size": [26, 16], "colour": "101820", "filled": True},
-        {"type": "text", "at": [0, 5], "size": [26, 7], "font": "mini", "align": "centre", "colour": "ffffff", "text": "centred"},
+        {"type": "text", "at": [0, 5], "size": [26, 7], "font": "mini", "align": "centre", "colour": "ffffff", "text": "centre"},
         {"type": "rect", "at": [28, 0], "size": [24, 16], "colour": "201010", "filled": True},
         {"type": "text", "at": [28, 5], "size": [24, 7], "font": "mini", "colour": "ffffff", "text": "cut off here"},
     ]),
@@ -70,7 +72,7 @@ REEL = [
     ]),
     ("from-off-panel", "placement clips rather than refusing, so a thing can be animated in from outside", [
         {"type": "text", "at": [0, 4], "size": [52, 8], "font": "small", "colour": "40ffc0",
-         "text": "                    arriving from the right", "animate": {"kind": "scroll", "ms": 40}},
+         "text": "        arriving from the right", "animate": {"kind": "scroll", "ms": 40}},
     ]),
 ]
 

@@ -151,7 +151,7 @@ def step(dev, item, args):
             {"type": "sprite", "at": [12, 6], "sprite": "warm"},
             {"type": "sprite", "at": [22, 6], "sprite": "cool"},
             {"type": "sprite", "at": [32, 6], "sprite": "face"},
-            {"type": "text", "at": [42, 8], "font": "mini", "colour": "505050", "text": f"{len(listing.get('sprites', []))}/{listing.get('slots')}"},
+            {"type": "text", "at": [41, 8], "font": "mini", "colour": "505050", "text": f"{len(listing.get('sprites', []))}/{listing.get('slots')}"},
         ])
         return f"{detail}: {sizes}"
     dev.put(elements)
