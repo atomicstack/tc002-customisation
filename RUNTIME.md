@@ -446,10 +446,15 @@ real emoji are not shipped. at 8x8 the art has to be drawn for the size rather t
 upload path is how an integration puts its own there.
 
 **the tile** is the composite an integration reaches for first, and the one place the device makes a
-layout decision: given at least twenty pixels of width it puts the glyph on the left with the label
-over the value beside it; narrower than that, the label is **dropped** rather than squeezed into two
-characters, and the value goes under the glyph. a patch's `text` replaces a tile's `value_text`,
-because the reading is the part that changes; the label is layout and waits for a `PUT`.
+layout decision: given at least twelve pixels of width beyond its glyph it puts the glyph on the
+left with the label over the value beside it; narrower than that, the value goes under the glyph.
+the label is **dropped** rather than squeezed or cut off whenever it cannot be drawn whole — too
+narrow a tile, a box shorter than the eleven pixels two lines of the small face need (`row n of 2`
+is eight), or simply a label wider than the room left beside the glyph. a box too short for even a
+glyph and a value keeps the value, which is the half worth having. the glyph's width is whatever is
+actually drawn, so a 16×16 uploaded sprite pushes the text further right than an 8×8 icon does.
+a patch's `text` replaces a tile's `value_text`, because the reading is the part that changes; the
+label is layout and waits for a `PUT`.
 
 **limits**, reported by `GET /canvas` so a client need not hard-code them: 24 elements, 256 bytes of
 text, 1,024 bytes of sample data, 52 samples per sparkline (one per panel column). a document is
@@ -541,12 +546,15 @@ keeps the direction, so the content carries on across the panel like a
 carousel and the base follows it in; `none` cuts. omitting the fields keeps
 the defaults; a request with `direction`, `transition_ms` or `exit` alone
 applies them to the default effect. a change between the base scenes with
-no effect named, from the buttons or `PUT /scene`, slides forward (art, clock,
-ip) to the left and back to the right; the knob's generator change fades.
+no effect named, from the buttons or `PUT /scene`, slides forward (clock, art,
+canvas) to the left and back to the right; the knob's generator change fades.
 **both layers stay live** while an effect runs: the outgoing scene keeps
 rendering as the old layer (art keeps stepping, an outgoing generator too,
 the clock keeps ticking, a notification keeps scrolling) until the effect
-ends. only when an effect starts while another is still running is the old
+ends. **the canvas is the exception**: it leaves as the last frame it rendered,
+because the document behind it belongs to a client, and a client that clears
+what it drew before handing the panel back would otherwise slide out as the
+empty canvas's hint rather than as its own picture. only when an effect starts while another is still running is the old
 layer the composite frame that was on the panel at that moment, held still. the effects are composited in the renderer from
 the frame that was on the panel and the scene's new output; `GET /scenes`
 lists them under `transitions`. the mqtt `cmd/frame` envelope grows from 14
@@ -1168,7 +1176,7 @@ publishes. nothing writable is exposed through discovery; control goes through
 |------|--------------|
 | `tc002ctl.py` | a client for every route: `status`, `scenes`, `scene` (with `--font`, `--colour-mode`, `--colour`, `--colour2`, `--gradient`, `--spread` for the clock), `brightness`, `reseed`, `arm-stream`, `notify`, `frame`, `power`, `input`, `screen` (`--ascii` draws the panel in the terminal, `--out` saves the raw rgb), `logs` (`--follow`), `config`, `config-set`, `config-save`, `mqtt`, `mqtt-set`, `mqtt-status`. takes the pulled token file (`--token-file`) or a hex token, picks the admin token for admin commands, generates request ids and fetches the epoch for you |
 | `tc002-up.sh` | the one-shot cold start for a person: connect adb, build and push (`--no-build` to skip the build), start the supervisor with `--tz`, apply and save the timezone, scene, clock font and sntp server, pull the tokens to the repo root for the console, print the status. after a reboot this is the way back |
-| `tc002-demo-*.py` | the demo reels, one per topic, played from this machine over the api: `shapes` (the primitives, clipping, bars), `text` (four fonts, alignment, and all eight animations), `charts` (sparkline styles, autoscale against a fixed range, thresholds, sweep, hex samples, a live feed), `icons` (every built-in glyph, five a page, the set fetched from the device), `images` (sprites generated on the host, uploaded, drawn, animated, deleted), `layout` (absolute placement, tiles and rows, boxes, clipping, draw order), `tiles` (the composite at four widths, so the layout switch is visible), `dashboard` (four realistic dashboards, each pushed once then fed only numbers, printing what the layout and the patches cost in bytes). all take `-s`, a token, `--hold`, `--only`, `--list` and `--loop`, and all put back the scene **and the canvas** they found. `tc002demo.py` is their shared helper, not a demo, and `tc002-demo-lint.py` puts every document all eight would send through the runtime's own rules without a device, which is how the shapes reel's 26 elements against a limit of 24 were caught on this machine rather than on the panel |
+| `tc002-demo-*.py` | the demo reels, one per topic, played from this machine over the api: `shapes` (the primitives, clipping, bars), `text` (four fonts, alignment, and all eight animations), `charts` (sparkline styles, autoscale against a fixed range, thresholds, sweep, hex samples, a live feed), `icons` (every built-in glyph, five a page, the set fetched from the device), `images` (sprites generated on the host, uploaded, drawn, animated, deleted), `layout` (absolute placement, tiles and rows, boxes, clipping, draw order), `tiles` (the composite at four widths, so the layout switch is visible), `dashboard` (four realistic dashboards, each pushed once then fed only numbers, printing what the layout and the patches cost in bytes). all take `-s`, a token, `--hold`, `--only`, `--list` and `--loop`, and all put back the scene **and the canvas** they found. `tc002demo.py` is their shared helper, not a demo, and `tc002-demo-lint.py` puts every document all eight would send through the runtime's own rules without a device — the limits and field rules, and where the ink lands: text off the edge of a 52×16 panel, two pieces of text on the same pixels, a tile label too wide for its tile. it is how the shapes reel's 26 elements against a limit of 24 were caught on this machine rather than on the panel, and it now catches the overflows that only showed up once the reels were played on one. a step whose subject is running off an edge names itself in the demo's `LINT_ALLOW` |
 | `tc002-demo-transitions.py` | a demo reel of every transition, played from this machine over the api: for each effect a clock ↔ art scene change arrives with it, then a labelled notification arrives with it and leaves with the paired exit; `--only` with per-step direction and exit overrides, `--ms`, `--hold`, `--loop`, `--no-scenes`, `--list`; restores the scene it started from and leaves the settings alone |
 | `tc002-run.sh` | `push` (build, elf check, push to `/tmp/tc002/`; `TC002_NO_BUILD=1` skips the build), `start [supervisor options]` (under the lock: stop `zkswe`, start the supervisor detached with its log in `/tmp/tc002/`), `status`, `stop` (sigterm, restart the stock app, release the lock), `restore` (stop and remove everything under `/tmp`) |
 | `tc002-ipcprobe` (`zig build ipcprobe`) | a device binary, not part of the runtime and not installed with it: makes the same seqpacket socketpair the supervisor uses and round-trips a filled datagram at 1 kb through 256 kb, reporting `SO_SNDBUF` and the largest that survives intact. it answers the one question that bounds every protocol decision here — what the kernel will actually carry — on the device rather than from the host. measured 2026-09-12: `SO_SNDBUF` 196,608, largest datagram 131,072 |
