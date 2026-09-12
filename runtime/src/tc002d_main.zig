@@ -225,6 +225,9 @@ const Renderer = struct {
             .power = @intFromBool(arb.power),
             .clock = messages.ClockStyle.full(arb.clock.style),
             .ip_mode = @intFromEnum(arb.ip.mode),
+            .menu = if (arb.menu_state) |m| @as(u8, @intFromEnum(m.kind)) + 1 else 0,
+            .menu_item = if (arb.menu_state) |m| (if (m.kind == .device) @intFromEnum(m.item) else @as(u8, @intCast(m.entry))) else 0,
+            .menu_state = if (arb.menu_state) |m| @intFromEnum(m.state) else 0,
         } }, 0);
     }
 

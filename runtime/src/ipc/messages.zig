@@ -85,7 +85,7 @@ test "every message kind round-trips through a packet" {
         .{ .set_param = .{ .base = 1, .index = 3, .value = 0xff8000 } },
         .{ .device_status = .{ .battery_pct = 80, .usb = 1, .wifi_quality = 49, .wifi_dbm = -61, .time_synced = 1, .mqtt_on = 1, .uptime_s = 90061 } },
         .status_get,
-        .{ .status = .{ .renderer_state = 2, .epoch = 3, .revision = 4, .presented = 5, .base = 1, .brightness = 77, .uptime_s = 8, .mem_available_kb = 14000, .cpu_pct = 12, .fps_x10 = 599, .ip_present = 1, .ip = .{ 10, 0, 0, 111 }, .config_revision = 2, .saved_revision = 1, .boot_id = 0xabcd, .sample_age_ms = 40, .mac = .{ 1, 2, 3, 4, 5, 6 }, .mac_present = 1, .load_1m_x100 = 123, .mem_free_kb = 4000, .wifi_level_dbm = -61, .wifi_quality = 49, .cpu_renderer_pct_x10 = 87, .tmpfs_used_kb = 1300, .battery_mv = 3987, .battery_pct = 80, .usb_present = 1, .clock = ClockStyle.full(.{ .font = .segment }), .mem_total_kb = 36240, .tmpfs_total_kb = 16504, .flash_total_kb = 8192, .flash_used_kb = 368, .night_phase = 2, .night_override = 1 } },
+        .{ .status = .{ .renderer_state = 2, .epoch = 3, .revision = 4, .presented = 5, .base = 1, .brightness = 77, .uptime_s = 8, .mem_available_kb = 14000, .cpu_pct = 12, .fps_x10 = 599, .ip_present = 1, .ip = .{ 10, 0, 0, 111 }, .config_revision = 2, .saved_revision = 1, .boot_id = 0xabcd, .sample_age_ms = 40, .mac = .{ 1, 2, 3, 4, 5, 6 }, .mac_present = 1, .load_1m_x100 = 123, .mem_free_kb = 4000, .wifi_level_dbm = -61, .wifi_quality = 49, .cpu_renderer_pct_x10 = 87, .tmpfs_used_kb = 1300, .battery_mv = 3987, .battery_pct = 80, .usb_present = 1, .clock = ClockStyle.full(.{ .font = .segment }), .mem_total_kb = 36240, .tmpfs_total_kb = 16504, .flash_total_kb = 8192, .flash_used_kb = 368, .night_phase = 2, .night_override = 1, .menu = 1, .menu_item = 6, .menu_state = 1 } },
     };
     var buf: [codec.max_message]u8 = undefined;
     for (all) |m| {
@@ -100,7 +100,7 @@ test "every message kind round-trips through a packet" {
 test "fixed hex vectors" {
     var buf: [codec.max_message]u8 = undefined;
     const hb = try encodePacket(.{ .heartbeat = .{ .presented = 0x1122334455667788, .revision = 7, .state = 2 } }, 1, 2, &buf);
-    try std.testing.expectEqualSlices(u8, &unhex("54434931" ++ "01" ++ "01" ++ "0000" ++ "0000000000000001" ++ "00000002" ++ "001f" ++ "0000" ++ "1122334455667788" ++ "00000007" ++ "02" ++ "00000000" ++ "01" ++ "0000" ++ "00" ++ "ffffff" ++ "ffffff" ++ "00" ++ "ff" ++ "00" ++ "00"), hb);
+    try std.testing.expectEqualSlices(u8, &unhex("54434931" ++ "01" ++ "01" ++ "0000" ++ "0000000000000001" ++ "00000002" ++ "0022" ++ "0000" ++ "1122334455667788" ++ "00000007" ++ "02" ++ "00000000" ++ "01" ++ "0000" ++ "00" ++ "ffffff" ++ "ffffff" ++ "00" ++ "ff" ++ "00" ++ "00" ++ "00" ++ "00" ++ "00"), hb);
     const st = try encodePacket(.stop, 0, 9, &buf);
     try std.testing.expectEqualSlices(u8, &unhex("54434931" ++ "01" ++ "18" ++ "0000" ++ "0000000000000000" ++ "00000009" ++ "0000" ++ "0000"), st);
     const nt = try encodePacket(.{ .notify = Notify.init("hi", .{ 0xff, 0x80, 0x00 }, 300, .{ .has = 1, .effect = 7, .direction = 3, .duration_ms = 300 }) }, 0, 0, &buf);
@@ -292,7 +292,11 @@ comptime {
 
 pub const Status = enum(u8) { applied = 0, rejected = 1, overload = 2, stale_epoch = 3, expired = 4, unavailable = 5, timeout = 6, conflict = 7 };
 
-pub const Heartbeat = struct { presented: u64, revision: u32, state: u8, base: u8 = 0, generator: u8 = 0, overlay: u8 = 0, brightness: u8 = 0, power: u8 = 1, clock: ClockStyle = .{}, ip_mode: u8 = 0 };
+/// `menu` is 0 when none is open, otherwise its kind plus one; `menu_item` is the device menu's
+/// item or the scene menu's entry, and `menu_state` whether it is browsing, adjusting or asking.
+/// the renderer is the only thing that knows any of it, and a client driving the panel over
+/// `/input` needs to be able to assert what is showing rather than count detents.
+pub const Heartbeat = struct { presented: u64, revision: u32, state: u8, base: u8 = 0, generator: u8 = 0, overlay: u8 = 0, brightness: u8 = 0, power: u8 = 1, clock: ClockStyle = .{}, ip_mode: u8 = 0, menu: u8 = 0, menu_item: u8 = 0, menu_state: u8 = 0 };
 
 /// the clock's style on the wire: a presence mask (for partial updates) and the five fields.
 pub const ClockStyle = struct {
@@ -1069,8 +1073,13 @@ pub const StatusSnapshot = struct {
     // v6: the night brightness schedule, as the supervisor is running it
     night_phase: u8 = 0, // 0 not running, then day, to_night, night, to_day
     night_override: u8 = 0, // a brightness set by hand is standing in the schedule's way
+    // v8: what the on-device menu is showing, so a client driving /input can assert rather than
+    // count detents (v7 is the art seed)
+    menu: u8 = 0,
+    menu_item: u8 = 0,
+    menu_state: u8 = 0,
 
-    pub const wire_len = 2 + 1 + 4 + 4 + 8 + 4 + 4 + 4 + 1 + 4 + 4 + 4 + 4 + 2 + 1 + 4 + 1 + 4 + 4 + 4 + 4 + 4 + (6 + 1 + 2 + 4 + 2 + 1 + 2 + 2 + 2 + 4 + 2 + 1 + 1) + 1 + ClockStyle.wire_len + 1 + NtfyStatus.wire_len + 4 * 4;
+    pub const wire_len = 3 + 2 + 1 + 4 + 4 + 8 + 4 + 4 + 4 + 1 + 4 + 4 + 4 + 4 + 2 + 1 + 4 + 1 + 4 + 4 + 4 + 4 + 4 + (6 + 1 + 2 + 4 + 2 + 1 + 2 + 2 + 2 + 4 + 2 + 1 + 1) + 1 + ClockStyle.wire_len + 1 + NtfyStatus.wire_len + 4 * 4;
 };
 
 pub const Message = union(Kind) {
@@ -1138,7 +1147,10 @@ fn encodePayload(msg: Message, out: []u8) usize {
             out[17] = h.power;
             h.clock.put(out[18 .. 18 + ClockStyle.wire_len]);
             out[18 + ClockStyle.wire_len] = h.ip_mode;
-            return 19 + ClockStyle.wire_len;
+            out[19 + ClockStyle.wire_len] = h.menu;
+            out[20 + ClockStyle.wire_len] = h.menu_item;
+            out[21 + ClockStyle.wire_len] = h.menu_state;
+            return 22 + ClockStyle.wire_len;
         },
         .clock_style => |s| {
             s.put(out[0..ClockStyle.wire_len]);
@@ -1412,7 +1424,10 @@ fn encodePayload(msg: Message, out: []u8) usize {
             }
             out[o] = st.night_phase;
             out[o + 1] = st.night_override;
-            o += 2;
+            out[o + 2] = st.menu;
+            out[o + 3] = st.menu_item;
+            out[o + 4] = st.menu_state;
+            o += 5;
             return o;
         },
         .result => |r| {
@@ -1496,8 +1511,8 @@ pub fn decodePacket(bytes: []const u8) Error!Packet {
     const p = d.payload;
     const message: Message = switch (kind) {
         .heartbeat => blk: {
-            const b = try fixed(p, 19 + ClockStyle.wire_len);
-            break :blk .{ .heartbeat = .{ .presented = std.mem.readInt(u64, b[0..8], .big), .revision = std.mem.readInt(u32, b[8..12], .big), .state = b[12], .base = b[13], .generator = b[14], .overlay = b[15], .brightness = b[16], .power = b[17], .clock = ClockStyle.get(b[18..]), .ip_mode = b[18 + ClockStyle.wire_len] } };
+            const b = try fixed(p, 22 + ClockStyle.wire_len);
+            break :blk .{ .heartbeat = .{ .presented = std.mem.readInt(u64, b[0..8], .big), .revision = std.mem.readInt(u32, b[8..12], .big), .state = b[12], .base = b[13], .generator = b[14], .overlay = b[15], .brightness = b[16], .power = b[17], .clock = ClockStyle.get(b[18..]), .ip_mode = b[18 + ClockStyle.wire_len], .menu = b[19 + ClockStyle.wire_len], .menu_item = b[20 + ClockStyle.wire_len], .menu_state = b[21 + ClockStyle.wire_len] } };
         },
         .clock_style => blk: {
             const b = try fixed(p, ClockStyle.wire_len);
@@ -1818,7 +1833,10 @@ pub fn decodePacket(bytes: []const u8) Error!Packet {
             }
             st.night_phase = b[o];
             st.night_override = b[o + 1];
-            o += 2;
+            st.menu = b[o + 2];
+            st.menu_item = b[o + 3];
+            st.menu_state = b[o + 4];
+            o += 5;
             break :blk .{ .status = st };
         },
         .ready => blk: {

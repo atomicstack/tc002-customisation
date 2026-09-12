@@ -23,6 +23,7 @@ const clock = @import("scene/clock.zig");
 const solar = @import("sys/solar.zig");
 const canvas = @import("scene/canvas.zig");
 const icons = @import("scene/icons.zig");
+const menu = @import("scene/menu.zig");
 const night = @import("supervisor/night.zig");
 
 const linux = std.os.linux;
@@ -838,6 +839,35 @@ const Netd = struct {
         o.fmt("],\"limits\":{{\"elements\":{d},\"text_bytes\":{d},\"data_bytes\":{d},\"samples\":{d}}}}}", .{ canvas.max_elements, canvas.text_pool, canvas.data_pool, canvas.samples_max });
     }
 
+    /// what the on-device menu is showing. a client driving the panel over `/input` can assert
+    /// this rather than counting detents from the top, which is a count that changes whenever an
+    /// item is added -- as one did, and it cost a setting.
+    fn menuJson(o: *Out, st: *const messages.StatusSnapshot) void {
+        if (st.menu == 0) {
+            o.add("{\"open\":false}");
+            return;
+        }
+        const state = switch (st.menu_state) {
+            0 => "browsing",
+            1 => "adjusting",
+            else => "confirming",
+        };
+        if (st.menu == 1) {
+            o.fmt("{{\"open\":true,\"kind\":\"device\",\"state\":\"{s}\",\"item\":\"{s}\",\"index\":{d},\"items\":{d}}}", .{ state, deviceMenuItem(st.menu_item), st.menu_item, menu.count });
+            return;
+        }
+        // a scene menu walks a table the scene owns, so the entry is reported by position and the
+        // scene it belongs to names it
+        o.fmt("{{\"open\":true,\"kind\":\"scene\",\"state\":\"{s}\",\"scene\":\"{s}\",\"index\":{d}}}", .{ state, baseName(st.base), st.menu_item });
+    }
+
+    fn deviceMenuItem(index: u8) []const u8 {
+        inline for (@typeInfo(menu.Item).@"enum".fields) |f| {
+            if (f.value == index) return f.name;
+        }
+        return "unknown";
+    }
+
     fn nightPhaseName(p: u8) []const u8 {
         return switch (p) {
             1...4 => night.Phase.text(@enumFromInt(p - 1)),
@@ -890,6 +920,8 @@ const Netd = struct {
         o.add("},\"clock\":");
         clockJson(o, st.clock);
         o.fmt(",\"ip_mode\":\"{s}\"", .{enumName(ip.Mode, st.ip_mode)});
+        o.add(",\"menu\":");
+        menuJson(o, &st);
         o.add(",\"night\":");
         self.nightStatusJson(o, &st);
         o.add(",\"ntfy\":");

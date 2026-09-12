@@ -1248,11 +1248,14 @@ const Supervisor = struct {
     }
 
     fn onHeartbeat(self: *Supervisor, h: messages.Heartbeat, now: u64) void {
-        const changed = h.revision != self.snapshot.revision or h.base != self.snapshot.base or h.brightness != self.snapshot.brightness or h.overlay != self.snapshot.overlay or h.generator != self.snapshot.generator or h.power != self.snapshot.power;
+        const changed = h.menu != self.snapshot.menu or h.menu_item != self.snapshot.menu_item or h.menu_state != self.snapshot.menu_state or h.revision != self.snapshot.revision or h.base != self.snapshot.base or h.brightness != self.snapshot.brightness or h.overlay != self.snapshot.overlay or h.generator != self.snapshot.generator or h.power != self.snapshot.power;
         self.snapshot.revision = h.revision;
         self.snapshot.power = h.power;
         self.snapshot.clock = h.clock;
         self.snapshot.ip_mode = h.ip_mode;
+        self.snapshot.menu = h.menu;
+        self.snapshot.menu_item = h.menu_item;
+        self.snapshot.menu_state = h.menu_state;
         self.snapshot.presented = h.presented;
         self.snapshot.base = h.base;
         self.snapshot.generator = h.generator;

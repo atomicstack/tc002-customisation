@@ -1022,6 +1022,7 @@ lowercase code:
  "overlay":"none","brightness":100,"power":true,"presented":35990,"fps":59.9,
  "uptime_s":600,"memory_available_kb":16084,"cpu_pct":5,"restarts":0,
  "network":{"ip":"10.0.0.111"},"time":{"state":"unsynced","age_s":null},
+ "menu":{"open":true,"kind":"device","state":"browsing","item":"ip","index":1,"items":11},
  "night":{"enabled":true,"phase":"to_night","held":false,
           "today":{"dawn":1789101184,"sunrise":1789103263,"sunset":1789150014,"dusk":1789152094,"sun_up":false}},
  "config_revision":1,"saved_revision":1,"transport":"plaintext",
@@ -1035,7 +1036,16 @@ lowercase code:
 display power switch; `clock` is the effective [clock style](#clock-styles). `boot_id` is random per supervisor start
 and is what groups the mqtt discovery entities. `time` is the sntp client's
 view: `state` and seconds since the last accepted reply (see
-[time](#time-sntp)). `night` is the [brightness schedule](#the-night-brightness-schedule):
+[time](#time-sntp)). `menu` is what the [device menu](#the-settings-menu) is
+showing — `{"open":false}` when none is, otherwise its `kind`, its `state`
+(`browsing`, `adjusting`, `confirming`) and the item, by name for the device
+menu and by position for a scene's. **a client driving the panel over
+`/input` should assert this rather than count detents from the top**: that
+count changes whenever an item is added, and adding one is what silently
+switched mqtt off here on 2026-09-12 — a script that counted six to reach
+`info` clicked into `mqtt` instead and then toggled it five times. note also
+that once an item is open for editing, further detents change its **value**
+rather than moving on. `night` is the [brightness schedule](#the-night-brightness-schedule):
 `phase` is `day`, `to_night`, `night`, `to_day`, or `null` when the schedule
 is not running; `held` says a hand-set brightness is standing in its way; and
 `today` is the sun's own day where the device is, which is `null` with no
