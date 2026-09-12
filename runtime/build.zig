@@ -88,6 +88,20 @@ pub fn build(b: *std.Build) void {
     wasm_copy.addCopyFileToSource(wasm.getEmittedBin(), "../panel-v2/tc002-panel.wasm");
     wasm_step.dependOn(&wasm_copy.step);
 
+    // the `/scenes` catalogue as a file, for clients that cannot ask a device for it (the mock
+    // device serves it verbatim). generated from the same comptime tables the runtime serves.
+    const scenes_tool = b.addExecutable(.{ .name = "scenes-json", .root_module = b.createModule(.{
+        .root_source_file = b.path("src/scenes_json_main.zig"),
+        .target = b.graph.host,
+        .optimize = .Debug,
+    }) });
+    const run_scenes = b.addRunArtifact(scenes_tool);
+    const scenes_json = run_scenes.addOutputFileArg("scenes.json");
+    const scenes_copy = b.addUpdateSourceFiles();
+    scenes_copy.addCopyFileToSource(scenes_json, "../panel-v2/scenes.json");
+    const scenes_step = b.step("scenes", "write the /scenes catalogue to panel-v2/scenes.json");
+    scenes_step.dependOn(&scenes_copy.step);
+
     // host tests of every pure module
     const tests = b.addTest(.{ .root_module = b.createModule(.{
         .root_source_file = b.path("src/root.zig"),

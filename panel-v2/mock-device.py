@@ -16,51 +16,32 @@ binds 127.0.0.1. point the console at 127.0.0.1:<port>.
 import http.server, json, os, re, secrets, socketserver, sys, threading, time
 from urllib.parse import urlsplit, parse_qs
 
-BASES = ["art", "clock", "ip"]
-GENERATORS = ["popsquares", "plasma", "cube"]
-CUBE_PARAMS = [
-    {"name": "palette", "kind": "choice", "default": 0, "choices": ["mono", "poly"]},
-    {"name": "colour", "kind": "colour", "default": 0x30a0ff},
-    {"name": "hue drift", "kind": "number", "default": 0, "min": 0, "max": 60, "step": 5},
-    {"name": "background", "kind": "colour", "default": 0},
-    {"name": "spin", "kind": "choice", "default": 2, "choices": ["single", "series", "parallel"]},
-    {"name": "speed", "kind": "number", "default": 6, "min": 1, "max": 20, "step": 1},
-    {"name": "zoom", "kind": "number", "default": 100, "min": 40, "max": 200, "step": 10},
-]
-CLOCK_FONTS = ["classic", "mini", "segment", "big", "block", "hires"]
-IP_MODES = ["lines", "mini", "scroll", "big"]
-CLOCK_COLOUR_MODES = ["solid", "gradient"]
-CLOCK_GRADIENTS = ["horizontal", "vertical", "diagonal"]
-CLOCK_DIGITS = ["solid", "outline", "shadow"]   # only the faces with a body (block, big) honour it
-CLOCK_MAX_SPREAD = 255          # the clamp is the `spread` parameter now, not a fixed 96
-DEFAULT_SPREAD = 255
+# the catalogue, generated from the runtime's own comptime tables by `zig build scenes`
+# (runtime/src/scenes_json_main.zig writes api.scenes_body here). it is not typed out in this file
+# any more: the hand-written copy drifted, reporting popsquares as declaring no parameters for as
+# long as popsquares had seven. a zig test pins the committed file against the tables, and
+# start-panel.sh regenerates it, so a stale copy shows up in `git status` rather than in the ui.
+SCENES_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "scenes.json")
+try:
+    with open(SCENES_PATH, encoding="utf-8") as _f:
+        SCENES = json.load(_f)
+except OSError as _e:
+    sys.exit(f"mock-device.py: cannot read {SCENES_PATH} ({_e.strerror}); "
+             "run `zig build scenes` in runtime/")
+
+BASES = SCENES["bases"]
+GENERATORS = [g["name"] for g in SCENES["generators"]]
+CLOCK_FONTS = SCENES["clock"]["fonts"]
+IP_MODES = SCENES["ip"]["modes"]
+CLOCK_COLOUR_MODES = SCENES["clock"]["colour_modes"]
+CLOCK_GRADIENTS = SCENES["clock"]["gradients"]
+CLOCK_DIGITS = SCENES["clock"]["digits"]   # only the faces with a body (block, big) honour it
+CLOCK_MAX_SPREAD = SCENES["clock"]["max_spread"]
+DEFAULT_SPREAD = next(p["default"] for p in SCENES["parameters"]["clock"] if p["name"] == "spread")
 DEFAULT_CLOCK = {"font": "classic", "colour_mode": "solid", "colour": "ffffff", "colour2": "ffffff",
                  "gradient": "horizontal", "spread": DEFAULT_SPREAD, "digits": "solid"}
 
 
-def choice(name, choices, default=0):
-    return {"name": name, "kind": "choice", "default": default, "choices": list(choices)}
-# every scene declares what it can be told; popsquares and plasma declare nothing of their own
-SCENES = {"bases": BASES,
-          "generators": [{"index": 0, "name": "popsquares", "parameters": []},
-                         {"index": 1, "name": "plasma", "parameters": []},
-                         {"index": 2, "name": "cube", "parameters": CUBE_PARAMS}],
-          "parameters": {
-              "art": [choice("scene", GENERATORS)],
-              "clock": [choice("face", CLOCK_FONTS), {"name": "colour", "kind": "colour", "default": 0xffffff},
-                        choice("shade", CLOCK_COLOUR_MODES), {"name": "colour 2", "kind": "colour", "default": 0xffffff},
-                        choice("gradient", CLOCK_GRADIENTS),
-                        {"name": "spread", "kind": "number", "default": DEFAULT_SPREAD, "min": 0, "max": 255, "step": 15},
-                        choice("digits", CLOCK_DIGITS)],
-              "ip": [choice("layout", IP_MODES)],
-          },
-          "clock": {"fonts": CLOCK_FONTS, "colour_modes": CLOCK_COLOUR_MODES, "gradients": CLOCK_GRADIENTS,
-                    "spread": [0, 255], "max_spread": CLOCK_MAX_SPREAD},
-          "ip": {"modes": IP_MODES},
-          "notify": {"text_max": 128, "duration_s": [1, 300]}, "frame": {"bytes": 2496, "duration_s": [1, 300]},
-          "transitions": {"effects": ["fade", "cut", "slide", "swipe_out", "swipe_in", "collapse", "expand", "wipe", "dissolve",
-                                      "split_out", "split_in", "blinds", "flip", "rain", "rain_random"],
-                          "directions": ["left", "right", "up", "down"], "exits": ["reverse", "same", "none"], "duration_ms": [0, 5000]}}
 PRINTABLE = re.compile(r"^[\x20-\x7e]{1,128}$")
 HEX_ID = re.compile(r"^[0-9a-fA-F]{1,16}$")
 
@@ -172,7 +153,7 @@ def parse_colour(s):
 SETTING_TO_STYLE = {"digit": "digits"}
 
 
-GENERATOR_PARAMS = {"popsquares": [], "plasma": [], "cube": CUBE_PARAMS}
+GENERATOR_PARAMS = {g["name"]: g["parameters"] for g in SCENES["generators"]}
 MAX_PARAMS_PER_PATCH = 8
 
 

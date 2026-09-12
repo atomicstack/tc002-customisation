@@ -346,9 +346,22 @@ class EndToEndTests(unittest.TestCase):
         cube = next(g for g in sc["generators"] if g["name"] == "cube")
         self.assertEqual([p["name"] for p in cube["parameters"]],
                          ["palette", "colour", "hue drift", "background", "spin", "speed", "zoom"])
-        # popsquares and plasma declare none of their own
-        self.assertEqual(sc["generators"][0]["parameters"], [])
+        # popsquares declares the processing sketch's sliders; plasma still declares none of its
+        # own. this used to assert that popsquares declared nothing, which was true of the
+        # hand-typed catalogue in mock-device.py and had not been true of the runtime for a while
+        pops = next(g for g in sc["generators"] if g["name"] == "popsquares")
+        self.assertEqual([p["name"] for p in pops["parameters"]],
+                         ["pop ms", "alive", "dim chance", "dim floor", "dim ceiling", "tint", "tint colour"])
+        self.assertEqual(next(g for g in sc["generators"] if g["name"] == "plasma")["parameters"], [])
         self.assertEqual(sc["clock"]["spread"], [0, 255])
+
+    def test_scenes_is_served_verbatim_from_the_generated_catalogue(self):
+        # the mock does not have a catalogue of its own: it serves what `zig build scenes` wrote
+        # from the runtime's comptime tables, so the two cannot disagree
+        with open(os.path.join(HERE, "scenes.json"), encoding="utf-8") as f:
+            generated = json.load(f)
+        _, sc = self.call("GET", "scenes")
+        self.assertEqual(sc, generated)
 
     def test_clock_spread_is_both_a_setting_and_a_transient_scene_field(self):
         _, cfg = self.call("GET", "config")
@@ -396,12 +409,14 @@ class EndToEndTests(unittest.TestCase):
 
     CUBE_DEFAULTS = {"palette": "mono", "colour": "30a0ff", "hue drift": 0, "background": "000000",
                      "spin": "parallel", "speed": 6, "zoom": 100}
+    POPSQUARES_DEFAULTS = {"pop ms": 2000, "alive": 100, "dim chance": 25, "dim floor": 0,
+                           "dim ceiling": 100, "tint": 15, "tint colour": "3a6ea5"}
 
     def test_generator_parameters_read_as_an_object_and_write_as_a_list(self):
         # asymmetric on purpose: an object keyed by the scene's own names to read, a list to write,
         # because a strict parser cannot know a scene's names in advance
         _, cfg = self.call("GET", "config")
-        self.assertEqual(cfg["generators"]["popsquares"], {})
+        self.assertEqual(cfg["generators"]["popsquares"], self.POPSQUARES_DEFAULTS)
         self.assertEqual(cfg["generators"]["plasma"], {})
         self.assertEqual(cfg["generators"]["cube"], self.CUBE_DEFAULTS)
         status, doc = self.call("PATCH", "config", {"generator_params": [
@@ -572,7 +587,10 @@ class EndToEndTests(unittest.TestCase):
 
     def test_scenes_status_and_config_carry_the_clock_style(self):
         _, scenes = self.call("GET", "scenes")
+        # `digits` belongs here too: the hand-typed catalogue omitted it while validating against
+        # a CLOCK_DIGITS list it kept privately, so a client could not discover the digit styles
         self.assertEqual(scenes["clock"], {"fonts": ["classic", "mini", "segment", "big", "block", "hires"], "colour_modes": ["solid", "gradient"],
+                                           "digits": ["solid", "outline", "shadow"],
                                            "gradients": ["horizontal", "vertical", "diagonal"], "spread": [0, 255], "max_spread": 255})
         self.device.config["clock"] = dict(self.DEFAULT_CLOCK); self.device.clock = dict(self.DEFAULT_CLOCK)
         _, st = self.call("GET", "status")
@@ -673,6 +691,30 @@ class EndToEndTests(unittest.TestCase):
             self.mock_call("mock/persist", {"enabled": True})
         _, back = self.call("GET", "config")
         self.assertEqual(back["revision"], back["saved_revision"])
+
+
+class CatalogueTests(unittest.TestCase):
+    """panel-v2/scenes.json is generated from the runtime's tables; a stale copy is the exact bug
+    this whole arrangement exists to stop, so it is checked rather than trusted."""
+
+    def test_the_committed_catalogue_is_what_the_runtime_generates_now(self):
+        runtime = os.path.join(os.path.dirname(HERE), "runtime")
+        if not os.path.isdir(runtime):
+            self.skipTest("runtime/ is not present")
+        try:
+            subprocess.run(["zig", "version"], capture_output=True, check=True)
+        except (OSError, subprocess.CalledProcessError):
+            self.skipTest("zig is not installed")
+        path = os.path.join(HERE, "scenes.json")
+        with open(path, "rb") as f:
+            before = f.read()
+        r = subprocess.run(["zig", "build", "scenes"], cwd=runtime, capture_output=True, text=True)
+        self.assertEqual(r.returncode, 0, f"`zig build scenes` failed:\n{r.stderr}")
+        with open(path, "rb") as f:
+            after = f.read()
+        self.assertEqual(before, after,
+                         "panel-v2/scenes.json is stale: `zig build scenes` in runtime/ changed it. "
+                         "commit the regenerated file")
 
 
 class StartScriptTests(unittest.TestCase):
