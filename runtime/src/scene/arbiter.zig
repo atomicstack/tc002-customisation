@@ -1004,7 +1004,7 @@ pub const Arbiter = struct {
             .stream_arming, .none => switch (self.base) {
                 .art => self.art.cadence(),
                 .clock => self.clock.cadence(wall_ns),
-                .canvas => self.canvas.cadence(),
+                .canvas => self.canvas.cadence(self.last_tick_ns),
             },
         };
     }

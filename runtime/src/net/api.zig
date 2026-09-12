@@ -233,7 +233,9 @@ const ElementBody = struct {
     max: ?u8 = null,
     threshold: ?u8 = null,
     over: ?[]const u8 = null,
+    animate: ?AnimateBody = null,
 };
+const AnimateBody = struct { kind: []const u8, ms: ?u16 = null, phase: ?u8 = null, amount: ?u8 = null, axis: ?[]const u8 = null };
 const CanvasBody = struct { elements: []const ElementBody };
 /// a patch names elements by id and carries only what changed. it is a list rather than an object
 /// keyed by id because the parser resolves field names at compile time and the ids belong to the
@@ -300,7 +302,7 @@ fn allowedField(kind: canvas.Kind, comptime name: []const u8) bool {
         }
     }.f;
     if (eq(name, "type") or eq(name, "id") or eq(name, "at") or eq(name, "size") or
-        eq(name, "tile") or eq(name, "row") or eq(name, "of") or eq(name, "colour")) return true;
+        eq(name, "tile") or eq(name, "row") or eq(name, "of") or eq(name, "colour") or eq(name, "animate")) return true;
     return switch (kind) {
         .text => eq(name, "text") or eq(name, "font") or eq(name, "align"),
         .rect => eq(name, "filled"),
@@ -377,6 +379,38 @@ fn parseCanvas(body: []const ElementBody, doc: *canvas.Document) CanvasRoute {
         const box = parseBox(b) orelse return .{ .reject = canvasBad("invalid_placement", "give at (and size), or tile/row with of; not both") };
         var e = canvas.Element{ .id = if (b.id) |id| canvas.Id.init(id) else .{}, .box = box, .body = .pixel };
         if (b.colour) |c| e.colour = parseColour(c) orelse return .{ .reject = canvasBad("invalid_colour", "colour must be rrggbb hex") };
+        if (b.animate) |a| {
+            const motion = enumByName(canvas.Motion, a.kind) orelse
+                return .{ .reject = canvasBad("invalid_motion", "kind must be hue, bounce, scramble, scroll, blink, pulse, typewriter or sweep") };
+            if (motion == .none) return .{ .reject = canvasBad("invalid_motion", "leave animate out rather than asking for none") };
+            // an animation that only makes sense on some kinds says so rather than doing nothing
+            const suits = switch (motion) {
+                .scramble, .typewriter, .scroll => kind == .text,
+                .sweep => kind == .sparkline,
+                else => true,
+            };
+            if (!suits) return .{ .reject = canvasBad("invalid_motion", "that motion does not suit that element type") };
+            if (a.ms) |ms| if (ms == 0) return .{ .reject = canvasBad("invalid_motion", "ms must be at least 1") };
+            if (a.phase) |ph| if (ph > 100) return .{ .reject = canvasBad("invalid_motion", "phase is 0..100") };
+            e.anim = .{
+                .kind = motion,
+                .ms = a.ms orelse switch (motion) {
+                    .scroll => 33, // the pace a notification scrolls at
+                    .hue => 8000,
+                    else => 1000,
+                },
+                .phase = a.phase orelse 0,
+                .amount = a.amount orelse switch (motion) {
+                    .bounce => 2,
+                    .blink => 50,
+                    else => 0,
+                },
+                .axis_x = if (a.axis) |ax| std.mem.eql(u8, ax, "x") else false,
+            };
+            if (a.axis) |ax| if (!std.mem.eql(u8, ax, "x") and !std.mem.eql(u8, ax, "y")) {
+                return .{ .reject = canvasBad("invalid_motion", "axis must be x or y") };
+            };
+        }
         switch (kind) {
             .text => {
                 const text = b.text orelse return .{ .reject = canvasBad("missing_text", "a text element needs text") };
@@ -1259,4 +1293,34 @@ test "a canvas patch carries values by id, and the canvas routes have their own 
     try std.testing.expect(route(testReq(.GET, "/api/v1/canvas", "", control_header, null, null), "", &c, &origins, &arena).op == .canvas_get);
     try std.testing.expect(route(testReq(.DELETE, "/api/v1/canvas", "", control_header, null, null), "", &c, &origins, &arena).op == .canvas_clear);
     try expectReject(route(testReq(.PUT, "/api/v1/canvas", "", control_header, "application/json", null), "{\"elements\":[]}", &c, &origins, &arena), 403, "forbidden");
+}
+
+test "an animation is declared per element, and only where it makes sense" {
+    const c = testCreds();
+    var arena: Arena = undefined;
+    const origins = OriginPolicy{};
+    const put = testReq(.PUT, "/api/v1/canvas", "", admin_header, "application/json", null);
+    const r = route(put,
+        \\{"elements":[
+        \\ {"id":"t","type":"text","text":"21.1C","animate":{"kind":"scramble","ms":600}},
+        \\ {"id":"d","type":"circle","r":3,"animate":{"kind":"hue"}},
+        \\ {"id":"b","type":"bar","value":50,"animate":{"kind":"bounce","amount":3,"axis":"x","phase":50}},
+        \\ {"id":"g","type":"sparkline","data":[1,2],"animate":{"kind":"sweep","ms":900}}]}
+    , &c, &origins, &arena);
+    const d = r.op.canvas_put;
+    try std.testing.expectEqual(canvas.Motion.scramble, d.elements[0].anim.kind);
+    try std.testing.expectEqual(@as(u16, 600), d.elements[0].anim.ms);
+    try std.testing.expectEqual(@as(u16, 8000), d.elements[1].anim.ms); // a hue turns slowly by default
+    try std.testing.expect(d.elements[2].anim.axis_x);
+    try std.testing.expectEqual(@as(u8, 50), d.elements[2].anim.phase);
+    try std.testing.expectEqual(canvas.Motion.sweep, d.elements[3].anim.kind);
+
+    // a motion that cannot mean anything for that element is refused rather than ignored
+    try expectReject(route(put, "{\"elements\":[{\"type\":\"rect\",\"animate\":{\"kind\":\"scramble\"}}]}", &c, &origins, &arena), 400, "invalid_motion");
+    try expectReject(route(put, "{\"elements\":[{\"type\":\"text\",\"text\":\"x\",\"animate\":{\"kind\":\"sweep\"}}]}", &c, &origins, &arena), 400, "invalid_motion");
+    try expectReject(route(put, "{\"elements\":[{\"type\":\"pixel\",\"animate\":{\"kind\":\"wobble\"}}]}", &c, &origins, &arena), 400, "invalid_motion");
+    try expectReject(route(put, "{\"elements\":[{\"type\":\"pixel\",\"animate\":{\"kind\":\"none\"}}]}", &c, &origins, &arena), 400, "invalid_motion");
+    try expectReject(route(put, "{\"elements\":[{\"type\":\"pixel\",\"animate\":{\"kind\":\"blink\",\"ms\":0}}]}", &c, &origins, &arena), 400, "invalid_motion");
+    try expectReject(route(put, "{\"elements\":[{\"type\":\"pixel\",\"animate\":{\"kind\":\"blink\",\"phase\":101}}]}", &c, &origins, &arena), 400, "invalid_motion");
+    try expectReject(route(put, "{\"elements\":[{\"type\":\"pixel\",\"animate\":{\"kind\":\"bounce\",\"axis\":\"z\"}}]}", &c, &origins, &arena), 400, "invalid_motion");
 }

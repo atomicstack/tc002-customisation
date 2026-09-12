@@ -769,6 +769,9 @@ const Netd = struct {
             o.fmt(",\"at\":[{d},{d}]", .{ e.box.x, e.box.y });
             if (e.box.w != 0 or e.box.h != 0) o.fmt(",\"size\":[{d},{d}]", .{ e.box.w, e.box.h });
             o.fmt(",\"colour\":\"{x:0>2}{x:0>2}{x:0>2}\"", .{ e.colour[0], e.colour[1], e.colour[2] });
+            if (e.anim.kind != .none) {
+                o.fmt(",\"animate\":{{\"kind\":\"{s}\",\"ms\":{d},\"phase\":{d},\"amount\":{d},\"axis\":\"{s}\"}}", .{ @tagName(e.anim.kind), e.anim.ms, e.anim.phase, e.anim.amount, if (e.anim.axis_x) "x" else "y" });
+            }
             switch (e.body) {
                 .text => |t| {
                     o.add(",\"text\":");

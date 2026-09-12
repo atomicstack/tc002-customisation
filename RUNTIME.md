@@ -390,6 +390,36 @@ mistake worth hearing about.
 `data_hex` is the same samples as hex, for a document that would not otherwise fit: 52 samples cost
 208 characters as json digits and 104 as hex.
 
+**animation is declared, not driven.** an element carries an `animate` block and the renderer ticks
+it, so an integration pushes once and walks away:
+
+```json
+{"id":"t","type":"text","text":"21.1C","animate":{"kind":"scramble","ms":600}}
+```
+
+| kind | what it does | `ms` | `amount` |
+|---|---|---|---|
+| `hue` | walks the element's colour round the wheel at full saturation | one full turn (8,000) | |
+| `bounce` | oscillates it, `axis` `y` (default) or `x` | one bounce (1,000) | pixels of travel (2) |
+| `scramble` | the flipboard: each character settles out of flipping glyphs, left to right | the whole word (1,000) | |
+| `scroll` | moves text wider than its box, wrapping with a panel's width of gap | per pixel (33) | |
+| `blink` | lit, then dark | the period (1,000) | the lit percentage (50) |
+| `pulse` | rides the brightness up and down, never to nothing | the period (1,000) | |
+| `typewriter` | reveals a character at a time | the whole string (1,000) | |
+| `sweep` | draws a sparkline left to right | the whole width (1,000) | |
+
+`phase` (0–100) offsets an element within its period, so a row of tiles does not move in lockstep.
+`scramble`, `typewriter` and `sweep` are **arrivals**: they run once, hold, and start again when the
+value they are showing changes — which the renderer works out by comparing the document that
+arrives with the one it holds, so a patch that moves a bar does not make the text beside it scramble
+all over again. a motion that cannot mean anything for the type given (`sweep` on a text, `scramble`
+on a rectangle) is refused rather than ignored.
+
+**what it costs.** the scene asks for frames only while something is moving, per element: a document
+with no animation is drawn when it changes and not again, and one that only scrambles on update goes
+quiet as soon as it has settled. measured on the device: 180 frames in three seconds with a hue and
+a bounce running, and **0 in three seconds** once a scramble had finished.
+
 **limits**, reported by `GET /canvas` so a client need not hard-code them: 24 elements, 256 bytes of
 text, 1,024 bytes of sample data, 52 samples per sparkline (one per panel column). a document is
 about two kilobytes on the wire and travels in one ipc packet, whole.

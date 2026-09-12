@@ -30,6 +30,30 @@ const hint_colour: [3]u8 = .{ 64, 64, 64 };
 
 pub const Kind = enum(u8) { text, rect, line, circle, pixel, bar, sparkline };
 
+/// what an element does on its own, so an integration pushes once and walks away. five run
+/// continuously; `scramble`, `typewriter` and `sweep` are arrivals, which run once and then hold,
+/// and start again when the value they are showing changes.
+pub const Motion = enum(u8) { none, hue, bounce, scramble, scroll, blink, pulse, typewriter, sweep };
+
+pub fn arrival(m: Motion) bool {
+    return m == .scramble or m == .typewriter or m == .sweep;
+}
+
+pub const Animation = struct {
+    kind: Motion = .none,
+    /// the period: one full turn of the hue, one bounce, one blink, one pixel of scroll, or the
+    /// whole of an arrival
+    ms: u16 = 1000,
+    /// 0..100 of the period, so a row of tiles does not move in lockstep
+    phase: u8 = 0,
+    /// bounce: pixels of travel. blink: the lit percentage of the period. otherwise unused.
+    amount: u8 = 0,
+    /// bounce along x rather than y
+    axis_x: bool = false,
+
+    pub const wire_len = 6;
+};
+
 /// `small` is the 5x7 with every printable character. `mini` is the 3x5 of the menus: letters,
 /// digits and a little punctuation. `block` and `big` are the clock's own faces and carry **digits
 /// and a colon only** — they are for a number a room away, not for words.
@@ -118,6 +142,7 @@ pub const Element = struct {
     id: Id = .{},
     box: Box = .{},
     colour: [3]u8 = .{ 255, 255, 255 },
+    anim: Animation = .{},
     body: Body,
 
     pub fn kind(self: *const Element) Kind {
@@ -221,6 +246,94 @@ pub const Document = struct {
     }
 };
 
+// --- motion -------------------------------------------------------------------------------------
+
+/// a quarter-turn of sine, scaled to 0..255 and built at compile time: `@sin` lowers to a libm call
+/// this binary cannot link, and the cube learned the same lesson.
+const sine = blk: {
+    @setEvalBranchQuota(20000);
+    var table: [256]i16 = undefined;
+    for (&table, 0..) |*v, i| {
+        const a = @as(f64, @floatFromInt(i)) * std.math.tau / 256.0;
+        v.* = @intFromFloat(@round(@sin(a) * 1000.0));
+    }
+    break :blk table;
+};
+
+/// sin(turns) in thousandths, turns being 0..255 around the circle
+fn sin1000(turn: u8) i32 {
+    return sine[turn];
+}
+
+/// where this element is in its period, 0..255, including its phase offset
+fn turnOf(a: Animation, elapsed_ms: u64) u8 {
+    const period: u64 = @max(1, a.ms);
+    const offset: u64 = @as(u64, a.phase) * period / 100;
+    return @truncate(((elapsed_ms + offset) * 256 / period) % 256);
+}
+
+/// how far through a one-shot arrival, 0..256 and capped there
+fn progress(a: Animation, elapsed_ms: u64) u32 {
+    const period: u64 = @max(1, a.ms);
+    return @intCast(@min((elapsed_ms * 256) / period, 256));
+}
+
+/// a value the scramble can draw before a character has landed on its own
+fn scrambleGlyph(seed: u64) u8 {
+    var h = seed *% 0x9E3779B97F4A7C15;
+    h ^= h >> 29;
+    h *%= 0xBF58476D1CE4E5B9;
+    h ^= h >> 32;
+    // the printable band a flipboard would carry: digits and letters
+    const set = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+    return set[@as(usize, @truncate(h)) % set.len];
+}
+
+/// the element's colour once its animation has had a say
+fn animatedColour(e: *const Element, elapsed_ms: u64) [3]u8 {
+    return switch (e.anim.kind) {
+        .hue => param.hueRgb(param.hueOf(param.rgbValue(e.colour)) +% turnOf(e.anim, elapsed_ms)),
+        .pulse => blk: {
+            // never all the way off: a pulse that vanishes reads as a fault
+            const s = sin1000(turnOf(e.anim, elapsed_ms));
+            const scale: i32 = 650 + @divTrunc(s * 350, 1000);
+            break :blk .{
+                @intCast(@divTrunc(@as(i32, e.colour[0]) * scale, 1000)),
+                @intCast(@divTrunc(@as(i32, e.colour[1]) * scale, 1000)),
+                @intCast(@divTrunc(@as(i32, e.colour[2]) * scale, 1000)),
+            };
+        },
+        else => e.colour,
+    };
+}
+
+/// where the animation has moved it to
+fn animatedOffset(e: *const Element, elapsed_ms: u64, natural_w: i32, box_w: i32) [2]i32 {
+    switch (e.anim.kind) {
+        .bounce => {
+            const travel: i32 = e.anim.amount;
+            const d = @divTrunc(sin1000(turnOf(e.anim, elapsed_ms)) * travel, 1000);
+            return if (e.anim.axis_x) .{ d, 0 } else .{ 0, d };
+        },
+        .scroll => {
+            // only what does not fit scrolls, and it wraps with a panel's width of gap
+            if (natural_w <= box_w) return .{ 0, 0 };
+            const span: u64 = @intCast(natural_w + geometry.width);
+            const per_px: u64 = @max(1, e.anim.ms);
+            const moved: u64 = (elapsed_ms / per_px) % span;
+            return .{ -@as(i32, @intCast(moved)), 0 };
+        },
+        else => return .{ 0, 0 },
+    }
+}
+
+/// whether a blink is in its lit half
+fn visible(e: *const Element, elapsed_ms: u64) bool {
+    if (e.anim.kind != .blink) return true;
+    const duty: u32 = if (e.anim.amount == 0) 50 else @min(e.anim.amount, 100);
+    return @as(u32, turnOf(e.anim, elapsed_ms)) * 100 < duty * 256;
+}
+
 // --- drawing ------------------------------------------------------------------------------------
 
 fn setPx(rgb: *geometry.Rgb, x: i32, y: i32, colour: [3]u8) void {
@@ -284,17 +397,17 @@ fn textHeightOf(face: Font) i32 {
 
 /// draw text into a scratch buffer and copy it through the clip, so every font goes through one
 /// path and none of them needs to learn about boxes
-fn drawText(rgb: *geometry.Rgb, e: *const Element, text: []const u8, colour: [3]u8) void {
+fn drawText(rgb: *geometry.Rgb, e: *const Element, text: []const u8, colour: [3]u8, offset: [2]i32) void {
     const b = e.body.text;
     const tw = textWidthOf(b.face, text);
     const th = textHeightOf(b.face);
     const box_w = e.box.width(tw);
-    const x = switch (b.alignment) {
+    const x = offset[0] + switch (b.alignment) {
         .left => @as(i32, e.box.x),
         .centre => @as(i32, e.box.x) + @divTrunc(box_w - tw, 2),
         .right => @as(i32, e.box.x) + box_w - tw,
     };
-    const y: i32 = e.box.y;
+    const y: i32 = @as(i32, e.box.y) + offset[1];
     var scratch = geometry.black_rgb;
     switch (b.face) {
         .small => font.blit(&scratch, x, y, text, colour),
@@ -312,27 +425,27 @@ fn drawText(rgb: *geometry.Rgb, e: *const Element, text: []const u8, colour: [3]
     }
 }
 
-fn drawRect(rgb: *geometry.Rgb, e: *const Element) void {
+fn drawRect(rgb: *geometry.Rgb, e: *const Element, offset: [2]i32, colour: [3]u8) void {
     const w = e.box.width(geometry.width - e.box.x);
     const h = e.box.height(geometry.height - e.box.y);
-    const x0: i32 = e.box.x;
-    const y0: i32 = e.box.y;
+    const x0: i32 = @as(i32, e.box.x) + offset[0];
+    const y0: i32 = @as(i32, e.box.y) + offset[1];
     var y: i32 = y0;
     while (y < y0 + h) : (y += 1) {
         var x: i32 = x0;
         while (x < x0 + w) : (x += 1) {
             const edge = x == x0 or x == x0 + w - 1 or y == y0 or y == y0 + h - 1;
-            if (e.body.rect.filled or edge) setPx(rgb, x, y, e.colour);
+            if (e.body.rect.filled or edge) setPx(rgb, x, y, colour);
         }
     }
 }
 
-fn drawLine(rgb: *geometry.Rgb, e: *const Element) void {
+fn drawLine(rgb: *geometry.Rgb, e: *const Element, offset: [2]i32, colour: [3]u8) void {
     // bresenham, so a diagonal has no gaps
-    var x: i32 = e.box.x;
-    var y: i32 = e.box.y;
-    const x2: i32 = e.body.line.x2;
-    const y2: i32 = e.body.line.y2;
+    var x: i32 = @as(i32, e.box.x) + offset[0];
+    var y: i32 = @as(i32, e.box.y) + offset[1];
+    const x2: i32 = @as(i32, e.body.line.x2) + offset[0];
+    const y2: i32 = @as(i32, e.body.line.y2) + offset[1];
     const dx = @abs(x2 - x);
     const dy = @abs(y2 - y);
     const sx: i32 = if (x < x2) 1 else -1;
@@ -340,7 +453,7 @@ fn drawLine(rgb: *geometry.Rgb, e: *const Element) void {
     var err: i32 = @as(i32, @intCast(dx)) - @as(i32, @intCast(dy));
     var guard: u32 = 0;
     while (guard < 4 * geometry.width * geometry.height) : (guard += 1) {
-        setPx(rgb, x, y, e.colour);
+        setPx(rgb, x, y, colour);
         if (x == x2 and y == y2) break;
         const e2 = 2 * err;
         if (e2 > -@as(i32, @intCast(dy))) {
@@ -354,13 +467,13 @@ fn drawLine(rgb: *geometry.Rgb, e: *const Element) void {
     }
 }
 
-fn drawCircle(rgb: *geometry.Rgb, e: *const Element) void {
+fn drawCircle(rgb: *geometry.Rgb, e: *const Element, offset: [2]i32, colour: [3]u8) void {
     // midpoint, with the filled case drawn as spans so there are no seams
-    const cx: i32 = e.box.x;
-    const cy: i32 = e.box.y;
+    const cx: i32 = @as(i32, e.box.x) + offset[0];
+    const cy: i32 = @as(i32, e.box.y) + offset[1];
     const r: i32 = e.body.circle.r;
     if (r <= 0) {
-        setPx(rgb, cx, cy, e.colour);
+        setPx(rgb, cx, cy, colour);
         return;
     }
     var x: i32 = r;
@@ -370,17 +483,17 @@ fn drawCircle(rgb: *geometry.Rgb, e: *const Element) void {
         if (e.body.circle.filled) {
             var i: i32 = -x;
             while (i <= x) : (i += 1) {
-                setPx(rgb, cx + i, cy + y, e.colour);
-                setPx(rgb, cx + i, cy - y, e.colour);
+                setPx(rgb, cx + i, cy + y, colour);
+                setPx(rgb, cx + i, cy - y, colour);
             }
             i = -y;
             while (i <= y) : (i += 1) {
-                setPx(rgb, cx + i, cy + x, e.colour);
-                setPx(rgb, cx + i, cy - x, e.colour);
+                setPx(rgb, cx + i, cy + x, colour);
+                setPx(rgb, cx + i, cy - x, colour);
             }
         } else {
             for ([_][2]i32{ .{ x, y }, .{ y, x }, .{ -x, y }, .{ -y, x }, .{ x, -y }, .{ y, -x }, .{ -x, -y }, .{ -y, -x } }) |p| {
-                setPx(rgb, cx + p[0], cy + p[1], e.colour);
+                setPx(rgb, cx + p[0], cy + p[1], colour);
             }
         }
         y += 1;
@@ -393,12 +506,12 @@ fn drawCircle(rgb: *geometry.Rgb, e: *const Element) void {
     }
 }
 
-fn drawBar(rgb: *geometry.Rgb, e: *const Element) void {
+fn drawBar(rgb: *geometry.Rgb, e: *const Element, offset: [2]i32, colour: [3]u8) void {
     const b = e.body.bar;
     const w = e.box.width(geometry.width - e.box.x);
     const h = e.box.height(1);
-    const x0: i32 = e.box.x;
-    const y0: i32 = e.box.y;
+    const x0: i32 = @as(i32, e.box.x) + offset[0];
+    const y0: i32 = @as(i32, e.box.y) + offset[1];
     const pct: i32 = @min(b.value, 100);
     // the filled extent, rounded so 1% of a wide bar still lights a pixel and 99% leaves one dark
     const span = if (b.vertical) @divTrunc(pct * h + 99, 100) else @divTrunc(pct * w + 99, 100);
@@ -407,21 +520,21 @@ fn drawBar(rgb: *geometry.Rgb, e: *const Element) void {
         var x: i32 = x0;
         while (x < x0 + w) : (x += 1) {
             const on = if (b.vertical) (y >= y0 + h - span) else (x < x0 + span);
-            const colour = if (on) e.colour else b.background;
-            if (on or !std.meta.eql(b.background, [3]u8{ 0, 0, 0 })) setPx(rgb, x, y, colour);
+            const paint = if (on) colour else b.background;
+            if (on or !std.meta.eql(b.background, [3]u8{ 0, 0, 0 })) setPx(rgb, x, y, paint);
         }
     }
 }
 
-fn drawSparkline(rgb: *geometry.Rgb, d: *const Document, e: *const Element) void {
+fn drawSparkline(rgb: *geometry.Rgb, d: *const Document, e: *const Element, offset: [2]i32, colour: [3]u8, reveal: u32) void {
     const s = e.body.sparkline;
     const samples = d.dataOf(s.span);
     if (samples.len == 0) return;
     const w = e.box.width(geometry.width - e.box.x);
     const h = e.box.height(geometry.height - e.box.y);
     if (w <= 0 or h <= 0) return;
-    const x0: i32 = e.box.x;
-    const y0: i32 = e.box.y;
+    const x0: i32 = @as(i32, e.box.x) + offset[0];
+    const y0: i32 = @as(i32, e.box.y) + offset[1];
 
     // the range: what was asked for, or what the samples themselves span
     var lo: i32 = s.min;
@@ -443,20 +556,22 @@ fn drawSparkline(rgb: *geometry.Rgb, d: *const Document, e: *const Element) void
         const idx: usize = if (w <= 1 or samples.len == 1) samples.len - 1 else @intCast(@divTrunc(col * @as(i32, @intCast(samples.len - 1)), w - 1));
         const v = std.math.clamp(@as(i32, samples[idx]), lo, hi);
         const top = y0 + h - 1 - @divTrunc((v - lo) * (h - 1), hi - lo);
-        const colour = if (s.threshold > 0 and samples[idx] >= s.threshold) s.over else e.colour;
+        // a sweep draws what has arrived so far and nothing to its right
+        if (@as(u32, @intCast(col)) * 256 > reveal * @as(u32, @intCast(w))) break;
+        const paint = if (s.threshold > 0 and samples[idx] >= s.threshold) s.over else colour;
         const x = x0 + col;
         switch (s.style) {
             .bars, .area => {
                 var y = top;
-                while (y < y0 + h) : (y += 1) setPx(rgb, x, y, colour);
+                while (y < y0 + h) : (y += 1) setPx(rgb, x, y, paint);
             },
             .line => {
-                setPx(rgb, x, top, colour);
+                setPx(rgb, x, top, paint);
                 // join to the previous column so a steep change is a line rather than two dots
                 if (prev) |p| {
                     var y = @min(p, top);
                     const end = @max(p, top);
-                    while (y <= end) : (y += 1) setPx(rgb, x, y, colour);
+                    while (y <= end) : (y += 1) setPx(rgb, x, y, paint);
                 }
             },
         }
@@ -466,6 +581,11 @@ fn drawSparkline(rgb: *geometry.Rgb, d: *const Document, e: *const Element) void
 
 pub const State = struct {
     doc: Document = .{},
+    /// when each element's arrival animation began. the renderer owns this, not the document: a
+    /// document is a declaration and says nothing about when it was said.
+    started_ns: [max_elements]u64 = [_]u64{0} ** max_elements,
+    /// when the document itself was installed, which is where the continuous animations count from
+    epoch_ns: u64 = 0,
 
     pub fn getParam(_: *const State, _: usize) u32 {
         return 0;
@@ -477,8 +597,41 @@ pub const State = struct {
         return self.doc.empty();
     }
 
+    /// take a document and work out what changed. an element whose value is new restarts its
+    /// arrival animation; one that merely kept its place does not, so a patch that moves a bar
+    /// does not make the text beside it scramble all over again.
+    pub fn install(self: *State, doc: Document, now_ns: u64) void {
+        var restart: [max_elements]bool = [_]bool{true} ** max_elements;
+        for (doc.elements[0..doc.count], 0..) |*e, i| {
+            if (e.id.len == 0) continue;
+            for (self.doc.elements[0..self.doc.count], 0..) |*old_e, j| {
+                if (!old_e.id.eql(e.id.slice())) continue;
+                const same = switch (e.body) {
+                    .text => |t| old_e.body == .text and std.mem.eql(u8, doc.textOf(t.span), self.doc.textOf(old_e.body.text.span)),
+                    .sparkline => |sp| old_e.body == .sparkline and std.mem.eql(u8, doc.dataOf(sp.span), self.doc.dataOf(old_e.body.sparkline.span)),
+                    else => std.meta.eql(e.body, old_e.body),
+                };
+                // it keeps its clock only if it is showing the same thing it was
+                if (same) {
+                    restart[i] = false;
+                    self.started_ns[i] = self.started_ns[j];
+                }
+                break;
+            }
+        }
+        self.doc = doc;
+        self.epoch_ns = now_ns;
+        for (0..max_elements) |i| if (restart[i]) {
+            self.started_ns[i] = now_ns;
+        };
+    }
+
+    fn elapsedMs(self: *const State, i: usize, now_ns: u64) u64 {
+        const from = if (arrival(self.doc.elements[i].anim.kind)) self.started_ns[i] else self.epoch_ns;
+        return (now_ns -| from) / std.time.ns_per_ms;
+    }
+
     pub fn render(self: *const State, now_ns: u64, rgb: *geometry.Rgb) void {
-        _ = now_ns;
         @memset(rgb, 0);
         if (self.doc.empty()) {
             // a dim word rather than a black panel: an empty canvas is a state, not a fault
@@ -486,22 +639,84 @@ pub const State = struct {
             font.blit(rgb, @divTrunc(geometry.width - w, 2), (geometry.height - font.glyph_h) / 2, hint, hint_colour);
             return;
         }
-        for (self.doc.elements[0..self.doc.count]) |*e| {
+        for (self.doc.elements[0..self.doc.count], 0..) |*e, i| {
+            const ms = self.elapsedMs(i, now_ns);
+            if (!visible(e, ms)) continue;
+            const colour = animatedColour(e, ms);
+            var reveal: u32 = 256;
+            if (e.anim.kind == .sweep) reveal = progress(e.anim, ms);
             switch (e.body) {
-                .text => drawText(rgb, e, self.doc.textOf(e.body.text.span), e.colour),
-                .rect => drawRect(rgb, e),
-                .line => drawLine(rgb, e),
-                .circle => drawCircle(rgb, e),
-                .pixel => setPx(rgb, e.box.x, e.box.y, e.colour),
-                .bar => drawBar(rgb, e),
-                .sparkline => drawSparkline(rgb, &self.doc, e),
+                .text => {
+                    var buf: [text_pool]u8 = undefined;
+                    const shown = self.animatedText(i, ms, &buf);
+                    const natural = textWidthOf(e.body.text.face, shown);
+                    const offset = animatedOffset(e, ms, natural, e.box.width(natural));
+                    drawText(rgb, e, shown, colour, offset);
+                },
+                .rect => drawRect(rgb, e, animatedOffset(e, ms, 0, 0), colour),
+                .line => drawLine(rgb, e, animatedOffset(e, ms, 0, 0), colour),
+                .circle => drawCircle(rgb, e, animatedOffset(e, ms, 0, 0), colour),
+                .pixel => {
+                    const o = animatedOffset(e, ms, 0, 0);
+                    setPx(rgb, @as(i32, e.box.x) + o[0], @as(i32, e.box.y) + o[1], colour);
+                },
+                .bar => drawBar(rgb, e, animatedOffset(e, ms, 0, 0), colour),
+                .sparkline => drawSparkline(rgb, &self.doc, e, animatedOffset(e, ms, 0, 0), colour, reveal),
             }
         }
     }
 
-    /// nothing here moves on its own yet: a static document is drawn when it changes and not again.
-    pub fn cadence(self: *const State) scene.Cadence {
-        _ = self;
+    /// the string as the animation would have it: a flipboard settling left to right, or a line
+    /// arriving a character at a time. anything else shows what it was given.
+    fn animatedText(self: *const State, i: usize, elapsed_ms: u64, buf: []u8) []const u8 {
+        const e = &self.doc.elements[i];
+        const text = self.doc.textOf(e.body.text.span);
+        if (text.len == 0 or text.len > buf.len) return text;
+        switch (e.anim.kind) {
+            .scramble => {
+                const p = progress(e.anim, elapsed_ms);
+                if (p >= 256) return text;
+                @memcpy(buf[0..text.len], text);
+                // each character lands in turn, and the ones still to land keep flipping
+                for (buf[0..text.len], 0..) |*c, n| {
+                    const lands_at: u32 = @intCast((n + 1) * 256 / text.len);
+                    if (p >= lands_at) continue;
+                    if (text[n] == ' ') continue; // a space is not a character to guess at
+                    c.* = scrambleGlyph(@as(u64, elapsed_ms / 60) *% 31 +% n);
+                }
+                return buf[0..text.len];
+            },
+            .typewriter => {
+                const p = progress(e.anim, elapsed_ms);
+                const shown = @min(text.len, (text.len * p) / 256);
+                @memcpy(buf[0..shown], text[0..shown]);
+                return buf[0..shown];
+            },
+            else => return text,
+        }
+    }
+
+    /// frames are wanted only while something is moving: a document with no animation is drawn
+    /// when it changes and not again, and one that only scrambles on update goes quiet when the
+    /// scramble has finished.
+    pub fn cadence(self: *const State, now_ns: u64) scene.Cadence {
+        for (self.doc.elements[0..self.doc.count], 0..) |*e, i| {
+            switch (e.anim.kind) {
+                .none => {},
+                .scramble, .typewriter, .sweep => {
+                    if (progress(e.anim, self.elapsedMs(i, now_ns)) < 256) return .{ .continuous = scene.frame_period_ns };
+                },
+                .scroll => {
+                    // only text that does not fit its box actually moves
+                    if (e.body == .text) {
+                        const t = self.doc.textOf(e.body.text.span);
+                        if (textWidthOf(e.body.text.face, t) > e.box.width(textWidthOf(e.body.text.face, t))) return .{ .continuous = scene.frame_period_ns };
+                        if (e.box.w > 0 and textWidthOf(e.body.text.face, t) > e.box.w) return .{ .continuous = scene.frame_period_ns };
+                    }
+                },
+                else => return .{ .continuous = scene.frame_period_ns },
+            }
+        }
         return .idle;
     }
 };
@@ -531,7 +746,7 @@ test "an empty canvas draws its hint rather than nothing, and asks for no redraw
     var rgb: geometry.Rgb = undefined;
     s.render(0, &rgb);
     try std.testing.expect(lit(&rgb) > 20);
-    try std.testing.expectEqual(scene.Cadence.idle, s.cadence());
+    try std.testing.expectEqual(scene.Cadence.idle, s.cadence(0));
     for (0..geometry.pixels) |i| {
         if (rgb[i * 3] == 0) continue;
         try std.testing.expectEqual(hint_colour[0], rgb[i * 3]); // dim, so it never reads as content
@@ -802,7 +1017,7 @@ test "a cleared document is empty again and says so on the panel" {
 
 /// id, box, colour, kind, then the widest variant (a sparkline's eleven bytes), padded so every
 /// record is the same size and the codec stays a loop rather than a state machine
-pub const element_wire = 9 + 8 + 3 + 1 + 11;
+pub const element_wire = 9 + 8 + 3 + Animation.wire_len + 1 + 11;
 pub const wire_max = 9 + max_elements * element_wire + text_pool + data_pool;
 
 /// one element of a patch: which element, and which of its fields to replace
@@ -901,8 +1116,13 @@ fn putElement(e: *const Element, out: []u8) void {
     @memcpy(out[1..9], &e.id.bytes);
     inline for (.{ e.box.x, e.box.y, e.box.w, e.box.h }, 0..) |v, i| std.mem.writeInt(i16, out[9 + i * 2 ..][0..2], v, .little);
     @memcpy(out[17..20], &e.colour);
-    out[20] = @intFromEnum(e.kind());
-    const v = out[21..];
+    out[20] = @intFromEnum(e.anim.kind);
+    std.mem.writeInt(u16, out[21..23], e.anim.ms, .little);
+    out[23] = e.anim.phase;
+    out[24] = e.anim.amount;
+    out[25] = @intFromBool(e.anim.axis_x);
+    out[26] = @intFromEnum(e.kind());
+    const v = out[27..];
     switch (e.body) {
         .text => |t| {
             putSpan(v, t.span);
@@ -944,8 +1164,15 @@ fn getElement(in: []const u8) error{BadPayload}!Element {
     e.box.w = std.mem.readInt(i16, in[13..15], .little);
     e.box.h = std.mem.readInt(i16, in[15..17], .little);
     @memcpy(&e.colour, in[17..20]);
-    const v = in[21..];
-    const kind = enumFromInt(Kind, in[20]) orelse return error.BadPayload;
+    e.anim = .{
+        .kind = enumFromInt(Motion, in[20]) orelse return error.BadPayload,
+        .ms = std.mem.readInt(u16, in[21..23], .little),
+        .phase = in[23],
+        .amount = in[24],
+        .axis_x = in[25] != 0,
+    };
+    const v = in[27..];
+    const kind = enumFromInt(Kind, in[26]) orelse return error.BadPayload;
     e.body = switch (kind) {
         .text => .{ .text = .{
             .span = getSpan(v),
@@ -1097,11 +1324,11 @@ test "a malformed document is refused rather than read" {
     bad_count[4] = max_elements + 1;
     try std.testing.expectError(error.BadPayload, decode(bad_count[0..n]));
     var bad_kind = buf;
-    bad_kind[9 + 20] = 99;
+    bad_kind[9 + 26] = 99;
     try std.testing.expectError(error.BadPayload, decode(bad_kind[0..n]));
     // a span reaching past its pool would read whatever follows it
     var bad_span = buf;
-    std.mem.writeInt(u16, bad_span[9 + 21 ..][2..4], 9000, .little);
+    std.mem.writeInt(u16, bad_span[9 + 27 ..][2..4], 9000, .little);
     try std.testing.expectError(error.BadPayload, decode(bad_span[0..n]));
     var small: [4]u8 = undefined;
     try std.testing.expectError(error.Overflow, encode(&d, &small));
@@ -1163,4 +1390,184 @@ test "a patch round-trips through its own wire form" {
     try std.testing.expectEqualStrings("lvl", back.items[1].id.slice());
     try std.testing.expectEqual(@as(u8, 42), back.items[1].value);
     try std.testing.expectError(error.BadPayload, getPatch(buf[0 .. n - 1]));
+}
+
+test "a hue animation walks the wheel and comes back, and a pulse never goes dark" {
+    var s = State{};
+    try s.doc.add(.{ .box = .{ .x = 0, .y = 0 }, .colour = .{ 255, 0, 0 }, .anim = .{ .kind = .hue, .ms = 1000 }, .body = .pixel });
+    var rgb: geometry.Rgb = undefined;
+    var seen: usize = 0;
+    var previous = [3]u8{ 255, 0, 0 };
+    var ms: u64 = 0;
+    while (ms < 1000) : (ms += 50) {
+        s.render(ms * std.time.ns_per_ms, &rgb);
+        const c = at(&rgb, 0, 0);
+        if (!std.meta.eql(c, previous)) seen += 1;
+        previous = c;
+        // the wheel is fully saturated, so one channel is always at full and one at nothing
+        try std.testing.expectEqual(@as(u8, 255), @max(c[0], @max(c[1], c[2])));
+    }
+    try std.testing.expect(seen > 10); // it really moves
+    s.render(0, &rgb);
+    try std.testing.expectEqual([3]u8{ 255, 0, 0 }, at(&rgb, 0, 0)); // and starts where it was told
+
+    var p = State{};
+    try p.doc.add(.{ .colour = .{ 200, 200, 200 }, .anim = .{ .kind = .pulse, .ms = 400 }, .body = .pixel });
+    var dimmest: u8 = 255;
+    var brightest: u8 = 0;
+    ms = 0;
+    while (ms < 400) : (ms += 10) {
+        p.render(ms * std.time.ns_per_ms, &rgb);
+        const v = at(&rgb, 0, 0)[0];
+        dimmest = @min(dimmest, v);
+        brightest = @max(brightest, v);
+    }
+    try std.testing.expect(dimmest > 40); // a pulse that vanishes reads as a fault
+    try std.testing.expect(brightest > dimmest + 40); // but it is clearly a pulse
+}
+
+test "a bounce travels and returns, along whichever axis it was given" {
+    var s = State{};
+    try s.doc.add(.{ .box = .{ .x = 10, .y = 8 }, .colour = white, .anim = .{ .kind = .bounce, .ms = 800, .amount = 3 }, .body = .pixel });
+    var rgb: geometry.Rgb = undefined;
+    var lowest: usize = 0;
+    var highest: usize = 15;
+    var ms: u64 = 0;
+    while (ms < 800) : (ms += 20) {
+        s.render(ms * std.time.ns_per_ms, &rgb);
+        for (0..geometry.height) |y| {
+            if (at(&rgb, 10, y)[0] == 0) continue;
+            lowest = @max(lowest, y);
+            highest = @min(highest, y);
+        }
+    }
+    try std.testing.expectEqual(@as(usize, 5), highest); // 8 - 3
+    try std.testing.expectEqual(@as(usize, 11), lowest); // 8 + 3
+
+    s.doc.elements[0].anim.axis_x = true;
+    var left: usize = 52;
+    var right: usize = 0;
+    ms = 0;
+    while (ms < 800) : (ms += 20) {
+        s.render(ms * std.time.ns_per_ms, &rgb);
+        for (0..geometry.width) |x| {
+            if (at(&rgb, x, 8)[0] == 0) continue;
+            left = @min(left, x);
+            right = @max(right, x);
+        }
+    }
+    try std.testing.expectEqual(@as(usize, 7), left);
+    try std.testing.expectEqual(@as(usize, 13), right);
+}
+
+test "a blink is lit for its duty and dark for the rest" {
+    var s = State{};
+    try s.doc.add(.{ .colour = white, .anim = .{ .kind = .blink, .ms = 1000, .amount = 25 }, .body = .pixel });
+    var rgb: geometry.Rgb = undefined;
+    var on: usize = 0;
+    var ms: u64 = 0;
+    while (ms < 1000) : (ms += 10) {
+        s.render(ms * std.time.ns_per_ms, &rgb);
+        if (at(&rgb, 0, 0)[0] != 0) on += 1;
+    }
+    try std.testing.expect(on >= 23 and on <= 27); // a quarter of the period, give or take a frame
+}
+
+test "a scramble settles left to right and ends on the word it was given" {
+    var s = State{};
+    const span = try s.doc.addText("HELLO");
+    try s.doc.add(.{ .id = Id.init("w"), .colour = white, .anim = .{ .kind = .scramble, .ms = 1000 }, .body = .{ .text = .{ .span = span } } });
+    var buf: [text_pool]u8 = undefined;
+
+    try std.testing.expectEqualStrings("HELLO", s.animatedText(0, 1000, &buf)); // finished
+    try std.testing.expectEqualStrings("HELLO", s.animatedText(0, 5000, &buf)); // and it stays
+    // a fifth of the way through, the first character has landed and the last has not
+    const early = s.animatedText(0, 250, &buf);
+    try std.testing.expectEqual(@as(u8, 'H'), early[0]);
+    try std.testing.expect(early[4] != 'O');
+    const late = s.animatedText(0, 850, &buf);
+    try std.testing.expectEqualStrings("HELL", late[0..4]);
+    // and the unsettled characters keep changing rather than sitting on one wrong letter
+    var changed = false;
+    var a: [text_pool]u8 = undefined;
+    const first = s.animatedText(0, 300, &a);
+    var b2: [text_pool]u8 = undefined;
+    const second = s.animatedText(0, 420, &b2);
+    for (first, second) |c1, c2| changed = changed or c1 != c2;
+    try std.testing.expect(changed);
+}
+
+test "a typewriter reveals a character at a time" {
+    var s = State{};
+    const span = try s.doc.addText("12345678");
+    try s.doc.add(.{ .colour = white, .anim = .{ .kind = .typewriter, .ms = 800 }, .body = .{ .text = .{ .span = span } } });
+    var buf: [text_pool]u8 = undefined;
+    try std.testing.expectEqualStrings("", s.animatedText(0, 0, &buf));
+    try std.testing.expectEqualStrings("1234", s.animatedText(0, 400, &buf));
+    try std.testing.expectEqualStrings("12345678", s.animatedText(0, 800, &buf));
+    try std.testing.expectEqualStrings("12345678", s.animatedText(0, 9000, &buf));
+}
+
+test "a sweep draws a sparkline left to right and then holds it" {
+    var s = State{};
+    const span = try s.doc.addData(&[_]u8{ 5, 5, 5, 5, 5, 5, 5, 5 });
+    try s.doc.add(.{ .box = .{ .x = 0, .y = 0, .w = 8, .h = 4 }, .colour = white, .anim = .{ .kind = .sweep, .ms = 800 }, .body = .{ .sparkline = .{ .span = span, .style = .bars } } });
+    var rgb: geometry.Rgb = undefined;
+    s.render(0, &rgb);
+    const none = lit(&rgb);
+    s.render(400 * std.time.ns_per_ms, &rgb);
+    const half = lit(&rgb);
+    s.render(900 * std.time.ns_per_ms, &rgb);
+    const all = lit(&rgb);
+    try std.testing.expect(none < half and half < all);
+    try std.testing.expectEqual(@as(usize, 8), all); // a flat line sits on the floor: one row, every column
+}
+
+test "scrolling moves only text that does not fit, and the cadence follows what is moving" {
+    var s = State{};
+    const long = try s.doc.addText("a string far wider than eight pixels");
+    try s.doc.add(.{ .box = .{ .x = 0, .y = 0, .w = 8, .h = 8 }, .colour = white, .anim = .{ .kind = .scroll, .ms = 33 }, .body = .{ .text = .{ .span = long } } });
+    var rgb: geometry.Rgb = undefined;
+    s.render(0, &rgb);
+    var a: geometry.Rgb = undefined;
+    @memcpy(&a, &rgb);
+    s.render(200 * std.time.ns_per_ms, &rgb);
+    try std.testing.expect(!std.mem.eql(u8, &a, &rgb)); // it moved
+    try std.testing.expect(s.cadence(0) == .continuous);
+
+    // a static document asks for nothing
+    var still = State{};
+    try still.doc.add(.{ .colour = white, .body = .pixel });
+    try std.testing.expectEqual(scene.Cadence.idle, still.cadence(0));
+
+    // an arrival goes quiet once it has arrived, which is the whole point of asking per element
+    var once = State{};
+    const word = try once.doc.addText("hi");
+    try once.doc.add(.{ .colour = white, .anim = .{ .kind = .typewriter, .ms = 500 }, .body = .{ .text = .{ .span = word } } });
+    try std.testing.expect(once.cadence(0) == .continuous);
+    try std.testing.expectEqual(scene.Cadence.idle, once.cadence(600 * std.time.ns_per_ms));
+}
+
+test "installing a document restarts only what changed" {
+    var built = Document{};
+    const a = try built.addText("20.4C");
+    const g = try built.addData(&[_]u8{ 1, 2 });
+    try built.add(.{ .id = Id.init("t"), .anim = .{ .kind = .scramble, .ms = 600 }, .body = .{ .text = .{ .span = a } } });
+    try built.add(.{ .id = Id.init("g"), .anim = .{ .kind = .sweep, .ms = 600 }, .body = .{ .sparkline = .{ .span = g } } });
+    const first = built;
+    var s = State{};
+    s.install(first, 1000 * std.time.ns_per_ms);
+    try std.testing.expectEqual(@as(u64, 1000 * std.time.ns_per_ms), s.started_ns[0]);
+
+    // the same document again: nothing has changed, so nothing starts over
+    s.install(first, 5000 * std.time.ns_per_ms);
+    try std.testing.expectEqual(@as(u64, 1000 * std.time.ns_per_ms), s.started_ns[0]);
+    try std.testing.expectEqual(@as(u64, 1000 * std.time.ns_per_ms), s.started_ns[1]);
+
+    // one value moves: that element scrambles again and the other is left alone
+    var moved = first;
+    moved.elements[0].body.text.span = try moved.addText("21.1C");
+    s.install(moved, 9000 * std.time.ns_per_ms);
+    try std.testing.expectEqual(@as(u64, 9000 * std.time.ns_per_ms), s.started_ns[0]);
+    try std.testing.expectEqual(@as(u64, 1000 * std.time.ns_per_ms), s.started_ns[1]);
 }

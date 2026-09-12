@@ -323,7 +323,8 @@ const Renderer = struct {
                 break :blk r;
             },
             .canvas => |d| blk: {
-                arb.canvas.doc = d;
+                // install rather than assign: the renderer owns when an arrival animation started
+                arb.canvas.install(d, now);
                 arb.dirty = true;
                 if (arb.base == .canvas) self.forceRedraw();
                 break :blk arbiter.Result{ .applied = arb.revision };
