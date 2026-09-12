@@ -266,6 +266,8 @@
   }
   const clearCanvas = nowMs => need().clearCanvas(nowMs || 0);
   const canvasEmpty = () => need().canvasEmpty() !== 0;
+  /* how many elements declare a motion; the device's phase for them is not published */
+  const canvasAnimated = () => need().canvasAnimatedCount();
 
   /* ---------- agreement: the shadow, checked against the device ----------
      /screen returns the frame the panel is actually showing. rather than displaying it instead of
@@ -302,7 +304,7 @@
   const api = {
     WIDTH, HEIGHT, PIXELS, RGB_BYTES, WHITE, black, pixelOffset,
     ready, loaded, buildLut, tzParse, TZ_UTC, Art, compose, sceneParams, renderIpLayout,
-    agreement, anchorClock, deviceNow, installCanvas, clearCanvas, canvasEmpty,
+    agreement, anchorClock, deviceNow, installCanvas, clearCanvas, canvasEmpty, canvasAnimated,
     get lastCanvasResult() { return lastCanvasResult; },
     get clockSkewMs() { return clockSkewMs; },
     DEFAULT_CLOCK_STYLE,

@@ -229,6 +229,44 @@ test('a document the device would refuse is reported, not silently drawn empty',
   assert.equal(W.lastCanvasResult.ok, true);
 });
 
+test('the console can tell an animated canvas from a still one', () => {
+  // the device starts every animation at install and publishes neither the document's age nor
+  // each element's, so an animated canvas can never be compared byte-for-byte with the panel.
+  // the console needs to know that to say so rather than report a match figure that reads as a
+  // rendering fault. counted from the parsed document, so a rejected `animate` does not count
+  W.reset('canvas', 'popsquares', 1);
+  W.compose(canvasStatus, withCanvas({ elements: [
+    { type: 'text', id: 'a', at: [1, 1], text: 'hi', colour: 'ffffff' },
+  ] }), WALL);
+  assert.equal(W.canvasAnimated(), 0, 'a still document has nothing out of phase');
+
+  W.compose(canvasStatus, withCanvas({ elements: [
+    { type: 'text', id: 'a', at: [1, 1], text: 'hi', colour: 'ffffff', animate: { kind: 'scramble', ms: 600 } },
+    { type: 'text', id: 'b', at: [1, 9], text: 'yo', colour: 'ffffff', animate: { kind: 'blink', ms: 400 } },
+    { type: 'rect', id: 'c', at: [30, 1], size: [4, 4], colour: 'ff0000' },
+  ] }), WALL);
+  assert.equal(W.canvasAnimated(), 2, 'two of the three declare a motion');
+
+  W.compose(canvasStatus, withCanvas(null), WALL);
+  assert.equal(W.canvasAnimated(), 0, 'an empty canvas animates nothing');
+});
+
+test('an animated element renders differently depending on when it was installed', () => {
+  // this is the gap itself, pinned: it is why the console reports the phase rather than a
+  // percentage. when /canvas starts publishing the ages, this test should start failing
+  const doc = { elements: [{ type: 'text', id: 't', at: [2, 4], text: 'HELLO', colour: '00ff88',
+                             animate: { kind: 'blink', ms: 600 } }] };
+  const at = (installMs, renderMs) => {
+    W.reset('canvas', 'popsquares', 1);
+    const local = withCanvas(doc);
+    W.compose(canvasStatus, local, installMs);
+    return W.compose(canvasStatus, local, renderMs).rgb.slice();
+  };
+  const T = 1_000_000;
+  assert.notEqual(bytesDiffering(at(T, T + 500), at(T + 400, T + 500)), 0,
+                  'installing 400ms apart should put a 600ms animation out of phase');
+});
+
 test('an animated element ticks on the arbiter\'s clock', () => {
   W.reset('canvas', 'popsquares', 1);
   const doc = { elements: [{ type: 'text', id: 's', at: [2, 4], text: 'HELLO', colour: 'ffffff',

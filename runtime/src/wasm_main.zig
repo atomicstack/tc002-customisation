@@ -298,6 +298,19 @@ export fn canvasEmpty() u32 {
     return @intFromBool(arb.canvas.empty());
 }
 
+/// how many elements declare a motion. the device starts every animation when it installs the
+/// document — `epoch_ns` for the continuous motions, each element's `started_ns` for the arrival
+/// ones — and GET /canvas does not publish either, so the console installs at a different instant
+/// and every animated element is permanently out of phase. it cannot be fixed from here; it can
+/// be said, which is better than showing a byte-match figure that reads as a rendering fault.
+export fn canvasAnimatedCount() u32 {
+    var n: u32 = 0;
+    for (arb.canvas.doc.elements[0..arb.canvas.doc.count]) |*e| {
+        if (e.anim.kind != .none) n += 1;
+    }
+    return n;
+}
+
 export fn canvasMaxElements() u32 {
     return canvas.max_elements;
 }

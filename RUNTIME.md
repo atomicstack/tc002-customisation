@@ -1247,6 +1247,16 @@ frames it recently painted and reports how many bytes agree. it never composes
 a fresh one for the comparison — `compose` advances the arbiter, so measuring
 that way ticks the clock it is measuring.
 
+**the canvas is the exception, and the console says so.** the device starts every animation
+when it installs the document — `epoch_ns` for the continuous motions, each element's
+`started_ns` for the arrival ones (`scramble`, `typewriter`, `sweep`) — and `GET /canvas`
+publishes neither age. the console installs whenever it fetched, so every animated element runs
+permanently out of phase, which is most of a demo reel. rather than report a byte-match figure
+that reads as a rendering fault, the caption names the cause: *"N animated elements, out of
+phase with the panel: /canvas does not publish when it was installed"*. a still canvas is
+compared normally. publishing the document's age and each element's age would close it, the same
+way `seed` closed it for the art scene.
+
 **measured on hardware (2026-09-12):** captured at the same instant, the
 shadow and the panel are **byte-for-byte identical** — 0 of 2496 bytes
 differing on the `block` clock face with shadowed digits, the 89-value shadow
