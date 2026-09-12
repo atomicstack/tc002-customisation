@@ -1215,6 +1215,19 @@ digit style and ip layout lists the console offers are read out of the wasm at
 load, so a new enum variant in `src/scene/` appears in the console with no
 javascript edit at all.
 
+the preview is a **shadow**, not a snapshot: it runs the scene code at the
+scene's own rate — 60 hz for art, the next whole second for the clock, 33 ms
+for a scrolling layout — and reconciles against the device once a second. what
+it takes from the device: the scene state from `/status`, the art
+[seed](#the-status-document) so the animation is the panel's and not a
+lookalike, and the wall clock from the device's own `Date` header, which
+`serve.py` forwards as `X-Device-Date` (its own `Date` is this machine's
+clock). `/screen` is still polled twice a second, but to *check* the shadow
+rather than to replace it: the console compares the two frames and reports how
+many bytes agree. on a scene that redraws faster than the poll the two frames
+are simply from different instants, so the figure is only offered as a verdict
+when the scene is holding still.
+
 this replaced `panel-v2/sim.js`, a 600-line hand-written port of the same
 logic. the two agree byte-for-byte on every clock font, the ip `lines`
 layout, notifications (centred and scrolling) and the whole brightness curve —

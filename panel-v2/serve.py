@@ -106,13 +106,19 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             req.add_header("Content-Type", self.headers.get("Content-Type") or "application/json")
         try:
             with urllib.request.urlopen(req, timeout=DEVICE_TIMEOUT_S) as r:
-                payload, status, ctype = r.read(), r.status, r.headers.get("Content-Type") or "application/json"
+                payload, status, ctype, device_date = r.read(), r.status, r.headers.get("Content-Type") or "application/json", r.headers.get("Date")
         except urllib.error.HTTPError as e:
-            payload, status, ctype = e.read(), e.code, e.headers.get("Content-Type") or "application/json"
+            payload, status, ctype, device_date = e.read(), e.code, e.headers.get("Content-Type") or "application/json", e.headers.get("Date")
         except Exception as e:
-            payload, status, ctype = json.dumps({"error": "proxy", "message": f"cannot reach {host}: {e}"}).encode(), 502, "application/json"
+            payload, status, ctype, device_date = json.dumps({"error": "proxy", "message": f"cannot reach {host}: {e}"}).encode(), 502, "application/json", None
         self.send_response(status)
         self.send_header("Content-Type", ctype)
+        # the device's own Date, kept under a name of its own: send_response writes a Date header
+        # from this machine's clock, and the console wants the panel's, to put the previewed clock
+        # on the device's second rather than the laptop's
+        if device_date:
+            self.send_header("X-Device-Date", device_date)
+            self.send_header("Access-Control-Expose-Headers", "X-Device-Date")
         self.send_header("Content-Length", str(len(payload)))
         self.send_header("Cache-Control", "no-store")
         self.end_headers()

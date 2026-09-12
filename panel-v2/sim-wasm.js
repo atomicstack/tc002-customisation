@@ -96,6 +96,18 @@
   /* what we last pushed in, so each poll issues only the commands that actually changed */
   const applied = { base: null, generator: null, seed: null, tz: null, clock: null, ipMode: null, ip: null, notify: null };
 
+  /* the panel's clock is the device's, not this browser's. every response carries a Date header,
+     which is whole seconds — the same resolution the clock scene redraws at — so anchoring to it
+     is enough to put the previewed time on the panel's second rather than the laptop's. */
+  let clockSkewMs = 0;
+  function anchorClock(dateHeader, receivedAtMs) {
+    const t = Date.parse(dateHeader || '');
+    if (!Number.isFinite(t)) return false;
+    clockSkewMs = t - (receivedAtMs == null ? Date.now() : receivedAtMs);
+    return true;
+  }
+  const deviceNow = (nowMs) => (nowMs == null ? Date.now() : nowMs) + clockSkewMs;
+
   const hexInt = (s, fallback) => {
     const m = /^#?([0-9a-fA-F]{6})$/.exec(String(s == null ? '' : s));
     return m ? parseInt(m[1], 16) : fallback;
@@ -121,7 +133,10 @@
 
     const gen = indexOf(GENERATORS, s.generator, 0);
     if (gen !== applied.generator) { e.setGenerator(gen, nowMs); applied.generator = gen; }
-    const seed = local && local.art ? local.art.seed : null;
+    // the device publishes its art seed, so the preview runs the panel's animation rather than a
+    // lookalike. a runtime too old to report one falls back to the page's own seed
+    const seed = typeof s.seed === 'number' ? s.seed >>> 0
+               : (local && local.art ? local.art.seed : null);
     if (seed !== null && seed !== applied.seed) { e.reseed(seed, nowMs); applied.seed = seed; }
 
     const c = s.clock || null;
@@ -181,7 +196,12 @@
       const c = s.clock;
       return c ? `clock · ${c.font || 'classic'} · ${c.colour_mode || 'solid'}` : 'clock';
     }
-    if (s.base === 'art') return `art: ${s.generator}, same algorithm, local seed`;
+    if (s.base === 'art') {
+      // the seed used to be the page's own, so the preview could only claim the algorithm
+      return typeof s.seed === 'number'
+        ? `art: ${s.generator}, seed ${s.seed >>> 0} from the device`
+        : `art: ${s.generator}, same algorithm, local seed`;
+    }
     return s.base ? String(s.base) : 'unknown base';
   }
 
@@ -197,7 +217,9 @@
       return { rgb, cadenceMs: null, label: 'frame (contents unknown: not sent from this page)' };
     }
     applyStatus(status, l, nowMs);
-    const cadence = e.frame(nowMs, nowMs);
+    // two clocks: the browser's elapsed time advances the animation, the device's decides what
+    // the clock scene reads. passing one for both made the panel's time the laptop's time
+    const cadence = e.frame(nowMs, deviceNow(nowMs));
     return { rgb: frameBytes().slice(), cadenceMs: cadence < 0 ? null : cadence, label: label(status, l) };
   }
 
@@ -216,6 +238,27 @@
     return { rgb: frameBytes().slice(), cadenceMs: cadence < 0 ? null : cadence };
   }
 
+  /* ---------- agreement: the shadow, checked against the device ----------
+     /screen returns the frame the panel is actually showing. rather than displaying it instead of
+     the simulation, compare the two: a shadow you can watch agreeing is worth more than a picture
+     you have to trust, and the figure says at a glance whether the preview can be believed. */
+  function agreement(deviceRgb, simRgb) {
+    if (!deviceRgb || !simRgb || deviceRgb.length !== simRgb.length) return null;
+    let same = 0, deviceLit = 0, simLit = 0;
+    for (let i = 0; i < deviceRgb.length; i++) {
+      if (deviceRgb[i] === simRgb[i]) same++;
+      if (deviceRgb[i]) deviceLit++;
+      if (simRgb[i]) simLit++;
+    }
+    return {
+      exact: same === deviceRgb.length,
+      fraction: same / deviceRgb.length,
+      bytesDiffering: deviceRgb.length - same,
+      deviceLit,
+      simLit,
+    };
+  }
+
   /* ---------- scene parameters, straight from the arbiter's own tables ---------- */
   function sceneParams() {
     const e = need();
@@ -230,6 +273,8 @@
   const api = {
     WIDTH, HEIGHT, PIXELS, RGB_BYTES, WHITE, black, pixelOffset,
     ready, loaded, buildLut, tzParse, TZ_UTC, Art, compose, sceneParams, renderIpLayout,
+    agreement, anchorClock, deviceNow,
+    get clockSkewMs() { return clockSkewMs; },
     DEFAULT_CLOCK_STYLE,
     /* enum catalogues: live values read out of the wasm at load, so they cannot drift */
     get BASES() { return BASES; },

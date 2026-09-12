@@ -133,6 +133,60 @@ test('cadence follows the scene, not a fixed timer', () => {
   assert.ok(art.cadenceMs > 10 && art.cadenceMs < 20, `art runs at ~60 hz, got ${art.cadenceMs}`);
 });
 
+/* ---------- the shadow: the device's seed, the device's clock, and a check ---------- */
+
+test('the art seed comes from /status, so the preview runs the panel\'s animation', () => {
+  const artStatus = seed => ({ base: 'art', overlay: 'none', generator: 'popsquares', brightness: 100, seed });
+  W.reset('art', 'popsquares', 1);
+  const a = W.compose(artStatus(4242), localWith(W), WALL);
+  W.reset('art', 'popsquares', 999);              // a different starting seed
+  const b = W.compose(artStatus(4242), localWith(W), WALL);
+  assert.equal(bytesDiffering(a.rgb, b.rgb), 0, 'the same published seed must give the same frame');
+
+  W.reset('art', 'popsquares', 1);
+  const other = W.compose(artStatus(7), localWith(W), WALL);
+  assert.notEqual(bytesDiffering(a.rgb, other.rgb), 0, 'a different seed must give a different frame');
+  assert.match(a.label, /seed 4242 from the device/);
+
+  // a runtime too old to publish one still previews, on the page's own seed
+  const legacy = W.compose({ base: 'art', overlay: 'none', generator: 'popsquares', brightness: 100 },
+                           localWith(W, { art: new W.Art('popsquares', 5) }), WALL);
+  assert.match(legacy.label, /local seed/);
+});
+
+test('the wall clock is anchored to the device, not to this machine', () => {
+  const header = 'Fri, 11 Sep 2026 23:00:00 GMT';
+  assert.equal(W.anchorClock(header, Date.parse('2026-09-11T23:00:07Z')), true);
+  assert.equal(W.clockSkewMs, -7000, 'seven seconds behind the browser');
+  assert.equal(W.deviceNow(1000), 1000 + W.clockSkewMs);
+
+  // a clock seven seconds off must draw a different second
+  const withSkew = W.compose(clockStatus(), localWith(W), WALL);
+  assert.equal(W.anchorClock('not a date'), false, 'a header that will not parse is ignored');
+  W.anchorClock(new Date(WALL).toUTCString(), WALL);   // back to no skew
+  const noSkew = W.compose(clockStatus(), localWith(W), WALL);
+  assert.notEqual(bytesDiffering(withSkew.rgb, noSkew.rgb), 0, 'the skew must reach the clock face');
+});
+
+test('agreement measures the shadow against the panel', () => {
+  const a = new Uint8Array(W.RGB_BYTES);
+  const b = new Uint8Array(W.RGB_BYTES);
+  const same = W.agreement(a, b);
+  assert.equal(same.exact, true);
+  assert.equal(same.fraction, 1);
+  assert.equal(same.bytesDiffering, 0);
+
+  b[0] = 1; b[9] = 200;
+  const off = W.agreement(a, b);
+  assert.equal(off.exact, false);
+  assert.equal(off.bytesDiffering, 2);
+  assert.ok(off.fraction > 0.999 && off.fraction < 1);
+  assert.equal(off.simLit, 2, 'the second buffer is the simulation');
+
+  assert.equal(W.agreement(null, b), null);
+  assert.equal(W.agreement(a, new Uint8Array(4)), null, 'a length mismatch is not a comparison');
+});
+
 /* ---------- parity with the hand-written port, where it was still faithful ---------- */
 
 test('every clock font sim.js implements is pixel-identical', () => {

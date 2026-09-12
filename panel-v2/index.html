@@ -448,6 +448,9 @@ async function call(method, path, body, contentType) {
     opts.headers['Content-Type'] = contentType || 'application/json';
   }
   const r = await fetch(api(path), opts);
+  // the proxy forwards the device's own Date under a name of its own; anchoring the preview's
+  // wall clock to it puts the simulated clock on the panel's second, not this machine's
+  S.anchorClock(r.headers.get('X-Device-Date'));
   const txt = await r.text();
   let doc = null;
   try { doc = txt ? JSON.parse(txt) : null; } catch { doc = { raw: txt }; }
@@ -602,10 +605,12 @@ async function refreshStatus(quiet) {
     if (!quiet) toast(e.message, true);
   }
 }
+const STATUS_POLL_MS = 1000;   // the shadow reconciles once a second
+const SCREEN_POLL_MS = 500;    // and is checked against the panel twice
 function startPolling() {
   stopPolling();
-  pollTimer = setInterval(() => refreshStatus(true), 2000);
-  screenTimer = setInterval(pollScreen, 500);
+  pollTimer = setInterval(() => refreshStatus(true), STATUS_POLL_MS);
+  screenTimer = setInterval(pollScreen, SCREEN_POLL_MS);
 }
 function stopPolling() {
   clearInterval(pollTimer); pollTimer = null;
@@ -657,25 +662,34 @@ function draw() {
       paint(S.black(), 100);
       $('cap').textContent = 'simulated from /status · not connected';
       nextDrawAt = nowMs + 500;
-    } else if (local.live && !local.pending) {
-      const live = local.live;
-      if (live.power === false) paint(S.black(), 100);
-      else paint(live.rgb, STATUS.brightness);
-      const stale = screenFailStreak >= 3 ? ' · stale' : '';
-      $('cap').textContent = `live frame from /screen · epoch ${live.epoch} · revision ${live.revision} · power ${live.power ? 'on' : 'off'}${stale}`;
-      nextDrawAt = nowMs + 100;
     } else {
-      const showingArt = STATUS.base === 'art' && STATUS.overlay === 'none' && !local.pending;
-      if (showingArt && local.art) local.art.step((nowMs - lastStepMs) / 1000);
+      // the preview shadows the device: it runs the runtime's own scene code at the scene's own
+      // rate, reconciled against /status each second, rather than showing /screen's 2 fps. the
+      // live frame is still fetched, but to check the shadow rather than to replace it
       lastStepMs = nowMs;
       const c = S.compose(STATUS, local, nowMs);
       const powerOff = STATUS.power === false;
       paint(powerOff ? S.black() : c.rgb, powerOff ? 100 : (local.pending ? 100 : STATUS.brightness));
-      $('cap').textContent = `simulated from /status · epoch ${STATUS.epoch} · revision ${STATUS.revision} · ${c.label}${powerOff ? ' · power off' : ''}`;
+      $('cap').textContent = `shadowing the device · epoch ${STATUS.epoch} · revision ${STATUS.revision} · ${c.label}`
+        + `${powerOff ? ' · power off' : ''}${shadowNote(c)}`;
       nextDrawAt = nowMs + (c.cadenceMs == null ? 250 : c.cadenceMs);
     }
   }
   requestAnimationFrame(draw);
+}
+
+// how well the shadow agrees with the panel. /screen is up to 500 ms old, so on a scene that
+// redraws faster than that the two frames are simply from different instants and a difference
+// says nothing; the figure is only a verdict when the scene is holding still.
+function shadowNote(c) {
+  if (!local.live || local.pending) return '';
+  const a = S.agreement(local.live.rgb, c.rgb);
+  if (!a) return '';
+  const stale = screenFailStreak >= 3 ? ', stale' : '';
+  const settled = c.cadenceMs == null || c.cadenceMs >= 500;
+  if (!settled) return ` · animating, ${(a.fraction * 100).toFixed(1)}% (frames ~${SCREEN_POLL_MS}ms apart${stale})`;
+  if (a.exact) return ` · matching the panel exactly${stale}`;
+  return ` · ${(a.fraction * 100).toFixed(1)}% of bytes match the panel (${a.bytesDiffering} differ${stale})`;
 }
 
 /* ---------- controls plumbing (as in the stock panel) ---------- */
