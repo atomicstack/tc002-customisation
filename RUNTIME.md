@@ -381,6 +381,9 @@ so something can be animated in from off-panel. `tile: n, of: m` is the column s
 | `pixel` | | the cheap escape hatch |
 | `bar` | `value` 0-100, `background`, `vertical` | rounds so 1% of a wide bar still lights a pixel and 99% leaves one dark; vertical fills from the bottom |
 | `sparkline` | `data` or `data_hex`, `style` (`line`/`bars`/`area`), `min`, `max`, `threshold`, `over` | `min` equal to `max` scales to whatever the samples span; a flat line sits on the floor; samples at or above `threshold` draw in `over` |
+| `icon` | `icon` | one of the built-in 8x8 glyphs by name, in the element's colour; `GET /icons` lists them |
+| `sprite` | `sprite` | an uploaded picture by id, drawn in its own colours; black is transparent |
+| `tile` | `icon` or `sprite`, `label`, `value_text`, `accent` | the composite: a glyph, a label and a reading, laid out by the device |
 
 every element takes `id` (1-8 characters; without one it is drawn but cannot be patched), `colour`
 as `rrggbb`, and its placement. elements draw in the order given, painter-style. **a field that does
@@ -419,6 +422,34 @@ on a rectangle) is refused rather than ignored.
 with no animation is drawn when it changes and not again, and one that only scrambles on update goes
 quiet as soon as it has settled. measured on the device: 180 frames in three seconds with a hue and
 a bounce running, and **0 in three seconds** once a scramble had finished.
+
+**icons and sprites.** the set is 61 monochrome 8x8 glyphs — weather, battery and signal, arrows,
+media, marks, and the objects a room has — authored as text art the way the fonts are, because a
+mistake in a picture is only visible if you can see the picture. they take the element's colour, so
+one fits whatever the document is already doing. `GET /icons` returns the names.
+
+anything the set has not got is a **sprite**, which an integration uploads:
+
+```
+PUT    /sprites/<id>   admin     8x8 (192 bytes) or 16x16 (768) of rgb888, application/octet-stream
+GET    /sprites        control   what is held: ids, sizes and how many slots there are
+DELETE /sprites/<id>   control
+```
+
+the size is inferred from how many bytes arrived, and octets rather than base64 because
+`POST /frame` already proved that path. eight slots, volatile, replayed to the renderer when it
+restarts — pictures first, so the document finds them. black is transparent, which is what lets a
+sprite sit over something else. a sprite an element names but nothing has uploaded simply does not
+draw; deleting one out from under a tile leaves the tile's text and drops its glyph.
+
+real emoji are not shipped. at 8x8 the art has to be drawn for the size rather than shrunk, and the
+upload path is how an integration puts its own there.
+
+**the tile** is the composite an integration reaches for first, and the one place the device makes a
+layout decision: given at least twenty pixels of width it puts the glyph on the left with the label
+over the value beside it; narrower than that, the label is **dropped** rather than squeezed into two
+characters, and the value goes under the glyph. a patch's `text` replaces a tile's `value_text`,
+because the reading is the part that changes; the label is layout and waits for a `PUT`.
 
 **limits**, reported by `GET /canvas` so a client need not hard-code them: 24 elements, 256 bytes of
 text, 1,024 bytes of sample data, 52 samples per sparkline (one per panel column). a document is
@@ -936,6 +967,10 @@ api is for programs, not pages. `allowed_origins` can only be set by editing
 | `GET` | `/config` | control | | the [settings document](#settings) |
 | `PATCH` | `/config` | admin | any subset of the settings fields plus `expected_revision`? | the settings document after the patch |
 | `POST` | `/config/save` | admin | `{"revision":u32}` or an empty body, `application/json` either way | `{"status":"saved","saved_revision":n}` |
+| `GET` | `/icons` | control | | `{"size":8,"names":[…]}`: the built-in [icon](#the-canvas) names |
+| `GET` | `/sprites` | control | | `{"slots":8,"sprites":[{"id","width","height"}…]}` |
+| `PUT` | `/sprites/{id}` | admin | `application/octet-stream`, 192 or 768 bytes of rgb888 | the sprite list |
+| `DELETE` | `/sprites/{id}` | control | | the sprite list |
 | `GET` | `/canvas` | control | | the [document](#the-canvas) as held, plus `limits` |
 | `PUT` | `/canvas` | admin | `{"elements":[…]}` | the document as stored |
 | `PATCH` | `/canvas` | control | `{"values":[{"id":"…","text"/"data"/"data_hex"/"value"/"colour"}…]}` | the document as stored |

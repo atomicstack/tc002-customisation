@@ -22,6 +22,7 @@ const actions = @import("input/actions.zig");
 const clock = @import("scene/clock.zig");
 const solar = @import("sys/solar.zig");
 const canvas = @import("scene/canvas.zig");
+const icons = @import("scene/icons.zig");
 const night = @import("supervisor/night.zig");
 
 const linux = std.os.linux;
@@ -51,7 +52,7 @@ const mqtt_frame_envelope = 8 + 4 + 2 + geometry.rgb_bytes;
 const Tag = enum(u64) { timer = 1, supervisor = 2, listener = 3, mqtt = 4, conn_base = 16 };
 
 const ConnState = enum { free, reading, relaying, writing };
-const Awaiting = enum { none, renderer_result, status, config, save_result, screen, logs, canvas };
+const Awaiting = enum { none, renderer_result, status, config, save_result, screen, logs, canvas, sprites };
 
 const Conn = struct {
     fd: sys.Fd = -1,
@@ -411,6 +412,13 @@ const Netd = struct {
             },
             .config_get => self.ask(c, .config_get, .config, now),
             // the supervisor keeps the document, so every canvas route is a round trip to it
+            .icons => {
+                self.respond(c, 200, "application/json", api.icons_body);
+                self.flushConn(c, now);
+            },
+            .sprite_list => self.ask(c, .sprite_list_get, .sprites, now),
+            .sprite_put => |sp| self.ask(c, .{ .sprite = sp }, .sprites, now),
+            .sprite_delete => |id| self.ask(c, .{ .sprite_delete = id }, .sprites, now),
             .canvas_get => self.ask(c, .canvas_get, .canvas, now),
             .canvas_put => |d| self.ask(c, .{ .canvas = d }, .canvas, now),
             .canvas_patch => |cp| self.ask(c, .{ .canvas_patch = cp }, .canvas, now),
@@ -660,6 +668,21 @@ const Netd = struct {
         self.flushConn(c, now);
     }
 
+    fn onSpriteList(self: *Netd, request_id: u64, l: *const messages.SpriteList, now: u64) void {
+        const c = self.findConn(true, request_id) orelse return;
+        var o = Out{ .buf = &json_buf };
+        o.fmt("{{\"slots\":{d},\"sprites\":[", .{canvas.sprite_max});
+        for (l.items[0..l.count], 0..) |it, i| {
+            if (i > 0) o.add(",");
+            o.add("{\"id\":");
+            o.str(it.id.slice());
+            o.fmt(",\"width\":{d},\"height\":{d}}}", .{ it.w, it.h });
+        }
+        o.add("]}");
+        self.respond(c, 200, "application/json", o.slice());
+        self.flushConn(c, now);
+    }
+
     fn onCanvasError(self: *Netd, request_id: u64, e: messages.CanvasError, now: u64) void {
         const c = self.findConn(true, request_id) orelse return;
         switch (e.reason) {
@@ -712,6 +735,7 @@ const Netd = struct {
                 .save_result => |r| self.onSaveResult(p.request_id, r, now),
                 .canvas => |*d| self.onCanvas(p.request_id, d, now),
                 .canvas_error => |e| self.onCanvasError(p.request_id, e, now),
+                .sprite_list => |*l| self.onSpriteList(p.request_id, l, now),
                 .screen => |*sc| self.onScreen(p.request_id, sc, now),
                 .log_lines => |*l| self.onLogs(p.request_id, l, now),
                 .input => |i| self.onInput(i),
@@ -783,6 +807,22 @@ const Netd = struct {
                 .circle => |cc| o.fmt(",\"r\":{d},\"filled\":{}", .{ cc.r, cc.filled }),
                 .pixel => {},
                 .bar => |b| o.fmt(",\"value\":{d},\"background\":\"{x:0>2}{x:0>2}{x:0>2}\",\"vertical\":{}", .{ b.value, b.background[0], b.background[1], b.background[2], b.vertical }),
+                .icon => |ic| o.fmt(",\"icon\":\"{s}\"", .{icons.nameOf(ic.index)}),
+                .sprite => |sp| {
+                    o.add(",\"sprite\":");
+                    o.str(sp.id.slice());
+                },
+                .tile => |t| {
+                    if (t.sprite_id.len > 0) {
+                        o.add(",\"sprite\":");
+                        o.str(t.sprite_id.slice());
+                    } else o.fmt(",\"icon\":\"{s}\"", .{icons.nameOf(t.icon)});
+                    o.add(",\"label\":");
+                    o.str(d.textOf(t.label));
+                    o.add(",\"value_text\":");
+                    o.str(d.textOf(t.value));
+                    o.fmt(",\"accent\":\"{x:0>2}{x:0>2}{x:0>2}\"", .{ t.accent[0], t.accent[1], t.accent[2] });
+                },
                 .sparkline => |sp| {
                     o.add(",\"data\":[");
                     for (d.dataOf(sp.span), 0..) |v, j| {

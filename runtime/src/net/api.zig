@@ -12,6 +12,7 @@ const clock = @import("../scene/clock.zig");
 const transition = @import("../panel/transition.zig");
 const ip = @import("../scene/ip.zig");
 const canvas = @import("../scene/canvas.zig");
+const icons = @import("../scene/icons.zig");
 const param = @import("../scene/param.zig");
 const cube = @import("../scene/cube.zig");
 const popsquares = @import("../scene/popsquares.zig");
@@ -92,6 +93,10 @@ pub const Op = union(enum) {
     canvas_put: canvas.Document,
     canvas_patch: canvas.Patch,
     canvas_clear,
+    icons,
+    sprite_list,
+    sprite_put: canvas.Sprite,
+    sprite_delete: canvas.Id,
 };
 
 /// a location pinned by hand, in hundredths of a degree
@@ -233,6 +238,13 @@ const ElementBody = struct {
     max: ?u8 = null,
     threshold: ?u8 = null,
     over: ?[]const u8 = null,
+    icon: ?[]const u8 = null,
+    sprite: ?[]const u8 = null,
+    label: ?[]const u8 = null,
+    /// a tile's reading. it is not `value` because a bar's `value` is a number and the strict
+    /// parser gives a field one type.
+    value_text: ?[]const u8 = null,
+    accent: ?[]const u8 = null,
     animate: ?AnimateBody = null,
 };
 const AnimateBody = struct { kind: []const u8, ms: ?u16 = null, phase: ?u8 = null, amount: ?u8 = null, axis: ?[]const u8 = null };
@@ -312,6 +324,9 @@ fn allowedField(kind: canvas.Kind, comptime name: []const u8) bool {
         .bar => eq(name, "value") or eq(name, "background") or eq(name, "vertical"),
         .sparkline => eq(name, "data") or eq(name, "data_hex") or eq(name, "style") or
             eq(name, "min") or eq(name, "max") or eq(name, "threshold") or eq(name, "over"),
+        .icon => eq(name, "icon"),
+        .sprite => eq(name, "sprite"),
+        .tile => eq(name, "icon") or eq(name, "sprite") or eq(name, "label") or eq(name, "value_text") or eq(name, "accent"),
     };
 }
 
@@ -433,6 +448,29 @@ fn parseCanvas(body: []const ElementBody, doc: *canvas.Document) CanvasRoute {
                 .background = if (b.background) |c| (parseColour(c) orelse return .{ .reject = canvasBad("invalid_colour", "background must be rrggbb hex") }) else .{ 0, 0, 0 },
                 .vertical = b.vertical orelse false,
             } },
+            .icon => {
+                const name = b.icon orelse return .{ .reject = canvasBad("missing_icon", "an icon element needs icon") };
+                e.body = .{ .icon = .{ .index = icons.indexOf(name) orelse return .{ .reject = canvasBad("unknown_icon", "no icon by that name; GET /icons lists them") } } };
+            },
+            .sprite => {
+                const id = b.sprite orelse return .{ .reject = canvasBad("missing_sprite", "a sprite element needs sprite") };
+                if (id.len == 0 or id.len > canvas.id_max) return .{ .reject = canvasBad("invalid_sprite_id", "a sprite id is 1 to 8 characters") };
+                e.body = .{ .sprite = .{ .id = canvas.Id.init(id) } };
+            },
+            .tile => {
+                var t: @FieldType(canvas.Body, "tile") = .{};
+                if (b.icon) |name| t.icon = icons.indexOf(name) orelse return .{ .reject = canvasBad("unknown_icon", "no icon by that name; GET /icons lists them") };
+                if (b.sprite) |id| {
+                    if (id.len == 0 or id.len > canvas.id_max) return .{ .reject = canvasBad("invalid_sprite_id", "a sprite id is 1 to 8 characters") };
+                    t.sprite_id = canvas.Id.init(id);
+                }
+                if (b.icon == null and b.sprite == null) return .{ .reject = canvasBad("missing_icon", "a tile needs an icon or a sprite") };
+                if (b.label) |l| t.label = doc.addText(l) catch return .{ .reject = canvasBad("document_full", "the document's text does not fit") };
+                const value = b.value_text orelse return .{ .reject = canvasBad("missing_value", "a tile needs value_text") };
+                t.value = doc.addText(value) catch return .{ .reject = canvasBad("document_full", "the document's text does not fit") };
+                if (b.accent) |cc| t.accent = parseColour(cc) orelse return .{ .reject = canvasBad("invalid_colour", "accent must be rrggbb hex") };
+                e.body = .{ .tile = t };
+            },
             .sparkline => {
                 var samples: [canvas.samples_max]u8 = undefined;
                 const got = parseSamples(b, &samples) orelse return .{ .reject = canvasBad("invalid_data", "data is up to 52 samples of 0..255, or data_hex of twice as many hex digits") };
@@ -545,6 +583,8 @@ const endpoints = [_]Endpoint{
     .{ .method = .POST, .path = "/api/v1/config/save", .authority = .admin },
     .{ .method = .POST, .path = "/api/v1/notify", .authority = .control },
     .{ .method = .POST, .path = "/api/v1/frame", .authority = .control },
+    .{ .method = .GET, .path = "/api/v1/icons", .authority = .control },
+    .{ .method = .GET, .path = "/api/v1/sprites", .authority = .control },
     .{ .method = .GET, .path = "/api/v1/canvas", .authority = .control },
     .{ .method = .PUT, .path = "/api/v1/canvas", .authority = .admin },
     .{ .method = .PATCH, .path = "/api/v1/canvas", .authority = .control },
@@ -575,6 +615,15 @@ pub fn route(req: http.Request, body: []const u8, creds: *const Credentials, ori
     // path and method
     var path_known = false;
     var matched: ?Endpoint = null;
+    const sprites_prefix = "/api/v1/sprites/";
+    if (std.mem.startsWith(u8, req.path, sprites_prefix)) {
+        path_known = true;
+        const rest = req.path[sprites_prefix.len..];
+        if (std.mem.indexOfScalar(u8, rest, '/') == null and rest.len > 0) {
+            if (req.method == .PUT) matched = .{ .method = .PUT, .path = "/api/v1/sprites/{id}", .authority = .admin };
+            if (req.method == .DELETE) matched = .{ .method = .DELETE, .path = "/api/v1/sprites/{id}", .authority = .control };
+        }
+    }
     const streams_prefix = "/api/v1/streams/";
     if (std.mem.startsWith(u8, req.path, streams_prefix)) {
         path_known = true;
@@ -598,6 +647,17 @@ pub fn route(req: http.Request, body: []const u8, creds: *const Credentials, ori
     if (std.mem.eql(u8, ep.path, "/api/v1/status")) return .{ .op = .status };
     if (std.mem.eql(u8, ep.path, "/api/v1/scenes")) return .{ .op = .scenes };
     if (std.mem.eql(u8, ep.path, "/api/v1/config") and req.method == .GET) return .{ .op = .config_get };
+    if (std.mem.eql(u8, ep.path, "/api/v1/icons")) return .{ .op = .icons };
+    if (std.mem.eql(u8, ep.path, "/api/v1/sprites")) return .{ .op = .sprite_list };
+    if (std.mem.eql(u8, ep.path, "/api/v1/sprites/{id}")) {
+        const id = req.path["/api/v1/sprites/".len..];
+        if (id.len > canvas.id_max) return bad("invalid_sprite_id", "a sprite id is 1 to 8 characters");
+        for (id) |ch| if (!std.ascii.isAlphanumeric(ch) and ch != '-' and ch != '_') {
+            return bad("invalid_sprite_id", "a sprite id is letters, digits, dash and underscore");
+        };
+        if (req.method == .DELETE) return .{ .op = .{ .sprite_delete = canvas.Id.init(id) } };
+        return parseSprite(id, req.content_type, body);
+    }
     if (std.mem.eql(u8, ep.path, "/api/v1/canvas") and req.method == .GET) return .{ .op = .canvas_get };
     if (std.mem.eql(u8, ep.path, "/api/v1/canvas") and req.method == .DELETE) return .{ .op = .canvas_clear };
     if (std.mem.eql(u8, ep.path, "/api/v1/mqtt") and req.method == .GET) return .{ .op = .mqtt_get };
@@ -641,6 +701,36 @@ pub fn enumByName(comptime E: type, text: []const u8) ?E {
     inline for (@typeInfo(E).@"enum".fields) |f| if (std.mem.eql(u8, text, f.name)) return @enumFromInt(f.value);
     return null;
 }
+
+/// a sprite: raw rgb888, square-ish, with the side lengths inferred from how many bytes arrived,
+/// the way a frame infers nothing because it is only ever one size. 8x8 is 192 bytes and 16x16 is
+/// 768; octets rather than base64 because `POST /frame` already proved the path.
+pub fn parseSprite(id: []const u8, content_type: ?[]const u8, body: []const u8) Route {
+    if (!isOctets(content_type)) return .{ .reject = .{ .status = 415, .code = "unsupported_media_type", .message = "a sprite is application/octet-stream" } };
+    var sp = canvas.Sprite{ .id = canvas.Id.init(id) };
+    switch (body.len) {
+        8 * 8 * 3 => {
+            sp.w = 8;
+            sp.h = 8;
+        },
+        16 * 16 * 3 => {
+            sp.w = 16;
+            sp.h = 16;
+        },
+        else => return bad("invalid_sprite", "a sprite is 192 bytes (8x8) or 768 bytes (16x16) of rgb888"),
+    }
+    @memcpy(sp.rgb[0..body.len], body);
+    return .{ .op = .{ .sprite_put = sp } };
+}
+
+/// the built-in icon names, as a catalogue a console can build a picker from
+pub const icons_body = blk: {
+    var out: []const u8 = "{\"size\":8,\"names\":[";
+    for (icons.set, 0..) |icon, i| {
+        out = out ++ (if (i > 0) "," else "") ++ "\"" ++ icon.name ++ "\"";
+    }
+    break :blk out ++ "]}";
+};
 
 /// a raw frame: exactly 2,496 rgb bytes, with duration, request id and epoch in the query.
 pub fn parseFrame(query: []const u8, body: []const u8) Route {

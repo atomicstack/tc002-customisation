@@ -249,6 +249,20 @@ pub const Kind = enum(u8) {
     canvas_patch = 53,
     canvas_clear = 54,
     canvas_error = 55,
+    sprite = 56,
+    sprite_delete = 57,
+    sprite_list_get = 58,
+    sprite_list = 59,
+};
+
+/// what the device is holding, for `GET /sprites`: ids and sizes, not the pixels
+pub const SpriteList = struct {
+    pub const Entry = struct { id: canvas.Id = .{}, w: u8 = 0, h: u8 = 0 };
+
+    count: u8 = 0,
+    items: [canvas.sprite_max]Entry = [_]Entry{.{}} ** canvas.sprite_max,
+
+    pub const wire_len = 1 + canvas.sprite_max * 11;
 };
 
 /// why a canvas update was refused, so the client hears which mistake it made rather than a list
@@ -1102,6 +1116,10 @@ pub const Message = union(Kind) {
     canvas_patch: canvas.Patch,
     canvas_clear,
     canvas_error: CanvasError,
+    sprite: canvas.Sprite,
+    sprite_delete: canvas.Id,
+    sprite_list_get,
+    sprite_list: SpriteList,
 };
 
 pub const Packet = struct { request_id: u64, epoch: u32, message: Message };
@@ -1147,6 +1165,30 @@ fn encodePayload(msg: Message, out: []u8) usize {
             out[0] = e.reason;
             return 1;
         },
+        .sprite => |sp| {
+            out[0] = sp.id.len;
+            @memcpy(out[1..9], &sp.id.bytes);
+            out[9] = sp.w;
+            out[10] = sp.h;
+            @memcpy(out[11 .. 11 + sp.bytes()], sp.rgb[0..sp.bytes()]);
+            return 11 + sp.bytes();
+        },
+        .sprite_delete => |id| {
+            out[0] = id.len;
+            @memcpy(out[1..9], &id.bytes);
+            return 9;
+        },
+        .sprite_list => |l| {
+            out[0] = l.count;
+            for (l.items[0..l.count], 0..) |it, i| {
+                const o = 1 + i * 11;
+                out[o] = it.id.len;
+                @memcpy(out[o + 1 .. o + 9], &it.id.bytes);
+                out[o + 9] = it.w;
+                out[o + 10] = it.h;
+            }
+            return 1 + @as(usize, l.count) * 11;
+        },
         .device_status => |d| {
             out[0] = d.battery_pct;
             out[1] = d.usb;
@@ -1161,7 +1203,7 @@ fn encodePayload(msg: Message, out: []u8) usize {
             out[14] = d.night_placed;
             return DeviceStatus.wire_len;
         },
-        .ready, .arm_stream, .time_corrected, .stop, .config_get, .status_get, .screen_get, .canvas_get, .canvas_clear => return 0,
+        .ready, .arm_stream, .time_corrected, .stop, .config_get, .status_get, .screen_get, .canvas_get, .canvas_clear, .sprite_list_get => return 0,
         .screen => |s| {
             std.mem.writeInt(u32, out[0..4], s.revision, .big);
             out[4] = s.brightness;
@@ -1490,6 +1532,40 @@ pub fn decodePacket(bytes: []const u8) Error!Packet {
         .canvas_error => blk: {
             const b = try fixed(p, 1);
             break :blk .{ .canvas_error = .{ .reason = b[0] } };
+        },
+        .sprite => blk: {
+            if (p.len < 11) return error.BadPayload;
+            var sp = canvas.Sprite{};
+            sp.id.len = @min(p[0], canvas.id_max);
+            @memcpy(&sp.id.bytes, p[1..9]);
+            sp.w = p[9];
+            sp.h = p[10];
+            if (sp.w == 0 or sp.h == 0 or sp.w > canvas.sprite_side_max or sp.h > canvas.sprite_side_max) return error.BadPayload;
+            if (p.len != 11 + sp.bytes()) return error.BadPayload;
+            @memcpy(sp.rgb[0..sp.bytes()], p[11..]);
+            break :blk .{ .sprite = sp };
+        },
+        .sprite_delete => blk: {
+            const b = try fixed(p, 9);
+            var id = canvas.Id{ .len = @min(b[0], canvas.id_max) };
+            @memcpy(&id.bytes, b[1..9]);
+            break :blk .{ .sprite_delete = id };
+        },
+        .sprite_list_get => blk: {
+            _ = try fixed(p, 0);
+            break :blk .sprite_list_get;
+        },
+        .sprite_list => blk: {
+            if (p.len < 1 or p[0] > canvas.sprite_max or p.len != 1 + @as(usize, p[0]) * 11) return error.BadPayload;
+            var l = SpriteList{ .count = p[0] };
+            for (0..l.count) |i| {
+                const o = 1 + i * 11;
+                l.items[i].id.len = @min(p[o], canvas.id_max);
+                @memcpy(&l.items[i].id.bytes, p[o + 1 .. o + 9]);
+                l.items[i].w = p[o + 9];
+                l.items[i].h = p[o + 10];
+            }
+            break :blk .{ .sprite_list = l };
         },
         .device_status => blk: {
             const b = try fixed(p, DeviceStatus.wire_len);

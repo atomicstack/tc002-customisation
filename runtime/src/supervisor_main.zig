@@ -383,6 +383,8 @@ const Supervisor = struct {
     /// the canvas document. the supervisor owns it because it is state a client reads back and
     /// will one day persist; the renderer gets a copy whenever it changes or restarts.
     canvas_doc: canvas.Document = .{},
+    /// the uploaded sprites, held for the same reason as the document and replayed with it
+    sprites: canvas.Sprites = .{},
     /// the night brightness schedule; the phase it is in lives in the snapshot
     night: night.Schedule = .{},
     next_night_poll: u64 = 0,
@@ -1004,6 +1006,21 @@ const Supervisor = struct {
                 .status_get => self.sendNetd(.{ .status = self.snapshot }, p.request_id),
                 .config_get => self.sendNetd(.{ .config = self.cfg }, p.request_id),
                 .canvas_get => self.sendNetd(.{ .canvas = self.canvas_doc }, p.request_id),
+                .sprite => |sp| {
+                    self.sprites.put(sp) catch {
+                        self.sendNetd(.{ .canvas_error = .{ .reason = messages.CanvasError.full } }, p.request_id);
+                        continue;
+                    };
+                    self.send(.{ .sprite = sp });
+                    self.sendNetd(.{ .sprite_list = self.spriteList() }, p.request_id);
+                    log.info("sprite {s} {d}x{d} stored", .{ sp.id.slice(), sp.w, sp.h });
+                },
+                .sprite_delete => |id| {
+                    _ = self.sprites.remove(id.slice());
+                    self.send(.{ .sprite_delete = id });
+                    self.sendNetd(.{ .sprite_list = self.spriteList() }, p.request_id);
+                },
+                .sprite_list_get => self.sendNetd(.{ .sprite_list = self.spriteList() }, p.request_id),
                 .canvas => |d| {
                     self.canvas_doc = d;
                     self.canvas_doc.revision +%= 1;
@@ -1382,7 +1399,9 @@ const Supervisor = struct {
                     self.send(.{ .clock_style = messages.ClockStyle.full(self.cfg.clockStyle()) });
                     self.send(.{ .ip_mode = .{ .mode = self.cfg.ip_mode } });
                     self.sendGeneratorParams();
-                    if (!self.canvas_doc.empty()) self.sendCanvas(); // a restart redraws what was pushed
+                    // a restart redraws what was pushed, pictures first so the document finds them
+                    for (self.sprites.items[0..self.sprites.count]) |sp| self.send(.{ .sprite = sp });
+                    if (!self.canvas_doc.empty()) self.sendCanvas();
                     // the renderer started dark: reveal the saved state with the power ramp
                     self.send(.{ .power = .{ .on = 1 } });
                     self.snapshot.epoch = lifecycle.epoch;
@@ -1538,6 +1557,12 @@ const Supervisor = struct {
     /// the renderer draws whatever document the supervisor is holding
     fn sendCanvas(self: *Supervisor) void {
         self.send(.{ .canvas = self.canvas_doc });
+    }
+
+    fn spriteList(self: *const Supervisor) messages.SpriteList {
+        var l = messages.SpriteList{ .count = self.sprites.count };
+        for (self.sprites.items[0..self.sprites.count], 0..) |*sp, i| l.items[i] = .{ .id = sp.id, .w = sp.w, .h = sp.h };
+        return l;
     }
 
     /// the schedule works from copies of the settings, refreshed whenever they change

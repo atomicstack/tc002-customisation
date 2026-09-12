@@ -329,6 +329,16 @@ const Renderer = struct {
                 if (arb.base == .canvas) self.forceRedraw();
                 break :blk arbiter.Result{ .applied = arb.revision };
             },
+            .sprite => |sp| blk: {
+                arb.canvas.sprites.put(sp) catch {};
+                arb.dirty = true;
+                break :blk arbiter.Result{ .applied = arb.revision };
+            },
+            .sprite_delete => |id| blk: {
+                _ = arb.canvas.sprites.remove(id.slice());
+                arb.dirty = true;
+                break :blk arbiter.Result{ .applied = arb.revision };
+            },
             .clock_style => |cs| arb.apply(.{ .set_clock_style = cs.toPatch() }, now),
             .ip_mode => |m| blk: {
                 const mode = messages.enumFromInt(ip.Mode, m.mode) orelse break :blk arbiter.Result{ .rejected = .invalid_text };

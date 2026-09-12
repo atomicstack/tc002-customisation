@@ -15,6 +15,7 @@ const param = @import("param.zig");
 const geometry = @import("../panel/geometry.zig");
 const font = @import("font.zig");
 const clockfont = @import("clockfont.zig");
+const icons = @import("icons.zig");
 const scene = @import("scene.zig");
 
 pub const max_elements = 24;
@@ -28,7 +29,60 @@ pub const samples_max = geometry.width;
 const hint = "canvas";
 const hint_colour: [3]u8 = .{ 64, 64, 64 };
 
-pub const Kind = enum(u8) { text, rect, line, circle, pixel, bar, sparkline };
+pub const Kind = enum(u8) { text, rect, line, circle, pixel, bar, sparkline, icon, sprite, tile };
+
+/// how many uploaded sprites the device keeps, and how big one may be
+pub const sprite_max = 8;
+pub const sprite_side_max = 16;
+pub const sprite_bytes_max = sprite_side_max * sprite_side_max * 3;
+
+/// a picture an integration uploaded, drawn as-is. the built-in icons are monochrome and take the
+/// element's colour; a sprite carries its own, which is what makes it the answer for anything the
+/// set does not have.
+pub const Sprite = struct {
+    id: Id = .{},
+    w: u8 = 0,
+    h: u8 = 0,
+    rgb: [sprite_bytes_max]u8 = [_]u8{0} ** sprite_bytes_max,
+
+    pub const wire_len = 9 + 2 + sprite_bytes_max;
+
+    pub fn bytes(self: *const Sprite) usize {
+        return @as(usize, self.w) * self.h * 3;
+    }
+};
+
+/// the renderer's sprite cache: volatile, replayed by the supervisor when the renderer restarts
+pub const Sprites = struct {
+    items: [sprite_max]Sprite = [_]Sprite{.{}} ** sprite_max,
+    count: u8 = 0,
+
+    pub fn find(self: *const Sprites, id: []const u8) ?*const Sprite {
+        for (self.items[0..self.count]) |*sp| if (sp.id.eql(id)) return sp;
+        return null;
+    }
+
+    /// replace one of the same id, or take the next slot
+    pub fn put(self: *Sprites, sp: Sprite) error{Full}!void {
+        for (self.items[0..self.count]) |*have| if (have.id.eql(sp.id.slice())) {
+            have.* = sp;
+            return;
+        };
+        if (self.count >= sprite_max) return error.Full;
+        self.items[self.count] = sp;
+        self.count += 1;
+    }
+
+    pub fn remove(self: *Sprites, id: []const u8) bool {
+        for (self.items[0..self.count], 0..) |*sp, i| {
+            if (!sp.id.eql(id)) continue;
+            for (i..self.count - 1) |j| self.items[j] = self.items[j + 1];
+            self.count -= 1;
+            return true;
+        }
+        return false;
+    }
+};
 
 /// what an element does on its own, so an integration pushes once and walks away. five run
 /// continuously; `scramble`, `typewriter` and `sweep` are arrivals, which run once and then hold,
@@ -136,6 +190,19 @@ pub const Body = union(Kind) {
         threshold: u8 = 0,
         over: [3]u8 = .{ 255, 0, 0 },
     },
+    icon: struct { index: u8 = 0 },
+    sprite: struct { id: Id = .{} },
+    /// the composite an integration reaches for first: a glyph, a label and a value, laid out by
+    /// the device because the device is where the font metrics are. a patch's `text` replaces the
+    /// **value**, which is the part that changes.
+    tile: struct {
+        icon: u8 = 0,
+        /// a sprite instead, when it has an id
+        sprite_id: Id = .{},
+        label: Span = .{},
+        value: Span = .{},
+        accent: [3]u8 = .{ 128, 128, 128 },
+    },
 };
 
 pub const Element = struct {
@@ -221,11 +288,23 @@ pub const Document = struct {
         var fresh: [text_pool]u8 = undefined;
         var len: u16 = 0;
         for (self.elements[0..self.count]) |*e| {
-            if (e.body != .text) continue;
-            const old = self.textOf(e.body.text.span);
-            @memcpy(fresh[len .. len + old.len], old);
-            e.body.text.span = .{ .off = len, .len = @intCast(old.len) };
-            len += @intCast(old.len);
+            switch (e.body) {
+                .text => |*t| {
+                    const old = self.textOf(t.span);
+                    @memcpy(fresh[len .. len + old.len], old);
+                    t.span = .{ .off = len, .len = @intCast(old.len) };
+                    len += @intCast(old.len);
+                },
+                .tile => |*t| {
+                    inline for (.{ "label", "value" }) |field| {
+                        const old = self.textOf(@field(t, field));
+                        @memcpy(fresh[len .. len + old.len], old);
+                        @field(t, field) = .{ .off = len, .len = @intCast(old.len) };
+                        len += @intCast(old.len);
+                    }
+                },
+                else => {},
+            }
         }
         @memcpy(self.text[0..len], fresh[0..len]);
         self.text_len = len;
@@ -526,6 +605,66 @@ fn drawBar(rgb: *geometry.Rgb, e: *const Element, offset: [2]i32, colour: [3]u8)
     }
 }
 
+fn drawIcon(rgb: *geometry.Rgb, index: u8, x0: i32, y0: i32, colour: [3]u8) void {
+    if (index >= icons.count) return;
+    const art = icons.bitmaps[index];
+    for (art, 0..) |row, y| {
+        for (0..icons.size) |x| {
+            if (row & (@as(u8, 0x80) >> @intCast(x)) == 0) continue;
+            setPx(rgb, x0 + @as(i32, @intCast(x)), y0 + @as(i32, @intCast(y)), colour);
+        }
+    }
+}
+
+/// a sprite carries its own colours, so it is copied rather than tinted; a black pixel is
+/// transparent, which is what lets one sit over something else
+fn drawSprite(rgb: *geometry.Rgb, sp: *const Sprite, x0: i32, y0: i32) void {
+    for (0..sp.h) |y| {
+        for (0..sp.w) |x| {
+            const o = (y * sp.w + x) * 3;
+            const c = [3]u8{ sp.rgb[o], sp.rgb[o + 1], sp.rgb[o + 2] };
+            if (c[0] == 0 and c[1] == 0 and c[2] == 0) continue;
+            setPx(rgb, x0 + @as(i32, @intCast(x)), y0 + @as(i32, @intCast(y)), c);
+        }
+    }
+}
+
+/// the composite: a glyph, a label and a value. wide enough and they sit side by side with the
+/// label over the value; narrower and the label goes, because two characters of it would say
+/// nothing. the device decides, which is the point of having the composite at all.
+fn drawTile(rgb: *geometry.Rgb, d: *const Document, e: *const Element, sprites: *const Sprites, offset: [2]i32, colour: [3]u8) void {
+    const t = e.body.tile;
+    const x0: i32 = @as(i32, e.box.x) + offset[0];
+    const y0: i32 = @as(i32, e.box.y) + offset[1];
+    const w = e.box.width(geometry.width - e.box.x);
+    const h = e.box.height(geometry.height - e.box.y);
+    const label = d.textOf(t.label);
+    const value = d.textOf(t.value);
+    const glyph_w: i32 = icons.size;
+
+    const side_by_side = w >= glyph_w + 12 and label.len > 0;
+    if (side_by_side) {
+        drawIconOrSprite(rgb, e, sprites, x0, y0 + @divTrunc(h - glyph_w, 2), colour);
+        const tx = x0 + glyph_w + 2;
+        clockfont.blit(rgb, tx, y0 + @divTrunc(h, 2) - 6, .mini, label, clockfont.Solid{ .colour = t.accent });
+        clockfont.blit(rgb, tx, y0 + @divTrunc(h, 2), .mini, value, clockfont.Solid{ .colour = colour });
+        return;
+    }
+    // stacked: the glyph on top, the value under it, both centred in the box
+    const vw: i32 = @intCast(clockfont.textWidth(.mini, value));
+    drawIconOrSprite(rgb, e, sprites, x0 + @divTrunc(w - glyph_w, 2), y0, colour);
+    clockfont.blit(rgb, x0 + @divTrunc(w - vw, 2), y0 + glyph_w + 1, .mini, value, clockfont.Solid{ .colour = colour });
+}
+
+fn drawIconOrSprite(rgb: *geometry.Rgb, e: *const Element, sprites: *const Sprites, x: i32, y: i32, colour: [3]u8) void {
+    const t = e.body.tile;
+    if (t.sprite_id.len > 0) {
+        if (sprites.find(t.sprite_id.slice())) |sp| drawSprite(rgb, sp, x, y);
+        return;
+    }
+    drawIcon(rgb, t.icon, x, y, colour);
+}
+
 fn drawSparkline(rgb: *geometry.Rgb, d: *const Document, e: *const Element, offset: [2]i32, colour: [3]u8, reveal: u32) void {
     const s = e.body.sparkline;
     const samples = d.dataOf(s.span);
@@ -581,6 +720,8 @@ fn drawSparkline(rgb: *geometry.Rgb, d: *const Document, e: *const Element, offs
 
 pub const State = struct {
     doc: Document = .{},
+    /// pictures an integration uploaded, kept here because this is where they are drawn
+    sprites: Sprites = .{},
     /// when each element's arrival animation began. the renderer owns this, not the document: a
     /// document is a declaration and says nothing about when it was said.
     started_ns: [max_elements]u64 = [_]u64{0} ** max_elements,
@@ -662,6 +803,15 @@ pub const State = struct {
                 },
                 .bar => drawBar(rgb, e, animatedOffset(e, ms, 0, 0), colour),
                 .sparkline => drawSparkline(rgb, &self.doc, e, animatedOffset(e, ms, 0, 0), colour, reveal),
+                .icon => {
+                    const o = animatedOffset(e, ms, 0, 0);
+                    drawIcon(rgb, e.body.icon.index, @as(i32, e.box.x) + o[0], @as(i32, e.box.y) + o[1], colour);
+                },
+                .sprite => {
+                    const o = animatedOffset(e, ms, 0, 0);
+                    if (self.sprites.find(e.body.sprite.id.slice())) |sp| drawSprite(rgb, sp, @as(i32, e.box.x) + o[0], @as(i32, e.box.y) + o[1]);
+                },
+                .tile => drawTile(rgb, &self.doc, e, &self.sprites, animatedOffset(e, ms, 0, 0), colour),
             }
         }
     }
@@ -1017,7 +1167,7 @@ test "a cleared document is empty again and says so on the panel" {
 
 /// id, box, colour, kind, then the widest variant (a sparkline's eleven bytes), padded so every
 /// record is the same size and the codec stays a loop rather than a state machine
-pub const element_wire = 9 + 8 + 3 + Animation.wire_len + 1 + 11;
+pub const element_wire = 9 + 8 + 3 + Animation.wire_len + 1 + 22;
 pub const wire_max = 9 + max_elements * element_wire + text_pool + data_pool;
 
 /// one element of a patch: which element, and which of its fields to replace
@@ -1065,8 +1215,12 @@ pub const ApplyError = error{ UnknownElement, WrongField, Full, TooLong };
 pub fn applyUpdate(d: *Document, u: *const Update) ApplyError!void {
     const e = d.find(u.id.slice()) orelse return error.UnknownElement;
     if (u.has & Field.text != 0) {
-        if (e.body != .text) return error.WrongField;
-        e.body.text.span = try d.addText(u.slice());
+        switch (e.body) {
+            .text => e.body.text.span = try d.addText(u.slice()),
+            // a tile's value is what changes; its label is layout and waits for a put
+            .tile => e.body.tile.value = try d.addText(u.slice()),
+            else => return error.WrongField,
+        }
     }
     if (u.has & Field.data != 0) {
         if (e.body != .sparkline) return error.WrongField;
@@ -1152,6 +1306,19 @@ fn putElement(e: *const Element, out: []u8) void {
             v[7] = s.threshold;
             @memcpy(v[8..11], &s.over);
         },
+        .icon => |ic| v[0] = ic.index,
+        .sprite => |sp| {
+            v[0] = sp.id.len;
+            @memcpy(v[1..9], &sp.id.bytes);
+        },
+        .tile => |t| {
+            v[0] = t.icon;
+            v[1] = t.sprite_id.len;
+            @memcpy(v[2..10], &t.sprite_id.bytes);
+            putSpan(v[10..], t.label);
+            putSpan(v[14..], t.value);
+            @memcpy(v[18..21], &t.accent);
+        },
     }
 }
 
@@ -1192,6 +1359,23 @@ fn getElement(in: []const u8) error{BadPayload}!Element {
             .threshold = v[7],
             .over = v[8..11].*,
         } },
+        .icon => .{ .icon = .{ .index = v[0] } },
+        .sprite => blk: {
+            var id = Id{ .len = @min(v[0], id_max) };
+            @memcpy(&id.bytes, v[1..9]);
+            break :blk .{ .sprite = .{ .id = id } };
+        },
+        .tile => blk: {
+            var id = Id{ .len = @min(v[1], id_max) };
+            @memcpy(&id.bytes, v[2..10]);
+            break :blk .{ .tile = .{
+                .icon = v[0],
+                .sprite_id = id,
+                .label = getSpan(v[10..]),
+                .value = getSpan(v[14..]),
+                .accent = v[18..21].*,
+            } };
+        },
     };
     return e;
 }
@@ -1237,6 +1421,7 @@ pub fn decode(in: []const u8) error{BadPayload}!Document {
     for (d.elements[0..d.count]) |*e| switch (e.body) {
         .text => |t| if (t.span.off + t.span.len > d.text_len) return error.BadPayload,
         .sparkline => |s| if (s.span.off + s.span.len > d.data_len) return error.BadPayload,
+        .tile => |t| if (t.label.off + t.label.len > d.text_len or t.value.off + t.value.len > d.text_len) return error.BadPayload,
         else => {},
     };
     return d;
@@ -1570,4 +1755,117 @@ test "installing a document restarts only what changed" {
     s.install(moved, 9000 * std.time.ns_per_ms);
     try std.testing.expectEqual(@as(u64, 9000 * std.time.ns_per_ms), s.started_ns[0]);
     try std.testing.expectEqual(@as(u64, 1000 * std.time.ns_per_ms), s.started_ns[1]);
+}
+
+test "an icon draws its art in the element's colour, and an unknown index draws nothing" {
+    var s = State{};
+    try s.doc.add(.{ .box = .{ .x = 0, .y = 0 }, .colour = .{ 0, 255, 0 }, .body = .{ .icon = .{ .index = icons.indexOf("sun").? } } });
+    var rgb: geometry.Rgb = undefined;
+    s.render(0, &rgb);
+    try std.testing.expectEqual([3]u8{ 0, 255, 0 }, at(&rgb, 3, 0)); // the sun's top pixel
+    const drawn = lit(&rgb);
+    try std.testing.expect(drawn > 10);
+    // every lit pixel is inside the eight by eight the glyph occupies
+    for (0..geometry.pixels) |i| {
+        if (rgb[i * 3 + 1] == 0) continue;
+        try std.testing.expect(i % geometry.width < 8 and i / geometry.width < 8);
+    }
+    s.doc.elements[0].body.icon.index = 200;
+    s.render(0, &rgb);
+    try std.testing.expectEqual(@as(usize, 0), lit(&rgb));
+}
+
+test "a sprite draws its own colours, is transparent where it is black, and needs to have been uploaded" {
+    var s = State{};
+    try s.doc.add(.{ .box = .{ .x = 2, .y = 2 }, .body = .{ .sprite = .{ .id = Id.init("logo") } } });
+    var rgb: geometry.Rgb = undefined;
+    s.render(0, &rgb);
+    try std.testing.expectEqual(@as(usize, 0), lit(&rgb)); // nothing uploaded yet, so nothing drawn
+
+    var sp = Sprite{ .id = Id.init("logo"), .w = 8, .h = 8 };
+    for (0..64) |i| {
+        sp.rgb[i * 3] = if (i % 2 == 0) 200 else 0; // a checkerboard of red and transparent
+        sp.rgb[i * 3 + 1] = 0;
+        sp.rgb[i * 3 + 2] = 0;
+    }
+    try s.sprites.put(sp);
+    s.render(0, &rgb);
+    try std.testing.expectEqual(@as(usize, 32), lit(&rgb));
+    try std.testing.expectEqual([3]u8{ 200, 0, 0 }, at(&rgb, 2, 2));
+    try std.testing.expectEqual([3]u8{ 0, 0, 0 }, at(&rgb, 3, 2)); // black is transparent
+
+    // the cache replaces by id, fills up and gives a slot back on delete
+    try std.testing.expectEqual(@as(u8, 1), s.sprites.count);
+    try s.sprites.put(.{ .id = Id.init("logo"), .w = 8, .h = 8 });
+    try std.testing.expectEqual(@as(u8, 1), s.sprites.count);
+    for (0..sprite_max - 1) |i| {
+        var other = Sprite{ .w = 8, .h = 8 };
+        other.id = Id.init(&[_]u8{ 'a', @intCast('0' + i) });
+        try s.sprites.put(other);
+    }
+    try std.testing.expectError(error.Full, s.sprites.put(.{ .id = Id.init("more"), .w = 8, .h = 8 }));
+    try std.testing.expect(s.sprites.remove("logo"));
+    try std.testing.expect(!s.sprites.remove("logo"));
+    try s.sprites.put(.{ .id = Id.init("more"), .w = 8, .h = 8 });
+}
+
+test "a tile lays itself out: side by side when there is room, stacked when there is not" {
+    var wide = State{};
+    const l = try wide.doc.addText("temp");
+    const v = try wide.doc.addText("21");
+    try wide.doc.add(.{ .box = .{ .x = 0, .y = 0, .w = 52, .h = 16 }, .colour = white, .body = .{ .tile = .{
+        .icon = icons.indexOf("thermometer").?,
+        .label = l,
+        .value = v,
+        .accent = .{ 80, 80, 80 },
+    } } });
+    var rgb: geometry.Rgb = undefined;
+    wide.render(0, &rgb);
+    // the glyph on the left, and two colours of text to its right
+    var accent: usize = 0;
+    var bright: usize = 0;
+    var glyph_px: usize = 0;
+    for (0..geometry.pixels) |i| {
+        const c = [3]u8{ rgb[i * 3], rgb[i * 3 + 1], rgb[i * 3 + 2] };
+        if (std.meta.eql(c, [3]u8{ 80, 80, 80 })) accent += 1;
+        if (std.meta.eql(c, white)) {
+            if (i % geometry.width < 8) glyph_px += 1 else bright += 1;
+        }
+    }
+    try std.testing.expect(glyph_px > 10); // the thermometer
+    try std.testing.expect(accent > 5); // the label, in the accent colour
+    try std.testing.expect(bright > 5); // the value, in the element's
+
+    // a third of the panel has no room for a label, so the value goes under the glyph instead
+    var narrow = State{};
+    const l2 = try narrow.doc.addText("temp");
+    const v2 = try narrow.doc.addText("21");
+    try narrow.doc.add(.{ .box = Box.tile(0, 3), .colour = white, .body = .{ .tile = .{
+        .icon = icons.indexOf("thermometer").?,
+        .label = l2,
+        .value = v2,
+        .accent = .{ 80, 80, 80 },
+    } } });
+    narrow.render(0, &rgb);
+    var narrow_accent: usize = 0;
+    for (0..geometry.pixels) |i| {
+        if (std.meta.eql([3]u8{ rgb[i * 3], rgb[i * 3 + 1], rgb[i * 3 + 2] }, [3]u8{ 80, 80, 80 })) narrow_accent += 1;
+        if (rgb[i * 3] != 0) try std.testing.expect(i % geometry.width < 18); // stays in its tile
+    }
+    try std.testing.expectEqual(@as(usize, 0), narrow_accent); // the label is dropped, not squeezed
+}
+
+test "a patch moves a tile's value and leaves its label alone" {
+    var d = Document{};
+    const l = try d.addText("temp");
+    const v = try d.addText("21");
+    try d.add(.{ .id = Id.init("t"), .body = .{ .tile = .{ .label = l, .value = v } } });
+    var p = Patch{};
+    var u = Update{ .id = Id.init("t"), .has = Field.text };
+    u.len = 4;
+    @memcpy(u.bytes[0..4], "21.6");
+    try p.add(u);
+    try applyPatch(&d, &p);
+    try std.testing.expectEqualStrings("21.6", d.textOf(d.elements[0].body.tile.value));
+    try std.testing.expectEqualStrings("temp", d.textOf(d.elements[0].body.tile.label));
 }
