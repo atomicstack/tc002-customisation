@@ -327,8 +327,9 @@ const Renderer = struct {
                 break :blk r;
             },
             .canvas => |d| blk: {
-                // install rather than assign: the renderer owns when an arrival animation started
-                arb.canvas.install(d, now);
+                // install rather than assign: the renderer owns when an arrival animation started.
+                // the ages travelling with the document are for clients reading it back, not for us
+                arb.canvas.install(d.doc, now);
                 arb.dirty = true;
                 if (arb.base == .canvas) self.forceRedraw();
                 break :blk arbiter.Result{ .applied = arb.revision };

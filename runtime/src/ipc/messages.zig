@@ -20,7 +20,7 @@ test "every message kind round-trips through a packet" {
     var patch = canvas.Patch{};
     patch.add(.{ .id = canvas.Id.init("hdr"), .has = canvas.Field.colour, .colour = .{ 1, 2, 3 } }) catch unreachable;
     const all = [_]Message{
-        .{ .canvas = doc },
+        .{ .canvas = CanvasView{ .doc = doc, .doc_age_ms = 1234, .element_age_ms = [_]u32{777} ++ [_]u32{0} ** (canvas.max_elements - 1) } },
         .canvas_get,
         .{ .canvas_patch = patch },
         .canvas_clear,
@@ -1026,6 +1026,17 @@ pub const ConfigSave = struct { has_revision: u8, revision: u32 };
 pub const SaveResult = struct { status: Status, saved_revision: u32 };
 
 /// the supervisor's snapshot of everything netd reports over http and mqtt.
+/// a canvas document together with the ages of its animation clocks. the document alone cannot
+/// describe the phase: a second renderer of it (the console's preview) installs at its own instant,
+/// and every animated element is then permanently out of step with the panel. the per-element ages
+/// are not redundant with the document's -- `canvas.Clocks.install` restarts only the elements
+/// whose value changed, so after a patch they differ.
+pub const CanvasView = struct {
+    doc: canvas.Document = .{},
+    doc_age_ms: u32 = 0,
+    element_age_ms: [canvas.max_elements]u32 = [_]u32{0} ** canvas.max_elements,
+};
+
 pub const StatusSnapshot = struct {
     renderer_state: u8 = 0, // 0 none, 1 starting, 2 running, 3 stopping
     epoch: u32 = 0,
@@ -1152,7 +1163,7 @@ pub const Message = union(Kind) {
     menu_request: MenuRequest,
     device_status: DeviceStatus,
     set_param: SetParam,
-    canvas: canvas.Document,
+    canvas: CanvasView,
     canvas_get,
     canvas_patch: canvas.Patch,
     canvas_clear,
@@ -1204,7 +1215,18 @@ fn encodePayload(msg: Message, out: []u8) usize {
             std.mem.writeInt(u32, out[2..6], sp.value, .big);
             return 6;
         },
-        .canvas => |d| return canvas.encode(&d, out) catch 0,
+        .canvas => |v| {
+            var o = canvas.encode(&v.doc, out) catch return 0;
+            // the ages follow the document, which knows its own length from its header
+            if (o + 4 + @as(usize, v.doc.count) * 4 > out.len) return 0;
+            std.mem.writeInt(u32, out[o..][0..4], v.doc_age_ms, .big);
+            o += 4;
+            for (0..v.doc.count) |i| {
+                std.mem.writeInt(u32, out[o..][0..4], v.element_age_ms[i], .big);
+                o += 4;
+            }
+            return o;
+        },
         .canvas_patch => |p| return canvas.putPatch(&p, out) catch 0,
         .canvas_error => |e| {
             out[0] = e.reason;
@@ -1579,7 +1601,21 @@ pub fn decodePacket(bytes: []const u8) Error!Packet {
             break :blk .{ .set_param = .{ .base = b[0], .index = b[1], .value = std.mem.readInt(u32, b[2..6], .big) } };
         },
         .canvas => blk: {
-            break :blk .{ .canvas = canvas.decode(p) catch return error.BadPayload };
+            const dlen = canvas.encodedLen(p) orelse return error.BadPayload;
+            if (p.len < dlen) return error.BadPayload;
+            var v = CanvasView{ .doc = canvas.decode(p[0..dlen]) catch return error.BadPayload };
+            // a sender with no ages to give (netd putting a document up) simply omits the tail
+            var o = dlen;
+            if (p.len >= o + 4) {
+                v.doc_age_ms = std.mem.readInt(u32, p[o..][0..4], .big);
+                o += 4;
+                for (0..v.doc.count) |i| {
+                    if (p.len < o + 4) break;
+                    v.element_age_ms[i] = std.mem.readInt(u32, p[o..][0..4], .big);
+                    o += 4;
+                }
+            }
+            break :blk .{ .canvas = v };
         },
         .canvas_patch => blk: {
             break :blk .{ .canvas_patch = canvas.getPatch(p) catch return error.BadPayload };

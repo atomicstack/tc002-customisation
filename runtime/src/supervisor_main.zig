@@ -387,6 +387,10 @@ const Supervisor = struct {
     /// the canvas document. the supervisor owns it because it is state a client reads back and
     /// will one day persist; the renderer gets a copy whenever it changes or restarts.
     canvas_doc: canvas.Document = .{},
+    /// when this document's animations started. the supervisor keeps the same account the renderer
+    /// does -- the same comparison over the same documents -- so `GET /canvas` can publish ages a
+    /// second renderer can reproduce the phase from.
+    canvas_clocks: canvas.Clocks = .{},
     /// the uploaded sprites, held for the same reason as the document and replayed with it
     sprites: canvas.Sprites = .{},
     /// the document revision last written to the state directory
@@ -1019,7 +1023,7 @@ const Supervisor = struct {
                 },
                 .status_get => self.sendNetd(.{ .status = self.snapshot }, p.request_id),
                 .config_get => self.sendNetd(.{ .config = self.cfg }, p.request_id),
-                .canvas_get => self.sendNetd(.{ .canvas = self.canvas_doc }, p.request_id),
+                .canvas_get => self.sendNetd(.{ .canvas = self.canvasView() }, p.request_id),
                 .sprite => |sp| {
                     self.sprites.put(sp) catch {
                         self.sendNetd(.{ .canvas_error = .{ .reason = messages.CanvasError.full } }, p.request_id);
@@ -1037,28 +1041,34 @@ const Supervisor = struct {
                     self.sendNetd(.{ .sprite_list = self.spriteList() }, p.request_id);
                 },
                 .sprite_list_get => self.sendNetd(.{ .sprite_list = self.spriteList() }, p.request_id),
-                .canvas => |d| {
-                    self.canvas_doc = d;
-                    self.canvas_doc.revision +%= 1;
+                .canvas => |v| {
+                    var next = v.doc;
+                    next.revision = self.canvas_doc.revision +% 1;
+                    self.installCanvas(next);
                     self.sendCanvas();
                     self.saveCanvas();
-                    self.sendNetd(.{ .canvas = self.canvas_doc }, p.request_id);
+                    self.sendNetd(.{ .canvas = self.canvasView() }, p.request_id);
                     log.info("canvas: {d} elements, revision {d}", .{ self.canvas_doc.count, self.canvas_doc.revision });
                 },
                 .canvas_patch => |cp| {
-                    canvas.applyPatch(&self.canvas_doc, &cp) catch |e| {
+                    // onto a copy, so the clocks can be told what actually changed
+                    var next = self.canvas_doc;
+                    canvas.applyPatch(&next, &cp) catch |e| {
                         log.warn("canvas patch rejected: {s}", .{@errorName(e)});
                         self.sendNetd(.{ .canvas_error = messages.CanvasError.of(e) }, p.request_id);
                         continue;
                     };
+                    self.installCanvas(next);
                     self.sendCanvas();
-                    self.sendNetd(.{ .canvas = self.canvas_doc }, p.request_id);
+                    self.sendNetd(.{ .canvas = self.canvasView() }, p.request_id);
                 },
                 .canvas_clear => {
-                    self.canvas_doc.clear();
+                    var next = self.canvas_doc;
+                    next.clear();
+                    self.installCanvas(next);
                     self.sendCanvas();
                     self.saveCanvas();
-                    self.sendNetd(.{ .canvas = self.canvas_doc }, p.request_id);
+                    self.sendNetd(.{ .canvas = self.canvasView() }, p.request_id);
                 },
                 .config_patch => |w| {
                     const before = self.cfg;
@@ -1452,7 +1462,12 @@ const Supervisor = struct {
                     self.sendGeneratorParams();
                     // a restart redraws what was pushed, pictures first so the document finds them
                     for (self.sprites.items[0..self.sprites.count]) |sp| self.send(.{ .sprite = sp });
-                    if (!self.canvas_doc.empty()) self.sendCanvas();
+                    if (!self.canvas_doc.empty()) {
+                        // the renderer installs it fresh, restarting whatever has no id to be
+                        // recognised by. running the same comparison here keeps the two in step.
+                        self.canvas_clocks.install(&self.canvas_doc, &self.canvas_doc, sys.monotonicNs());
+                        self.sendCanvas();
+                    }
                     // the renderer started dark: reveal the saved state with the power ramp
                     self.send(.{ .power = .{ .on = 1 } });
                     self.snapshot.epoch = lifecycle.epoch;
@@ -1607,7 +1622,21 @@ const Supervisor = struct {
 
     /// the renderer draws whatever document the supervisor is holding
     fn sendCanvas(self: *Supervisor) void {
-        self.send(.{ .canvas = self.canvas_doc });
+        self.send(.{ .canvas = self.canvasView() });
+    }
+
+    /// the document as a client reads it back: with the ages of its animation clocks
+    fn canvasView(self: *const Supervisor) messages.CanvasView {
+        const now = sys.monotonicNs();
+        var v = messages.CanvasView{ .doc = self.canvas_doc, .doc_age_ms = self.canvas_clocks.docAgeMs(now) };
+        for (0..self.canvas_doc.count) |i| v.element_age_ms[i] = self.canvas_clocks.elementAgeMs(i, now);
+        return v;
+    }
+
+    /// take a new document and start the clocks the elements that changed need
+    fn installCanvas(self: *Supervisor, next: canvas.Document) void {
+        self.canvas_clocks.install(&self.canvas_doc, &next, sys.monotonicNs());
+        self.canvas_doc = next;
     }
 
     /// the document and its pictures go to the state directory on a layout change, and **never on

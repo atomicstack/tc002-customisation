@@ -40,7 +40,12 @@ const supervisor_fd: sys.Fd = 3;
 const listener_fd: sys.Fd = 5;
 const max_conns = 4;
 const in_buf_len = http.max_head + json.max_body;
-const out_buf_len = 4096;
+// the largest thing netd answers with is a canvas document read back, and that is bounded by
+// what the device itself accepts: 24 elements, a 256-byte text pool and a 1,024-byte sample pool,
+// each element carrying its placement, colour, animation and age. rendered as json that reaches
+// about 10 kb, so a buffer of 4 kb could not return a full document at all -- a client could
+// create a canvas it was unable to read back. measured, not estimated: see runtime.md.
+const out_buf_len = 13312;
 const request_timeout_ns: u64 = 5 * ns_per_s;
 const idle_timeout_ns: u64 = 10 * ns_per_s;
 const relay_timeout_ns: u64 = 2 * ns_per_s;
@@ -141,7 +146,7 @@ var packet_buf: [codec.max_message]u8 = undefined;
 var send_buf: [codec.max_message]u8 = undefined;
 var arena: api.Arena = undefined;
 /// sized for the base64 screen document (3,328 characters plus its fields) and a log page
-var json_buf: [3584]u8 = undefined;
+var json_buf: [12288]u8 = undefined;
 
 const Netd = struct {
     ep: sys.Fd,
@@ -421,7 +426,7 @@ const Netd = struct {
             .sprite_put => |sp| self.ask(c, .{ .sprite = sp }, .sprites, now),
             .sprite_delete => |id| self.ask(c, .{ .sprite_delete = id }, .sprites, now),
             .canvas_get => self.ask(c, .canvas_get, .canvas, now),
-            .canvas_put => |d| self.ask(c, .{ .canvas = d }, .canvas, now),
+            .canvas_put => |d| self.ask(c, .{ .canvas = .{ .doc = d } }, .canvas, now),
             .canvas_patch => |cp| self.ask(c, .{ .canvas_patch = cp }, .canvas, now),
             .canvas_clear => self.ask(c, .canvas_clear, .canvas, now),
             .config_patch => |p| {
@@ -661,11 +666,12 @@ const Netd = struct {
         o.add("}");
     }
 
-    fn onCanvas(self: *Netd, request_id: u64, d: *const canvas.Document, now: u64) void {
+    fn onCanvas(self: *Netd, request_id: u64, v: *const messages.CanvasView, now: u64) void {
         const c = self.findConn(true, request_id) orelse return;
         var o = Out{ .buf = &json_buf };
-        canvasJson(&o, d);
-        self.respond(c, 200, "application/json", o.slice());
+        canvasJson(&o, v);
+        // the document grows with the elements a client put there, so say so rather than truncate
+        if (o.overflow) self.respondError(c, 500, "internal", "the canvas document did not fit") else self.respond(c, 200, "application/json", o.slice());
         self.flushConn(c, now);
     }
 
@@ -782,11 +788,16 @@ const Netd = struct {
 
     /// the document as held, in the shape a `PUT` would send it back: what is on the panel, not a
     /// separate vocabulary for reading it.
-    fn canvasJson(o: *Out, d: *const canvas.Document) void {
-        o.fmt("{{\"revision\":{d},\"saved_revision\":{d},\"elements\":[", .{ d.revision, d.saved_revision });
+    /// the document as a client reads it back. `age_ms` is how long ago the animation clocks
+    /// started -- one for the document, one per element, because a patch restarts only the
+    /// elements whose value changed. a second renderer needs them to draw the phase this one is
+    /// drawing; `PUT` accepts the field and ignores it, so a document read back can be put back.
+    fn canvasJson(o: *Out, view: *const messages.CanvasView) void {
+        const d = &view.doc;
+        o.fmt("{{\"revision\":{d},\"saved_revision\":{d},\"age_ms\":{d},\"elements\":[", .{ d.revision, d.saved_revision, view.doc_age_ms });
         for (d.elements[0..d.count], 0..) |*e, i| {
             if (i > 0) o.add(",");
-            o.fmt("{{\"type\":\"{s}\"", .{@tagName(e.kind())});
+            o.fmt("{{\"type\":\"{s}\",\"age_ms\":{d}", .{ @tagName(e.kind()), view.element_age_ms[i] });
             if (e.id.len > 0) {
                 o.add(",\"id\":");
                 o.str(e.id.slice());

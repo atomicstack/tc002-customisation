@@ -216,6 +216,10 @@ const ConfigBody = struct {
 const ElementBody = struct {
     type: []const u8,
     id: ?[]const u8 = null,
+    /// read-only: `GET /canvas` publishes how long ago this element's animation clock started, and
+    /// a client that reads a document and puts it back sends it straight back. accepted so that
+    /// round trip works, and then ignored -- the device owns when an animation started.
+    age_ms: ?u32 = null,
     at: ?[2]i16 = null,
     size: ?[2]i16 = null,
     tile: ?u8 = null,
@@ -314,7 +318,8 @@ fn allowedField(kind: canvas.Kind, comptime name: []const u8) bool {
         }
     }.f;
     if (eq(name, "type") or eq(name, "id") or eq(name, "at") or eq(name, "size") or
-        eq(name, "tile") or eq(name, "row") or eq(name, "of") or eq(name, "colour") or eq(name, "animate")) return true;
+        eq(name, "tile") or eq(name, "row") or eq(name, "of") or eq(name, "colour") or eq(name, "animate") or
+        eq(name, "age_ms")) return true;
     return switch (kind) {
         .text => eq(name, "text") or eq(name, "font") or eq(name, "align"),
         .rect => eq(name, "filled"),
@@ -1359,6 +1364,28 @@ test "a canvas document is parsed whole, with every field checked against its el
     try expectReject(route(put, "{\"elements\":[{\"type\":\"pixel\",\"tile\":1}]}", &c, &origins, &arena), 400, "invalid_placement");
     try expectReject(route(put, "{\"elements\":[{\"type\":\"pixel\",\"of\":3}]}", &c, &origins, &arena), 400, "invalid_placement");
     try expectReject(route(put, "{\"elements\":[{\"type\":\"rect\",\"size\":[-1,4]}]}", &c, &origins, &arena), 400, "invalid_placement");
+}
+
+test "a document read back can be put back: age_ms is accepted and ignored" {
+    // `GET /canvas` publishes the age of each element's animation clock so a second renderer can
+    // match the phase. clients read a document and put it back -- the demo reels restore exactly
+    // that way -- so the field a get emits has to be one a put will take.
+    const c = testCreds();
+    var arena: Arena = undefined;
+    const origins = OriginPolicy{};
+    const put = testReq(.PUT, "/api/v1/canvas", "", admin_header, "application/json", null);
+    const r = route(put,
+        \\{"elements":[
+        \\ {"id":"t","type":"text","at":[0,0],"text":"21.4C","age_ms":1840,
+        \\  "animate":{"kind":"scramble","ms":2500}},
+        \\ {"type":"rect","at":[0,8],"size":[10,4],"age_ms":0}]}
+    , &c, &origins, &arena);
+    const d = r.op.canvas_put;
+    try std.testing.expectEqual(@as(u8, 2), d.count);
+    try std.testing.expectEqualStrings("21.4C", d.textOf(d.elements[0].body.text.span));
+    try std.testing.expectEqual(canvas.Motion.scramble, d.elements[0].anim.kind);
+    // it is a reading, not a setting: nothing in the document carries it
+    try std.testing.expectEqual(canvas.Motion.none, d.elements[1].anim.kind);
 }
 
 test "a canvas patch carries values by id, and the canvas routes have their own authority" {

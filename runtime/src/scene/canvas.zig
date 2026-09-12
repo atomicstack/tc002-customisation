@@ -743,15 +743,79 @@ fn drawSparkline(rgb: *geometry.Rgb, d: *const Document, e: *const Element, offs
     }
 }
 
+/// when a document's animations started: `epoch_ns` for the continuous motions, one `started_ns`
+/// per element for the arrival ones. this is not part of the document -- a document is a
+/// declaration and says nothing about when it was said -- so it is kept beside it.
+///
+/// the renderer needs it to draw. the supervisor keeps the same account so `GET /canvas` can
+/// publish the ages, without which a second renderer of the same document (the console's preview)
+/// installs at its own instant and every animated element is permanently out of phase. both sides
+/// run this one comparison over the same pair of documents, so they agree.
+pub const Clocks = struct {
+    started_ns: [max_elements]u64 = [_]u64{0} ** max_elements,
+    epoch_ns: u64 = 0,
+
+    /// work out what changed between two documents. an element whose value is new restarts its
+    /// arrival animation; one that merely kept its place does not, so a patch that moves a bar
+    /// does not make the text beside it scramble all over again. an element with no id has nothing
+    /// to be recognised by and always restarts.
+    pub fn install(self: *Clocks, old: *const Document, new: *const Document, now_ns: u64) void {
+        var restart: [max_elements]bool = [_]bool{true} ** max_elements;
+        for (new.elements[0..new.count], 0..) |*e, i| {
+            if (e.id.len == 0) continue;
+            for (old.elements[0..old.count], 0..) |*old_e, j| {
+                if (!old_e.id.eql(e.id.slice())) continue;
+                const same = switch (e.body) {
+                    .text => |t| old_e.body == .text and std.mem.eql(u8, new.textOf(t.span), old.textOf(old_e.body.text.span)),
+                    .sparkline => |sp| old_e.body == .sparkline and std.mem.eql(u8, new.dataOf(sp.span), old.dataOf(old_e.body.sparkline.span)),
+                    else => std.meta.eql(e.body, old_e.body),
+                };
+                // it keeps its clock only if it is showing the same thing it was
+                if (same) {
+                    restart[i] = false;
+                    self.started_ns[i] = self.started_ns[j];
+                }
+                break;
+            }
+        }
+        self.epoch_ns = now_ns;
+        for (0..max_elements) |i| if (restart[i]) {
+            self.started_ns[i] = now_ns;
+        };
+    }
+
+    /// how long ago the document was installed, in milliseconds, clamped rather than wrapped
+    pub fn docAgeMs(self: *const Clocks, now_ns: u64) u32 {
+        return clampMs(now_ns -| self.epoch_ns);
+    }
+
+    /// how long ago one element's arrival animation started
+    pub fn elementAgeMs(self: *const Clocks, i: usize, now_ns: u64) u32 {
+        if (i >= max_elements) return 0;
+        return clampMs(now_ns -| self.started_ns[i]);
+    }
+
+    /// the other direction: take the ages a device published and set the clocks to match, so a
+    /// second renderer of the same document draws the phase the panel is drawing.
+    pub fn backdate(self: *Clocks, doc_age_ms: u32, element_age_ms: []const u32, now_ns: u64) void {
+        self.epoch_ns = now_ns -| (@as(u64, doc_age_ms) * std.time.ns_per_ms);
+        for (0..max_elements) |i| {
+            const age = if (i < element_age_ms.len) element_age_ms[i] else doc_age_ms;
+            self.started_ns[i] = now_ns -| (@as(u64, age) * std.time.ns_per_ms);
+        }
+    }
+
+    fn clampMs(delta_ns: u64) u32 {
+        return @intCast(@min(delta_ns / std.time.ns_per_ms, 0xffffffff));
+    }
+};
+
 pub const State = struct {
     doc: Document = .{},
     /// pictures an integration uploaded, kept here because this is where they are drawn
     sprites: Sprites = .{},
-    /// when each element's arrival animation began. the renderer owns this, not the document: a
-    /// document is a declaration and says nothing about when it was said.
-    started_ns: [max_elements]u64 = [_]u64{0} ** max_elements,
-    /// when the document itself was installed, which is where the continuous animations count from
-    epoch_ns: u64 = 0,
+    /// when this state's animations started; see `Clocks`
+    clocks: Clocks = .{},
 
     pub fn getParam(_: *const State, _: usize) u32 {
         return 0;
@@ -763,37 +827,14 @@ pub const State = struct {
         return self.doc.empty();
     }
 
-    /// take a document and work out what changed. an element whose value is new restarts its
-    /// arrival animation; one that merely kept its place does not, so a patch that moves a bar
-    /// does not make the text beside it scramble all over again.
+    /// take a document and start the clocks the elements that changed need; see `Clocks.install`
     pub fn install(self: *State, doc: Document, now_ns: u64) void {
-        var restart: [max_elements]bool = [_]bool{true} ** max_elements;
-        for (doc.elements[0..doc.count], 0..) |*e, i| {
-            if (e.id.len == 0) continue;
-            for (self.doc.elements[0..self.doc.count], 0..) |*old_e, j| {
-                if (!old_e.id.eql(e.id.slice())) continue;
-                const same = switch (e.body) {
-                    .text => |t| old_e.body == .text and std.mem.eql(u8, doc.textOf(t.span), self.doc.textOf(old_e.body.text.span)),
-                    .sparkline => |sp| old_e.body == .sparkline and std.mem.eql(u8, doc.dataOf(sp.span), self.doc.dataOf(old_e.body.sparkline.span)),
-                    else => std.meta.eql(e.body, old_e.body),
-                };
-                // it keeps its clock only if it is showing the same thing it was
-                if (same) {
-                    restart[i] = false;
-                    self.started_ns[i] = self.started_ns[j];
-                }
-                break;
-            }
-        }
+        self.clocks.install(&self.doc, &doc, now_ns);
         self.doc = doc;
-        self.epoch_ns = now_ns;
-        for (0..max_elements) |i| if (restart[i]) {
-            self.started_ns[i] = now_ns;
-        };
     }
 
     fn elapsedMs(self: *const State, i: usize, now_ns: u64) u64 {
-        const from = if (arrival(self.doc.elements[i].anim.kind)) self.started_ns[i] else self.epoch_ns;
+        const from = if (arrival(self.doc.elements[i].anim.kind)) self.clocks.started_ns[i] else self.clocks.epoch_ns;
         return (now_ns -| from) / std.time.ns_per_ms;
     }
 
@@ -1426,6 +1467,18 @@ pub fn encode(d: *const Document, out: []u8) error{Overflow}!usize {
     return o + d.data_len;
 }
 
+/// how long the document at the start of `in` is, read from its own header, so a message can
+/// carry something after it. `decode` itself stays strict about its slice: a trailing byte in the
+/// saved file or on the wire is a corruption, not a feature.
+pub fn encodedLen(in: []const u8) ?usize {
+    if (in.len < doc_header) return null;
+    const count = in[4];
+    const text_len = std.mem.readInt(u16, in[5..7], .little);
+    const data_len = std.mem.readInt(u16, in[7..9], .little);
+    if (count > max_elements or text_len > text_pool or data_len > data_pool) return null;
+    return doc_header + @as(usize, count) * element_wire + text_len + data_len;
+}
+
 pub fn decode(in: []const u8) error{BadPayload}!Document {
     if (in.len < doc_header) return error.BadPayload;
     var d = Document{};
@@ -1826,19 +1879,19 @@ test "installing a document restarts only what changed" {
     const first = built;
     var s = State{};
     s.install(first, 1000 * std.time.ns_per_ms);
-    try std.testing.expectEqual(@as(u64, 1000 * std.time.ns_per_ms), s.started_ns[0]);
+    try std.testing.expectEqual(@as(u64, 1000 * std.time.ns_per_ms), s.clocks.started_ns[0]);
 
     // the same document again: nothing has changed, so nothing starts over
     s.install(first, 5000 * std.time.ns_per_ms);
-    try std.testing.expectEqual(@as(u64, 1000 * std.time.ns_per_ms), s.started_ns[0]);
-    try std.testing.expectEqual(@as(u64, 1000 * std.time.ns_per_ms), s.started_ns[1]);
+    try std.testing.expectEqual(@as(u64, 1000 * std.time.ns_per_ms), s.clocks.started_ns[0]);
+    try std.testing.expectEqual(@as(u64, 1000 * std.time.ns_per_ms), s.clocks.started_ns[1]);
 
     // one value moves: that element scrambles again and the other is left alone
     var moved = first;
     moved.elements[0].body.text.span = try moved.addText("21.1C");
     s.install(moved, 9000 * std.time.ns_per_ms);
-    try std.testing.expectEqual(@as(u64, 9000 * std.time.ns_per_ms), s.started_ns[0]);
-    try std.testing.expectEqual(@as(u64, 1000 * std.time.ns_per_ms), s.started_ns[1]);
+    try std.testing.expectEqual(@as(u64, 9000 * std.time.ns_per_ms), s.clocks.started_ns[0]);
+    try std.testing.expectEqual(@as(u64, 1000 * std.time.ns_per_ms), s.clocks.started_ns[1]);
 }
 
 test "an icon draws its art in the element's colour, and an unknown index draws nothing" {
@@ -2007,6 +2060,84 @@ test "a tile drops a label it cannot fit whole rather than cutting it off at the
     }
     try std.testing.expectEqual(@as(usize, 0), accent); // no half-written label
     try std.testing.expect(bright > 5); // the reading is still there, and still beside the glyph
+}
+
+test "a second renderer given the published ages draws the phase the first one is drawing" {
+    // the console's preview installs the document whenever it fetched it, so without the ages
+    // every animated element is permanently out of phase with the panel. this is that fix, and
+    // the assertion is the one that matters: the same document, installed 400 ms apart, drawn at
+    // the same instant, byte for byte.
+    var doc = Document{};
+    const t = try doc.addText("20.4C");
+    const u = try doc.addText("living");
+    const g = try doc.addData(&[_]u8{ 10, 40, 20, 80, 30 });
+    try doc.add(.{ .id = Id.init("a"), .anim = .{ .kind = .scramble, .ms = 2500 }, .colour = white, .body = .{ .text = .{ .span = t } } });
+    try doc.add(.{ .id = Id.init("b"), .box = .{ .y = 8 }, .anim = .{ .kind = .hue, .ms = 3000 }, .colour = white, .body = .{ .text = .{ .span = u } } });
+    try doc.add(.{ .id = Id.init("c"), .box = .{ .x = 40, .y = 8, .w = 12, .h = 8 }, .anim = .{ .kind = .sweep, .ms = 900 }, .colour = white, .body = .{ .sparkline = .{ .span = g } } });
+
+    const installed_at = 1000 * std.time.ns_per_ms;
+    const drawn_at = 1400 * std.time.ns_per_ms; // the 400 ms that made 81.7% of the bytes differ
+    var panel = State{};
+    panel.install(doc, installed_at);
+
+    var panel_rgb: geometry.Rgb = undefined;
+    panel.render(drawn_at, &panel_rgb);
+
+    // what GET /canvas publishes at the moment the console asks
+    const doc_age = panel.clocks.docAgeMs(drawn_at);
+    var element_age: [max_elements]u32 = undefined;
+    for (0..doc.count) |i| element_age[i] = panel.clocks.elementAgeMs(i, drawn_at);
+    try std.testing.expectEqual(@as(u32, 400), doc_age);
+    try std.testing.expectEqual(@as(u32, 400), element_age[0]);
+
+    // the console: install now, then back-date to what the device reported
+    var preview = State{};
+    preview.install(doc, drawn_at);
+    var naive: geometry.Rgb = undefined;
+    preview.render(drawn_at, &naive);
+    try std.testing.expect(!std.mem.eql(u8, &panel_rgb, &naive)); // the bug this fixes
+
+    preview.clocks.backdate(doc_age, element_age[0..doc.count], drawn_at);
+    var fixed_rgb: geometry.Rgb = undefined;
+    preview.render(drawn_at, &fixed_rgb);
+    try std.testing.expectEqualSlices(u8, &panel_rgb, &fixed_rgb);
+}
+
+test "the ages a patch leaves behind describe each element, not just the document" {
+    // install() restarts only the elements whose value changed, so one age for the whole document
+    // cannot describe the arrival motions after a patch. this is why both are published.
+    var first = Document{};
+    const a = try first.addText("one");
+    const b = try first.addText("two");
+    try first.add(.{ .id = Id.init("a"), .anim = .{ .kind = .scramble, .ms = 600 }, .body = .{ .text = .{ .span = a } } });
+    try first.add(.{ .id = Id.init("b"), .anim = .{ .kind = .scramble, .ms = 600 }, .body = .{ .text = .{ .span = b } } });
+    var s = State{};
+    s.install(first, 1000 * std.time.ns_per_ms);
+
+    // the same document with only the second element's text changed, 3 s later
+    var second = Document{};
+    const c = try second.addText("one");
+    const d = try second.addText("three");
+    try second.add(.{ .id = Id.init("a"), .anim = .{ .kind = .scramble, .ms = 600 }, .body = .{ .text = .{ .span = c } } });
+    try second.add(.{ .id = Id.init("b"), .anim = .{ .kind = .scramble, .ms = 600 }, .body = .{ .text = .{ .span = d } } });
+    s.install(second, 4000 * std.time.ns_per_ms);
+
+    const now = 5000 * std.time.ns_per_ms;
+    try std.testing.expectEqual(@as(u32, 1000), s.clocks.docAgeMs(now)); // the document is 1 s old
+    try std.testing.expectEqual(@as(u32, 4000), s.clocks.elementAgeMs(0, now)); // untouched, 4 s
+    try std.testing.expectEqual(@as(u32, 1000), s.clocks.elementAgeMs(1, now)); // restarted, 1 s
+}
+
+test "backdating falls back to the document's age for an element it was not given one for" {
+    var c = Clocks{};
+    const now = 10_000 * std.time.ns_per_ms;
+    c.backdate(250, &[_]u32{ 900, 100 }, now);
+    try std.testing.expectEqual(@as(u32, 250), c.docAgeMs(now));
+    try std.testing.expectEqual(@as(u32, 900), c.elementAgeMs(0, now));
+    try std.testing.expectEqual(@as(u32, 100), c.elementAgeMs(1, now));
+    try std.testing.expectEqual(@as(u32, 250), c.elementAgeMs(2, now));
+    c.backdate(0, &[_]u32{}, 5); // an age older than the clock itself saturates rather than wraps
+    try std.testing.expectEqual(@as(u32, 0), c.docAgeMs(5));
 }
 
 test "a patch moves a tile's value and leaves its label alone" {

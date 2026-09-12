@@ -460,6 +460,13 @@ label is layout and waits for a `PUT`.
 text, 1,024 bytes of sample data, 52 samples per sparkline (one per panel column). a document is
 about two kilobytes on the wire and travels in one ipc packet, whole.
 
+a request body is capped at 8,192 bytes, which is what actually bounds a document: nothing bigger
+can be put there. the read-back is wordier than the put — the device's canonical form plus each
+element's `age_ms` — so netd answers from a 12 kb buffer. it was 3,584, and at that size a client
+could create a document it was then unable to read back: a full one of 24 animated elements with
+the sample pool loaded measures **5,957 bytes**. that cost 45 kb of netd's bss (four connection
+buffers and the shared json buffer), taking it from 356 kb to 401 kb.
+
 **who holds it.** the supervisor, because it is state a client reads back and the renderer is the
 thing that restarts: kill the renderer and the document is pushed again when it comes up, which is
 verified rather than assumed. `revision` counts accepted changes.
@@ -471,6 +478,26 @@ jffs2 writes a day. so a restart restores the layout with the values its last fu
 which is what any dashboard shows until its next update. `saved_revision` in `GET /canvas` says what
 is on disk, the same confirmation the settings give: it trails `revision` after a patch and catches
 up at the next layout change.
+
+**the animation clocks, and why the document alone is not enough.** the device starts a
+document's animations when it installs it: one `epoch_ns` for the continuous motions (hue, pulse,
+blink, bounce) and one `started_ns` per element for the arrival ones (scramble, typewriter, sweep).
+none of that is in the document — a document is a declaration and says nothing about when it was
+said — so a second renderer of the same document installs at its own instant and every animated
+element is permanently out of phase with the panel. the console's preview is exactly that second
+renderer, and it measured the gap: the same document installed 400 ms apart and drawn at the same
+instant differed by 136 bytes on a scramble, 146 on a blink, 219 on a hue, and not at all with no
+animation.
+
+so `GET /canvas` publishes **`age_ms`**: one for the document, and one on each element. both are
+needed, because installing restarts only the elements whose value actually changed — after a
+`PATCH` of one reading, that element's clock is young and its neighbours' are not. a client
+back-dates its own install by those ages and the phases line up; `canvas.Clocks.backdate` is that
+operation, and an element it is not given an age for falls back to the document's.
+
+`PUT` **accepts `age_ms` and ignores it**. the device owns when an animation started, but a client
+that reads a document and puts it back — which is how the demo reels restore what they found —
+would otherwise be sending a field the schema refused.
 
 the file is binary rather than json because half of it is pixels — the readable view of a canvas is
 `GET /canvas`, and `config.json` stays the one a person would edit. a document of one tile with an
@@ -992,7 +1019,7 @@ api is for programs, not pages. `allowed_origins` can only be set by editing
 | `GET` | `/sprites` | control | | `{"slots":8,"sprites":[{"id","width","height"}…]}` |
 | `PUT` | `/sprites/{id}` | admin | `application/octet-stream`, 192 or 768 bytes of rgb888 | the sprite list |
 | `DELETE` | `/sprites/{id}` | control | | the sprite list |
-| `GET` | `/canvas` | control | | the [document](#the-canvas) as held, plus `limits` |
+| `GET` | `/canvas` | control | | the [document](#the-canvas) as held, plus `limits` and the `age_ms` of every animation clock |
 | `PUT` | `/canvas` | admin | `{"elements":[…]}` | the document as stored |
 | `PATCH` | `/canvas` | control | `{"values":[{"id":"…","text"/"data"/"data_hex"/"value"/"colour"}…]}` | the document as stored |
 | `DELETE` | `/canvas` | control | | the emptied document |
