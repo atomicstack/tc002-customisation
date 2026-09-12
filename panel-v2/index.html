@@ -899,7 +899,10 @@ function fillClockSelects() {
   const fonts = cat.fonts || S.CLOCK_FONTS, modes = cat.colour_modes || ['solid', 'gradient'], grads = cat.gradients || ['horizontal', 'vertical', 'diagonal'];
   fillSelect($('kfont'), fonts, $('kfont').value); fillSelect($('kgrad'), grads, $('kgrad').value);
   fillSelect($('cfont'), fonts, $('cfont').value); fillSelect($('cmode'), modes, $('cmode').value); fillSelect($('cgrad'), grads, $('cgrad').value);
-  const ipModes = (SCENES && SCENES.ip && SCENES.ip.modes) || ['lines', 'mini', 'scroll', 'big'];
+  // SCENES.ip.modes is its own top-level block, fed by the ip.Mode enum and independent of the
+  // base scenes, so it survives ip retiring as a base. no fallback list: an empty select is an
+  // honest "the device has not told us", a stale hard-coded one is a lie
+  const ipModes = (SCENES && SCENES.ip && SCENES.ip.modes) || [];
   fillSelect($('kip'), ipModes, $('kip').value); fillSelect($('cip'), ipModes, $('cip').value);
   // the digit styles come from the clock's own parameter table, the only place they are published
   const table = (SCENES && SCENES.parameters && SCENES.parameters.clock) || [];

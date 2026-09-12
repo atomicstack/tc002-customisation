@@ -93,11 +93,22 @@ export fn frame(now_ms: f64, wall_ms: f64) f64 {
 
 // ---- commands ----
 
+/// an enum value from its numeric index, or null when the index is not one this build has.
+/// every count here comes from the enum itself: the console sends indices into the lists it read
+/// out of `generatorNames` and friends, and those lists change whenever the runtime's enums do.
+fn enumOf(comptime E: type, v: i64) ?E {
+    const fields = @typeInfo(E).@"enum".fields;
+    if (v < 0 or v >= fields.len) return null;
+    return @enumFromInt(@as(@typeInfo(E).@"enum".tag_type, @intCast(v)));
+}
+
 fn baseOf(v: u32) arbiter.Base {
-    return if (v < 3) @enumFromInt(v) else .art;
+    // the default is whatever the enum calls zero, not a name written down here: the bases are
+    // being renumbered into the panel's left/middle/right order, and `ip` is leaving them
+    return enumOf(arbiter.Base, v) orelse @enumFromInt(0);
 }
 fn generatorOf(v: u32) scene.Generator {
-    return if (v < scene.generator_count) @enumFromInt(v) else .popsquares;
+    return enumOf(scene.Generator, v) orelse @enumFromInt(0);
 }
 
 export fn setBase(v: u32, now_ms: f64) void {
@@ -121,18 +132,18 @@ export fn setIp(has: u32, a: u32, b: u32, c: u32, d: u32, now_ms: f64) void {
     _ = arb.apply(.{ .ip_changed = addr }, toNs(now_ms));
 }
 export fn setIpMode(v: u32, now_ms: f64) void {
-    const mode: ip.Mode = if (v < 4) @enumFromInt(v) else .lines;
+    const mode = enumOf(ip.Mode, v) orelse return;
     _ = arb.apply(.{ .set_ip_mode = mode }, toNs(now_ms));
 }
 
 /// every field of the clock style at once; -1 in any slot leaves that field alone.
 export fn setClockStyle(font: i32, mode: i32, gradient: i32, spread: i32, digit: i32, colour: i32, colour2: i32, now_ms: f64) void {
     var patch: clock.StylePatch = .{};
-    if (font >= 0 and font < 6) patch.font = @enumFromInt(@as(u8, @intCast(font)));
-    if (mode >= 0 and mode < 2) patch.mode = @enumFromInt(@as(u8, @intCast(mode)));
-    if (gradient >= 0 and gradient < 3) patch.gradient = @enumFromInt(@as(u8, @intCast(gradient)));
+    patch.font = enumOf(clockfont.Font, font);
+    patch.mode = enumOf(clock.ColourMode, mode);
+    patch.gradient = enumOf(clock.Gradient, gradient);
     if (spread >= 0) patch.spread = @intCast(@min(spread, 255));
-    if (digit >= 0 and digit < 3) patch.digit = @enumFromInt(@as(u8, @intCast(digit)));
+    patch.digit = enumOf(clockfont.DigitStyle, digit);
     if (colour >= 0) patch.colour = rgbOf(colour);
     if (colour2 >= 0) patch.colour2 = rgbOf(colour2);
     _ = arb.apply(.{ .set_clock_style = patch }, toNs(now_ms));
@@ -172,18 +183,52 @@ export fn rawFrame(duration_s: u32, now_ms: f64) u32 {
 var tz_ok: bool = true;
 export fn setTz(len: u32) i32 {
     const text = scratch[0..@min(len, scratch.len)];
+    // only the rule changes. rebuilding clock.State here reset `style` to its default, so every
+    // compose that re-applied the timezone silently threw away the font and colours
     rule = tz.parse(text) catch {
         tz_ok = false;
         rule = tz.utc;
-        arb.clock = clock.State.init(rule);
+        arb.clock.rule = rule;
         return -1;
     };
     tz_ok = true;
-    arb.clock = clock.State.init(rule);
+    arb.clock.rule = rule;
     return rule.std_offset_s;
 }
 export fn tzOk() u32 {
     return @intFromBool(tz_ok);
+}
+
+// ---- the ip layouts, straight from the scene ----
+//
+// `ip` is leaving the base scenes: it becomes a page of the device menu, and the panel's third
+// button selects the canvas instead. ip.State and its four layouts do not move, and the console
+// still has to show what a layout the user picks will look like, so it renders the scene directly
+// rather than through a base that will not be there. this never needed a base to begin with.
+
+var ip_preview: ip.State = .{};
+
+/// render one ip layout into the frame window. returns 0 for a layout index this build does not
+/// have. `has` false draws the scene's own `no ip`; a negative colour keeps the current one.
+export fn renderIpLayout(mode: u32, has: u32, a: u32, b: u32, c: u32, d: u32, colour: i32, now_ms: f64) u32 {
+    const m = enumOf(ip.Mode, mode) orelse return 0;
+    ip_preview.addr = if (has != 0) .{ @intCast(a & 0xff), @intCast(b & 0xff), @intCast(c & 0xff), @intCast(d & 0xff) } else null;
+    if (colour >= 0) ip_preview.colour = rgbOf(colour);
+    ip_preview.mode = m;
+    ip_preview.renderWith(m, toNs(now_ms), &out_rgb);
+    return 1;
+}
+
+/// how often that layout wants redrawing: milliseconds, or -1 when it is static.
+export fn ipLayoutCadenceMs(mode: u32) f64 {
+    const m = enumOf(ip.Mode, mode) orelse return -1;
+    var st = ip_preview;
+    st.mode = m;
+    return switch (st.cadence()) {
+        .continuous => |period| toMs(period),
+        .at_wall_ns => 0,
+        .idle => -1,
+    };
 }
 
 // ---- input, so the preview can drive the menu the way the dial does ----

@@ -201,6 +201,21 @@
     return { rgb: frameBytes().slice(), cadenceMs: cadence < 0 ? null : cadence, label: label(status, l) };
   }
 
+  /* ---------- the ip layouts, without a base ----------
+     `ip` is leaving the base scenes for a page of the device menu, but ip.State and its four
+     layouts stay where they are. previewing a layout never needed a base, so this asks the scene
+     directly and keeps working across that change. */
+  function renderIpLayout(mode, ip, nowMs, colour) {
+    const e = need();
+    const i = typeof mode === 'number' ? mode : IP_MODES.indexOf(mode);
+    const o = ipOctets(ip);
+    const c = colour == null ? -1 : (Array.isArray(colour) ? (colour[0] << 16) | (colour[1] << 8) | colour[2] : colour);
+    const ok = e.renderIpLayout(i, o ? 1 : 0, o ? o[0] : 0, o ? o[1] : 0, o ? o[2] : 0, o ? o[3] : 0, c, nowMs || 0);
+    if (!ok) throw new Error(`no such ip layout: ${mode}`);
+    const cadence = e.ipLayoutCadenceMs(i);
+    return { rgb: frameBytes().slice(), cadenceMs: cadence < 0 ? null : cadence };
+  }
+
   /* ---------- scene parameters, straight from the arbiter's own tables ---------- */
   function sceneParams() {
     const e = need();
@@ -214,7 +229,7 @@
 
   const api = {
     WIDTH, HEIGHT, PIXELS, RGB_BYTES, WHITE, black, pixelOffset,
-    ready, loaded, buildLut, tzParse, TZ_UTC, Art, compose, sceneParams,
+    ready, loaded, buildLut, tzParse, TZ_UTC, Art, compose, sceneParams, renderIpLayout,
     DEFAULT_CLOCK_STYLE,
     /* enum catalogues: live values read out of the wasm at load, so they cannot drift */
     get BASES() { return BASES; },

@@ -34,7 +34,6 @@ const clockStatus = extra => ({
   base: 'clock', overlay: 'none', generator: 'popsquares', brightness: 100,
   clock: { font: 'classic', colour_mode: 'solid', colour: 'ffffff', colour2: 'ffffff', gradient: 'horizontal', ...extra },
 });
-const ipStatus = (mode, ip = '192.168.1.42') => ({ base: 'ip', overlay: 'none', generator: 'popsquares', brightness: 100, ip, ip_mode: mode });
 
 function both(status, extra = {}) {
   W.reset(0, 0, 1);
@@ -104,6 +103,20 @@ test('a staged frame is shown as-is and never reaches the arbiter', () => {
   assert.deepEqual(c.rgb, pending);
 });
 
+test('an index past the end of an enum is ignored, not coerced to a neighbour', () => {
+  // the wasm takes enum values as indices into the lists the console read out of it, and decides
+  // what is in range from the enum itself. a count written into this shim would go stale the next
+  // time the runtime gains or retires a variant, which is the whole bug being designed out
+  W.reset(1, 0, 1);
+  const styled = W.compose(clockStatus({ font: 'big' }), localWith(W), WALL);
+  const e = W.exports;
+  e.setClockStyle(99, -1, -1, -1, -1, -1, -1, WALL);   // no such font: leave the style alone
+  const after = W.compose(clockStatus({ font: 'big' }), localWith(W), WALL);
+  assert.equal(bytesDiffering(styled.rgb, after.rgb), 0, 'a bogus font index changed the render');
+  assert.equal(W.renderIpLayout(W.IP_MODES.length - 1, '1.2.3.4', WALL).rgb.length, W.RGB_BYTES);
+  assert.throws(() => W.renderIpLayout(W.IP_MODES.length, '1.2.3.4', WALL), /no such ip layout/);
+});
+
 /* ---------- cadence: when the console is told to come back ---------- */
 
 test('cadence follows the scene, not a fixed timer', () => {
@@ -111,11 +124,13 @@ test('cadence follows the scene, not a fixed timer', () => {
   const clock = W.compose(clockStatus(), localWith(W), WALL);
   assert.equal(clock.cadenceMs, 1000, 'the clock redraws on the next whole second');
 
-  const still = W.compose(ipStatus('lines'), localWith(W), WALL);
-  assert.equal(still.cadenceMs, null, 'a static ip layout needs no timer');
+  assert.equal(W.renderIpLayout('lines', '192.168.1.42', WALL).cadenceMs, null,
+               'a static ip layout needs no timer');
+  const scrolling = W.renderIpLayout('scroll', '192.168.1.42', WALL).cadenceMs;
+  assert.ok(scrolling > 0 && scrolling < 100, `a scrolling layout wants frames, got ${scrolling}`);
 
-  const scrolling = W.compose(ipStatus('scroll'), localWith(W), WALL);
-  assert.ok(scrolling.cadenceMs > 0 && scrolling.cadenceMs < 100, `a scrolling layout wants frames, got ${scrolling.cadenceMs}`);
+  const art = W.compose({ base: 'art', overlay: 'none', generator: 'popsquares', brightness: 100 }, localWith(W), WALL);
+  assert.ok(art.cadenceMs > 10 && art.cadenceMs < 20, `art runs at ~60 hz, got ${art.cadenceMs}`);
 });
 
 /* ---------- parity with the hand-written port, where it was still faithful ---------- */
@@ -129,10 +144,30 @@ test('every clock font sim.js implements is pixel-identical', () => {
 });
 
 test('the ip lines layout and the no-address case are pixel-identical', () => {
-  for (const status of [ipStatus('lines'), ipStatus('lines', null)]) {
-    const { js, wasm } = both(status);
-    assert.equal(bytesDiffering(js.rgb, wasm.rgb), 0);
+  // driven through the scene, not through a base: `ip` is retiring as a base scene and becoming a
+  // page of the device menu, and previewing a layout never needed a base to begin with
+  for (const addr of ['192.168.1.42', null]) {
+    const wasm = W.renderIpLayout('lines', addr, WALL);
+    const js = JS.black();
+    JS.renderIp(js, JS.ipFromString(addr));
+    assert.equal(bytesDiffering(js, wasm.rgb), 0, `ip lines differs for ${addr}`);
+    assert.equal(wasm.cadenceMs, null, 'a static layout wants no timer');
   }
+});
+
+test('every ip layout renders and only the scrolling ones ask for frames', () => {
+  const seen = new Map();
+  for (const mode of W.IP_MODES) {
+    const { rgb, cadenceMs } = W.renderIpLayout(mode, '192.168.1.42', WALL);
+    assert.ok(lit(rgb) > 0, `${mode} drew nothing`);
+    for (const [other, prev] of seen) {
+      assert.notEqual(bytesDiffering(prev, rgb), 0, `${mode} draws the same pixels as ${other}`);
+    }
+    seen.set(mode, rgb);
+    const scrolls = mode === 'scroll' || mode === 'big';
+    assert.equal(cadenceMs !== null, scrolls, `${mode} cadence should${scrolls ? '' : ' not'} be set`);
+  }
+  assert.throws(() => W.renderIpLayout('nonesuch', '1.2.3.4', WALL), /no such ip layout/);
 });
 
 test('notifications are pixel-identical, centred and scrolling', () => {
@@ -163,12 +198,13 @@ test('drift: sim.js is missing generators and clock fonts the runtime has', () =
   assert.equal(W.CLOCK_FONTS.length, 6, 'the runtime grew the block and hires fonts');
 });
 
-test('drift: sim.js draws every ip layout as `lines`', () => {
-  const linesLit = lit(both(ipStatus('lines')).js.rgb);
-  for (const mode of ['mini', 'scroll', 'big']) {
-    const { js, wasm } = both(ipStatus(mode));
-    assert.equal(lit(js.rgb), linesLit, `sim.js should be ignoring ip_mode ${mode}`);
-    assert.notEqual(bytesDiffering(js.rgb, wasm.rgb), 0, `ip ${mode} should differ until sim.js goes`);
+test('drift: sim.js has only one ip layout, and draws it whatever the mode', () => {
+  const jsLines = JS.black();
+  JS.renderIp(jsLines, JS.ipFromString('192.168.1.42'));
+  for (const mode of W.IP_MODES) {
+    const wasm = W.renderIpLayout(mode, '192.168.1.42', WALL);
+    const same = bytesDiffering(jsLines, wasm.rgb) === 0;
+    assert.equal(same, mode === 'lines', `sim.js's only layout should match ${mode} iff it is lines`);
   }
 });
 
