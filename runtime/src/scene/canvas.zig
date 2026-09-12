@@ -643,20 +643,42 @@ fn drawTile(rgb: *geometry.Rgb, d: *const Document, e: *const Element, sprites: 
     const h = e.box.height(geometry.height - e.box.y);
     const label = d.textOf(t.label);
     const value = d.textOf(t.value);
-    const glyph_w: i32 = icons.size;
+    // whatever is actually drawn: a built-in icon is 8x8, an uploaded sprite is its own size
+    var glyph_w: i32 = icons.size;
+    var glyph_h: i32 = icons.size;
+    if (t.sprite_id.len > 0) {
+        if (sprites.find(t.sprite_id.slice())) |sp| {
+            glyph_w = sp.w;
+            glyph_h = sp.h;
+        }
+    }
+    const line_h: i32 = @intCast(clockfont.glyphHeight(.mini));
+    const vw: i32 = @intCast(clockfont.textWidth(.mini, value));
+    const lw: i32 = @intCast(clockfont.textWidth(.mini, label));
 
     const side_by_side = w >= glyph_w + 12 and label.len > 0;
     if (side_by_side) {
-        drawIconOrSprite(rgb, e, sprites, x0, y0 + @divTrunc(h - glyph_w, 2), colour);
+        drawIconOrSprite(rgb, e, sprites, x0, y0 + @divTrunc(h - glyph_h, 2), colour);
         const tx = x0 + glyph_w + 2;
-        clockfont.blit(rgb, tx, y0 + @divTrunc(h, 2) - 6, .mini, label, clockfont.Solid{ .colour = t.accent });
-        clockfont.blit(rgb, tx, y0 + @divTrunc(h, 2), .mini, value, clockfont.Solid{ .colour = colour });
+        // the label earns its line only if it fits whole and the box is tall enough for two of
+        // them. a label cut off mid-letter reads as a fault, and one hung outside an 8 px box
+        // lands on the tile above
+        if (lw <= w - (glyph_w + 2) and h >= 2 * line_h + 1) {
+            clockfont.blit(rgb, tx, y0 + @divTrunc(h, 2) - line_h - 1, .mini, label, clockfont.Solid{ .colour = t.accent });
+            clockfont.blit(rgb, tx, y0 + @divTrunc(h, 2), .mini, value, clockfont.Solid{ .colour = colour });
+        } else {
+            clockfont.blit(rgb, tx, y0 + @divTrunc(h - line_h, 2), .mini, value, clockfont.Solid{ .colour = colour });
+        }
         return;
     }
-    // stacked: the glyph on top, the value under it, both centred in the box
-    const vw: i32 = @intCast(clockfont.textWidth(.mini, value));
-    drawIconOrSprite(rgb, e, sprites, x0 + @divTrunc(w - glyph_w, 2), y0, colour);
-    clockfont.blit(rgb, x0 + @divTrunc(w - vw, 2), y0 + glyph_w + 1, .mini, value, clockfont.Solid{ .colour = colour });
+    // stacked: the glyph on top, the value under it, both centred in the box -- and if the box is
+    // too short to hold both, the reading is the half worth keeping
+    if (h >= glyph_h + 1 + line_h) {
+        drawIconOrSprite(rgb, e, sprites, x0 + @divTrunc(w - glyph_w, 2), y0, colour);
+        clockfont.blit(rgb, x0 + @divTrunc(w - vw, 2), y0 + glyph_h + 1, .mini, value, clockfont.Solid{ .colour = colour });
+    } else {
+        clockfont.blit(rgb, x0 + @divTrunc(w - vw, 2), y0 + @divTrunc(h - line_h, 2), .mini, value, clockfont.Solid{ .colour = colour });
+    }
 }
 
 fn drawIconOrSprite(rgb: *geometry.Rgb, e: *const Element, sprites: *const Sprites, x: i32, y: i32, colour: [3]u8) void {
@@ -1915,6 +1937,76 @@ test "a tile lays itself out: side by side when there is room, stacked when ther
         if (rgb[i * 3] != 0) try std.testing.expect(i % geometry.width < 18); // stays in its tile
     }
     try std.testing.expectEqual(@as(usize, 0), narrow_accent); // the label is dropped, not squeezed
+}
+
+test "a tile stays inside a box too short for two lines of text" {
+    // `row n of 2` is 8 px high: the two-line layout hung its label above the box and its value
+    // below it, so a pair of stacked tiles wrote over each other
+    var s = State{};
+    const l = try s.doc.addText("inside");
+    const v = try s.doc.addText("21.4C");
+    try s.doc.add(.{ .box = Box.row(1, 2), .colour = white, .body = .{ .tile = .{
+        .icon = icons.indexOf("thermometer").?,
+        .label = l,
+        .value = v,
+        .accent = .{ 80, 80, 80 },
+    } } });
+    var rgb: geometry.Rgb = undefined;
+    s.render(0, &rgb);
+    try std.testing.expect(lit(&rgb) > 10); // it still draws something
+    for (0..geometry.pixels) |i| {
+        if (rgb[i * 3] == 0 and rgb[i * 3 + 1] == 0 and rgb[i * 3 + 2] == 0) continue;
+        try std.testing.expect(i / geometry.width >= 8); // the lower half is all it owns
+    }
+}
+
+test "a tile puts its text past a 16x16 picture, not across it" {
+    // the glyph column was always the icon's 8 px, so an uploaded sprite twice that size had the
+    // label and value written over its right half
+    var s = State{};
+    var sp = Sprite{ .id = Id.init("big"), .w = 16, .h = 16 };
+    for (0..16 * 16) |i| sp.rgb[i * 3] = 200; // solid red, so any other channel is text
+    try s.sprites.put(sp);
+    const l = try s.doc.addText("earth");
+    const v = try s.doc.addText("online");
+    try s.doc.add(.{ .box = .{ .x = 0, .y = 0, .w = 52, .h = 16 }, .colour = .{ 0, 255, 0 }, .body = .{ .tile = .{
+        .sprite_id = Id.init("big"),
+        .label = l,
+        .value = v,
+        .accent = .{ 0, 0, 255 },
+    } } });
+    var rgb: geometry.Rgb = undefined;
+    s.render(0, &rgb);
+    var text_px: usize = 0;
+    for (0..geometry.pixels) |i| {
+        if (rgb[i * 3 + 1] == 0 and rgb[i * 3 + 2] == 0) continue; // red is the picture
+        text_px += 1;
+        try std.testing.expect(i % geometry.width >= 16);
+    }
+    try std.testing.expect(text_px > 10);
+}
+
+test "a tile drops a label it cannot fit whole rather than cutting it off at the edge" {
+    var s = State{};
+    const l = try s.doc.addText("living room"); // wider than the 42 px left beside the glyph
+    const v = try s.doc.addText("21.4C");
+    try s.doc.add(.{ .box = .{ .x = 0, .y = 0, .w = 52, .h = 16 }, .colour = white, .body = .{ .tile = .{
+        .icon = icons.indexOf("thermometer").?,
+        .label = l,
+        .value = v,
+        .accent = .{ 80, 80, 80 },
+    } } });
+    var rgb: geometry.Rgb = undefined;
+    s.render(0, &rgb);
+    var accent: usize = 0;
+    var bright: usize = 0;
+    for (0..geometry.pixels) |i| {
+        const c = [3]u8{ rgb[i * 3], rgb[i * 3 + 1], rgb[i * 3 + 2] };
+        if (std.meta.eql(c, [3]u8{ 80, 80, 80 })) accent += 1;
+        if (std.meta.eql(c, white) and i % geometry.width >= 8) bright += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 0), accent); // no half-written label
+    try std.testing.expect(bright > 5); // the reading is still there, and still beside the glyph
 }
 
 test "a patch moves a tile's value and leaves its label alone" {
