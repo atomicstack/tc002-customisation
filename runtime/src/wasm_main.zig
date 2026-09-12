@@ -288,6 +288,29 @@ export fn canvasRejectReason() u32 {
     return copyOut(canvas_reject[0..canvas_reject_len]);
 }
 
+/// the ages GET /canvas publishes, one per element, written here by the console before it calls
+/// `backdateCanvas`. a u32 window rather than the scratch buffer because scratch still holds the
+/// document json at that point.
+var canvas_ages: [canvas.max_elements]u32 = [_]u32{0} ** canvas.max_elements;
+
+export fn canvasAgesPtr() [*]u32 {
+    return &canvas_ages;
+}
+export fn canvasAgesLen() u32 {
+    return canvas.max_elements;
+}
+
+/// set the animation clocks from the ages the device published, so the preview draws the phase
+/// the panel is drawing rather than starting every animation at the moment it happened to fetch.
+/// call after `installCanvas`, which starts the clocks at now; this moves them back.
+/// the runtime does the arithmetic — `Clocks.backdate` is the counterpart of the accounting the
+/// supervisor runs to produce the ages, so both sides cannot drift apart.
+export fn backdateCanvas(count: u32, doc_age_ms: u32, now_ms: f64) void {
+    const n = @min(count, canvas_ages.len);
+    arb.canvas.clocks.backdate(doc_age_ms, canvas_ages[0..n], toNs(now_ms));
+    arb.dirty = true;
+}
+
 /// empty the canvas, as DELETE /canvas does.
 export fn clearCanvas(now_ms: f64) void {
     arb.canvas.install(.{}, toNs(now_ms));

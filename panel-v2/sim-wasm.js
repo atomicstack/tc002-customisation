@@ -175,8 +175,11 @@
     /* the canvas document, as the page last read it from GET /canvas */
     const canvasKey = local && local.canvas ? JSON.stringify(local.canvas) : null;
     if (canvasKey !== applied.canvas) {
-      if (canvasKey) lastCanvasResult = installCanvas(canvasKey, nowMs);
-      else { e.clearCanvas(nowMs); lastCanvasResult = { ok: true }; }
+      // install as of when the document was read, not as of now: the ages it carries were
+      // measured then, and a fetch takes long enough to matter to a 900 ms blink
+      const readAt = local && Number.isFinite(local.canvasAt) ? local.canvasAt : nowMs;
+      if (canvasKey) lastCanvasResult = installCanvas(canvasKey, readAt);
+      else { e.clearCanvas(nowMs); lastCanvasResult = { ok: true, backdated: true }; }
       applied.canvas = canvasKey;
     }
 
@@ -257,17 +260,41 @@
      the canvas's content is not in /status: an integration PUTs a document and the panel draws
      it. the console fetches GET /canvas and hands the bytes to the runtime's own parser, so the
      document model lives in one place, on the device's terms. */
+  /* a GET /canvas body is not a PUT body: GET adds `revision`, `saved_revision` and a top-level
+     `age_ms`, and the runtime's parser takes only `elements` (an element's own `age_ms` it does
+     accept and ignore). the whole document comes in here so the ages can be read off it, and only
+     the part the parser knows goes to the parser. */
   function installCanvas(doc, nowMs) {
     const e = need();
-    const text = typeof doc === 'string' ? doc : JSON.stringify(doc);
-    if (e.installCanvas(writeScratch(text), nowMs || 0)) return { ok: true };
-    const len = e.canvasRejectReason();
-    return { ok: false, reason: len ? readScratch(len) : 'the document was refused' };
+    const parsed = typeof doc === 'string' ? JSON.parse(doc) : doc;
+    const elements = parsed && Array.isArray(parsed.elements) ? parsed.elements : [];
+    const text = JSON.stringify({ elements });
+    if (!e.installCanvas(writeScratch(text), nowMs || 0)) {
+      const len = e.canvasRejectReason();
+      return { ok: false, reason: len ? readScratch(len) : 'the document was refused' };
+    }
+    // the install started every clock at now; move them back to where the device's are. the ages
+    // are what GET /canvas publishes — one for the document, one per element, because a PATCH
+    // restarts only the elements whose value changed. a runtime too old to publish them leaves
+    // the clocks at now and the animations run out of phase, as they did before it was added
+    const docAge = parsed && Number.isFinite(parsed.age_ms) ? parsed.age_ms >>> 0 : null;
+    if (docAge !== null) {
+      const win = new Uint32Array(e.memory.buffer, e.canvasAgesPtr(), e.canvasAgesLen());
+      const n = Math.min(elements.length, win.length);
+      for (let i = 0; i < n; i++) {
+        const a = elements[i] && elements[i].age_ms;
+        win[i] = Number.isFinite(a) ? a >>> 0 : docAge;   // no age of its own: the document's
+      }
+      e.backdateCanvas(n, docAge, nowMs || 0);
+    }
+    return { ok: true, backdated: docAge !== null };
   }
   const clearCanvas = nowMs => need().clearCanvas(nowMs || 0);
   const canvasEmpty = () => need().canvasEmpty() !== 0;
   /* how many elements declare a motion; the device's phase for them is not published */
   const canvasAnimated = () => need().canvasAnimatedCount();
+  /* whether the last document arrived with the ages that let the clocks be matched */
+  const canvasBackdated = () => lastCanvasResult.ok && lastCanvasResult.backdated === true;
 
   /* ---------- agreement: the shadow, checked against the device ----------
      /screen returns the frame the panel is actually showing. rather than displaying it instead of
@@ -275,16 +302,32 @@
      you have to trust, and the figure says at a glance whether the preview can be believed. */
   function agreement(deviceRgb, simRgb) {
     if (!deviceRgb || !simRgb || deviceRgb.length !== simRgb.length) return null;
-    let same = 0, deviceLit = 0, simLit = 0;
+    let same = 0, deviceLit = 0, simLit = 0, maxDelta = 0, pixelsDiffering = 0;
     for (let i = 0; i < deviceRgb.length; i++) {
       if (deviceRgb[i] === simRgb[i]) same++;
+      else maxDelta = Math.max(maxDelta, Math.abs(deviceRgb[i] - simRgb[i]));
       if (deviceRgb[i]) deviceLit++;
       if (simRgb[i]) simLit++;
+    }
+    // whether the same pixels are lit, separately from what colour they are. a hue or pulse
+    // animation sampled a few milliseconds apart draws the same shape in a slightly advanced
+    // colour: every lit byte differs, sometimes by a lot, while the picture is the same picture
+    for (let p = 0; p < deviceRgb.length; p += 3) {
+      const d = deviceRgb[p] | deviceRgb[p + 1] | deviceRgb[p + 2];
+      const s = simRgb[p] | simRgb[p + 1] | simRgb[p + 2];
+      if (!d !== !s) pixelsDiffering++;
     }
     return {
       exact: same === deviceRgb.length,
       fraction: same / deviceRgb.length,
       bytesDiffering: deviceRgb.length - same,
+      // how far off, not just how often: a hue or pulse animation sampled a few milliseconds
+      // apart differs by one unit per channel on every lit pixel, which counts as a large
+      // fraction of bytes differing while being invisible. the size of the difference is what
+      // says whether the shadow is drawing the same thing
+      maxDelta,
+      pixelsDiffering,
+      sameShape: pixelsDiffering === 0,
       deviceLit,
       simLit,
     };
@@ -305,6 +348,7 @@
     WIDTH, HEIGHT, PIXELS, RGB_BYTES, WHITE, black, pixelOffset,
     ready, loaded, buildLut, tzParse, TZ_UTC, Art, compose, sceneParams, renderIpLayout,
     agreement, anchorClock, deviceNow, installCanvas, clearCanvas, canvasEmpty, canvasAnimated,
+    canvasBackdated,
     get lastCanvasResult() { return lastCanvasResult; },
     get clockSkewMs() { return clockSkewMs; },
     DEFAULT_CLOCK_STYLE,

@@ -580,8 +580,13 @@ async function pollCanvas(force) {
   canvasInFlight = true;
   const want = STATUS.revision;
   try {
+    // the whole document, ages included: sim-wasm.js reads the clocks off it and sends the
+    // parser only the part it takes. stripping to `elements` here threw the ages away
     const doc = await call('GET', 'canvas');
-    local.canvas = { elements: doc.elements || [] };
+    // the ages are as of the moment this answered, so remember it: installing at draw time
+    // instead back-dates from the wrong instant and leaves the animations a fetch-latency out
+    local.canvasAt = Date.now();
+    local.canvas = doc;
     canvasRevision = want;
   } catch (e) {
     if (e.status === 404) { local.canvas = null; canvasRevision = want; }   // a runtime without a canvas
@@ -719,20 +724,28 @@ function draw() {
 // says nothing; the figure is only a verdict when the scene is holding still.
 function shadowNote() {
   if (local.pending) return '';
-  // an animated canvas cannot match the panel: the device starts each animation when it installs
-  // the document and GET /canvas publishes neither the document's age nor each element's, so the
-  // shadow installs at a different instant and runs permanently out of phase. that is true
-  // whether or not /screen is reachable, so it is said before any comparison — a byte-match
-  // figure here would read as "the preview is wrong" when what is missing is a timestamp
+  // an animated canvas only matches the panel if the device told us how old its animation clocks
+  // are: they start at install, and the preview installs whenever it fetched. GET /canvas
+  // publishes age_ms per document and per element, and the clocks are back-dated from it. against
+  // a runtime too old to send them the phase is simply unknowable, so say that rather than offer
+  // a byte-match figure that would read as "the preview is wrong"
   const animated = STATUS.base === 'canvas' ? S.canvasAnimated() : 0;
-  if (animated > 0) {
+  if (animated > 0 && !S.canvasBackdated()) {
     return ` · ${animated} animated element${animated === 1 ? '' : 's'}, out of phase with the panel:`
-         + ` /canvas does not publish when it was installed`;
+         + ` this runtime does not publish canvas age_ms`;
   }
   if (!shadowMatch) return '';
   const stale = screenFailStreak >= 3 ? ', stale' : '';
   if (shadowMatch.exact) return ` · matching the panel exactly${stale}`;
-  return ` · ${(shadowMatch.fraction * 100).toFixed(1)}% of bytes match the panel (${shadowMatch.bytesDiffering} differ${stale})`;
+  // shape and colour are worth separating. /screen and the shadow can never be sampled at the
+  // same instant, and a hue or pulse animation advances its colour in between — so every lit byte
+  // differs while the picture is the same picture. "same shape" is the claim that means the
+  // renderer agrees; the byte count alone reads as a fault when nothing is wrong
+  if (shadowMatch.sameShape) {
+    return ` · same shape as the panel, colours within ${shadowMatch.maxDelta}/255${stale}`;
+  }
+  return ` · ${shadowMatch.pixelsDiffering} of ${S.PIXELS} pixels differ from the panel`
+       + ` (up to ${shadowMatch.maxDelta}/255${stale})`;
 }
 
 /* ---------- controls plumbing (as in the stock panel) ---------- */

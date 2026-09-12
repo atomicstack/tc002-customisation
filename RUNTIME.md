@@ -1314,15 +1314,25 @@ frames it recently painted and reports how many bytes agree. it never composes
 a fresh one for the comparison — `compose` advances the arbiter, so measuring
 that way ticks the clock it is measuring.
 
-**the canvas is the exception, and the console says so.** the device starts every animation
-when it installs the document — `epoch_ns` for the continuous motions, each element's
-`started_ns` for the arrival ones (`scramble`, `typewriter`, `sweep`) — and `GET /canvas`
-publishes neither age. the console installs whenever it fetched, so every animated element runs
-permanently out of phase, which is most of a demo reel. rather than report a byte-match figure
-that reads as a rendering fault, the caption names the cause: *"N animated elements, out of
-phase with the panel: /canvas does not publish when it was installed"*. a still canvas is
-compared normally. publishing the document's age and each element's age would close it, the same
-way `seed` closed it for the art scene.
+**the canvas needs the ages, and gets them.** the device starts every animation clock when it
+installs a document — `epoch_ns` for the continuous motions, each element's `started_ns` for the
+arrival ones — and the preview installs whenever it fetched, so without help every animated
+element is permanently out of phase. `GET /canvas` publishes `age_ms` for the document and for
+each element (a patch restarts only what changed, so one age cannot describe them all), and the
+console back-dates the clocks through `canvas.Clocks.backdate`, the runtime's own counterpart to
+the accounting that produced the ages. against a runtime too old to send them the caption says so
+rather than offering a figure it cannot stand behind.
+
+note that a `GET /canvas` body is not a `PUT` body: get adds `revision`, `saved_revision`,
+`limits` and the top-level `age_ms`, and the put schema takes `elements` only (an element's own
+`age_ms` it accepts and ignores). the console sends the reshaped document.
+
+**measured on hardware with three animations running** (hue 2 s, pulse 1.5 s, blink 0.9 s): the
+shadow lights exactly the pixels the panel lights — zero of 832 differing, every sample — with
+colours up to 24-30/255 advanced, because `/canvas` and `/screen` are separate requests and the
+continuous motions keep moving in between. before the ages it was 81.7% of bytes matching. the
+console reports shape and colour separately for that reason: a byte-difference count alone reads
+as a rendering fault when the picture is the same picture.
 
 **measured on hardware (2026-09-12):** captured at the same instant, the
 shadow and the panel are **byte-for-byte identical** — 0 of 2496 bytes

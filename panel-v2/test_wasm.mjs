@@ -192,6 +192,29 @@ test('agreement measures the shadow against the panel', () => {
   assert.equal(W.agreement(a, new Uint8Array(4)), null, 'a length mismatch is not a comparison');
 });
 
+test('agreement separates the shape from the colour', () => {
+  // /screen and the shadow cannot be sampled at the same instant, and a hue or pulse animation
+  // advances its colour in between: every lit byte differs while the picture is unchanged.
+  // measured on hardware at 24-30/255 with three animations running, and zero pixels differing
+  const dev = new Uint8Array(W.RGB_BYTES);
+  const sim = new Uint8Array(W.RGB_BYTES);
+  for (let p = 0; p < 30; p += 3) { dev[p] = 200; dev[p + 1] = 100; sim[p] = 176; sim[p + 1] = 88; }
+  const shifted = W.agreement(dev, sim);
+  assert.equal(shifted.sameShape, true, 'the same pixels are lit');
+  assert.equal(shifted.pixelsDiffering, 0);
+  assert.equal(shifted.maxDelta, 24);
+  assert.equal(shifted.exact, false);
+  assert.ok(shifted.bytesDiffering > 0, 'and the byte count alone would read as a fault');
+
+  // a pixel that is lit on one side only is a real difference, not a colour shift
+  const missing = new Uint8Array(W.RGB_BYTES);
+  missing.set(dev.subarray(0, 30));
+  missing[0] = 0; missing[1] = 0; missing[2] = 0;
+  const gap = W.agreement(dev, missing);
+  assert.equal(gap.sameShape, false);
+  assert.equal(gap.pixelsDiffering, 1);
+});
+
 /* ---------- the canvas: a document the device parses, not one this file models ---------- */
 
 const canvasStatus = { base: 'canvas', overlay: 'none', generator: 'popsquares', brightness: 100 };
@@ -229,6 +252,21 @@ test('a document the device would refuse is reported, not silently drawn empty',
   assert.equal(W.lastCanvasResult.ok, true);
 });
 
+test('a GET /canvas body is reshaped before it reaches the parser', () => {
+  // GET publishes revision, saved_revision and a top-level age_ms; the runtime's CanvasBody takes
+  // `elements` only, so handing a GET response straight to the parser is refused. an element's
+  // own age_ms it does accept and ignore
+  W.reset('canvas', 'popsquares', 1);
+  const asDeviceSendsIt = {
+    revision: 9, saved_revision: 9, age_ms: 622,
+    elements: [{ type: 'text', id: 'a', at: [1, 0], text: 'one', colour: 'ffffff', age_ms: 622 }],
+  };
+  const r = W.installCanvas(asDeviceSendsIt, 1000);
+  assert.equal(r.ok, true, r.reason || '');
+  assert.equal(r.backdated, true, 'the top-level age_ms must still be read off it');
+  assert.equal(W.canvasEmpty(), false);
+});
+
 test('the console can tell an animated canvas from a still one', () => {
   // the device starts every animation at install and publishes neither the document's age nor
   // each element's, so an animated canvas can never be compared byte-for-byte with the panel.
@@ -251,20 +289,63 @@ test('the console can tell an animated canvas from a still one', () => {
   assert.equal(W.canvasAnimated(), 0, 'an empty canvas animates nothing');
 });
 
-test('an animated element renders differently depending on when it was installed', () => {
-  // this is the gap itself, pinned: it is why the console reports the phase rather than a
-  // percentage. when /canvas starts publishing the ages, this test should start failing
-  const doc = { elements: [{ type: 'text', id: 't', at: [2, 4], text: 'HELLO', colour: '00ff88',
-                             animate: { kind: 'blink', ms: 600 } }] };
-  const at = (installMs, renderMs) => {
+test('the published ages put the preview in phase with the panel', () => {
+  // the device starts every animation clock at install and the preview installs whenever it
+  // fetched, so without help a 600ms animation is permanently out of phase. GET /canvas publishes
+  // age_ms for the document and for each element, and Clocks.backdate — the runtime's own
+  // counterpart to the accounting that produced them — moves the clocks back to match
+  const el = extra => ({ type: 'text', id: 't', at: [2, 4], text: 'HELLO', colour: '00ff88',
+                         animate: { kind: 'hue', ms: 600 }, ...extra });
+  const withAge = age => ({ age_ms: age, elements: [el({ age_ms: age })] });
+  const withoutAge = () => ({ elements: [el({})] });
+  const at = (installMs, renderMs, doc) => {
     W.reset('canvas', 'popsquares', 1);
     const local = withCanvas(doc);
     W.compose(canvasStatus, local, installMs);
     return W.compose(canvasStatus, local, renderMs).rgb.slice();
   };
   const T = 1_000_000;
-  assert.notEqual(bytesDiffering(at(T, T + 500), at(T + 400, T + 500)), 0,
-                  'installing 400ms apart should put a 600ms animation out of phase');
+
+  // the panel installed at T; a console that fetched 400ms later is told the document is 400ms old
+  const panel = at(T, T + 500, withAge(0));
+  const late = at(T + 400, T + 500, withAge(400));
+  // a refused document leaves the canvas empty, and two empty canvases agree perfectly — which
+  // is how an earlier version of this test passed while installing nothing at all
+  assert.equal(W.lastCanvasResult.ok, true, W.lastCanvasResult.reason || '');
+  assert.ok(lit(panel) > 0 && lit(late) > 0, 'both frames must actually have drawn the document');
+  assert.equal(bytesDiffering(panel, late), 0, 'the ages should put the two renderers in phase');
+  assert.equal(W.canvasBackdated(), true);
+
+  // and without them it is the old behaviour, which is why the caption says so
+  const a = at(T, T + 500, withoutAge());
+  const b = at(T + 400, T + 500, withoutAge());
+  assert.notEqual(bytesDiffering(a, b), 0, 'with no ages a 600ms animation drifts');
+  assert.ok(lit(a) > 0, 'and the unaged frames must have drawn too');
+  assert.equal(W.canvasBackdated(), false, 'and the console must know it could not be matched');
+});
+
+test('a per-element age is used, not just the document\'s', () => {
+  // a PATCH restarts only the elements whose value changed, so one document age cannot describe
+  // the arrival motions. this is the real device reading the runtime agent sent: a document 622ms
+  // old whose second element has been up for 2196ms
+  const doc = ages => ({ age_ms: ages[0], elements: [
+    { type: 'text', id: 'a', at: [1, 0], text: 'one', colour: 'ffffff', age_ms: ages[0],
+      animate: { kind: 'scramble', ms: 900 } },
+    { type: 'text', id: 'b', at: [1, 9], text: 'two', colour: 'ffffff', age_ms: ages[1],
+      animate: { kind: 'scramble', ms: 900 } },
+  ] });
+  const render = ages => {
+    W.reset('canvas', 'popsquares', 1);
+    const local = withCanvas(doc(ages));
+    W.compose(canvasStatus, local, 1_000_000);
+    return W.compose(canvasStatus, local, 1_000_000).rgb.slice();
+  };
+  const staggered = render([622, 2196]);
+  const together = render([622, 622]);
+  assert.equal(W.lastCanvasResult.ok, true, W.lastCanvasResult.reason || '');
+  assert.ok(lit(staggered) > 0, 'the document must have drawn');
+  assert.notEqual(bytesDiffering(staggered, together), 0,
+                  'the second element\'s own age must reach its clock');
 });
 
 test('an animated element ticks on the arbiter\'s clock', () => {
