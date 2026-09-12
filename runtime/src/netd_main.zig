@@ -782,7 +782,7 @@ const Netd = struct {
     /// the document as held, in the shape a `PUT` would send it back: what is on the panel, not a
     /// separate vocabulary for reading it.
     fn canvasJson(o: *Out, d: *const canvas.Document) void {
-        o.fmt("{{\"revision\":{d},\"elements\":[", .{d.revision});
+        o.fmt("{{\"revision\":{d},\"saved_revision\":{d},\"elements\":[", .{ d.revision, d.saved_revision });
         for (d.elements[0..d.count], 0..) |*e, i| {
             if (i > 0) o.add(",");
             o.fmt("{{\"type\":\"{s}\"", .{@tagName(e.kind())});

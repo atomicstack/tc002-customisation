@@ -68,6 +68,7 @@ var ntfy_send_buf: [codec.max_message]u8 = undefined;
 const ntfy_backoff_min_ns: u64 = 2 * ns_per_s;
 const ntfy_backoff_max_ns: u64 = 60 * ns_per_s;
 var config_buf: [config.file_max]u8 = undefined;
+var canvas_file_buf: [canvas.file_max]u8 = undefined;
 /// the largest file the durable-state migration copies is the ntfy ca
 var migrate_buf: [api.max_ca]u8 = undefined;
 var config_arena: [4096]u8 = undefined;
@@ -385,6 +386,8 @@ const Supervisor = struct {
     canvas_doc: canvas.Document = .{},
     /// the uploaded sprites, held for the same reason as the document and replayed with it
     sprites: canvas.Sprites = .{},
+    /// the document revision last written to the state directory
+    canvas_saved: u32 = 0,
     /// the night brightness schedule; the phase it is in lives in the snapshot
     night: night.Schedule = .{},
     next_night_poll: u64 = 0,
@@ -1012,12 +1015,14 @@ const Supervisor = struct {
                         continue;
                     };
                     self.send(.{ .sprite = sp });
+                    self.saveCanvas();
                     self.sendNetd(.{ .sprite_list = self.spriteList() }, p.request_id);
                     log.info("sprite {s} {d}x{d} stored", .{ sp.id.slice(), sp.w, sp.h });
                 },
                 .sprite_delete => |id| {
                     _ = self.sprites.remove(id.slice());
                     self.send(.{ .sprite_delete = id });
+                    self.saveCanvas();
                     self.sendNetd(.{ .sprite_list = self.spriteList() }, p.request_id);
                 },
                 .sprite_list_get => self.sendNetd(.{ .sprite_list = self.spriteList() }, p.request_id),
@@ -1025,6 +1030,7 @@ const Supervisor = struct {
                     self.canvas_doc = d;
                     self.canvas_doc.revision +%= 1;
                     self.sendCanvas();
+                    self.saveCanvas();
                     self.sendNetd(.{ .canvas = self.canvas_doc }, p.request_id);
                     log.info("canvas: {d} elements, revision {d}", .{ self.canvas_doc.count, self.canvas_doc.revision });
                 },
@@ -1040,6 +1046,7 @@ const Supervisor = struct {
                 .canvas_clear => {
                     self.canvas_doc.clear();
                     self.sendCanvas();
+                    self.saveCanvas();
                     self.sendNetd(.{ .canvas = self.canvas_doc }, p.request_id);
                 },
                 .config_patch => |w| {
@@ -1559,6 +1566,45 @@ const Supervisor = struct {
         self.send(.{ .canvas = self.canvas_doc });
     }
 
+    /// the document and its pictures go to the state directory on a layout change, and **never on
+    /// a value patch**: home assistant pushing a reading every minute would otherwise be 1,440
+    /// jffs2 writes a day. so a reboot restores the layout with the values its last full push
+    /// carried, which is what any dashboard shows until its next update.
+    fn saveCanvas(self: *Supervisor) void {
+        var dir_buf: [160]u8 = undefined;
+        var tmp_buf: [160]u8 = undefined;
+        var path_buf: [160]u8 = undefined;
+        const dir = self.statePathIn(&dir_buf, "config");
+        const tmp = self.statePathIn(&tmp_buf, "config/canvas.bin.tmp");
+        const path = self.statePathIn(&path_buf, "config/canvas.bin");
+        const n = canvas.saveBytes(&self.canvas_doc, &self.sprites, &canvas_file_buf) catch {
+            log.err("canvas save failed: it does not fit its buffer", .{});
+            return;
+        };
+        sys.saveFileAtomic(dir, tmp, path, canvas_file_buf[0..n]) catch |e| {
+            log.err("canvas save failed: {s}", .{sys.errText(e)});
+            return;
+        };
+        self.canvas_saved = self.canvas_doc.revision;
+        self.canvas_doc.saved_revision = self.canvas_saved;
+        log.info("canvas saved, revision {d}, {d} bytes", .{ self.canvas_doc.revision, n });
+    }
+
+    fn loadCanvas(self: *Supervisor) void {
+        var path_buf: [160]u8 = undefined;
+        const path = self.statePathIn(&path_buf, "config/canvas.bin");
+        const bytes = sys.readFile(path, &canvas_file_buf) catch return;
+        canvas.loadBytes(bytes, &self.canvas_doc, &self.sprites) catch {
+            log.warn("saved canvas is invalid; starting empty and keeping the file", .{});
+            self.canvas_doc = .{};
+            self.sprites = .{};
+            return;
+        };
+        self.canvas_saved = self.canvas_doc.revision;
+        self.canvas_doc.saved_revision = self.canvas_saved;
+        log.info("canvas loaded, revision {d}, {d} elements, {d} sprites", .{ self.canvas_doc.revision, self.canvas_doc.count, self.sprites.count });
+    }
+
     fn spriteList(self: *const Supervisor) messages.SpriteList {
         var l = messages.SpriteList{ .count = self.sprites.count };
         for (self.sprites.items[0..self.sprites.count], 0..) |*sp, i| l.items[i] = .{ .id = sp.id, .w = sp.w, .h = sp.h };
@@ -1742,6 +1788,7 @@ fn run(cfg_in: cli.Config, environ: anytype, args: []const [:0]const u8) !u8 {
     // 7. the network daemon's privileged resources: credentials, configuration, the listener
     s.loadCredentials() catch |e| log.err("credentials unavailable: {s}; netd will refuse every request", .{sys.errText(e)});
     s.loadConfig();
+    s.loadCanvas();
     s.snapshot.config_revision = s.cfg.revision;
     s.snapshot.saved_revision = s.cfg.saved_revision;
     s.listener = sys.tcpListener(http_port, 8) catch |e| blk: {

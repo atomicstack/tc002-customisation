@@ -228,6 +228,9 @@ pub const Document = struct {
     data_len: u16 = 0,
     /// bumped on every accepted change, so a client can tell which document it is looking at
     revision: u32 = 0,
+    /// what is on disk. a value patch does not write, so this trails `revision` until the next
+    /// layout change -- the same confirmation the settings give, for the same reason.
+    saved_revision: u32 = 0,
 
     pub fn empty(self: *const Document) bool {
         return self.count == 0;
@@ -1168,7 +1171,8 @@ test "a cleared document is empty again and says so on the panel" {
 /// id, box, colour, kind, then the widest variant (a sparkline's eleven bytes), padded so every
 /// record is the same size and the codec stays a loop rather than a state machine
 pub const element_wire = 9 + 8 + 3 + Animation.wire_len + 1 + 22;
-pub const wire_max = 9 + max_elements * element_wire + text_pool + data_pool;
+pub const doc_header = 13;
+pub const wire_max = doc_header + max_elements * element_wire + text_pool + data_pool;
 
 /// one element of a patch: which element, and which of its fields to replace
 pub const patch_bytes_max = 64;
@@ -1382,13 +1386,14 @@ fn getElement(in: []const u8) error{BadPayload}!Element {
 
 /// the whole document as bytes; returns how many were written
 pub fn encode(d: *const Document, out: []u8) error{Overflow}!usize {
-    const total = 9 + @as(usize, d.count) * element_wire + d.text_len + d.data_len;
+    const total = doc_header + @as(usize, d.count) * element_wire + d.text_len + d.data_len;
     if (out.len < total) return error.Overflow;
     std.mem.writeInt(u32, out[0..4], d.revision, .little);
     out[4] = d.count;
     std.mem.writeInt(u16, out[5..7], d.text_len, .little);
     std.mem.writeInt(u16, out[7..9], d.data_len, .little);
-    var o: usize = 9;
+    std.mem.writeInt(u32, out[9..13], d.saved_revision, .little);
+    var o: usize = doc_header;
     for (d.elements[0..d.count]) |*e| {
         putElement(e, out[o..]);
         o += element_wire;
@@ -1400,16 +1405,17 @@ pub fn encode(d: *const Document, out: []u8) error{Overflow}!usize {
 }
 
 pub fn decode(in: []const u8) error{BadPayload}!Document {
-    if (in.len < 9) return error.BadPayload;
+    if (in.len < doc_header) return error.BadPayload;
     var d = Document{};
     d.revision = std.mem.readInt(u32, in[0..4], .little);
     d.count = in[4];
     d.text_len = std.mem.readInt(u16, in[5..7], .little);
     d.data_len = std.mem.readInt(u16, in[7..9], .little);
+    d.saved_revision = std.mem.readInt(u32, in[9..13], .little);
     if (d.count > max_elements or d.text_len > text_pool or d.data_len > data_pool) return error.BadPayload;
-    const total = 9 + @as(usize, d.count) * element_wire + d.text_len + d.data_len;
+    const total = doc_header + @as(usize, d.count) * element_wire + d.text_len + d.data_len;
     if (in.len != total) return error.BadPayload;
-    var o: usize = 9;
+    var o: usize = doc_header;
     for (0..d.count) |i| {
         d.elements[i] = try getElement(in[o..]);
         o += element_wire;
@@ -1425,6 +1431,61 @@ pub fn decode(in: []const u8) error{BadPayload}!Document {
         else => {},
     };
     return d;
+}
+
+/// the document and the pictures it refers to, as one file. binary rather than json because half
+/// of it is pixels; the readable view of a canvas is `GET /canvas`, and the settings file stays the
+/// one a person edits.
+pub const file_magic = "TCCV";
+pub const file_version: u8 = 1;
+pub const file_max = 5 + wire_max + 2 + sprite_max * Sprite.wire_len;
+
+pub fn saveBytes(d: *const Document, sprites: *const Sprites, out: []u8) error{Overflow}!usize {
+    if (out.len < file_max) return error.Overflow;
+    @memcpy(out[0..4], file_magic);
+    out[4] = file_version;
+    var o: usize = 5;
+    const n = try encode(d, out[o + 2 ..]);
+    std.mem.writeInt(u16, out[o..][0..2], @intCast(n), .little);
+    o += 2 + n;
+    out[o] = sprites.count;
+    o += 1;
+    for (sprites.items[0..sprites.count]) |*sp| {
+        out[o] = sp.id.len;
+        @memcpy(out[o + 1 .. o + 9], &sp.id.bytes);
+        out[o + 9] = sp.w;
+        out[o + 10] = sp.h;
+        @memcpy(out[o + 11 .. o + 11 + sp.bytes()], sp.rgb[0..sp.bytes()]);
+        o += 11 + sp.bytes();
+    }
+    return o;
+}
+
+pub const LoadError = error{BadFile};
+
+pub fn loadBytes(in: []const u8, d: *Document, sprites: *Sprites) LoadError!void {
+    if (in.len < 8 or !std.mem.eql(u8, in[0..4], file_magic) or in[4] != file_version) return error.BadFile;
+    const doc_len = std.mem.readInt(u16, in[5..7], .little);
+    if (7 + @as(usize, doc_len) + 1 > in.len) return error.BadFile;
+    d.* = decode(in[7 .. 7 + doc_len]) catch return error.BadFile;
+    var o: usize = 7 + doc_len;
+    const count = in[o];
+    o += 1;
+    if (count > sprite_max) return error.BadFile;
+    sprites.* = .{};
+    for (0..count) |_| {
+        if (o + 11 > in.len) return error.BadFile;
+        var sp = Sprite{};
+        sp.id.len = @min(in[o], id_max);
+        @memcpy(&sp.id.bytes, in[o + 1 .. o + 9]);
+        sp.w = in[o + 9];
+        sp.h = in[o + 10];
+        if (sp.w == 0 or sp.h == 0 or sp.w > sprite_side_max or sp.h > sprite_side_max) return error.BadFile;
+        if (o + 11 + sp.bytes() > in.len) return error.BadFile;
+        @memcpy(sp.rgb[0..sp.bytes()], in[o + 11 .. o + 11 + sp.bytes()]);
+        sprites.put(sp) catch return error.BadFile;
+        o += 11 + sp.bytes();
+    }
 }
 
 pub fn putPatch(p: *const Patch, out: []u8) error{Overflow}!usize {
@@ -1505,15 +1566,16 @@ test "a malformed document is refused rather than read" {
 
     try std.testing.expectError(error.BadPayload, decode(buf[0 .. n - 1])); // short
     try std.testing.expectError(error.BadPayload, decode(buf[0..3]));
+    try std.testing.expectError(error.BadPayload, decode(buf[0 .. doc_header - 1]));
     var bad_count = buf;
     bad_count[4] = max_elements + 1;
     try std.testing.expectError(error.BadPayload, decode(bad_count[0..n]));
     var bad_kind = buf;
-    bad_kind[9 + 26] = 99;
+    bad_kind[doc_header + 26] = 99;
     try std.testing.expectError(error.BadPayload, decode(bad_kind[0..n]));
     // a span reaching past its pool would read whatever follows it
     var bad_span = buf;
-    std.mem.writeInt(u16, bad_span[9 + 27 ..][2..4], 9000, .little);
+    std.mem.writeInt(u16, bad_span[doc_header + 27 ..][2..4], 9000, .little);
     try std.testing.expectError(error.BadPayload, decode(bad_span[0..n]));
     var small: [4]u8 = undefined;
     try std.testing.expectError(error.Overflow, encode(&d, &small));
@@ -1868,4 +1930,58 @@ test "a patch moves a tile's value and leaves its label alone" {
     try applyPatch(&d, &p);
     try std.testing.expectEqualStrings("21.6", d.textOf(d.elements[0].body.tile.value));
     try std.testing.expectEqualStrings("temp", d.textOf(d.elements[0].body.tile.label));
+}
+
+test "a document and its pictures survive a round trip through the file" {
+    var d = Document{};
+    const l = try d.addText("power");
+    const v = try d.addText("1.4kW");
+    try d.add(.{ .id = Id.init("w"), .box = .{ .x = 2, .y = 0, .w = 40, .h = 16 }, .colour = .{ 9, 9, 9 }, .body = .{ .tile = .{ .sprite_id = Id.init("ring"), .label = l, .value = v, .accent = .{ 5, 5, 5 } } } });
+    try d.add(.{ .box = .{ .x = 0, .y = 0 }, .anim = .{ .kind = .blink, .ms = 500, .amount = 30 }, .body = .{ .icon = .{ .index = icons.indexOf("bell").? } } });
+    d.revision = 77;
+    var sprites = Sprites{};
+    var sp = Sprite{ .id = Id.init("ring"), .w = 8, .h = 8 };
+    sp.rgb[0] = 200;
+    sp.rgb[191] = 30;
+    try sprites.put(sp);
+
+    var buf: [file_max]u8 = undefined;
+    const n = try saveBytes(&d, &sprites, &buf);
+    var back_doc = Document{};
+    var back_sprites = Sprites{};
+    try loadBytes(buf[0..n], &back_doc, &back_sprites);
+    try std.testing.expectEqual(@as(u32, 77), back_doc.revision);
+    try std.testing.expectEqualDeep(d.elements[0..d.count], back_doc.elements[0..back_doc.count]);
+    try std.testing.expectEqualStrings("1.4kW", back_doc.textOf(back_doc.elements[0].body.tile.value));
+    try std.testing.expectEqual(@as(u8, 1), back_sprites.count);
+    try std.testing.expectEqual(@as(u8, 200), back_sprites.find("ring").?.rgb[0]);
+    try std.testing.expectEqual(@as(u8, 30), back_sprites.find("ring").?.rgb[191]);
+
+    // and the panel cannot tell the two apart
+    var a: geometry.Rgb = undefined;
+    var b2: geometry.Rgb = undefined;
+    (State{ .doc = d, .sprites = sprites }).render(0, &a);
+    (State{ .doc = back_doc, .sprites = back_sprites }).render(0, &b2);
+    try std.testing.expectEqualSlices(u8, &a, &b2);
+}
+
+test "a corrupt file is refused rather than half-read" {
+    var d = Document{};
+    try d.add(.{ .body = .pixel });
+    var sprites = Sprites{};
+    var buf: [file_max]u8 = undefined;
+    const n = try saveBytes(&d, &sprites, &buf);
+    var out_d = Document{};
+    var out_s = Sprites{};
+    try std.testing.expectError(error.BadFile, loadBytes(buf[0 .. n - 1], &out_d, &out_s));
+    try std.testing.expectError(error.BadFile, loadBytes(buf[0..4], &out_d, &out_s));
+    var wrong_magic = buf;
+    wrong_magic[1] = 'X';
+    try std.testing.expectError(error.BadFile, loadBytes(wrong_magic[0..n], &out_d, &out_s));
+    var wrong_version = buf;
+    wrong_version[4] = 9;
+    try std.testing.expectError(error.BadFile, loadBytes(wrong_version[0..n], &out_d, &out_s));
+    var too_many = buf;
+    too_many[n - 1] = sprite_max + 1;
+    try std.testing.expectError(error.BadFile, loadBytes(too_many[0..n], &out_d, &out_s));
 }

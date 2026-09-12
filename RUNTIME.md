@@ -459,6 +459,19 @@ about two kilobytes on the wire and travels in one ipc packet, whole.
 thing that restarts: kill the renderer and the document is pushed again when it comes up, which is
 verified rather than assumed. `revision` counts accepted changes.
 
+**what survives.** the document and its sprites are written to `config/canvas.bin` in the [state
+directory](#settings-credentials-the-listener) on a `PUT`, a `DELETE` and a sprite change, and
+**never on a value patch** — home assistant pushing a reading every minute would otherwise be 1,440
+jffs2 writes a day. so a restart restores the layout with the values its last full push carried,
+which is what any dashboard shows until its next update. `saved_revision` in `GET /canvas` says what
+is on disk, the same confirmation the settings give: it trails `revision` after a patch and catches
+up at the next layout change.
+
+the file is binary rather than json because half of it is pixels — the readable view of a canvas is
+`GET /canvas`, and `config.json` stays the one a person would edit. a document of one tile with an
+8x8 sprite is 283 bytes. a file that does not start with `TCCV` and its version byte, or that runs
+out part way through, is refused and the canvas starts empty with the file left alone.
+
 ### the cube
 
 a solid rotating cube, shaded rather than flat: each of the six faces takes one
