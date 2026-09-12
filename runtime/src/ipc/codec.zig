@@ -16,7 +16,10 @@ const std = @import("std");
 pub const magic = "TCI1";
 pub const version: u8 = 1;
 pub const header_len = 24;
-pub const max_message = 4096;
+/// one datagram carries one message. raised from 4096 so a canvas document with an embedded image
+/// arrives in one piece: chunking would cost atomicity, and a half-applied document on a panel is
+/// worse than a rejected one. `tc002-ipcprobe` measures what the kernel will actually carry.
+pub const max_message = 8192;
 pub const max_payload = max_message - header_len;
 
 pub const Header = struct { kind: u8, request_id: u64, epoch: u32, payload_len: u16 };

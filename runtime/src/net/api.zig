@@ -219,7 +219,7 @@ fn bad(code: []const u8, message: []const u8) Route {
 
 fn jsonError(e: json.Error) Route {
     return switch (e) {
-        error.TooLarge => .{ .reject = .{ .status = 413, .code = "body_too_large", .message = "json bodies are limited to 4096 bytes" } },
+        error.TooLarge => .{ .reject = .{ .status = 413, .code = "body_too_large", .message = "json bodies are limited to 8192 bytes" } },
         error.TooDeep => bad("body_too_deep", "json nesting is limited to eight levels"),
         error.UnknownField => bad("unknown_field", "the body contains a field the schema does not define"),
         error.DuplicateField => bad("duplicate_field", "the body repeats a field"),

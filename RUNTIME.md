@@ -747,7 +747,16 @@ transfers per second and nothing in between.
 ## the local channel (ipc)
 
 supervisor ↔ renderer and supervisor ↔ netd use the same framing on
-`SOCK_SEQPACKET` unix sockets, one packet per message, at most 4,096 bytes:
+`SOCK_SEQPACKET` unix sockets, one packet per message, at most 8,192 bytes
+(raised from 4,096 so a canvas document carrying an image arrives whole:
+chunking would cost atomicity, and a half-applied document is worse than a
+rejected one). `zig build ipcprobe` builds `tc002-ipcprobe`, which measures
+what the kernel will actually carry: on this device `SO_SNDBUF` is 196,608 and
+datagrams round-trip up to 131,072 bytes, so the limit has a sixteenfold
+margin. the cost of the raise is 68 kb of reserved bss across the four
+binaries — the renderer and ntfy hold two packet buffers each, the supervisor
+five, and netd two plus a request buffer for each of its four connection slots
+plus the json parse arena:
 
 | offset | size | field |
 |-------:|-----:|-------|
@@ -790,7 +799,7 @@ the protocol surface is deliberately narrow so the whole daemon fits in about
 |-------|-------|
 | concurrent connections | 4 (a fifth gets a canned `429` and is closed) |
 | requests per connection | 1; every response says `connection: close` and `cache-control: no-store` |
-| request head / json body | 4,096 bytes each; json nesting ≤ 8; unknown or duplicate fields rejected; invalid utf-8 rejected |
+| request head / json body | 4,096 and 8,192 bytes; json nesting ≤ 8; unknown or duplicate fields rejected; invalid utf-8 rejected |
 | unsupported | chunked or encoded bodies, `expect: 100-continue`, http/2 |
 | time to send a complete request | 5 s, then `400 request_timeout` |
 | time for the renderer to answer | 2 s, then `504 timeout` (retry with the same request id) |
@@ -998,6 +1007,7 @@ publishes. nothing writable is exposed through discovery; control goes through
 | `tc002-up.sh` | the one-shot cold start for a person: connect adb, build and push (`--no-build` to skip the build), start the supervisor with `--tz`, apply and save the timezone, scene, clock font and sntp server, pull the tokens to the repo root for the console, print the status. after a reboot this is the way back |
 | `tc002-demo.py` | a demo reel of every transition, played from this machine over the api: for each effect a clock ↔ art scene change arrives with it, then a labelled notification arrives with it and leaves with the paired exit; `--only` with per-step direction and exit overrides, `--ms`, `--hold`, `--loop`, `--no-scenes`, `--list`; restores the scene it started from and leaves the settings alone |
 | `tc002-run.sh` | `push` (build, elf check, push to `/tmp/tc002/`; `TC002_NO_BUILD=1` skips the build), `start [supervisor options]` (under the lock: stop `zkswe`, start the supervisor detached with its log in `/tmp/tc002/`), `status`, `stop` (sigterm, restart the stock app, release the lock), `restore` (stop and remove everything under `/tmp`) |
+| `tc002-ipcprobe` (`zig build ipcprobe`) | a device binary, not part of the runtime and not installed with it: makes the same seqpacket socketpair the supervisor uses and round-trips a filled datagram at 1 kb through 256 kb, reporting `SO_SNDBUF` and the largest that survives intact. it answers the one question that bounds every protocol decision here — what the kernel will actually carry — on the device rather than from the host. measured 2026-09-12: `SO_SNDBUF` 196,608, largest datagram 131,072 |
 | `tc002-boot-experiment.sh` | `baseline` (time the stock `ctl.start` to the property), `start` (rewrite `startupLibPath` into `/tmp/EasyUI.cfg`, restart `zkswe` through the bootstrap, show the audit), `status`, `restore` |
 | `tc002-lock.sh` | the append-only advisory lock in `/tmp/tc002-lock.txt` on the host, for two agents sharing one device: `acquire <intent> [timeout]`, `release`, `status`, `note`. every device-mutating step in the scripts above runs under it |
 | `tc002-test-broker.py` | a minimal mqtt 3.1.1 broker (`#`/`+` matching, retained messages, qos 1 acks) that logs every packet, plus a tiny publisher (`--publish HOST TOPIC PAYLOAD_OR_@FILE`) for lan acceptance runs |

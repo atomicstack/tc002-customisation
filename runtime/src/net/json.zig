@@ -3,9 +3,11 @@
 //! fixed per-request arena that is reset after use.
 const std = @import("std");
 
-pub const max_body = 4096;
+pub const max_body = 8192;
 pub const max_depth = 8;
-pub const arena_size = 8192;
+/// the parsed form of a body: the struct tree plus a copy of every string in it, so it has to be
+/// comfortably larger than the body itself
+pub const arena_size = 16384;
 
 pub const Error = error{ TooLarge, TooDeep, InvalidJson, UnknownField, DuplicateField, MissingField };
 
@@ -44,6 +46,14 @@ test "size, depth, syntax, types and utf-8 are enforced" {
 test "brackets inside strings do not count towards depth" {
     try std.testing.expect(depthOk("{\"text\":\"[[[[[[[[[[[[\"}"));
     try std.testing.expect(depthOk("{\"text\":\"\\\"[[[[[[[[[[\"}"));
+}
+
+test "the parse arena stays ahead of the body it has to hold" {
+    // every string in a body is copied into the arena alongside the struct tree it hangs off, so
+    // an arena that is not comfortably larger than the body turns a large document into
+    // error.TooLarge at the allocator rather than a clean 413. raising one without the other is
+    // the mistake this catches.
+    try std.testing.expect(arena_size >= 2 * max_body);
 }
 
 /// bracket depth outside strings; false when deeper than `max_depth`.

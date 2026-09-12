@@ -326,7 +326,7 @@ const Netd = struct {
             c.head_len = c.req.head_len;
             c.body_len = c.req.content_length orelse 0;
             if (c.body_len > json.max_body) {
-                self.respondError(c, 413, "body_too_large", "bodies are limited to 4096 bytes");
+                self.respondError(c, 413, "body_too_large", "bodies are limited to 8192 bytes");
                 self.flushConn(c, now);
                 return;
             }

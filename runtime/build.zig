@@ -35,6 +35,22 @@ pub fn build(b: *std.Build) void {
         b.installArtifact(exe);
     }
 
+    // a diagnostic rather than part of the runtime: built on request, not installed
+    const ipcprobe = b.addExecutable(.{
+        .name = "tc002-ipcprobe",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/ipcprobe_main.zig"),
+            .target = device,
+            .optimize = optimize,
+            .link_libc = false,
+            .strip = strip,
+            .single_threaded = true,
+        }),
+        .linkage = .static,
+    });
+    const probe_step = b.step("ipcprobe", "build tc002-ipcprobe: the largest datagram the device's ipc socket carries");
+    probe_step.dependOn(&b.addInstallArtifact(ipcprobe, .{}).step);
+
     const bootstrap = b.addLibrary(.{
         .name = "tc002-bootstrap",
         .linkage = .dynamic,
