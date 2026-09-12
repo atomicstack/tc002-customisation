@@ -304,7 +304,7 @@ the visible output is one **base** scene plus at most one temporary
 |------|---------------|----------------|
 | `art` | a generator: `popsquares` (the same cell simulation as [`led/`](LED-SPI.md#led-native-popsquares-at-60-fps)) or `plasma` (integer sum-of-sines) | continuous, 60 hz |
 | `clock` | local time from a posix tz rule (`AEST-10AEDT,M10.1.0,M4.1.0/3` style, with `Mm.w.d` transitions) or an iana zone name, in one of five fonts and a solid or gradient colour; see [clock styles](#clock-styles) and [time zones](#time-zones) | once per wall-second boundary |
-| `canvas` | a document of drawing primitives pushed by an integration, or a dim `canvas` when nothing has been pushed | idle, unless an element declares an animation |
+| `canvas` | a document of drawing primitives pushed by an integration, or a dim `canvas` when nothing has been pushed; see [the canvas](#the-canvas) | idle, unless an element declares an animation |
 
 | overlay | bounds | behaviour |
 |---------|--------|-----------|
@@ -331,6 +331,72 @@ right comes in from the right, like pages, a cross-fade when the generator,
 a notification (start or end)
 or the showing clock's style changes; raw frames, reseeds and brightness
 switch at once. both durations are renderer options; 0 disables.
+
+### the canvas
+
+an integration that wanted anything other than the clock, the art or the address used to have to
+compose 2,496 bytes of rgb itself. the canvas is the alternative: a document of drawing primitives,
+pushed once, patched by value afterwards, so an integration sends **data** and the device draws it.
+
+```
+PUT    /canvas   admin     replaces the document, whole or not at all
+PATCH  /canvas   control   values only, by element id
+GET    /canvas   control   the document as held, in the shape a put would send it
+DELETE /canvas   control   empties it
+```
+
+```json
+PUT /canvas
+{"elements":[
+  {"id":"hdr","type":"text","at":[0,0],"font":"mini","colour":"606060","text":"living room"},
+  {"id":"t","type":"text","at":[0,6],"font":"small","text":"20.4C"},
+  {"id":"lvl","type":"bar","at":[34,7],"size":[18,3],"value":40,"colour":"30a0ff","background":"101010"},
+  {"id":"g","type":"sparkline","at":[0,13],"size":[52,3],"style":"bars","colour":"208020",
+   "data":[2,4,3,6,9,7,5,8,11,14,12,15,13],"threshold":13,"over":"ff4000"}]}
+```
+
+```json
+PATCH /canvas
+{"values":[{"id":"t","text":"21.1C"},{"id":"lvl","value":85},{"id":"g","data":[14,12,15,13]}]}
+```
+
+a patch body is a **list, not an object keyed by id**: the json parser resolves field names at
+compile time and the ids belong to the client, the same constraint that made `generator_params` a
+list. a value naming an id the document does not have is `unknown_element`; one carrying a field
+that element's type has no use for is `invalid_element_field`; either refuses the **whole** patch,
+because a half-applied dashboard is worse than a rejected one.
+
+**placement.** `at: [x,y]` puts the top-left corner (the centre, for a circle) and `size: [w,h]`
+bounds the element; both are pixels on 52x16 and both clip at the edge rather than being refused,
+so something can be animated in from off-panel. `tile: n, of: m` is the column shorthand and
+`row: n, of: m` the row one; neither combines with `at` or `size`. a width or height of zero means
+"as big as it needs to be".
+
+| type | fields | notes |
+|---|---|---|
+| `text` | `text`, `font`, `align` | `small` is the 5x7 with every printable character; `mini` the 3x5 of the menus; `block` and `big` are the clock's own faces and carry **digits and a colon only**, for a number read across a room |
+| `rect` | `filled` | a one-pixel outline unless filled |
+| `line` | `to: [x,y]` | bresenham, so a diagonal has no gaps |
+| `circle` | `r`, `filled` | `at` is the centre |
+| `pixel` | | the cheap escape hatch |
+| `bar` | `value` 0-100, `background`, `vertical` | rounds so 1% of a wide bar still lights a pixel and 99% leaves one dark; vertical fills from the bottom |
+| `sparkline` | `data` or `data_hex`, `style` (`line`/`bars`/`area`), `min`, `max`, `threshold`, `over` | `min` equal to `max` scales to whatever the samples span; a flat line sits on the floor; samples at or above `threshold` draw in `over` |
+
+every element takes `id` (1-8 characters; without one it is drawn but cannot be patched), `colour`
+as `rrggbb`, and its placement. elements draw in the order given, painter-style. **a field that does
+not belong to the type given is refused** rather than dropped: `{"type":"rect","text":"hi"}` is a
+mistake worth hearing about.
+
+`data_hex` is the same samples as hex, for a document that would not otherwise fit: 52 samples cost
+208 characters as json digits and 104 as hex.
+
+**limits**, reported by `GET /canvas` so a client need not hard-code them: 24 elements, 256 bytes of
+text, 1,024 bytes of sample data, 52 samples per sparkline (one per panel column). a document is
+about two kilobytes on the wire and travels in one ipc packet, whole.
+
+**who holds it.** the supervisor, because it is state a client reads back and the renderer is the
+thing that restarts: kill the renderer and the document is pushed again when it comes up, which is
+verified rather than assumed. `revision` counts accepted changes.
 
 ### the cube
 
@@ -840,6 +906,10 @@ api is for programs, not pages. `allowed_origins` can only be set by editing
 | `GET` | `/config` | control | | the [settings document](#settings) |
 | `PATCH` | `/config` | admin | any subset of the settings fields plus `expected_revision`? | the settings document after the patch |
 | `POST` | `/config/save` | admin | `{"revision":u32}` or an empty body, `application/json` either way | `{"status":"saved","saved_revision":n}` |
+| `GET` | `/canvas` | control | | the [document](#the-canvas) as held, plus `limits` |
+| `PUT` | `/canvas` | admin | `{"elements":[…]}` | the document as stored |
+| `PATCH` | `/canvas` | control | `{"values":[{"id":"…","text"/"data"/"data_hex"/"value"/"colour"}…]}` | the document as stored |
+| `DELETE` | `/canvas` | control | | the emptied document |
 | `GET` | `/mqtt` | admin | | broker settings; `password_set` instead of the password |
 | `PUT` | `/mqtt` | admin | `{"enabled","host","port","username","password","client_id","prefix","tls"}`, any subset | the broker settings |
 | `GET` | `/mqtt/status` | control | | `{"enabled","connected","state","reconnect_delay_s","reconnects","last_error"}` |

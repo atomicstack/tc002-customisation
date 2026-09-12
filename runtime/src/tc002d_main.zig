@@ -322,6 +322,12 @@ const Renderer = struct {
                 if (s.style.has != 0) r = arb.applyWith(.{ .set_clock_style = s.style.toPatch() }, spec, now);
                 break :blk r;
             },
+            .canvas => |d| blk: {
+                arb.canvas.doc = d;
+                arb.dirty = true;
+                if (arb.base == .canvas) self.forceRedraw();
+                break :blk arbiter.Result{ .applied = arb.revision };
+            },
             .clock_style => |cs| arb.apply(.{ .set_clock_style = cs.toPatch() }, now),
             .ip_mode => |m| blk: {
                 const mode = messages.enumFromInt(ip.Mode, m.mode) orelse break :blk arbiter.Result{ .rejected = .invalid_text };

@@ -9,11 +9,22 @@ const api = @import("../net/api.zig");
 const clock = @import("../scene/clock.zig");
 const clockfont = @import("../scene/clockfont.zig");
 const ip = @import("../scene/ip.zig");
+const canvas = @import("../scene/canvas.zig");
 
 test "every message kind round-trips through a packet" {
     var frame = Frame{ .duration_s = 9, .rgb = geometry.black_rgb };
     frame.rgb[2495] = 0x5a;
+    var doc = canvas.Document{};
+    const span = doc.addText("living room") catch unreachable;
+    doc.add(.{ .id = canvas.Id.init("hdr"), .box = .{ .x = 1, .y = 2, .w = 50, .h = 6 }, .colour = .{ 9, 8, 7 }, .body = .{ .text = .{ .span = span, .face = .mini, .alignment = .centre } } }) catch unreachable;
+    var patch = canvas.Patch{};
+    patch.add(.{ .id = canvas.Id.init("hdr"), .has = canvas.Field.colour, .colour = .{ 1, 2, 3 } }) catch unreachable;
     const all = [_]Message{
+        .{ .canvas = doc },
+        .canvas_get,
+        .{ .canvas_patch = patch },
+        .canvas_clear,
+        .{ .canvas_error = .{ .reason = CanvasError.wrong_field } },
         .{ .heartbeat = .{ .presented = 0x1122334455667788, .revision = 7, .state = 2 } },
         .ready,
         .{ .result = .{ .status = .applied, .revision = 41 } },
@@ -231,7 +242,39 @@ pub const Kind = enum(u8) {
     menu_request = 48,
     device_status = 49,
     set_param = 50,
+    // the canvas: netd puts, patches and clears; the supervisor keeps the document and pushes it
+    // to the renderer, and answers a get from its own copy
+    canvas = 51,
+    canvas_get = 52,
+    canvas_patch = 53,
+    canvas_clear = 54,
+    canvas_error = 55,
 };
+
+/// why a canvas update was refused, so the client hears which mistake it made rather than a list
+/// of the ones it might have
+pub const CanvasError = struct {
+    reason: u8,
+
+    pub const unknown_element: u8 = 0;
+    pub const wrong_field: u8 = 1;
+    pub const full: u8 = 2;
+
+    pub fn of(e: canvas.ApplyError) CanvasError {
+        return .{ .reason = switch (e) {
+            error.UnknownElement => unknown_element,
+            error.WrongField => wrong_field,
+            error.Full, error.TooLong => full,
+        } };
+    }
+};
+
+comptime {
+    // both canvas payloads have to cross the ipc socket whole: chunking a document would cost the
+    // atomicity that makes a half-drawn dashboard impossible
+    if (canvas.wire_max > codec.max_payload) @compileError("a canvas document does not fit one ipc packet");
+    if (canvas.Patch.wire_max > codec.max_payload) @compileError("a canvas patch does not fit one ipc packet");
+}
 
 pub const Status = enum(u8) { applied = 0, rejected = 1, overload = 2, stale_epoch = 3, expired = 4, unavailable = 5, timeout = 6, conflict = 7 };
 
@@ -1054,6 +1097,11 @@ pub const Message = union(Kind) {
     menu_request: MenuRequest,
     device_status: DeviceStatus,
     set_param: SetParam,
+    canvas: canvas.Document,
+    canvas_get,
+    canvas_patch: canvas.Patch,
+    canvas_clear,
+    canvas_error: CanvasError,
 };
 
 pub const Packet = struct { request_id: u64, epoch: u32, message: Message };
@@ -1093,6 +1141,12 @@ fn encodePayload(msg: Message, out: []u8) usize {
             std.mem.writeInt(u32, out[2..6], sp.value, .big);
             return 6;
         },
+        .canvas => |d| return canvas.encode(&d, out) catch 0,
+        .canvas_patch => |p| return canvas.putPatch(&p, out) catch 0,
+        .canvas_error => |e| {
+            out[0] = e.reason;
+            return 1;
+        },
         .device_status => |d| {
             out[0] = d.battery_pct;
             out[1] = d.usb;
@@ -1107,7 +1161,7 @@ fn encodePayload(msg: Message, out: []u8) usize {
             out[14] = d.night_placed;
             return DeviceStatus.wire_len;
         },
-        .ready, .arm_stream, .time_corrected, .stop, .config_get, .status_get, .screen_get => return 0,
+        .ready, .arm_stream, .time_corrected, .stop, .config_get, .status_get, .screen_get, .canvas_get, .canvas_clear => return 0,
         .screen => |s| {
             std.mem.writeInt(u32, out[0..4], s.revision, .big);
             out[4] = s.brightness;
@@ -1418,6 +1472,24 @@ pub fn decodePacket(bytes: []const u8) Error!Packet {
         .set_param => blk: {
             const b = try fixed(p, 6);
             break :blk .{ .set_param = .{ .base = b[0], .index = b[1], .value = std.mem.readInt(u32, b[2..6], .big) } };
+        },
+        .canvas => blk: {
+            break :blk .{ .canvas = canvas.decode(p) catch return error.BadPayload };
+        },
+        .canvas_patch => blk: {
+            break :blk .{ .canvas_patch = canvas.getPatch(p) catch return error.BadPayload };
+        },
+        .canvas_get => blk: {
+            _ = try fixed(p, 0);
+            break :blk .canvas_get;
+        },
+        .canvas_clear => blk: {
+            _ = try fixed(p, 0);
+            break :blk .canvas_clear;
+        },
+        .canvas_error => blk: {
+            const b = try fixed(p, 1);
+            break :blk .{ .canvas_error = .{ .reason = b[0] } };
         },
         .device_status => blk: {
             const b = try fixed(p, DeviceStatus.wire_len);

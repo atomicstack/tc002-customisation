@@ -87,6 +87,11 @@ pub const Op = union(enum) {
     streams_create,
     streams_palette,
     streams_delete,
+    canvas_get,
+    /// the whole document, by value: it is about two kilobytes and a request handles one
+    canvas_put: canvas.Document,
+    canvas_patch: canvas.Patch,
+    canvas_clear,
 };
 
 /// a location pinned by hand, in hundredths of a degree
@@ -200,6 +205,48 @@ const ConfigBody = struct {
     longitude: ?f64 = null,
     location_auto: ?bool = null,
 };
+/// one element of a pushed document. the strict parser cannot do a tagged union, so every field
+/// any element type takes lives here and `allowedField` refuses the ones that do not belong to the
+/// type given: `{"type":"rect","text":"hi"}` is a mistake worth hearing about, not a field to drop.
+const ElementBody = struct {
+    type: []const u8,
+    id: ?[]const u8 = null,
+    at: ?[2]i16 = null,
+    size: ?[2]i16 = null,
+    tile: ?u8 = null,
+    row: ?u8 = null,
+    of: ?u8 = null,
+    colour: ?[]const u8 = null,
+    text: ?[]const u8 = null,
+    font: ?[]const u8 = null,
+    @"align": ?[]const u8 = null,
+    filled: ?bool = null,
+    to: ?[2]i16 = null,
+    r: ?u8 = null,
+    value: ?u8 = null,
+    background: ?[]const u8 = null,
+    vertical: ?bool = null,
+    data: ?[]const u8 = null,
+    data_hex: ?[]const u8 = null,
+    style: ?[]const u8 = null,
+    min: ?u8 = null,
+    max: ?u8 = null,
+    threshold: ?u8 = null,
+    over: ?[]const u8 = null,
+};
+const CanvasBody = struct { elements: []const ElementBody };
+/// a patch names elements by id and carries only what changed. it is a list rather than an object
+/// keyed by id because the parser resolves field names at compile time and the ids belong to the
+/// client -- the same reason `generator_params` is a list.
+const ValueBody = struct {
+    id: []const u8,
+    text: ?[]const u8 = null,
+    data: ?[]const u8 = null,
+    data_hex: ?[]const u8 = null,
+    value: ?u8 = null,
+    colour: ?[]const u8 = null,
+};
+const PatchBody = struct { values: []const ValueBody };
 const SaveBody = struct { revision: ?u32 = null };
 const NtfyBody = struct { enabled: ?bool = null, url: ?[]const u8 = null, topic: ?[]const u8 = null, token: ?[]const u8 = null, username: ?[]const u8 = null, password: ?[]const u8 = null, duration_s: ?u16 = null, insecure: ?bool = null, ca: ?[]const u8 = null };
 const MqttBody = struct {
@@ -234,6 +281,178 @@ pub fn parseRequestId(text: []const u8) ?u64 {
 }
 
 const base_names_message = "base must be clock, art or canvas";
+
+// --- the canvas -------------------------------------------------------------------------------
+
+const CanvasRoute = union(enum) { op: canvas.Document, reject: Reject };
+const CanvasPatchRoute = union(enum) { op: canvas.Patch, reject: Reject };
+
+fn canvasBad(code: []const u8, message: []const u8) Reject {
+    return .{ .status = 400, .code = code, .message = message };
+}
+
+/// which fields each element type has a use for. anything else set on it is a mistake: an
+/// integration that thinks it is setting a radius on a rectangle should hear that it is not.
+fn allowedField(kind: canvas.Kind, comptime name: []const u8) bool {
+    const eq = struct {
+        fn f(comptime a: []const u8, comptime b: []const u8) bool {
+            return comptime std.mem.eql(u8, a, b);
+        }
+    }.f;
+    if (eq(name, "type") or eq(name, "id") or eq(name, "at") or eq(name, "size") or
+        eq(name, "tile") or eq(name, "row") or eq(name, "of") or eq(name, "colour")) return true;
+    return switch (kind) {
+        .text => eq(name, "text") or eq(name, "font") or eq(name, "align"),
+        .rect => eq(name, "filled"),
+        .line => eq(name, "to"),
+        .circle => eq(name, "r") or eq(name, "filled"),
+        .pixel => false,
+        .bar => eq(name, "value") or eq(name, "background") or eq(name, "vertical"),
+        .sparkline => eq(name, "data") or eq(name, "data_hex") or eq(name, "style") or
+            eq(name, "min") or eq(name, "max") or eq(name, "threshold") or eq(name, "over"),
+    };
+}
+
+/// samples as an array of numbers, or as hex for a document that would not otherwise fit: 52
+/// samples cost 208 characters as json digits and 104 as hex
+fn parseSamples(b: *const ElementBody, out: []u8) ?[]const u8 {
+    if (b.data) |d| {
+        if (d.len > out.len) return null;
+        @memcpy(out[0..d.len], d);
+        return out[0..d.len];
+    }
+    const hex = b.data_hex orelse return out[0..0];
+    if (hex.len % 2 != 0 or hex.len / 2 > out.len) return null;
+    var i: usize = 0;
+    while (i < hex.len) : (i += 2) {
+        out[i / 2] = (hexDigit(hex[i]) orelse return null) * 16 + (hexDigit(hex[i + 1]) orelse return null);
+    }
+    return out[0 .. hex.len / 2];
+}
+
+fn hexDigit(c: u8) ?u8 {
+    return switch (c) {
+        '0'...'9' => c - '0',
+        'a'...'f' => c - 'a' + 10,
+        'A'...'F' => c - 'A' + 10,
+        else => null,
+    };
+}
+
+fn parseBox(b: *const ElementBody) ?canvas.Box {
+    if (b.tile != null and b.row != null) return null;
+    if ((b.tile != null or b.row != null) and (b.at != null or b.size != null)) return null;
+    if (b.tile) |n| return canvas.Box.tile(n, b.of orelse return null);
+    if (b.row) |n| return canvas.Box.row(n, b.of orelse return null);
+    if (b.of != null) return null; // `of` without a tile or row says nothing
+    var box = canvas.Box{};
+    if (b.at) |a| {
+        box.x = a[0];
+        box.y = a[1];
+    }
+    if (b.size) |sz| {
+        if (sz[0] < 0 or sz[1] < 0) return null;
+        box.w = sz[0];
+        box.h = sz[1];
+    }
+    return box;
+}
+
+/// a whole document, or the first thing wrong with it
+fn parseCanvas(body: []const ElementBody, doc: *canvas.Document) CanvasRoute {
+    if (body.len > canvas.max_elements) return .{ .reject = canvasBad("too_many_elements", "a document holds at most 24 elements") };
+    for (body) |*b| {
+        const kind = enumByName(canvas.Kind, b.type) orelse
+            return .{ .reject = canvasBad("invalid_element_type", "type must be text, rect, line, circle, pixel, bar or sparkline") };
+        inline for (@typeInfo(ElementBody).@"struct".fields) |f| {
+            if (comptime @typeInfo(f.type) == .optional) {
+                if (@field(b, f.name) != null and !allowedField(kind, f.name)) {
+                    return .{ .reject = canvasBad("invalid_element_field", "that field does not belong to that element type") };
+                }
+            }
+        }
+        if (b.id) |id| if (id.len == 0 or id.len > canvas.id_max) {
+            return .{ .reject = canvasBad("invalid_element_id", "an id is 1 to 8 characters") };
+        };
+        const box = parseBox(b) orelse return .{ .reject = canvasBad("invalid_placement", "give at (and size), or tile/row with of; not both") };
+        var e = canvas.Element{ .id = if (b.id) |id| canvas.Id.init(id) else .{}, .box = box, .body = .pixel };
+        if (b.colour) |c| e.colour = parseColour(c) orelse return .{ .reject = canvasBad("invalid_colour", "colour must be rrggbb hex") };
+        switch (kind) {
+            .text => {
+                const text = b.text orelse return .{ .reject = canvasBad("missing_text", "a text element needs text") };
+                const span = doc.addText(text) catch return .{ .reject = canvasBad("document_full", "the document's text does not fit") };
+                e.body = .{ .text = .{
+                    .span = span,
+                    .face = if (b.font) |f| (enumByName(canvas.Font, f) orelse return .{ .reject = canvasBad("invalid_font", "font must be small, mini, block or big") }) else .small,
+                    .alignment = if (b.@"align") |a| (enumByName(canvas.Align, a) orelse return .{ .reject = canvasBad("invalid_align", "align must be left, centre or right") }) else .left,
+                } };
+            },
+            .rect => e.body = .{ .rect = .{ .filled = b.filled orelse false } },
+            .line => {
+                const to = b.to orelse return .{ .reject = canvasBad("missing_to", "a line needs to") };
+                e.body = .{ .line = .{ .x2 = to[0], .y2 = to[1] } };
+            },
+            .circle => e.body = .{ .circle = .{ .r = b.r orelse 1, .filled = b.filled orelse false } },
+            .pixel => e.body = .pixel,
+            .bar => e.body = .{ .bar = .{
+                .value = b.value orelse 0,
+                .background = if (b.background) |c| (parseColour(c) orelse return .{ .reject = canvasBad("invalid_colour", "background must be rrggbb hex") }) else .{ 0, 0, 0 },
+                .vertical = b.vertical orelse false,
+            } },
+            .sparkline => {
+                var samples: [canvas.samples_max]u8 = undefined;
+                const got = parseSamples(b, &samples) orelse return .{ .reject = canvasBad("invalid_data", "data is up to 52 samples of 0..255, or data_hex of twice as many hex digits") };
+                const span = doc.addData(got) catch return .{ .reject = canvasBad("document_full", "the document's sample data does not fit") };
+                e.body = .{ .sparkline = .{
+                    .span = span,
+                    .style = if (b.style) |st| (enumByName(canvas.Style, st) orelse return .{ .reject = canvasBad("invalid_style", "style must be line, bars or area") }) else .line,
+                    .min = b.min orelse 0,
+                    .max = b.max orelse 0,
+                    .threshold = b.threshold orelse 0,
+                    .over = if (b.over) |c| (parseColour(c) orelse return .{ .reject = canvasBad("invalid_colour", "over must be rrggbb hex") }) else .{ 255, 0, 0 },
+                } };
+            },
+        }
+        doc.add(e) catch return .{ .reject = canvasBad("too_many_elements", "a document holds at most 24 elements") };
+    }
+    return .{ .op = doc.* };
+}
+
+fn parseCanvasPatch(body: []const ValueBody) CanvasPatchRoute {
+    if (body.len > canvas.max_elements) return .{ .reject = canvasBad("too_many_values", "a patch carries at most 24 values") };
+    var p = canvas.Patch{};
+    for (body) |*v| {
+        if (v.id.len == 0 or v.id.len > canvas.id_max) return .{ .reject = canvasBad("invalid_element_id", "an id is 1 to 8 characters") };
+        var u = canvas.Update{ .id = canvas.Id.init(v.id) };
+        if (v.text) |t| {
+            if (t.len > canvas.patch_bytes_max) return .{ .reject = canvasBad("text_too_long", "a patched string is at most 64 characters") };
+            u.has |= canvas.Field.text;
+            u.len = @intCast(t.len);
+            @memcpy(u.bytes[0..t.len], t);
+        }
+        if (v.data != null or v.data_hex != null) {
+            if (u.has & canvas.Field.text != 0) return .{ .reject = canvasBad("invalid_element_field", "an element takes text or data, not both") };
+            var samples: [canvas.samples_max]u8 = undefined;
+            const eb = ElementBody{ .type = "sparkline", .data = v.data, .data_hex = v.data_hex };
+            const got = parseSamples(&eb, &samples) orelse return .{ .reject = canvasBad("invalid_data", "data is up to 52 samples of 0..255, or data_hex of twice as many hex digits") };
+            if (got.len > canvas.patch_bytes_max) return .{ .reject = canvasBad("invalid_data", "a patched sparkline carries at most 64 samples") };
+            u.has |= canvas.Field.data;
+            u.len = @intCast(got.len);
+            @memcpy(u.bytes[0..got.len], got);
+        }
+        if (v.value) |n| {
+            u.has |= canvas.Field.value;
+            u.value = n;
+        }
+        if (v.colour) |c| {
+            u.has |= canvas.Field.colour;
+            u.colour = parseColour(c) orelse return .{ .reject = canvasBad("invalid_colour", "colour must be rrggbb hex") };
+        }
+        if (u.has == 0) return .{ .reject = canvasBad("empty_value", "a value must change something") };
+        p.add(u) catch return .{ .reject = canvasBad("too_many_values", "a patch carries at most 24 values") };
+    }
+    return .{ .op = p };
+}
 
 fn parseBase(text: []const u8) ?Base {
     if (std.mem.eql(u8, text, "clock")) return .clock;
@@ -292,6 +511,10 @@ const endpoints = [_]Endpoint{
     .{ .method = .POST, .path = "/api/v1/config/save", .authority = .admin },
     .{ .method = .POST, .path = "/api/v1/notify", .authority = .control },
     .{ .method = .POST, .path = "/api/v1/frame", .authority = .control },
+    .{ .method = .GET, .path = "/api/v1/canvas", .authority = .control },
+    .{ .method = .PUT, .path = "/api/v1/canvas", .authority = .admin },
+    .{ .method = .PATCH, .path = "/api/v1/canvas", .authority = .control },
+    .{ .method = .DELETE, .path = "/api/v1/canvas", .authority = .control },
     .{ .method = .GET, .path = "/api/v1/mqtt", .authority = .admin },
     .{ .method = .PUT, .path = "/api/v1/mqtt", .authority = .admin },
     .{ .method = .GET, .path = "/api/v1/mqtt/status", .authority = .control },
@@ -341,6 +564,8 @@ pub fn route(req: http.Request, body: []const u8, creds: *const Credentials, ori
     if (std.mem.eql(u8, ep.path, "/api/v1/status")) return .{ .op = .status };
     if (std.mem.eql(u8, ep.path, "/api/v1/scenes")) return .{ .op = .scenes };
     if (std.mem.eql(u8, ep.path, "/api/v1/config") and req.method == .GET) return .{ .op = .config_get };
+    if (std.mem.eql(u8, ep.path, "/api/v1/canvas") and req.method == .GET) return .{ .op = .canvas_get };
+    if (std.mem.eql(u8, ep.path, "/api/v1/canvas") and req.method == .DELETE) return .{ .op = .canvas_clear };
     if (std.mem.eql(u8, ep.path, "/api/v1/mqtt") and req.method == .GET) return .{ .op = .mqtt_get };
     if (std.mem.eql(u8, ep.path, "/api/v1/ntfy") and req.method == .GET) return .{ .op = .ntfy_get };
     if (std.mem.eql(u8, ep.path, "/api/v1/mqtt/status")) return .{ .op = .mqtt_status };
@@ -371,11 +596,12 @@ pub fn route(req: http.Request, body: []const u8, creds: *const Credentials, ori
     if (std.mem.eql(u8, ep.path, "/api/v1/mqtt")) return parseBody(.mqtt_put, body, arena);
     if (std.mem.eql(u8, ep.path, "/api/v1/ntfy")) return parseBody(.ntfy_put, body, arena);
     if (std.mem.eql(u8, ep.path, "/api/v1/input")) return parseBody(.input, body, arena);
+    if (std.mem.eql(u8, ep.path, "/api/v1/canvas")) return parseBody(if (req.method == .PUT) .canvas_put else .canvas_patch, body, arena);
     return .{ .reject = .{ .status = 404, .code = "not_found", .message = "no such route" } };
 }
 
 
-pub const BodyKind = enum { scene, action, notify, config_patch, config_save, mqtt_put, ntfy_put, input };
+pub const BodyKind = enum { scene, action, notify, config_patch, config_save, mqtt_put, ntfy_put, input, canvas_put, canvas_patch };
 
 pub fn enumByName(comptime E: type, text: []const u8) ?E {
     inline for (@typeInfo(E).@"enum".fields) |f| if (std.mem.eql(u8, text, f.name)) return @enumFromInt(f.value);
@@ -513,6 +739,21 @@ pub fn parseBody(kind: BodyKind, body: []const u8, arena: *Arena) Route {
                 .location = location,
                 .location_auto = b.location_auto,
             } } };
+        },
+        .canvas_put => {
+            const b = json.parse(CanvasBody, body, arena) catch |e| return jsonError(e);
+            var doc = canvas.Document{};
+            return switch (parseCanvas(b.elements, &doc)) {
+                .reject => |j| .{ .reject = j },
+                .op => |d| .{ .op = .{ .canvas_put = d } },
+            };
+        },
+        .canvas_patch => {
+            const b = json.parse(PatchBody, body, arena) catch |e| return jsonError(e);
+            return switch (parseCanvasPatch(b.values)) {
+                .reject => |j| .{ .reject = j },
+                .op => |p| .{ .op = .{ .canvas_patch = p } },
+            };
         },
         .config_save => {
             const b = if (body.len == 0) SaveBody{} else json.parse(SaveBody, body, arena) catch |e| return jsonError(e);
@@ -946,4 +1187,76 @@ test "screen, logs and input routes" {
     try expectReject(route(testReq(.POST, "/api/v1/input", "", control_header, "application/json", null), "{\"control\":\"middle\",\"event\":\"click\",\"steps\":2,\"request_id\":\"c\",\"epoch\":1}", &c, &origins, &arena), 400, "invalid_steps");
     try expectReject(route(testReq(.POST, "/api/v1/input", "", control_header, "application/json", null), "{\"control\":\"rotary\",\"event\":\"cw\",\"steps\":17,\"request_id\":\"c\",\"epoch\":1}", &c, &origins, &arena), 400, "invalid_steps");
     try expectReject(route(testReq(.POST, "/api/v1/input", "", control_header, "application/json", null), "{\"control\":\"pedal\",\"event\":\"click\",\"request_id\":\"c\",\"epoch\":1}", &c, &origins, &arena), 400, "invalid_control");
+}
+
+test "a canvas document is parsed whole, with every field checked against its element type" {
+    const c = testCreds();
+    var arena: Arena = undefined;
+    const origins = OriginPolicy{};
+    const put = testReq(.PUT, "/api/v1/canvas", "", admin_header, "application/json", null);
+    const r = route(put,
+        \\{"elements":[
+        \\ {"id":"hdr","type":"text","at":[0,0],"font":"mini","colour":"808080","text":"living room"},
+        \\ {"id":"t","type":"text","tile":2,"of":3,"align":"centre","font":"big","text":"21"},
+        \\ {"id":"g","type":"sparkline","at":[0,13],"size":[52,3],"style":"bars","data":[1,9,4],"threshold":8,"over":"ff0000"},
+        \\ {"type":"line","at":[0,12],"to":[51,12],"colour":"202020"},
+        \\ {"id":"b","type":"bar","row":3,"of":4,"value":60,"background":"101010"}]}
+    , &c, &origins, &arena);
+    const d = r.op.canvas_put;
+    try std.testing.expectEqual(@as(u8, 5), d.count);
+    try std.testing.expectEqualStrings("living room", d.textOf(d.elements[0].body.text.span));
+    try std.testing.expectEqual(canvas.Font.big, d.elements[1].body.text.face);
+    try std.testing.expectEqual(canvas.Align.centre, d.elements[1].body.text.alignment);
+    try std.testing.expectEqual(canvas.Box.tile(2, 3), d.elements[1].box);
+    try std.testing.expectEqualSlices(u8, &[_]u8{ 1, 9, 4 }, d.dataOf(d.elements[2].body.sparkline.span));
+    try std.testing.expectEqual([3]u8{ 255, 0, 0 }, d.elements[2].body.sparkline.over);
+    try std.testing.expectEqual(@as(i16, 51), d.elements[3].body.line.x2);
+    try std.testing.expect(d.elements[3].id.len == 0); // decoration needs no id
+    try std.testing.expectEqual(@as(u8, 60), d.elements[4].body.bar.value);
+
+    // samples as hex, for a document that would not otherwise fit
+    const hexed = route(put, "{\"elements\":[{\"type\":\"sparkline\",\"data_hex\":\"01090f\"}]}", &c, &origins, &arena);
+    try std.testing.expectEqualSlices(u8, &[_]u8{ 1, 9, 15 }, hexed.op.canvas_put.dataOf(hexed.op.canvas_put.elements[0].body.sparkline.span));
+
+    // a field that does not belong to the type is a mistake worth hearing about
+    try expectReject(route(put, "{\"elements\":[{\"type\":\"rect\",\"text\":\"hi\"}]}", &c, &origins, &arena), 400, "invalid_element_field");
+    try expectReject(route(put, "{\"elements\":[{\"type\":\"bar\",\"r\":4}]}", &c, &origins, &arena), 400, "invalid_element_field");
+    try expectReject(route(put, "{\"elements\":[{\"type\":\"pixel\",\"filled\":true}]}", &c, &origins, &arena), 400, "invalid_element_field");
+    // and so is a nonsense value
+    try expectReject(route(put, "{\"elements\":[{\"type\":\"blob\"}]}", &c, &origins, &arena), 400, "invalid_element_type");
+    try expectReject(route(put, "{\"elements\":[{\"type\":\"text\"}]}", &c, &origins, &arena), 400, "missing_text");
+    try expectReject(route(put, "{\"elements\":[{\"type\":\"line\",\"at\":[0,0]}]}", &c, &origins, &arena), 400, "missing_to");
+    try expectReject(route(put, "{\"elements\":[{\"type\":\"text\",\"text\":\"x\",\"font\":\"comic\"}]}", &c, &origins, &arena), 400, "invalid_font");
+    try expectReject(route(put, "{\"elements\":[{\"type\":\"text\",\"text\":\"x\",\"colour\":\"nope\"}]}", &c, &origins, &arena), 400, "invalid_colour");
+    try expectReject(route(put, "{\"elements\":[{\"type\":\"text\",\"text\":\"x\",\"id\":\"far_too_long\"}]}", &c, &origins, &arena), 400, "invalid_element_id");
+    try expectReject(route(put, "{\"elements\":[{\"type\":\"sparkline\",\"data_hex\":\"abc\"}]}", &c, &origins, &arena), 400, "invalid_data");
+    // placement: one way or the other, not both, and `of` means nothing alone
+    try expectReject(route(put, "{\"elements\":[{\"type\":\"pixel\",\"tile\":1,\"of\":3,\"at\":[0,0]}]}", &c, &origins, &arena), 400, "invalid_placement");
+    try expectReject(route(put, "{\"elements\":[{\"type\":\"pixel\",\"tile\":1}]}", &c, &origins, &arena), 400, "invalid_placement");
+    try expectReject(route(put, "{\"elements\":[{\"type\":\"pixel\",\"of\":3}]}", &c, &origins, &arena), 400, "invalid_placement");
+    try expectReject(route(put, "{\"elements\":[{\"type\":\"rect\",\"size\":[-1,4]}]}", &c, &origins, &arena), 400, "invalid_placement");
+}
+
+test "a canvas patch carries values by id, and the canvas routes have their own authority" {
+    const c = testCreds();
+    var arena: Arena = undefined;
+    const origins = OriginPolicy{};
+    const patch = testReq(.PATCH, "/api/v1/canvas", "", control_header, "application/json", null);
+    const r = route(patch, "{\"values\":[{\"id\":\"t\",\"text\":\"21.1C\"},{\"id\":\"g\",\"data\":[4,5]},{\"id\":\"b\",\"value\":70,\"colour\":\"00ff00\"}]}", &c, &origins, &arena);
+    const p = r.op.canvas_patch;
+    try std.testing.expectEqual(@as(u8, 3), p.count);
+    try std.testing.expectEqualStrings("21.1C", p.items[0].slice());
+    try std.testing.expectEqual(canvas.Field.text, p.items[0].has);
+    try std.testing.expectEqualSlices(u8, &[_]u8{ 4, 5 }, p.items[1].slice());
+    try std.testing.expectEqual(canvas.Field.value | canvas.Field.colour, p.items[2].has);
+    try std.testing.expectEqual(@as(u8, 70), p.items[2].value);
+
+    try expectReject(route(patch, "{\"values\":[{\"id\":\"t\"}]}", &c, &origins, &arena), 400, "empty_value");
+    try expectReject(route(patch, "{\"values\":[{\"id\":\"\",\"value\":1}]}", &c, &origins, &arena), 400, "invalid_element_id");
+    try expectReject(route(patch, "{\"values\":[{\"id\":\"t\",\"text\":\"x\",\"data\":[1]}]}", &c, &origins, &arena), 400, "invalid_element_field");
+
+    // reading is control, replacing the whole document is admin
+    try std.testing.expect(route(testReq(.GET, "/api/v1/canvas", "", control_header, null, null), "", &c, &origins, &arena).op == .canvas_get);
+    try std.testing.expect(route(testReq(.DELETE, "/api/v1/canvas", "", control_header, null, null), "", &c, &origins, &arena).op == .canvas_clear);
+    try expectReject(route(testReq(.PUT, "/api/v1/canvas", "", control_header, "application/json", null), "{\"elements\":[]}", &c, &origins, &arena), 403, "forbidden");
 }

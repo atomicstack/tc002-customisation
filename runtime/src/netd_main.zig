@@ -21,6 +21,7 @@ const scene = @import("scene/scene.zig");
 const actions = @import("input/actions.zig");
 const clock = @import("scene/clock.zig");
 const solar = @import("sys/solar.zig");
+const canvas = @import("scene/canvas.zig");
 const night = @import("supervisor/night.zig");
 
 const linux = std.os.linux;
@@ -50,7 +51,7 @@ const mqtt_frame_envelope = 8 + 4 + 2 + geometry.rgb_bytes;
 const Tag = enum(u64) { timer = 1, supervisor = 2, listener = 3, mqtt = 4, conn_base = 16 };
 
 const ConnState = enum { free, reading, relaying, writing };
-const Awaiting = enum { none, renderer_result, status, config, save_result, screen, logs };
+const Awaiting = enum { none, renderer_result, status, config, save_result, screen, logs, canvas };
 
 const Conn = struct {
     fd: sys.Fd = -1,
@@ -409,6 +410,11 @@ const Netd = struct {
                 self.relay(c, .{ .frame = .{ .duration_s = f.duration_s, .transition = messages.Transition.fromSpec(f.transition), .rgb = f.rgb.* } }, f.request_id, f.epoch, now);
             },
             .config_get => self.ask(c, .config_get, .config, now),
+            // the supervisor keeps the document, so every canvas route is a round trip to it
+            .canvas_get => self.ask(c, .canvas_get, .canvas, now),
+            .canvas_put => |d| self.ask(c, .{ .canvas = d }, .canvas, now),
+            .canvas_patch => |cp| self.ask(c, .{ .canvas_patch = cp }, .canvas, now),
+            .canvas_clear => self.ask(c, .canvas_clear, .canvas, now),
             .config_patch => |p| {
                 const w = messages.ConfigPatch.fromApi(p) catch {
                     self.respondError(c, 400, "invalid_value", "a text field is too long");
@@ -646,6 +652,24 @@ const Netd = struct {
         o.add("}");
     }
 
+    fn onCanvas(self: *Netd, request_id: u64, d: *const canvas.Document, now: u64) void {
+        const c = self.findConn(true, request_id) orelse return;
+        var o = Out{ .buf = &json_buf };
+        canvasJson(&o, d);
+        self.respond(c, 200, "application/json", o.slice());
+        self.flushConn(c, now);
+    }
+
+    fn onCanvasError(self: *Netd, request_id: u64, e: messages.CanvasError, now: u64) void {
+        const c = self.findConn(true, request_id) orelse return;
+        switch (e.reason) {
+            messages.CanvasError.unknown_element => self.respondError(c, 400, "unknown_element", "the document has no element with that id"),
+            messages.CanvasError.wrong_field => self.respondError(c, 400, "invalid_element_field", "that field does not belong to that element's type"),
+            else => self.respondError(c, 400, "document_full", "the document's pools cannot hold that"),
+        }
+        self.flushConn(c, now);
+    }
+
     fn onSaveResult(self: *Netd, request_id: u64, r: messages.SaveResult, now: u64) void {
         const c = self.findConn(true, request_id) orelse return;
         switch (r.status) {
@@ -686,6 +710,8 @@ const Netd = struct {
                 .status => |st| self.onStatus(p.request_id, st, now),
                 .result => |r| self.onResult(p.request_id, r, now),
                 .save_result => |r| self.onSaveResult(p.request_id, r, now),
+                .canvas => |*d| self.onCanvas(p.request_id, d, now),
+                .canvas_error => |e| self.onCanvasError(p.request_id, e, now),
                 .screen => |*sc| self.onScreen(p.request_id, sc, now),
                 .log_lines => |*l| self.onLogs(p.request_id, l, now),
                 .input => |i| self.onInput(i),
@@ -727,6 +753,46 @@ const Netd = struct {
             3 => "stopping",
             else => "unknown",
         };
+    }
+
+    /// the document as held, in the shape a `PUT` would send it back: what is on the panel, not a
+    /// separate vocabulary for reading it.
+    fn canvasJson(o: *Out, d: *const canvas.Document) void {
+        o.fmt("{{\"revision\":{d},\"elements\":[", .{d.revision});
+        for (d.elements[0..d.count], 0..) |*e, i| {
+            if (i > 0) o.add(",");
+            o.fmt("{{\"type\":\"{s}\"", .{@tagName(e.kind())});
+            if (e.id.len > 0) {
+                o.add(",\"id\":");
+                o.str(e.id.slice());
+            }
+            o.fmt(",\"at\":[{d},{d}]", .{ e.box.x, e.box.y });
+            if (e.box.w != 0 or e.box.h != 0) o.fmt(",\"size\":[{d},{d}]", .{ e.box.w, e.box.h });
+            o.fmt(",\"colour\":\"{x:0>2}{x:0>2}{x:0>2}\"", .{ e.colour[0], e.colour[1], e.colour[2] });
+            switch (e.body) {
+                .text => |t| {
+                    o.add(",\"text\":");
+                    o.str(d.textOf(t.span));
+                    o.fmt(",\"font\":\"{s}\",\"align\":\"{s}\"", .{ @tagName(t.face), @tagName(t.alignment) });
+                },
+                .rect => |r| o.fmt(",\"filled\":{}", .{r.filled}),
+                .line => |l| o.fmt(",\"to\":[{d},{d}]", .{ l.x2, l.y2 }),
+                .circle => |cc| o.fmt(",\"r\":{d},\"filled\":{}", .{ cc.r, cc.filled }),
+                .pixel => {},
+                .bar => |b| o.fmt(",\"value\":{d},\"background\":\"{x:0>2}{x:0>2}{x:0>2}\",\"vertical\":{}", .{ b.value, b.background[0], b.background[1], b.background[2], b.vertical }),
+                .sparkline => |sp| {
+                    o.add(",\"data\":[");
+                    for (d.dataOf(sp.span), 0..) |v, j| {
+                        if (j > 0) o.add(",");
+                        o.fmt("{d}", .{v});
+                    }
+                    o.fmt("],\"style\":\"{s}\",\"min\":{d},\"max\":{d},\"threshold\":{d}", .{ @tagName(sp.style), sp.min, sp.max, sp.threshold });
+                    o.fmt(",\"over\":\"{x:0>2}{x:0>2}{x:0>2}\"", .{ sp.over[0], sp.over[1], sp.over[2] });
+                },
+            }
+            o.add("}");
+        }
+        o.fmt("],\"limits\":{{\"elements\":{d},\"text_bytes\":{d},\"data_bytes\":{d},\"samples\":{d}}}}}", .{ canvas.max_elements, canvas.text_pool, canvas.data_pool, canvas.samples_max });
     }
 
     fn nightPhaseName(p: u8) []const u8 {

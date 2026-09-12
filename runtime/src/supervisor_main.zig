@@ -23,6 +23,7 @@ const clockscene = @import("scene/clock.zig");
 const param = @import("scene/param.zig");
 const sntp = @import("supervisor/sntp.zig");
 const night = @import("supervisor/night.zig");
+const canvas = @import("scene/canvas.zig");
 const api = @import("net/api.zig");
 
 const linux = std.os.linux;
@@ -379,6 +380,9 @@ const Supervisor = struct {
     /// the children's stdout and stderr: drained into the ring and echoed to our own stderr
     log_pipe: ?[2]sys.Fd = null,
     sntp_link: SntpLink = .{},
+    /// the canvas document. the supervisor owns it because it is state a client reads back and
+    /// will one day persist; the renderer gets a copy whenever it changes or restarts.
+    canvas_doc: canvas.Document = .{},
     /// the night brightness schedule; the phase it is in lives in the snapshot
     night: night.Schedule = .{},
     next_night_poll: u64 = 0,
@@ -999,6 +1003,28 @@ const Supervisor = struct {
                 },
                 .status_get => self.sendNetd(.{ .status = self.snapshot }, p.request_id),
                 .config_get => self.sendNetd(.{ .config = self.cfg }, p.request_id),
+                .canvas_get => self.sendNetd(.{ .canvas = self.canvas_doc }, p.request_id),
+                .canvas => |d| {
+                    self.canvas_doc = d;
+                    self.canvas_doc.revision +%= 1;
+                    self.sendCanvas();
+                    self.sendNetd(.{ .canvas = self.canvas_doc }, p.request_id);
+                    log.info("canvas: {d} elements, revision {d}", .{ self.canvas_doc.count, self.canvas_doc.revision });
+                },
+                .canvas_patch => |cp| {
+                    canvas.applyPatch(&self.canvas_doc, &cp) catch |e| {
+                        log.warn("canvas patch rejected: {s}", .{@errorName(e)});
+                        self.sendNetd(.{ .canvas_error = messages.CanvasError.of(e) }, p.request_id);
+                        continue;
+                    };
+                    self.sendCanvas();
+                    self.sendNetd(.{ .canvas = self.canvas_doc }, p.request_id);
+                },
+                .canvas_clear => {
+                    self.canvas_doc.clear();
+                    self.sendCanvas();
+                    self.sendNetd(.{ .canvas = self.canvas_doc }, p.request_id);
+                },
                 .config_patch => |w| {
                     const before = self.cfg;
                     self.cfg.patch(w.toApi()) catch |e| {
@@ -1356,6 +1382,7 @@ const Supervisor = struct {
                     self.send(.{ .clock_style = messages.ClockStyle.full(self.cfg.clockStyle()) });
                     self.send(.{ .ip_mode = .{ .mode = self.cfg.ip_mode } });
                     self.sendGeneratorParams();
+                    if (!self.canvas_doc.empty()) self.sendCanvas(); // a restart redraws what was pushed
                     // the renderer started dark: reveal the saved state with the power ramp
                     self.send(.{ .power = .{ .on = 1 } });
                     self.snapshot.epoch = lifecycle.epoch;
@@ -1506,6 +1533,11 @@ const Supervisor = struct {
         const value = want orelse return;
         if (value == self.snapshot.brightness) return;
         self.send(.{ .brightness = .{ .value = value } });
+    }
+
+    /// the renderer draws whatever document the supervisor is holding
+    fn sendCanvas(self: *Supervisor) void {
+        self.send(.{ .canvas = self.canvas_doc });
     }
 
     /// the schedule works from copies of the settings, refreshed whenever they change
