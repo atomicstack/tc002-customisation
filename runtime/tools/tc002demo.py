@@ -11,6 +11,9 @@ about.
 """
 import argparse, json, os, secrets, sys, time
 
+# one heartbeat and a little: how long the renderer takes to report a scene change back
+settle = 0.4
+
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import tc002ctl  # noqa: e402  (the request and token helpers of the host client)
 
@@ -136,6 +139,9 @@ def run(name, description, reel, step_fn, extra_setup=None, extra_teardown=None,
         die(name, "--hold must be positive")
 
     dev = dev_for_reel or Device(args, name)
+    # `/status` comes from the renderer's 250 ms heartbeat, so a reading taken the instant another
+    # demo put its scene back is stale -- and saving a stale base means restoring the wrong one.
+    time.sleep(settle)
     status = dev.status()
     if status.get("power") is False:
         print("note: the display is off, so this will play unseen (tc002ctl.py power on)")
@@ -172,5 +178,6 @@ def run(name, description, reel, step_fn, extra_setup=None, extra_teardown=None,
         else:
             dev.clear()
         dev.request("PUT", "/scene", {"base": was_base, "request_id": secrets.token_hex(8)})
+        time.sleep(settle)  # and leave it settled, so the next demo reads the truth
         print(f"  put back: {was_base}" + (f" and the canvas that was there" if was_canvas else ""))
     return 0
