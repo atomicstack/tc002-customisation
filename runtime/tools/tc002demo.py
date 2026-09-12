@@ -171,13 +171,16 @@ def run(name, description, reel, step_fn, extra_setup=None, extra_teardown=None,
                 extra_teardown(dev)
             except SystemExit:
                 pass
+        # hand the panel back first, then tidy the document. the other way round the renderer gets
+        # a frame of the empty canvas before the transition starts, and the scene slides out as the
+        # word "canvas" instead of the last thing the demo drew
+        dev.request("PUT", "/scene", {"base": was_base, "request_id": secrets.token_hex(8)})
         # the document as it was: `GET /canvas` answers in the shape a `PUT` takes, so this is
         # exactly what was there, values and all
         if was_canvas:
             dev.put(was_canvas)
         else:
             dev.clear()
-        dev.request("PUT", "/scene", {"base": was_base, "request_id": secrets.token_hex(8)})
         time.sleep(settle)  # and leave it settled, so the next demo reads the truth
         print(f"  put back: {was_base}" + (f" and the canvas that was there" if was_canvas else ""))
     return 0

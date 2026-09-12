@@ -482,6 +482,26 @@ test "ip and time updates redraw without changing the revision" {
     try std.testing.expect(a.takeDirty());
 }
 
+test "a transition away from the canvas carries the frame it last showed, not the document as it stands" {
+    var a = fresh();
+    _ = a.apply(.{ .set_base = .canvas }, 0);
+    _ = a.takeTransition(); // the renderer ran the arrival, so the next change captures the canvas
+    // one lit pixel is a whole document; render it, and that is what the panel is showing
+    try a.canvas.doc.add(.{ .box = .{ .x = 10, .y = 5 }, .colour = white, .body = .pixel });
+    var shown: geometry.Rgb = undefined;
+    a.render(0, &shown);
+    const lit = (5 * geometry.width + 10) * 3;
+    try std.testing.expectEqual(@as(u8, 255), shown[lit]);
+
+    // the document goes before the scene does, which is the order a client naturally writes:
+    // clear what you put there, then hand the panel back. the outgoing layer must not notice.
+    a.canvas.doc.clear();
+    _ = a.apply(.{ .set_base = .clock }, 0);
+    var old: geometry.Rgb = undefined;
+    try std.testing.expect(a.renderOutgoing(0, &old));
+    try std.testing.expectEqualSlices(u8, &shown, &old);
+}
+
 pub const scroll_period_ns: u64 = 33_333_333;
 
 /// the next (or previous) value of an enum, wrapping around
@@ -554,6 +574,11 @@ pub const Arbiter = struct {
     default_transition: transition.Spec = .{},
     /// the scene the pending transition leaves, kept live until the renderer reports it finished
     outgoing: ?Outgoing = null,
+    /// the last frame the canvas scene rendered. the other bases are re-rendered live for their
+    /// outgoing layer, which keeps a departing clock ticking; the canvas cannot be, because the
+    /// document behind it belongs to a client that has usually already replaced or cleared it by
+    /// the time the transition runs. so the canvas layer leaves as the frame it last showed.
+    canvas_frame: geometry.Rgb = geometry.black_rgb,
     last_tick_ns: u64 = 0,
     art: scene.Art,
     clock: clock.State,
@@ -615,7 +640,7 @@ pub const Arbiter = struct {
                 switch (o.base) {
                     .art => self.art.renderGenerator(o.generator, rgb),
                     .clock => self.clock.renderWith(o.clock_style, wall_ns, rgb),
-                    .canvas => self.canvas.render(self.last_tick_ns, rgb),
+                    .canvas => rgb.* = self.canvas_frame,
                 }
                 // the same dots as the incoming layer, so a cross-fade leaves them crisp instead
                 // of diluting them into the scene underneath
@@ -962,15 +987,18 @@ pub const Arbiter = struct {
         };
     }
 
-    fn renderBase(self: *const Arbiter, wall_ns: u64, rgb: *geometry.Rgb) void {
+    fn renderBase(self: *Arbiter, wall_ns: u64, rgb: *geometry.Rgb) void {
         switch (self.base) {
             .art => self.art.render(rgb),
             .clock => self.clock.render(wall_ns, rgb),
-            .canvas => self.canvas.render(self.last_tick_ns, rgb),
+            .canvas => {
+                self.canvas.render(self.last_tick_ns, rgb);
+                self.canvas_frame = rgb.*;
+            },
         }
     }
 
-    pub fn render(self: *const Arbiter, wall_ns: u64, rgb: *geometry.Rgb) void {
+    pub fn render(self: *Arbiter, wall_ns: u64, rgb: *geometry.Rgb) void {
         if (self.menu_state) |*m| return m.render(self.last_tick_ns, rgb);
         switch (self.overlay) {
             .notify => |n| self.renderNotify(&n, rgb),
