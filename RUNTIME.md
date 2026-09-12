@@ -950,6 +950,24 @@ plus the json parse arena:
 | 22 | 2 | reserved, zero |
 | 24 | n | payload |
 
+`zig build ipcbench` builds `tc002-ipcbench`, the latency companion: it forks a
+peer over the same socketpair and pins both ends with `sched_setaffinity`, so
+the cost of putting a component in a process of its own is measured rather than
+argued about. on this device, p50 over 2,000 round trips after 200 warmup:
+
+| payload | same core | across the two cores |
+|---|---:|---:|
+| 64 bytes | 41 us | 42 us |
+| 2,520 bytes (a whole frame packet) | 53 us | 60 us |
+| 8,192 bytes | 88 us | 98 us |
+| frame packet, waiting in `epoll_wait` | 56 us | 66 us |
+
+one-way with the peer draining, 3,000 frames: 48,149 frames/s on one core,
+**120,192 frames/s across the two** (8.3 us per frame). streaming is faster
+across cores because the two processes run at the same time instead of
+ping-ponging through the scheduler. against a 16,667 us frame budget, handing a
+whole frame to another process costs 0.05% of a frame.
+
 | direction | kinds |
 |-----------|-------|
 | supervisor → ntfy subscriber | `ntfy_config` (the settings and the ca, once after spawn) |
@@ -1393,6 +1411,7 @@ all on a warm device that had been up for days, under the lock, on
 | area | result |
 |------|--------|
 | renderer, art | 900 transfers in 15 s, 59.7–59.9 fps per 5 s window, 0 short writes, 0 errors; one thread |
+| ipc latency (2026-09-13) | frame-sized round trip 53 us on one core, 60 us across two; one-way streaming 120,192 frames/s across cores; `tc002-ipcbench` |
 | renderer, clock | exactly two paced transfers per wall-second update, none in between |
 | supervisor start | `sys.zkapp.state=running` accepted 10 ms after entry; renderer `ready` 7 ms after spawn |
 | frozen renderer (`SIGSTOP`) | stop requested 2.0 s after the last heartbeat, `SIGKILL` 2.0 s later, new epoch spawned 1.0 s after that |

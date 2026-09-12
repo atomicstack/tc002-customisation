@@ -51,6 +51,22 @@ pub fn build(b: *std.Build) void {
     const probe_step = b.step("ipcprobe", "build tc002-ipcprobe: the largest datagram the device's ipc socket carries");
     probe_step.dependOn(&b.addInstallArtifact(ipcprobe, .{}).step);
 
+    // a diagnostic rather than part of the runtime: what one message between two processes costs
+    const ipcbench = b.addExecutable(.{
+        .name = "tc002-ipcbench",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/ipcbench_main.zig"),
+            .target = device,
+            .optimize = optimize,
+            .link_libc = false,
+            .strip = strip,
+            .single_threaded = true,
+        }),
+        .linkage = .static,
+    });
+    const bench_step = b.step("ipcbench", "build tc002-ipcbench: round-trip latency and frame throughput over the ipc socket");
+    bench_step.dependOn(&b.addInstallArtifact(ipcbench, .{}).step);
+
     const bootstrap = b.addLibrary(.{
         .name = "tc002-bootstrap",
         .linkage = .dynamic,
