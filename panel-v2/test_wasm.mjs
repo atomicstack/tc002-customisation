@@ -1,7 +1,8 @@
 /* tests for the wasm-backed preview: `node --test panel-v2/`.
    the module under test is runtime/src/scene compiled to wasm, so these are not a second
    implementation to keep honest — they check the javascript glue (status -> commands, memory
-   windows, catalogues) and pin the wasm renderer against the old hand-written sim.js port.
+   windows, catalogues) and the behaviour of the scenes as seen through it. the scenes' own
+   correctness is tested in zig, next to the code: `zig build test` in runtime/.
    run `zig build wasm` in runtime/ first; the .wasm is generated and not committed. */
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -14,7 +15,6 @@ const require = createRequire(import.meta.url);
 const here = dirname(fileURLToPath(import.meta.url));
 const WASM = join(here, 'tc002-panel.wasm');
 const W = require('./sim-wasm.js');
-const JS = require('./sim.js');
 
 if (!existsSync(WASM)) {
   test('tc002-panel.wasm is built', () => {
@@ -34,14 +34,6 @@ const clockStatus = extra => ({
   base: 'clock', overlay: 'none', generator: 'popsquares', brightness: 100,
   clock: { font: 'classic', colour_mode: 'solid', colour: 'ffffff', colour2: 'ffffff', gradient: 'horizontal', ...extra },
 });
-
-function both(status, extra = {}) {
-  W.reset('art', 'popsquares', 1);
-  return {
-    js: JS.compose(status, localWith(JS, extra), WALL),
-    wasm: W.compose(status, localWith(W, extra), WALL),
-  };
-}
 
 /* ---------- the module itself ---------- */
 
@@ -271,23 +263,22 @@ test('every field of the clock style reaches the renderer', () => {
   }
 });
 
-test('every clock font sim.js implements is pixel-identical', () => {
-  for (const font of ['classic', 'mini', 'segment', 'big']) {
-    const { js, wasm } = both(clockStatus({ font }));
-    assert.equal(bytesDiffering(js.rgb, wasm.rgb), 0, `clock font ${font} differs`);
-    assert.equal(js.cadenceMs, wasm.cadenceMs);
-  }
-});
-
-test('the ip lines layout and the no-address case are pixel-identical', () => {
-  // driven through the scene, not through a base: `ip` is retiring as a base scene and becoming a
-  // page of the device menu, and previewing a layout never needed a base to begin with
-  for (const addr of ['192.168.1.42', null]) {
-    const wasm = W.renderIpLayout('lines', addr, WALL);
-    const js = JS.black();
-    JS.renderIp(js, JS.ipFromString(addr));
-    assert.equal(bytesDiffering(js, wasm.rgb), 0, `ip lines differs for ${addr}`);
-    assert.equal(wasm.cadenceMs, null, 'a static layout wants no timer');
+test('every clock font renders, and no two of them draw the same thing', () => {
+  // this used to compare against sim.js, the hand-written port these tests were written to
+  // retire. with the port gone the claim worth making is about the fonts themselves: each one
+  // draws something, and none is silently an alias for another
+  const seen = new Map();
+  for (const font of W.CLOCK_FONTS) {
+    W.reset('clock', 'popsquares', 1);
+    const { rgb, cadenceMs } = W.compose(clockStatus({ font }), localWith(W), WALL);
+    assert.ok(lit(rgb) > 0, `clock font ${font} drew nothing`);
+    for (const [other, prev] of seen) {
+      assert.notEqual(bytesDiffering(prev, rgb), 0, `font ${font} draws the same pixels as ${other}`);
+    }
+    seen.set(font, rgb);
+    // hires counts milliseconds, so it wants every frame; the rest wake on the next second
+    if (font === 'hires') assert.ok(cadenceMs < 100, `hires should run fast, got ${cadenceMs}`);
+    else assert.ok(cadenceMs > 100, `${font} should wake on the second, got ${cadenceMs}`);
   }
 });
 
@@ -303,50 +294,51 @@ test('every ip layout renders and only the scrolling ones ask for frames', () =>
     const scrolls = mode === 'scroll' || mode === 'big';
     assert.equal(cadenceMs !== null, scrolls, `${mode} cadence should${scrolls ? '' : ' not'} be set`);
   }
+  const noAddress = W.renderIpLayout('lines', null, WALL);
+  assert.ok(lit(noAddress.rgb) > 0, 'no address should still draw `no ip`, not a black panel');
+  assert.notEqual(bytesDiffering(noAddress.rgb, seen.get('lines')), 0);
   assert.throws(() => W.renderIpLayout('nonesuch', '1.2.3.4', WALL), /no such ip layout/);
 });
 
-test('notifications are pixel-identical, centred and scrolling', () => {
+test('a notification is centred when it fits and scrolls when it does not', () => {
   const base = { base: 'clock', overlay: 'notify', generator: 'popsquares', brightness: 100 };
-  for (const text of ['hi', 'a much longer notification that scrolls']) {
-    const notify = { text, colour: [0, 255, 136], sinceMs: WALL };
-    const { js, wasm } = both(base, { notify });
-    assert.equal(bytesDiffering(js.rgb, wasm.rgb), 0, `notification "${text}" differs`);
-    assert.equal(Math.round(js.cadenceMs ?? -1), Math.round(wasm.cadenceMs ?? -1));
+  const shown = text => {
+    W.reset('clock', 'popsquares', 1);
+    return W.compose(base, localWith(W, { notify: { text, colour: [0, 255, 136], sinceMs: WALL } }), WALL);
+  };
+  const short = shown('hi');
+  assert.equal(short.cadenceMs, null, 'text that fits needs no timer');
+  assert.ok(lit(short.rgb) > 0);
+  // centred: the lit columns are symmetric about the middle of the panel
+  const cols = [];
+  for (let x = 0; x < W.WIDTH; x++) {
+    for (let y = 0; y < W.HEIGHT; y++) {
+      const o = (y * W.WIDTH + x) * 3;
+      if (short.rgb[o] | short.rgb[o + 1] | short.rgb[o + 2]) { cols.push(x); break; }
+    }
   }
+  // the 5x7 font advances a spacing column after every glyph including the last, so the lit
+  // extent sits a column or two left of true centre. that is the font, not a placement bug
+  const margin = Math.abs(cols[0] - (W.WIDTH - 1 - cols[cols.length - 1]));
+  assert.ok(margin <= 2, `short text is not centred: margins differ by ${margin}`);
+
+  const long = shown('a much longer notification that scrolls');
+  assert.ok(long.cadenceMs > 0 && long.cadenceMs < 100, `scrolling text wants frames, got ${long.cadenceMs}`);
 });
 
-test('the firmware level curve is identical at every brightness', () => {
-  for (const b of [0, 1, 25, 50, 99, 100]) {
-    assert.equal(bytesDiffering(JS.buildLut(b), W.buildLut(b)), 0, `lut differs at brightness ${b}`);
-  }
-});
+test('the brightness lut is the firmware level curve', () => {
+  // the curve libzkgui.so applies: 0 stays 0, 1..255 land on 50..255. these are the values
+  // runtime/src/panel/pack.zig asserts of itself, checked here through the wasm boundary
+  const full = W.buildLut(100);
+  assert.equal(full[0], 0);
+  assert.equal(full[1], 50);
+  assert.equal(full[128], 152);
+  assert.equal(full[255], 255);
+  for (let v = 1; v < 256; v++) assert.ok(full[v] >= full[v - 1], `the curve dips at ${v}`);
 
-/* ---------- the drift this change exists to remove ----------
-   these assert that sim.js is WRONG, so they are the checklist for deleting it. each one is a
-   place the javascript port stopped following runtime/src and nobody noticed. when sim.js goes,
-   this block goes with it. */
-
-test('drift: sim.js is missing generators and clock fonts the runtime has', () => {
-  assert.deepEqual(JS.GENERATORS, ['popsquares', 'plasma']);
-  assert.ok(W.GENERATORS.includes('cube'), 'the runtime grew a cube generator');
-  assert.equal(JS.CLOCK_FONTS.length, 4);
-  assert.equal(W.CLOCK_FONTS.length, 6, 'the runtime grew the block and hires fonts');
-});
-
-test('drift: sim.js has only one ip layout, and draws it whatever the mode', () => {
-  const jsLines = JS.black();
-  JS.renderIp(jsLines, JS.ipFromString('192.168.1.42'));
-  for (const mode of W.IP_MODES) {
-    const wasm = W.renderIpLayout(mode, '192.168.1.42', WALL);
-    const same = bytesDiffering(jsLines, wasm.rgb) === 0;
-    assert.equal(same, mode === 'lines', `sim.js's only layout should match ${mode} iff it is lines`);
-  }
-});
-
-test('drift: sim.js clamps the gradient by a fixed 96, the runtime by the style\'s spread', () => {
-  assert.equal(JS.CLOCK_MAX_SPREAD, 96);
-  assert.equal(W.CLOCK_MAX_SPREAD, 255, 'clock.default_spread');
-  const { js, wasm } = both(clockStatus({ colour_mode: 'gradient', colour: 'ff0000', colour2: '00ff00' }));
-  assert.notEqual(bytesDiffering(js.rgb, wasm.rgb), 0, 'the two clamps should disagree');
+  const half = W.buildLut(50);
+  assert.equal(half[0], 0, 'zero stays off at any brightness');
+  // v * 50 / 100 is integer division, so 255 scales to 127, not 128
+  assert.equal(half[255], full[127], 'half brightness is the curve of half the value');
+  assert.deepEqual(W.buildLut(255), full, 'brightness is clamped to 100');
 });

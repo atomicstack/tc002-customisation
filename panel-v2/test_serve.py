@@ -197,7 +197,7 @@ class EndToEndTests(unittest.TestCase):
         except urllib.error.HTTPError as e:
             self.assertEqual(e.code, 404)
             self.assertEqual(json.loads(e.read())["error"], "not_found")
-        with urllib.request.urlopen(f"http://127.0.0.1:{self.proxy_port}/sim.js", timeout=5) as r:
+        with urllib.request.urlopen(f"http://127.0.0.1:{self.proxy_port}/sim-wasm.js", timeout=5) as r:
             self.assertEqual(r.status, 200)
             self.assertIn(r.headers.get("Content-Type", "").split(";")[0].strip(),
                           ("application/javascript", "text/javascript"))

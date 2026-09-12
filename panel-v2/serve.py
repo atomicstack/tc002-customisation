@@ -28,7 +28,7 @@ ADMIN_ROUTES = {("PATCH", "config"), ("POST", "config/save"), ("GET", "mqtt"), (
 PATH_RE = re.compile(r"^/api/([0-9a-zA-Z.\-]+(?::\d+)?)/v1/([A-Za-z0-9_\-]+(?:/[A-Za-z0-9_\-]+)*)(?:\?(.*))?$")
 DEVICE_TIMEOUT_S = 10
 # the only static files this server will hand back; everything else not under /api/ or /tokens is 404
-STATIC_ALLOW = {"/", "/index.html", "/sim.js", "/sim-wasm.js", "/tc002-panel.wasm"}
+STATIC_ALLOW = {"/", "/index.html", "/sim-wasm.js", "/tc002-panel.wasm"}
 
 
 def parse_tokens(data):

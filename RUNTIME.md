@@ -1256,13 +1256,13 @@ poll runs twice, so about half the pairs straddle a second boundary and one
 digit differs. the figure reaching 100% is the verdict; below it is the
 sampling gap, not the renderer.
 
-this replaced `panel-v2/sim.js`, a 600-line hand-written port of the same
-logic. the two agree byte-for-byte on every clock font, the ip `lines`
-layout, notifications (centred and scrolling) and the whole brightness curve —
-and `panel-v2/test_wasm.mjs` pins that. where they disagree, the port had
-drifted: it knew 2 of 3 generators and 4 of 6 clock fonts, drew all four ip
-layouts as `lines`, clamped clock gradients by a fixed ±96 where the runtime
-uses the style's own `spread`, and had no concept of the digit styles.
+it replaced `panel-v2/sim.js`, a 600-line hand-written port of the same logic, which was
+deleted once the wasm had been verified byte-exact against the panel. while the two ran side by
+side the javascript was pinned against the wasm, and it had drifted in five places nobody had
+noticed: it knew 2 of 3 generators and 4 of 6 clock fonts, drew all four ip layouts as `lines`,
+clamped clock gradients by a fixed ±96 where the runtime uses the style's own `spread`, and had
+no concept of the digit styles. that is the argument for compiling the source rather than
+porting it.
 
 ## memory audits
 
