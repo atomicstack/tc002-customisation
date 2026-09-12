@@ -1215,6 +1215,17 @@ digit style and ip layout lists the console offers are read out of the wasm at
 load, so a new enum variant in `src/scene/` appears in the console with no
 javascript edit at all.
 
+the canvas is shadowed the same way, but its content is not in `/status`: an
+integration PUTs a document and the panel draws it. the console fetches
+`GET /canvas` when the base is showing one and the revision has moved, and
+hands those bytes to `api.parseBody(.canvas_put, ...)` — the runtime's own
+parser, the one a real PUT goes through — which wants a fixed byte arena and
+no allocator, so it works unchanged in freestanding. there is no document
+model in javascript at all, and a document the device would refuse is refused
+here too, with the runtime's own code and message shown in the caption rather
+than a silently empty panel. this is what took the module from 55 kB to
+148 kB: the canvas renderer, 61 icons and the json parser.
+
 the preview is a **shadow**, not a snapshot: it runs the scene code at the
 scene's own rate — 60 hz for art, the next whole second for the clock, 33 ms
 for a scrolling layout — and reconciles against the device once a second. what

@@ -42,6 +42,8 @@ DEFAULT_CLOCK = {"font": "classic", "colour_mode": "solid", "colour": "ffffff", 
                  "gradient": "horizontal", "spread": DEFAULT_SPREAD, "digits": "solid"}
 
 
+# raised from 4096 with the canvas, which needs room for a whole document
+JSON_BODY_MAX = 8192
 PRINTABLE = re.compile(r"^[\x20-\x7e]{1,128}$")
 HEX_ID = re.compile(r"^[0-9a-fA-F]{1,16}$")
 
@@ -258,6 +260,7 @@ class Device:
         self.presented_base, self.presented_at = 0, self.started
         self.restarts = 0
         self.seed = secrets.randbelow(1 << 32)   # the art scene's seed, as /status reports it
+        self.canvas = []                         # the canvas document, as last PUT
         self.log_seq = 0
         self.log_lines = []
         for line in SEED_LOG_LINES:
@@ -737,6 +740,9 @@ SCHEMAS = {
                 "clock_digit", "ip_mode", "generator_params",
                 "night", "night_brightness", "night_lead_min", "latitude", "longitude", "location_auto"}, set()),
     "config/save": ({"revision"}, set()),
+    # the canvas body is stored, not checked: the element schema is the runtime's and this file
+    # does not keep a second copy of it. PUT sends elements, PATCH sends values
+    "canvas": ({"elements", "values"}, set()),
     "mock/persist": ({"enabled"}, {"enabled"}),
     "mqtt": ({"enabled", "host", "port", "username", "password", "client_id", "prefix", "tls"}, set()),
     "ntfy": ({"enabled", "url", "topic", "token", "username", "password", "duration_s", "insecure", "ca"}, set()),
@@ -747,7 +753,12 @@ ROUTES = {("GET", "status"): "control", ("GET", "scenes"): "control", ("PUT", "s
           ("GET", "config"): "control", ("PATCH", "config"): "admin",
           ("POST", "config/save"): "admin", ("POST", "notify"): "control", ("POST", "frame"): "control",
           ("GET", "mqtt"): "admin", ("PUT", "mqtt"): "admin", ("GET", "mqtt/status"): "control",
-          ("GET", "ntfy"): "admin", ("PUT", "ntfy"): "admin"}
+          ("GET", "ntfy"): "admin", ("PUT", "ntfy"): "admin",
+          # the canvas: stored, not validated. the runtime checks a document against a schema this
+          # file deliberately does not reimplement — the console's preview parses it with the
+          # runtime's own parser and says so when it would be refused, which is the honest split
+          ("GET", "canvas"): "control", ("PUT", "canvas"): "admin",
+          ("PATCH", "canvas"): "control", ("DELETE", "canvas"): "control"}
 
 
 def route_lookup(method, endpoint):
@@ -787,8 +798,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
     def _json_body(self, schema):
         n = int(self.headers.get("Content-Length") or 0)
         raw = self.rfile.read(n) if n else b""
-        if n > 4096:
-            raise Reject(413, "body_too_large", "json bodies are limited to 4096 bytes")
+        if n > JSON_BODY_MAX:
+            raise Reject(413, "body_too_large", f"json bodies are limited to {JSON_BODY_MAX} bytes")
         ct = (self.headers.get("Content-Type") or "").split(";")[0].strip().lower()
         if ct != "application/json":
             raise Reject(415, "unsupported_media_type", "this route takes application/json")
@@ -853,6 +864,31 @@ class Handler(http.server.BaseHTTPRequestHandler):
                     return self._send(200, d.status())
                 if endpoint == "scenes":
                     return self._send(200, SCENES)
+                if endpoint == "canvas":
+                    if method == "GET":
+                        return self._send(200, {"elements": d.canvas, "max_elements": 24,
+                                                "saved_revision": d.config["saved_revision"]})
+                    if method == "DELETE":
+                        d.canvas = []
+                        d.log("canvas cleared")
+                        return self._applied(d.bump(), 0)
+                    body = self._json_body("canvas")
+                    if method == "PUT":
+                        els = body.get("elements")
+                        if not isinstance(els, list):
+                            raise Reject(400, "invalid_elements", "elements must be a list")
+                        d.canvas = els
+                        d.log(f"canvas: {len(els)} elements")
+                    else:   # PATCH: a list of {id, ...} updates, merged onto matching elements
+                        values = body.get("values")
+                        if not isinstance(values, list):
+                            raise Reject(400, "invalid_values", "values must be a list")
+                        for v in values:
+                            for el in d.canvas:
+                                if el.get("id") == v.get("id"):
+                                    el.update({k: x for k, x in v.items() if k != "id"})
+                        d.log(f"canvas: {len(values)} values patched")
+                    return self._applied(d.bump(), 0)
                 if endpoint == "scene":
                     body = self._json_body("scene"); rid = self._rid(body)
                     return self._applied(d.set_scene(body), rid)

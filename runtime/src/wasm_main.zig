@@ -19,6 +19,8 @@ const clockfont = @import("scene/clockfont.zig");
 const ip = @import("scene/ip.zig");
 const tz = @import("scene/tz.zig");
 const param = @import("scene/param.zig");
+const canvas = @import("scene/canvas.zig");
+const api = @import("net/api.zig");
 
 const ms_per_ns: f64 = 1_000_000.0;
 
@@ -33,8 +35,9 @@ fn toMs(ns: u64) f64 {
 }
 
 var out_rgb: geometry.Rgb = geometry.black_rgb;
-/// strings in, frames in, catalogue names out; one buffer, never two calls deep
-var scratch: [4096]u8 = undefined;
+/// strings in, frames in, canvas documents in, catalogue names out; one buffer, never two calls
+/// deep. sized for the api's own json body limit, since a whole /canvas document comes through it
+var scratch: [9216]u8 = undefined;
 var lut: pack.Lut = undefined;
 var arb: arbiter.Arbiter = undefined;
 var rule: tz.Rule = tz.utc;
@@ -229,6 +232,64 @@ export fn ipLayoutCadenceMs(mode: u32) f64 {
         .at_wall_ns => 0,
         .idle => -1,
     };
+}
+
+// ---- the canvas ----
+//
+// the canvas is a base scene whose content lives on the device, not in /status: an integration
+// PUTs a document and the panel draws it. to shadow that, the console fetches GET /canvas and
+// hands the bytes straight back to the runtime's own parser — the same `parseBody` the device
+// runs on a PUT — so there is no second implementation of the document here either. the parser
+// wants a fixed byte arena and no allocator, which is why this works at all in freestanding.
+
+var canvas_arena: api.Arena = undefined;
+
+/// install the /canvas document held in the first `len` bytes of scratch. the body is the same
+/// shape a PUT takes ({"elements":[...]}), which is the shape GET returns. 1 on success, 0 when
+/// the runtime's own parser refused it.
+var canvas_reject: [128]u8 = undefined;
+var canvas_reject_len: u8 = 0;
+
+export fn installCanvas(len: u32, now_ms: f64) u32 {
+    const body = scratch[0..@min(len, scratch.len)];
+    canvas_reject_len = 0;
+    switch (api.parseBody(.canvas_put, body, &canvas_arena)) {
+        .op => |op| switch (op) {
+            .canvas_put => |doc| {
+                arb.canvas.install(doc, toNs(now_ms));
+                arb.dirty = true;
+                return 1;
+            },
+            else => return 0,
+        },
+        .reject => |r| {
+            // the device would refuse this document too, and for this reason: worth saying so
+            // rather than drawing an empty canvas and leaving the reader to wonder
+            const text = std.fmt.bufPrint(&canvas_reject, "{s}: {s}", .{ r.code, r.message }) catch r.code;
+            canvas_reject_len = @intCast(@min(text.len, canvas_reject.len));
+            return 0;
+        },
+    }
+}
+
+/// why the last installCanvas was refused, written into scratch; 0 when it was accepted.
+export fn canvasRejectReason() u32 {
+    if (canvas_reject_len == 0) return 0;
+    return copyOut(canvas_reject[0..canvas_reject_len]);
+}
+
+/// empty the canvas, as DELETE /canvas does.
+export fn clearCanvas(now_ms: f64) void {
+    arb.canvas.install(.{}, toNs(now_ms));
+    arb.dirty = true;
+}
+
+export fn canvasEmpty() u32 {
+    return @intFromBool(arb.canvas.empty());
+}
+
+export fn canvasMaxElements() u32 {
+    return canvas.max_elements;
 }
 
 // ---- input, so the preview can drive the menu the way the dial does ----

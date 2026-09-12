@@ -187,6 +187,53 @@ test('agreement measures the shadow against the panel', () => {
   assert.equal(W.agreement(a, new Uint8Array(4)), null, 'a length mismatch is not a comparison');
 });
 
+/* ---------- the canvas: a document the device parses, not one this file models ---------- */
+
+const canvasStatus = { base: 'canvas', overlay: 'none', generator: 'popsquares', brightness: 100 };
+const withCanvas = doc => localWith(W, { canvas: doc });
+
+test('a canvas document renders through the runtime\'s own parser', () => {
+  W.reset('canvas', 'popsquares', 1);
+  const empty = W.compose(canvasStatus, withCanvas(null), WALL);
+  assert.equal(empty.label, 'canvas · empty');
+  assert.ok(lit(empty.rgb) > 0, 'an empty canvas draws its hint word, not a black panel');
+
+  const doc = { elements: [
+    { type: 'text', id: 't', at: [1, 0], text: '21.1C', colour: '00ff88' },
+    { type: 'bar', id: 'b', at: [1, 9], size: [30, 3], value: 70, colour: '3a6ea5' },
+    { type: 'icon', id: 'i', at: [42, 1], icon: 'heart', colour: 'ff0044' },
+  ] };
+  const drawn = W.compose(canvasStatus, withCanvas(doc), WALL);
+  assert.equal(drawn.label, 'canvas');
+  assert.notEqual(bytesDiffering(empty.rgb, drawn.rgb), 0, 'the document must change the frame');
+  assert.ok(lit(drawn.rgb) > lit(empty.rgb));
+});
+
+test('a document the device would refuse is reported, not silently drawn empty', () => {
+  W.reset('canvas', 'popsquares', 1);
+  // `name` is not the icon field — the runtime calls it `icon` — so its strict parser refuses it
+  const bad = { elements: [{ type: 'icon', id: 'i', at: [0, 0], name: 'heart' }] };
+  const c = W.compose(canvasStatus, withCanvas(bad), WALL);
+  assert.match(c.label, /the runtime refuses this document/);
+  assert.match(c.label, /unknown_field/);
+  assert.equal(W.lastCanvasResult.ok, false);
+
+  const good = { elements: [{ type: 'icon', id: 'i', at: [0, 0], icon: 'heart' }] };
+  const ok = W.compose(canvasStatus, withCanvas(good), WALL);
+  assert.equal(ok.label, 'canvas');
+  assert.equal(W.lastCanvasResult.ok, true);
+});
+
+test('an animated element ticks on the arbiter\'s clock', () => {
+  W.reset('canvas', 'popsquares', 1);
+  const doc = { elements: [{ type: 'text', id: 's', at: [2, 4], text: 'HELLO', colour: 'ffffff',
+                             animate: { kind: 'scramble', ms: 600 } }] };
+  const local = withCanvas(doc);
+  const frames = [0, 100, 250, 450].map(dt => W.compose(canvasStatus, local, WALL + dt).rgb);
+  const distinct = frames.filter((f, i) => i === 0 || bytesDiffering(frames[i - 1], f) !== 0);
+  assert.ok(distinct.length > 1, 'a scramble must actually move between frames');
+});
+
 /* ---------- parity with the hand-written port, where it was still faithful ---------- */
 
 test('every clock font sim.js implements is pixel-identical', () => {

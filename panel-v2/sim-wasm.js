@@ -94,7 +94,8 @@
   /* ---------- /status -> arbiter commands ---------- */
 
   /* what we last pushed in, so each poll issues only the commands that actually changed */
-  const applied = { base: null, generator: null, seed: null, tz: null, clock: null, ipMode: null, ip: null, notify: null };
+  const applied = { base: null, generator: null, seed: null, tz: null, clock: null, ipMode: null, ip: null, notify: null, canvas: null };
+  let lastCanvasResult = { ok: true };
 
   /* the panel's clock is the device's, not this browser's. every response carries a Date header,
      which is whole seconds — the same resolution the clock scene redraws at — so anchoring to it
@@ -169,6 +170,14 @@
       applied.ip = addrKey;
     }
 
+    /* the canvas document, as the page last read it from GET /canvas */
+    const canvasKey = local && local.canvas ? JSON.stringify(local.canvas) : null;
+    if (canvasKey !== applied.canvas) {
+      if (canvasKey) lastCanvasResult = installCanvas(canvasKey, nowMs);
+      else { e.clearCanvas(nowMs); lastCanvasResult = { ok: true }; }
+      applied.canvas = canvasKey;
+    }
+
     /* a notification the console itself sent: the arbiter scrolls it and times it out */
     const n = s.overlay === 'notify' && local && local.notify ? local.notify : null;
     const nKey = n ? `${n.sinceMs}:${n.text}` : null;
@@ -195,6 +204,10 @@
     if (s.base === 'clock') {
       const c = s.clock;
       return c ? `clock · ${c.font || 'classic'} · ${c.colour_mode || 'solid'}` : 'clock';
+    }
+    if (s.base === 'canvas') {
+      if (!lastCanvasResult.ok) return `canvas · the runtime refuses this document (${lastCanvasResult.reason})`;
+      return canvasEmpty() ? 'canvas · empty' : 'canvas';
     }
     if (s.base === 'art') {
       // the seed used to be the page's own, so the preview could only claim the algorithm
@@ -238,6 +251,20 @@
     return { rgb: frameBytes().slice(), cadenceMs: cadence < 0 ? null : cadence };
   }
 
+  /* ---------- the canvas ----------
+     the canvas's content is not in /status: an integration PUTs a document and the panel draws
+     it. the console fetches GET /canvas and hands the bytes to the runtime's own parser, so the
+     document model lives in one place, on the device's terms. */
+  function installCanvas(doc, nowMs) {
+    const e = need();
+    const text = typeof doc === 'string' ? doc : JSON.stringify(doc);
+    if (e.installCanvas(writeScratch(text), nowMs || 0)) return { ok: true };
+    const len = e.canvasRejectReason();
+    return { ok: false, reason: len ? readScratch(len) : 'the document was refused' };
+  }
+  const clearCanvas = nowMs => need().clearCanvas(nowMs || 0);
+  const canvasEmpty = () => need().canvasEmpty() !== 0;
+
   /* ---------- agreement: the shadow, checked against the device ----------
      /screen returns the frame the panel is actually showing. rather than displaying it instead of
      the simulation, compare the two: a shadow you can watch agreeing is worth more than a picture
@@ -273,7 +300,8 @@
   const api = {
     WIDTH, HEIGHT, PIXELS, RGB_BYTES, WHITE, black, pixelOffset,
     ready, loaded, buildLut, tzParse, TZ_UTC, Art, compose, sceneParams, renderIpLayout,
-    agreement, anchorClock, deviceNow,
+    agreement, anchorClock, deviceNow, installCanvas, clearCanvas, canvasEmpty,
+    get lastCanvasResult() { return lastCanvasResult; },
     get clockSkewMs() { return clockSkewMs; },
     DEFAULT_CLOCK_STYLE,
     /* enum catalogues: live values read out of the wasm at load, so they cannot drift */

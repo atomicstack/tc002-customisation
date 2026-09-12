@@ -21,7 +21,9 @@ import argparse, functools, http.server, json, os, re, socketserver, subprocess,
 HERE = os.path.dirname(os.path.abspath(__file__))
 TOKENS = {"control": None, "admin": None}
 # routes that take the admin token; everything else on /api/v1 takes control
-ADMIN_ROUTES = {("PATCH", "config"), ("POST", "config/save"), ("GET", "mqtt"), ("PUT", "mqtt"), ("GET", "ntfy"), ("PUT", "ntfy")}
+ADMIN_ROUTES = {("PATCH", "config"), ("POST", "config/save"), ("GET", "mqtt"), ("PUT", "mqtt"), ("GET", "ntfy"), ("PUT", "ntfy"),
+                # replacing a canvas or a sprite is admin; reading, patching values and clearing are control
+                ("PUT", "canvas")}
 # host may carry a port (host:1234) so the mock or a device behind a forward works
 PATH_RE = re.compile(r"^/api/([0-9a-zA-Z.\-]+(?::\d+)?)/v1/([A-Za-z0-9_\-]+(?:/[A-Za-z0-9_\-]+)*)(?:\?(.*))?$")
 DEVICE_TIMEOUT_S = 10
@@ -62,6 +64,8 @@ def adb_pull(serial=None):
 
 
 def token_for(method, endpoint):
+    if method == "PUT" and endpoint.startswith("sprites/"):
+        return "admin"   # a sprite slot is a path family, so it cannot sit in the set above
     return "admin" if (method, endpoint) in ADMIN_ROUTES else "control"
 
 
@@ -147,6 +151,12 @@ class Handler(http.server.SimpleHTTPRequestHandler):
     def do_PATCH(self):
         if self.path.startswith("/api/"):
             return self._proxy("PATCH")
+        self.send_error(405)
+
+    def do_DELETE(self):
+        # the canvas and the sprite slots are the routes that use it
+        if self.path.startswith("/api/"):
+            return self._proxy("DELETE")
         self.send_error(405)
 
     def log_message(self, fmt, *a):

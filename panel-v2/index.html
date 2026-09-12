@@ -430,7 +430,7 @@ let pollTimer = null, screenTimer = null, screenInFlight = false, liveUnavailabl
 // what this page knows that /status does not report: the art it animates locally, the tz rule,
 // the notification text and frame bytes it sent, a frame staged but not yet sent, and the last
 // live frame read from /screen (null when the device does not offer that route)
-const local = { art: null, tz: S.TZ_UTC, notify: null, frame: null, pending: null, live: null };
+const local = { art: null, tz: S.TZ_UTC, notify: null, frame: null, pending: null, live: null, canvas: null };
 
 function toast(msg, isErr) {
   const t = $('toast'); t.textContent = msg;
@@ -570,6 +570,26 @@ function renderNow(s) {
   const r = $('renderer'); r.textContent = s.renderer;
   r.className = 'pill ' + (s.renderer === 'running' ? 'on' : s.renderer === 'none' ? 'off' : 'warn');
 }
+// the canvas's content is not in /status, so it is fetched when the base is showing one and the
+// revision has moved. GET /canvas returns the document plus limits and saved_revision; only the
+// elements go to the renderer, in the shape a PUT takes, because that is what it parses
+let canvasRevision = null, canvasInFlight = false;
+async function pollCanvas(force) {
+  if (canvasInFlight) return;
+  if (!force && canvasRevision === STATUS.revision) return;
+  canvasInFlight = true;
+  const want = STATUS.revision;
+  try {
+    const doc = await call('GET', 'canvas');
+    local.canvas = { elements: doc.elements || [] };
+    canvasRevision = want;
+  } catch (e) {
+    if (e.status === 404) { local.canvas = null; canvasRevision = want; }   // a runtime without a canvas
+  } finally {
+    canvasInFlight = false;
+  }
+}
+
 function onStatus(prev) {
   const s = STATUS;
   renderNow(s);
@@ -584,6 +604,8 @@ function onStatus(prev) {
   }
   if (!prev || prev.base !== s.base) showBaseRows(s.base);
   if (!prev || prev.base !== s.base || prev.generator !== s.generator) renderGenParams();
+  if (s.base === 'canvas') pollCanvas(!prev || prev.base !== 'canvas');
+  else { local.canvas = null; canvasRevision = null; }
   if (s.overlay === 'none') { local.notify = null; local.frame = null; }
   if (s.ip_mode && (!prev || prev.ip_mode !== s.ip_mode)) $('kip').value = s.ip_mode;
   // the effective style: mirrored only when it changed, so an open colour picker is not clobbered

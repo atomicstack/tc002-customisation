@@ -402,6 +402,26 @@ class EndToEndTests(unittest.TestCase):
             self.assertEqual(now["base"], sc["bases"][index],
                              f"the {control} button should select {sc['bases'][index]}")
 
+    def test_the_canvas_round_trips_through_the_proxy(self):
+        # GET returns the document in the shape PUT takes, which is what makes the console's
+        # preview possible: it hands those bytes to the runtime's own parser unchanged
+        _, st = self.call("GET", "status")
+        doc = {"elements": [{"type": "text", "id": "t", "at": [1, 4], "text": "21.1C", "colour": "00ff88"}]}
+        status, _ = self.call("PUT", "canvas", doc)
+        self.assertEqual(status, 200)
+        _, got = self.call("GET", "canvas")
+        self.assertEqual(got["elements"], doc["elements"])
+
+        status, _ = self.call("PATCH", "canvas", {"values": [{"id": "t", "text": "22.4C"}]})
+        self.assertEqual(status, 200)
+        _, patched = self.call("GET", "canvas")
+        self.assertEqual(patched["elements"][0]["text"], "22.4C")
+
+        status, _ = self.call("DELETE", "canvas")
+        self.assertEqual(status, 200)
+        _, emptied = self.call("GET", "canvas")
+        self.assertEqual(emptied["elements"], [])
+
     def test_clock_spread_is_both_a_setting_and_a_transient_scene_field(self):
         _, cfg = self.call("GET", "config")
         status, doc = self.call("PATCH", "config", {"clock_spread": 120, "expected_revision": cfg["revision"]})
