@@ -640,7 +640,9 @@ function stopPolling() {
 }
 
 /* ---------- the live preview from /screen ---------- */
-let screenFailStreak = 0;
+// three is enough to span a second at the clock's redraw rate without hoarding frames
+const SIM_FRAME_HISTORY = 3;
+let screenFailStreak = 0, shadowMatch = null, recentSimFrames = [];
 async function pollScreen() {
   if (liveUnavailable || screenInFlight) return;
   screenInFlight = true;
@@ -653,6 +655,16 @@ async function pollScreen() {
     const rgb = new Uint8Array(bin.length);
     for (let i = 0; i < bin.length; i++) rgb[i] = bin.charCodeAt(i);
     local.live = { rgb, revision: doc.revision, power: doc.power, epoch: doc.epoch };
+    // /screen carries no timestamp, so which shadow frame it should be paired with is a guess:
+    // the console paints once a second on the clock and polls twice a second, so about half the
+    // pairs straddle a second boundary and one digit differs. compare against the last few frames
+    // and keep the best — "the panel matches a frame the shadow drew" is the claim worth making,
+    // and it tells a wrong shadow apart from an offset sample. never compose here: compose()
+    // advances the arbiter, so measuring that way would tick the clock it is measuring.
+    shadowMatch = recentSimFrames.reduce((best, f) => {
+      const a = S.agreement(rgb, f);
+      return (a && (!best || a.fraction > best.fraction)) ? a : best;
+    }, null);
     screenFailStreak = 0;
   } catch (e) {
     screenFailStreak++;   // network hiccup: keep the last known live frame, retry next tick
@@ -690,10 +702,12 @@ function draw() {
       // live frame is still fetched, but to check the shadow rather than to replace it
       lastStepMs = nowMs;
       const c = S.compose(STATUS, local, nowMs);
+      recentSimFrames.push(c.rgb);
+      if (recentSimFrames.length > SIM_FRAME_HISTORY) recentSimFrames.shift();
       const powerOff = STATUS.power === false;
       paint(powerOff ? S.black() : c.rgb, powerOff ? 100 : (local.pending ? 100 : STATUS.brightness));
       $('cap').textContent = `shadowing the device · epoch ${STATUS.epoch} · revision ${STATUS.revision} · ${c.label}`
-        + `${powerOff ? ' · power off' : ''}${shadowNote(c)}`;
+        + `${powerOff ? ' · power off' : ''}${shadowNote()}`;
       nextDrawAt = nowMs + (c.cadenceMs == null ? 250 : c.cadenceMs);
     }
   }
@@ -703,15 +717,11 @@ function draw() {
 // how well the shadow agrees with the panel. /screen is up to 500 ms old, so on a scene that
 // redraws faster than that the two frames are simply from different instants and a difference
 // says nothing; the figure is only a verdict when the scene is holding still.
-function shadowNote(c) {
-  if (!local.live || local.pending) return '';
-  const a = S.agreement(local.live.rgb, c.rgb);
-  if (!a) return '';
+function shadowNote() {
+  if (!shadowMatch || local.pending) return '';
   const stale = screenFailStreak >= 3 ? ', stale' : '';
-  const settled = c.cadenceMs == null || c.cadenceMs >= 500;
-  if (!settled) return ` · animating, ${(a.fraction * 100).toFixed(1)}% (frames ~${SCREEN_POLL_MS}ms apart${stale})`;
-  if (a.exact) return ` · matching the panel exactly${stale}`;
-  return ` · ${(a.fraction * 100).toFixed(1)}% of bytes match the panel (${a.bytesDiffering} differ${stale})`;
+  if (shadowMatch.exact) return ` · matching the panel exactly${stale}`;
+  return ` · ${(shadowMatch.fraction * 100).toFixed(1)}% of bytes match the panel (${shadowMatch.bytesDiffering} differ${stale})`;
 }
 
 /* ---------- controls plumbing (as in the stock panel) ---------- */
@@ -1094,7 +1104,10 @@ function showConfig(c) {
     const b = document.createElement('b'); b.textContent = 'not written to flash';
     crev.append(' · ', b);
   }
-  try { local.tz = S.tzParse(c.timezone); } catch { local.tz = S.TZ_UTC; }
+  // a silent fallback to utc here hid a two-hour error in the preview's clock for as long as the
+  // timezone was an iana name: say so instead. tzParse takes both a zone name and a posix rule
+  try { local.tz = S.tzParse(c.timezone); }
+  catch { local.tz = S.TZ_UTC; toast(`the preview cannot read the timezone ${c.timezone}; showing utc`, true); }
   if (SCENES) renderGenParams();
 }
 async function loadConfig() { showConfig(await call('GET', 'config')); }

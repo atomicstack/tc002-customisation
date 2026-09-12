@@ -69,10 +69,23 @@ test('catalogues come from the zig enums, not from a list in this file', () => {
   assert.deepEqual(W.IP_MODES, ['lines', 'mini', 'scroll', 'big']);
 });
 
-test('a bad tz rule throws and leaves the clock on utc', () => {
-  assert.throws(() => W.tzParse('nonsense!!'), /invalid tz rule/);
+test('the timezone takes an iana name as well as a posix rule', () => {
+  // caught on hardware: /config.timezone holds an iana name, not a rule. parsing it directly
+  // failed, the console caught the throw and fell back to utc, and the shadow's clock ran two
+  // hours off the panel's. the runtime resolves both forms and so must this
   assert.equal(W.tzParse('GMT0').stdOffset, 0);
   assert.equal(W.tzParse('EST5EDT,M3.2.0,M11.1.0').stdOffset, -18000);
+  assert.equal(W.tzParse('Europe/Amsterdam').stdOffset, 3600);
+  assert.equal(W.tzParse('Europe/London').stdOffset, 0);
+  assert.equal(W.tzParse('australia/sydney').stdOffset, 36000, 'zone names match case-insensitively');
+  assert.throws(() => W.tzParse('nonsense!!'), /invalid tz rule/);
+  assert.throws(() => W.tzParse('Nowhere/Nothing'), /invalid tz rule/);
+
+  // and it must reach the clock face, not just the parser
+  W.reset('clock', 'popsquares', 1);
+  const utc = W.compose(clockStatus(), localWith(W, { tz: W.tzParse('UTC0') }), WALL).rgb.slice();
+  const ams = W.compose(clockStatus(), localWith(W, { tz: W.tzParse('Europe/Amsterdam') }), WALL).rgb;
+  assert.notEqual(bytesDiffering(utc, ams), 0, 'a zone two hours out must draw a different time');
 });
 
 test('scene parameters carry the arbiter\'s own table', () => {
@@ -235,6 +248,28 @@ test('an animated element ticks on the arbiter\'s clock', () => {
 });
 
 /* ---------- parity with the hand-written port, where it was still faithful ---------- */
+
+test('every field of the clock style reaches the renderer', () => {
+  // caught on hardware: the style block calls the digit style `digits`, this file read `digit`,
+  // and the panel drew a shadowed face while the preview drew a solid one. the defaults matched,
+  // so nothing below noticed until a real device was showing a non-default style
+  W.reset('clock', 'popsquares', 1);
+  const base = clockStatus({ font: 'block' });
+  const solid = W.compose(base, localWith(W), WALL).rgb.slice();
+  const cases = [
+    { digits: 'shadow' }, { digits: 'outline' }, { font: 'big' }, { colour: 'ff0000' },
+    // a gradient needs two colours to be one: white-to-white is solid white, and asserting on
+    // that would only have proved the test could tell nothing apart
+    { colour_mode: 'gradient', colour2: '0015ff' },
+    { colour_mode: 'gradient', colour2: '0015ff', spread: 8 },
+  ];
+  for (const patch of cases) {
+    W.reset('clock', 'popsquares', 1);
+    const changed = W.compose(clockStatus({ font: 'block', ...patch }), localWith(W), WALL).rgb;
+    assert.notEqual(bytesDiffering(solid, changed), 0,
+                    `${JSON.stringify(patch)} changed nothing in the render`);
+  }
+});
 
 test('every clock font sim.js implements is pixel-identical', () => {
   for (const font of ['classic', 'mini', 'segment', 'big']) {

@@ -149,7 +149,9 @@
           indexOf(CLOCK_MODES, c.colour_mode, 0),
           indexOf(GRADIENTS, c.gradient, 0),
           c.spread == null ? -1 : c.spread,
-          indexOf(DIGIT_STYLES, c.digit, -1),
+          // the style block calls it `digits`; only the /config setting is `clock_digit`.
+          // reading `digit` here meant a shadowed or outlined face previewed as solid
+          indexOf(DIGIT_STYLES, c.digits, -1),
           hexInt(c.colour, 0xffffff),
           hexInt(c.colour2, 0xffffff),
           nowMs);

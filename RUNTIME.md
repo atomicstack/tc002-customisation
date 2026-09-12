@@ -1234,10 +1234,19 @@ it takes from the device: the scene state from `/status`, the art
 lookalike, and the wall clock from the device's own `Date` header, which
 `serve.py` forwards as `X-Device-Date` (its own `Date` is this machine's
 clock). `/screen` is still polled twice a second, but to *check* the shadow
-rather than to replace it: the console compares the two frames and reports how
-many bytes agree. on a scene that redraws faster than the poll the two frames
-are simply from different instants, so the figure is only offered as a verdict
-when the scene is holding still.
+rather than to replace it: the console compares the live frame against the
+frames it recently painted and reports how many bytes agree. it never composes
+a fresh one for the comparison — `compose` advances the arbiter, so measuring
+that way ticks the clock it is measuring.
+
+**measured on hardware (2026-09-12):** captured at the same instant, the
+shadow and the panel are **byte-for-byte identical** — 0 of 2496 bytes
+differing on the `block` clock face with shadowed digits, the 89-value shadow
+tone included. the console's continuous figure spreads 94–100% because
+`/screen` carries no timestamp and the clock ticks once a second while the
+poll runs twice, so about half the pairs straddle a second boundary and one
+digit differs. the figure reaching 100% is the verdict; below it is the
+sampling gap, not the renderer.
 
 this replaced `panel-v2/sim.js`, a 600-line hand-written port of the same
 logic. the two agree byte-for-byte on every clock font, the ip `lines`

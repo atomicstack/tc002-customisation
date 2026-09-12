@@ -186,9 +186,19 @@ export fn rawFrame(duration_s: u32, now_ms: f64) u32 {
 var tz_ok: bool = true;
 export fn setTz(len: u32) i32 {
     const text = scratch[0..@min(len, scratch.len)];
+    // `tz.resolve` first, not `tz.parse`: the timezone setting is whatever /config holds, and that
+    // is usually an iana zone name ("Europe/Amsterdam"), not a posix rule. parsing it directly
+    // failed, the console caught the throw and fell back to utc, and the shadow's clock ran two
+    // hours off the panel's without saying so. resolve takes both forms, as the runtime does.
+    const resolved = tz.resolve(text) orelse {
+        tz_ok = false;
+        rule = tz.utc;
+        arb.clock.rule = rule;
+        return -1;
+    };
     // only the rule changes. rebuilding clock.State here reset `style` to its default, so every
     // compose that re-applied the timezone silently threw away the font and colours
-    rule = tz.parse(text) catch {
+    rule = tz.parse(resolved) catch {
         tz_ok = false;
         rule = tz.utc;
         arb.clock.rule = rule;
