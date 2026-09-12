@@ -693,6 +693,21 @@ class EndToEndTests(unittest.TestCase):
         self.assertEqual(back["revision"], back["saved_revision"])
 
 
+class BaseButtonTests(unittest.TestCase):
+    """the console must not carry its own list of base scenes: the runtime is retiring one (ip) and
+    adding another (canvas), and a hard-coded button posts a base the device now rejects."""
+
+    def test_the_console_does_not_hard_code_the_base_scenes(self):
+        with open(os.path.join(HERE, "index.html"), encoding="utf-8") as f:
+            html = f.read()
+        seg = html[html.index('id="base"'):]
+        seg = seg[:seg.index("</div>")]
+        self.assertNotIn("data-v=", seg,
+                         "the base radiogroup has buttons written into the html; build them from "
+                         "GET /scenes so a new or retired base needs no edit here")
+        self.assertIn("fillBaseButtons(SCENES.bases", html)
+
+
 class CatalogueTests(unittest.TestCase):
     """panel-v2/scenes.json is generated from the runtime's tables; a stale copy is the exact bug
     this whole arrangement exists to stop, so it is checked rather than trusted."""

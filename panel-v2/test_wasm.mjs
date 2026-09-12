@@ -56,7 +56,12 @@ test('the wasm exposes the panel geometry the console assumes', () => {
 });
 
 test('catalogues come from the zig enums, not from a list in this file', () => {
-  assert.deepEqual(W.BASES, ['art', 'clock', 'ip']);
+  // the base scenes are in flux (ip is retiring as a base and canvas is arriving on feat/canvas),
+  // so this asserts the two that are staying rather than pinning the whole list. the ip tests
+  // further down DO drive `base: "ip"` and will fail when that lands — deliberately: that is the
+  // point at which the console needs to preview the ip layouts through the device menu instead
+  assert.ok(W.BASES.includes('art') && W.BASES.includes('clock'), `bases: ${W.BASES.join(',')}`);
+  assert.ok(W.BASES.length >= 2);
   assert.deepEqual(W.GENERATORS, ['popsquares', 'plasma', 'cube']);
   assert.deepEqual(W.CLOCK_FONTS, ['classic', 'mini', 'segment', 'big', 'block', 'hires']);
   assert.deepEqual(W.CLOCK_MODES, ['solid', 'gradient']);

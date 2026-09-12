@@ -23,7 +23,7 @@
   let E = null;           // wasm exports, once ready
   let readyPromise = null;
   /* every enum name comes from the wasm, so a new font or generator needs no edit here */
-  let BASES = ['art', 'clock', 'ip'], GENERATORS = [], CLOCK_FONTS = [], CLOCK_MODES = [],
+  let BASES = [], GENERATORS = [], CLOCK_FONTS = [], CLOCK_MODES = [],
       GRADIENTS = [], DIGIT_STYLES = [], IP_MODES = [];
   let CLOCK_MAX_SPREAD = 255, NOTIFY_MAX_S = 300;
   const DEFAULT_CLOCK_STYLE = { font: 'classic', colour_mode: 'solid', colour: 'ffffff', colour2: 'ffffff', gradient: 'horizontal' };
@@ -175,12 +175,14 @@
     if (local && local.pending) return 'pending frame';
     if (s.overlay === 'frame') return local && local.frame ? 'frame' : 'frame (contents unknown: not sent from this page)';
     if (s.overlay === 'notify') return local && local.notify ? 'notification' : 'notification (text unknown: not sent from this page)';
+    // switch on the base with a default: the set of bases is the runtime's enum, not a list this
+    // file knows. a base it has never heard of captions as itself rather than as art
     if (s.base === 'clock') {
       const c = s.clock;
       return c ? `clock · ${c.font || 'classic'} · ${c.colour_mode || 'solid'}` : 'clock';
     }
-    if (s.base === 'ip') return 'ip';
-    return `art: ${s.generator}, same algorithm, local seed`;
+    if (s.base === 'art') return `art: ${s.generator}, same algorithm, local seed`;
+    return s.base ? String(s.base) : 'unknown base';
   }
 
   /* the console's entry point: a /status document plus what only this page knows, in; one frame,

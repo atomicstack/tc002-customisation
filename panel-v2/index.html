@@ -261,11 +261,8 @@ input[type=file]{font:12px var(--body);color:var(--muted);max-width:220px}
       <div class="lockmsg">the proxy has no control token: start serve.py with --token-file or --adb-pull</div>
       <div class="rows">
         <div class="field"><span class="lab">Base scene<span class="key">PUT /scene</span></span>
-          <div class="seg" id="base" role="radiogroup" aria-label="base scene">
-            <button type="button" data-v="art" role="radio" aria-checked="false">Art</button>
-            <button type="button" data-v="clock" role="radio" aria-checked="false">Clock</button>
-            <button type="button" data-v="ip" role="radio" aria-checked="false">IP</button>
-          </div></div>
+          <!-- filled from GET /scenes on connect: the bases are the runtime's, not a list typed here -->
+          <div class="seg" id="base" role="radiogroup" aria-label="base scene"></div></div>
         <div class="field" data-base="art"><label for="gen">Generator<span class="key">art only · PUT /scene</span></label><select id="gen"></select></div>
         <div class="rows genparams" id="genParams" data-base="art" hidden></div>
         <div class="field" data-base="ip"><label for="kip">IP layout<span class="key">ip only · PUT /scene ip.mode · transient</span></label><select id="kip"></select></div>
@@ -693,6 +690,24 @@ function segSet(id, v) { $(id).querySelectorAll('button').forEach(b => b.setAttr
 document.querySelectorAll('input[type=range]').forEach(r => { syncRange(r); r.addEventListener('input', () => syncRange(r)); });
 const hexColour = v => v.replace('#', '');
 const colourBytes = v => [0, 2, 4].map(i => parseInt(v.replace('#', '').slice(i, i + 2), 16));
+// the base scenes come from the catalogue, so a runtime that retires one or adds one needs no edit
+// here. only `ip` reads wrong when title-cased, and it is the one base on its way out
+const BASE_LABELS = { ip: 'IP' };
+const baseLabel = name => BASE_LABELS[name] || name.charAt(0).toUpperCase() + name.slice(1);
+function fillBaseButtons(bases, current) {
+  const box = $('base');
+  box.innerHTML = '';
+  for (const name of bases) {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.dataset.v = name;
+    b.setAttribute('role', 'radio');
+    b.setAttribute('aria-checked', String(name === current));
+    b.textContent = baseLabel(name);
+    box.append(b);
+  }
+}
+
 function fillSelect(sel, names, current) {
   sel.innerHTML = '';
   for (const n of names) { const o = document.createElement('option'); o.value = n; o.textContent = n; sel.append(o); }
@@ -1255,6 +1270,8 @@ async function loadAll() {
     logNext = 0; logLines = []; renderLogs();
     STATUS = await call('GET', 'status'); onStatus(null);
     SCENES = await call('GET', 'scenes');
+    fillBaseButtons(SCENES.bases || [], STATUS.base);
+    showBaseRows(STATUS.base);
     fillSelect($('gen'), SCENES.generators.map(g => g.name), STATUS.generator);
     fillClockSelects();
     fillTransitionSelects();
