@@ -340,7 +340,12 @@ class EndToEndTests(unittest.TestCase):
         self.assertEqual([p["name"] for p in sc["parameters"]["art"]], ["scene"])
         self.assertEqual([p["name"] for p in sc["parameters"]["clock"]],
                          ["face", "colour", "shade", "colour 2", "gradient", "spread", "digits"])
-        self.assertEqual([p["name"] for p in sc["parameters"]["ip"]], ["layout"])
+        # ip stopped being a base scene (it is a page of the device menu now), so it has no
+        # parameter table any more. its four layouts are still published as their own block,
+        # which is what the console's layout select reads
+        self.assertNotIn("ip", sc["parameters"])
+        self.assertEqual(sorted(sc["parameters"]), sorted(sc["bases"]))
+        self.assertEqual(sc["ip"]["modes"], ["lines", "mini", "scroll", "big"])
         spread = next(p for p in sc["parameters"]["clock"] if p["name"] == "spread")
         self.assertEqual((spread["kind"], spread["min"], spread["max"], spread["step"]), ("number", 0, 255, 15))
         cube = next(g for g in sc["generators"] if g["name"] == "cube")

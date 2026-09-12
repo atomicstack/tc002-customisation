@@ -36,7 +36,7 @@ const clockStatus = extra => ({
 });
 
 function both(status, extra = {}) {
-  W.reset(0, 0, 1);
+  W.reset('art', 'popsquares', 1);
   return {
     js: JS.compose(status, localWith(JS, extra), WALL),
     wasm: W.compose(status, localWith(W, extra), WALL),
@@ -76,7 +76,7 @@ test('a bad tz rule throws and leaves the clock on utc', () => {
 });
 
 test('scene parameters carry the arbiter\'s own table', () => {
-  W.reset(0, 0, 1);
+  W.reset('art', 'popsquares', 1);
   const params = W.sceneParams();
   assert.ok(params.length > 0);
   const names = params.map(p => p.name);
@@ -89,7 +89,7 @@ test('scene parameters carry the arbiter\'s own table', () => {
 
 test('the notification duration cap is read from the arbiter, not hardcoded here', () => {
   assert.equal(W.NOTIFY_MAX_S, 300);
-  W.reset(1, 0, 1);
+  W.reset('clock', 'popsquares', 1);
   const s = { base: 'clock', overlay: 'notify', generator: 'popsquares', brightness: 100 };
   const c = W.compose(s, localWith(W, { notify: { text: 'hi', colour: [255, 255, 255], sinceMs: WALL } }), WALL);
   assert.equal(c.label, 'notification');
@@ -107,7 +107,7 @@ test('an index past the end of an enum is ignored, not coerced to a neighbour', 
   // the wasm takes enum values as indices into the lists the console read out of it, and decides
   // what is in range from the enum itself. a count written into this shim would go stale the next
   // time the runtime gains or retires a variant, which is the whole bug being designed out
-  W.reset(1, 0, 1);
+  W.reset('clock', 'popsquares', 1);
   const styled = W.compose(clockStatus({ font: 'big' }), localWith(W), WALL);
   const e = W.exports;
   e.setClockStyle(99, -1, -1, -1, -1, -1, -1, WALL);   // no such font: leave the style alone
@@ -120,7 +120,7 @@ test('an index past the end of an enum is ignored, not coerced to a neighbour', 
 /* ---------- cadence: when the console is told to come back ---------- */
 
 test('cadence follows the scene, not a fixed timer', () => {
-  W.reset(1, 0, 1);
+  W.reset('clock', 'popsquares', 1);
   const clock = W.compose(clockStatus(), localWith(W), WALL);
   assert.equal(clock.cadenceMs, 1000, 'the clock redraws on the next whole second');
 

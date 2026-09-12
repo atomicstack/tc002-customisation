@@ -248,8 +248,12 @@
     menuOpen: () => need().menuOpen() !== 0,
     revision: () => need().revision(),
     takeTransition: () => { const t = need().takeTransition(); return t === 255 ? null : t; },
+    /* base and generator may be names or indices; names are safer, because the indices are the
+       runtime's enum values and those are renumbered whenever a scene is added or retired */
     reset: (base, generator, seed) => {
-      need().init(base | 0, generator | 0, seed >>> 0);
+      const b = typeof base === 'number' ? base : Math.max(0, BASES.indexOf(base));
+      const g = typeof generator === 'number' ? generator : Math.max(0, GENERATORS.indexOf(generator));
+      need().init(b | 0, g | 0, seed >>> 0);
       for (const k of Object.keys(applied)) applied[k] = null;
     },
   };
