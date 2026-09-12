@@ -65,7 +65,8 @@ pub const Config = struct {
     revision: u32 = 0,
     saved_revision: u32 = 0,
     brightness: u8 = 100,
-    /// index into base_names: the clock, so a cold start never shows the art generator
+    /// index into base_names, which is `arbiter.Base`: the clock, so a cold start never shows the
+    /// art generator
     base: u8 = base_clock,
     generator: u8 = 0,
     timezone: Text = Text.init("UTC0"),
@@ -481,10 +482,10 @@ const FileForm = struct {
     } = .{},
 };
 
-const base_names = [_][]const u8{ "art", "clock", "ip" };
+const base_names = [_][]const u8{ "clock", "art", "canvas" };
 /// the base scene of a device with no settings file: a power cycle wipes /tmp, and the first
 /// frame after a cold start must be the clock rather than a flash of the art generator.
-const base_clock: u8 = 1;
+const base_clock: u8 = 0;
 const generator_names = [_][]const u8{ "popsquares", "plasma" };
 
 fn nameIndex(names: []const []const u8, name: []const u8) ?u8 {
@@ -718,7 +719,7 @@ test "ipc encoding round-trips every field" {
 
 test "json persistence round-trips and rejects junk" {
     var c = Config{};
-    try c.patch(.{ .brightness = 33, .base = .ip, .timezone = "AEST-10AEDT,M10.1.0,M4.1.0/3", .ntp_server = .{ 10, 0, 0, 5 }, .clock_font = .big, .clock_colour = .{ 0xff, 0x80, 0x00 }, .clock_colour_mode = .gradient, .ip_mode = .big, .night = true, .night_brightness = 8, .night_lead_min = 0, .location = .{ .lat_c = 5151, .lon_c = -13 } });
+    try c.patch(.{ .brightness = 33, .base = .canvas, .timezone = "AEST-10AEDT,M10.1.0,M4.1.0/3", .ntp_server = .{ 10, 0, 0, 5 }, .clock_font = .big, .clock_colour = .{ 0xff, 0x80, 0x00 }, .clock_colour_mode = .gradient, .ip_mode = .big, .night = true, .night_brightness = 8, .night_lead_min = 0, .location = .{ .lat_c = 5151, .lon_c = -13 } });
     try c.patchMqtt(.{ .enabled = true, .host = "10.0.0.2", .username = "tc002", .password = "Pw1", .prefix = "tc002/dev" });
     c.origins[0] = Text.init("http://panel");
     c.origin_count = 1;

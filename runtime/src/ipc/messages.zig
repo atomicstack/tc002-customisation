@@ -55,7 +55,7 @@ test "every message kind round-trips through a packet" {
         .{ .config_patch = try ConfigPatch.fromApi(.{ .brightness = 3, .timezone = "UTC0", .expected_revision = 5 }) },
         .{ .config_patch = try ConfigPatch.fromApi(.{ .night = true, .night_brightness = 5, .night_lead_min = 60, .location = .{ .lat_c = -3387, .lon_c = 15122 }, .clock_font = .big, .clock_colour_mode = .gradient, .clock_colour = .{ 1, 2, 3 }, .clock_colour2 = .{ 7, 8, 9 }, .clock_gradient = .vertical, .clock_spread = 128, .clock_digit = .shadow, .ip_mode = .big }) },
         .{ .ip_mode = .{ .mode = 2 } },
-        .{ .set_base = .{ .base = 2, .generator = 0, .seed = 0, .ip_mode = 3 } },
+        .{ .set_base = .{ .base = 2, .generator = 0, .seed = 0 } },
         .{ .config_save = .{ .has_revision = 1, .revision = 6 } },
         .{ .save_result = .{ .status = .conflict, .saved_revision = 5 } },
         .{ .mqtt_put = try MqttPut.fromApi(.{ .host = "10.0.0.2", .password = "Pw", .enabled = true }) },
@@ -420,8 +420,8 @@ pub const Transition = struct {
 };
 
 /// 0xff on set_base = not given
-pub const SetBase = struct { base: u8, generator: u8, seed: u32, style: ClockStyle = .{}, transition: Transition = .{}, ip_mode: u8 = 0xff };
-/// the ip scene's layout as a durable setting pushed to the renderer
+pub const SetBase = struct { base: u8, generator: u8, seed: u32, style: ClockStyle = .{}, transition: Transition = .{} };
+/// the ip layout as a durable setting pushed to the renderer, for the device menu's own page
 pub const IpMode = struct { mode: u8 };
 
 /// what the on-device menu asks the supervisor to do. the renderer has already previewed it.
@@ -1330,8 +1330,7 @@ fn encodePayload(msg: Message, out: []u8) usize {
             std.mem.writeInt(u32, out[2..6], s.seed, .big);
             s.style.put(out[6 .. 6 + ClockStyle.wire_len]);
             s.transition.put(out[6 + ClockStyle.wire_len .. 6 + ClockStyle.wire_len + Transition.wire_len]);
-            out[6 + ClockStyle.wire_len + Transition.wire_len] = s.ip_mode;
-            return 7 + ClockStyle.wire_len + Transition.wire_len;
+            return 6 + ClockStyle.wire_len + Transition.wire_len;
         },
         .notify => |n| {
             out[0..3].* = n.colour;
@@ -1684,8 +1683,8 @@ pub fn decodePacket(bytes: []const u8) Error!Packet {
             break :blk .{ .result = .{ .status = status, .revision = std.mem.readInt(u32, b[1..5], .big) } };
         },
         .set_base => blk: {
-            const b = try fixed(p, 7 + ClockStyle.wire_len + Transition.wire_len);
-            break :blk .{ .set_base = .{ .base = b[0], .generator = b[1], .seed = std.mem.readInt(u32, b[2..6], .big), .style = ClockStyle.get(b[6..]), .transition = Transition.get(b[6 + ClockStyle.wire_len ..]), .ip_mode = b[6 + ClockStyle.wire_len + Transition.wire_len] } };
+            const b = try fixed(p, 6 + ClockStyle.wire_len + Transition.wire_len);
+            break :blk .{ .set_base = .{ .base = b[0], .generator = b[1], .seed = std.mem.readInt(u32, b[2..6], .big), .style = ClockStyle.get(b[6..]), .transition = Transition.get(b[6 + ClockStyle.wire_len ..]) } };
         },
         .notify => blk: {
             if (p.len < 12) return error.BadPayload;

@@ -385,7 +385,7 @@ const Netd = struct {
                 self.respond(c, 200, "application/json", api.scenes_body);
                 self.flushConn(c, now);
             },
-            .set_scene => |s| self.relay(c, .{ .set_base = .{ .base = @intFromEnum(s.base), .generator = if (s.generator) |g| @intFromEnum(g) else 0xff, .seed = s.seed orelse 0, .style = if (s.style) |st| messages.ClockStyle.fromPatch(st) else .{}, .transition = messages.Transition.fromSpec(s.transition), .ip_mode = if (s.ip_mode) |m| @intFromEnum(m) else 0xff } }, s.request_id, s.epoch orelse 0, now),
+            .set_scene => |s| self.relay(c, .{ .set_base = .{ .base = @intFromEnum(s.base), .generator = if (s.generator) |g| @intFromEnum(g) else 0xff, .seed = s.seed orelse 0, .style = if (s.style) |st| messages.ClockStyle.fromPatch(st) else .{}, .transition = messages.Transition.fromSpec(s.transition) } }, s.request_id, s.epoch orelse 0, now),
             .action => |a| switch (a.kind) {
                 .brightness => self.relay(c, .{ .brightness = .{ .value = a.brightness.? } }, a.request_id, a.epoch, now),
                 .reseed => self.relay(c, .{ .reseed = .{ .seed = a.seed orelse @truncate(now ^ a.request_id) } }, a.request_id, a.epoch, now),
@@ -698,9 +698,9 @@ const Netd = struct {
 
     fn baseName(b: u8) []const u8 {
         return switch (b) {
-            0 => "art",
-            1 => "clock",
-            2 => "ip",
+            0 => "clock",
+            1 => "art",
+            2 => "canvas",
             else => "unknown",
         };
     }
@@ -1248,7 +1248,7 @@ const Netd = struct {
                 self.mqttPublish("result", o.slice(), 0, false);
             },
             .op => |op| switch (op) {
-                .set_scene => |s| self.mqttRelay(.{ .set_base = .{ .base = @intFromEnum(s.base), .generator = if (s.generator) |g| @intFromEnum(g) else 0xff, .seed = s.seed orelse 0, .style = if (s.style) |st| messages.ClockStyle.fromPatch(st) else .{}, .transition = messages.Transition.fromSpec(s.transition), .ip_mode = if (s.ip_mode) |m| @intFromEnum(m) else 0xff } }, s.request_id, s.epoch orelse 0, now),
+                .set_scene => |s| self.mqttRelay(.{ .set_base = .{ .base = @intFromEnum(s.base), .generator = if (s.generator) |g| @intFromEnum(g) else 0xff, .seed = s.seed orelse 0, .style = if (s.style) |st| messages.ClockStyle.fromPatch(st) else .{}, .transition = messages.Transition.fromSpec(s.transition) } }, s.request_id, s.epoch orelse 0, now),
                 .action => |a| switch (a.kind) {
                     .brightness => self.mqttRelay(.{ .brightness = .{ .value = a.brightness.? } }, a.request_id, a.epoch, now),
                     .reseed => self.mqttRelay(.{ .reseed = .{ .seed = a.seed orelse @truncate(now ^ a.request_id) } }, a.request_id, a.epoch, now),

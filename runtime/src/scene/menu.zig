@@ -18,6 +18,7 @@ const scene = @import("scene.zig");
 
 pub const Item = enum(u8) {
     brightness = 0,
+    ip,
     night,
     night_level,
     display_off,
@@ -31,6 +32,7 @@ pub const Item = enum(u8) {
     pub fn label(self: Item) []const u8 {
         return switch (self) {
             .brightness => "brightness",
+            .ip => "ip",
             .night => "night",
             .night_level => "night level",
             .display_off => "display off",
@@ -46,7 +48,7 @@ pub const Item = enum(u8) {
     /// items whose value the knob or the left/right buttons can change
     fn adjustable(self: Item) bool {
         return switch (self) {
-            .brightness, .night, .night_level, .mqtt, .ntfy, .info => true,
+            .brightness, .ip, .night, .night_level, .mqtt, .ntfy, .info => true,
             else => false,
         };
     }
@@ -54,8 +56,9 @@ pub const Item = enum(u8) {
 
 pub const count = @typeInfo(Item).@"enum".fields.len;
 
-/// the readouts of the info page, in the order the knob walks them
-pub const Readout = enum(u8) { address = 0, wifi, battery, time, uptime };
+/// the readouts of the info page, in the order the knob walks them. the address is not among them:
+/// it has an item of its own, which draws it the way the ip scene used to.
+pub const Readout = enum(u8) { wifi = 0, battery, time, uptime };
 
 const readout_count = @typeInfo(Readout).@"enum".fields.len;
 
@@ -138,7 +141,7 @@ pub const Menu = struct {
     state: State = .browsing,
     settings: Values = .{},
     status: Status = .{},
-    readout: Readout = .address,
+    readout: Readout = .wifi,
     /// the highlighted answer of the reboot dialogue; it starts on no every time
     confirm_yes: bool = false,
     /// when the pending change should be sent up, if one is pending
@@ -221,6 +224,13 @@ pub const Menu = struct {
                 self.settings.brightness = next;
                 self.stage(.{ .brightness = next }, now);
                 return .{ .brightness = next };
+            },
+            .ip => {
+                // the dial pages the four layouts, which is what it did when ip was a scene
+                const next = cycle(ip.Mode, self.settings.ip_mode, forward);
+                self.settings.ip_mode = next;
+                self.stage(.{ .ip_mode = next }, now);
+                return .{ .ip_mode = next };
             },
             .night => {
                 self.settings.night = !self.settings.night;
@@ -406,6 +416,15 @@ pub const Menu = struct {
             pages.draw(rgb, self.entries(), self.entry, pages.alphaAt(now -| self.pages_at));
             return;
         }
+        if (self.item == .ip) {
+            // the address takes the whole panel, drawn by the scene that used to be a base: a
+            // label over it would leave no room for the layouts that fill the height
+            var state = ip.State{ .addr = self.status.address, .mode = self.settings.ip_mode };
+            state.colour = if (self.state == .adjusting) amber else bright;
+            state.render(now, rgb);
+            pages.draw(rgb, count, @intFromEnum(self.item), pages.alphaAt(now -| self.pages_at));
+            return;
+        }
         drawLine(rgb, 1, self.item.label(), dim, now, self.scroll_start_ns);
         const text = self.valueText(&buf);
         drawLine(rgb, 9, text, colour, now, self.scroll_start_ns);
@@ -422,8 +441,7 @@ pub const Menu = struct {
     fn valueText(self: *const Menu, buf: []u8) []const u8 {
         return switch (self.item) {
             .brightness => std.fmt.bufPrint(buf, "{d}%", .{self.settings.brightness}) catch "?",
-            // on with nowhere to be is the one state worth explaining: the timezone names no
-            // place (a bare posix rule) and no latitude and longitude have been set
+            .ip => "", // the ip page draws the address itself, full-panel
             .night => if (!self.settings.night) "off" else if (self.status.night_placed) "on" else "no place",
             .night_level => std.fmt.bufPrint(buf, "{d}%", .{self.settings.night_level}) catch "?",
             .mqtt => if (self.settings.mqtt) "on" else "off",
@@ -439,7 +457,6 @@ pub const Menu = struct {
     fn readoutText(self: *const Menu, buf: []u8) []const u8 {
         const s = self.status;
         return switch (self.readout) {
-            .address => if (s.address) |a| (std.fmt.bufPrint(buf, "{d}.{d}.{d}.{d}", .{ a[0], a[1], a[2], a[3] }) catch "?") else "no address",
             .wifi => if (s.wifi_quality != 255) (std.fmt.bufPrint(buf, "wifi {d}%", .{s.wifi_quality}) catch "?") else "wifi ?",
             .battery => if (s.battery_pct != 255)
                 (std.fmt.bufPrint(buf, "bat {d}%{s}", .{ s.battery_pct, if (s.usb == 1) " usb" else "" }) catch "?")
@@ -743,11 +760,10 @@ test "the info page walks its readouts and reads the pushed status" {
     var m = Menu.open(.{}, .{ .address = .{ 10, 0, 0, 111 }, .battery_pct = 80, .usb = 1, .wifi_quality = 49, .time_synced = true, .uptime_s = 3 * 86400 + 4 * 3600 }, 0);
     m.item = .info;
     var buf: [24]u8 = undefined;
-    try std.testing.expectEqualStrings("10.0.0.111", m.valueText(&buf));
+    // the address is not among the readouts: it has an item of its own
+    try std.testing.expectEqualStrings("wifi 49%", m.valueText(&buf));
     _ = m.input(.click, 0); // a click enters the page; the knob then walks the readouts
     try std.testing.expectEqual(State.adjusting, m.state);
-    _ = m.input(.next, 0);
-    try std.testing.expectEqualStrings("wifi 49%", m.valueText(&buf));
     _ = m.input(.next, 0);
     try std.testing.expectEqualStrings("bat 80% usb", m.valueText(&buf));
     _ = m.input(.next, 0);
@@ -755,13 +771,52 @@ test "the info page walks its readouts and reads the pushed status" {
     _ = m.input(.next, 0);
     try std.testing.expectEqualStrings("up 3d 4h", m.valueText(&buf));
     _ = m.input(.next, 0); // wraps
-    try std.testing.expectEqualStrings("10.0.0.111", m.valueText(&buf));
-    // an unknown status says so rather than showing a wrong number
+    try std.testing.expectEqualStrings("wifi 49%", m.valueText(&buf));
     _ = m.tick(10 * commit_delay_ns);
     try std.testing.expect(m.takeReady() == .none); // a readout is not a setting
+}
+
+test "the ip item draws the address full-panel, and the dial pages its four layouts" {
+    var m = Menu.open(.{ .ip_mode = .mini }, .{ .address = .{ 10, 0, 0, 111 } }, 0);
+    m.item = .ip;
+    var rgb: geometry.Rgb = undefined;
+    m.render(0, &rgb);
+    // exactly what the scene drew when it was a base, with the page dots over it
+    var expected = geometry.black_rgb;
+    var state = ip.State{ .addr = .{ 10, 0, 0, 111 }, .mode = .mini };
+    state.colour = bright;
+    state.render(0, &expected);
+    pages.draw(&expected, count, @intFromEnum(Item.ip), pages.alphaAt(0));
+    try std.testing.expectEqualSlices(u8, &expected, &rgb);
+
+    // the label row is not drawn over it: the address owns the whole panel
+    var buf: [24]u8 = undefined;
+    try std.testing.expectEqualStrings("", m.valueText(&buf));
+
+    // a click opens it and the dial walks the layouts, committing like any other setting
+    _ = m.input(.click, 0);
+    try std.testing.expectEqual(State.adjusting, m.state);
+    const r = m.input(.next, ms);
+    try std.testing.expect(r == .ip_mode and r.ip_mode == .scroll);
+    try std.testing.expectEqual(ip.Mode.scroll, m.settings.ip_mode);
+    _ = m.input(.next, 2 * ms);
+    try std.testing.expectEqual(ip.Mode.big, m.settings.ip_mode);
+    _ = m.input(.prev, 3 * ms);
+    try std.testing.expectEqual(ip.Mode.scroll, m.settings.ip_mode);
+    _ = m.tick(3 * ms + commit_delay_ns);
+    const settled = m.takeReady();
+    try std.testing.expect(settled == .ip_mode and settled.ip_mode == .scroll);
+
+    // with no address it says so, in whichever layout is set
     var blank = Menu.open(.{}, .{}, 0);
-    blank.item = .info;
-    try std.testing.expectEqualStrings("no address", blank.valueText(&buf));
+    blank.item = .ip;
+    blank.render(0, &rgb);
+    var none = geometry.black_rgb;
+    var empty = ip.State{ .addr = null, .mode = .lines };
+    empty.colour = bright;
+    empty.render(0, &none);
+    pages.draw(&none, count, @intFromEnum(Item.ip), pages.alphaAt(0));
+    try std.testing.expectEqualSlices(u8, &none, &rgb);
 }
 
 test "a browsing frame shows the label, the value and the position dots" {

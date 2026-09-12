@@ -320,9 +320,6 @@ const Renderer = struct {
                     if (s.seed != 0) r = arb.apply(.{ .reseed = s.seed }, now);
                 }
                 if (s.style.has != 0) r = arb.applyWith(.{ .set_clock_style = s.style.toPatch() }, spec, now);
-                if (s.ip_mode != 0xff) {
-                    if (messages.enumFromInt(ip.Mode, s.ip_mode)) |m| r = arb.applyWith(.{ .set_ip_mode = m }, spec, now);
-                }
                 break :blk r;
             },
             .clock_style => |cs| arb.apply(.{ .set_clock_style = cs.toPatch() }, now),

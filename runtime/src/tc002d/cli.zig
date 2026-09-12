@@ -16,7 +16,7 @@ pub const usage =
     \\  --knob PATH         rotary evdev node (/dev/input/event68)
     \\  --keymap L,M,R,K    keycodes for left, middle, right, knob (108,105,106,103)
     \\  --tz RULE           posix tz rule for the clock (UTC0)
-    \\  --base art|clock|ip initial base scene (clock)
+    \\  --base clock|art|canvas  initial base scene (clock)
     \\  --generator N       initial art generator index (0)
     \\  --seed N            art seed, 0 = from the clock (0)
     \\  --brightness N      1..100 (100)
@@ -110,7 +110,7 @@ pub fn parse(args: []const [:0]const u8) ParseError!Outcome {
         } else if (std.mem.eql(u8, a, "--tz")) {
             c.tz_rule = v;
         } else if (std.mem.eql(u8, a, "--base")) {
-            c.base = if (std.mem.eql(u8, v, "art")) .art else if (std.mem.eql(u8, v, "clock")) .clock else if (std.mem.eql(u8, v, "ip")) .ip else return error.BadValue;
+            c.base = if (std.mem.eql(u8, v, "clock")) .clock else if (std.mem.eql(u8, v, "art")) .art else if (std.mem.eql(u8, v, "canvas")) .canvas else return error.BadValue;
         } else if (std.mem.eql(u8, a, "--generator")) {
             c.generator = @enumFromInt(try parseU32(v, 0, scene.generator_count - 1));
         } else if (std.mem.eql(u8, a, "--seed")) {

@@ -11,6 +11,7 @@ const actions = @import("../input/actions.zig");
 const clock = @import("../scene/clock.zig");
 const transition = @import("../panel/transition.zig");
 const ip = @import("../scene/ip.zig");
+const canvas = @import("../scene/canvas.zig");
 const param = @import("../scene/param.zig");
 const cube = @import("../scene/cube.zig");
 const popsquares = @import("../scene/popsquares.zig");
@@ -65,7 +66,7 @@ pub const ActionKind = enum { brightness, reseed, arm_stream, power };
 pub const Op = union(enum) {
     status,
     scenes,
-    set_scene: struct { base: Base, generator: ?scene.Generator, seed: ?u32, style: ?clock.StylePatch, ip_mode: ?ip.Mode, transition: ?transition.Spec, request_id: u64, epoch: ?u32 },
+    set_scene: struct { base: Base, generator: ?scene.Generator, seed: ?u32, style: ?clock.StylePatch, transition: ?transition.Spec, request_id: u64, epoch: ?u32 },
     action: struct { kind: ActionKind, brightness: ?u8, seed: ?u32, power: ?bool, request_id: u64, epoch: u32 },
     /// the framebuffer as shown; `raw` = octets instead of the json document
     screen: struct { raw: bool },
@@ -163,12 +164,11 @@ pub const Arena = [json.arena_size]u8;
 
 // json wire schemas (request bodies)
 const ClockBody = struct { font: ?[]const u8 = null, colour_mode: ?[]const u8 = null, colour: ?[]const u8 = null, colour2: ?[]const u8 = null, gradient: ?[]const u8 = null, spread: ?u8 = null, digits: ?[]const u8 = null };
-const IpBody = struct { mode: ?[]const u8 = null };
 /// one generator parameter in a settings patch. the value is always a string and the scene's own
 /// table says how to read it: a choice by its name, a colour as rrggbb, a number in decimal, a
 /// toggle as on or off. `GET /scenes` publishes the table, so a client needs nothing else.
 const GenParamBody = struct { scene: []const u8, name: []const u8, value: []const u8 };
-const SceneBody = struct { base: []const u8, generator: ?[]const u8 = null, seed: ?u32 = null, clock: ?ClockBody = null, ip: ?IpBody = null, transition: ?[]const u8 = null, direction: ?[]const u8 = null, transition_ms: ?u32 = null, exit: ?[]const u8 = null, request_id: []const u8, epoch: ?u32 = null };
+const SceneBody = struct { base: []const u8, generator: ?[]const u8 = null, seed: ?u32 = null, clock: ?ClockBody = null, transition: ?[]const u8 = null, direction: ?[]const u8 = null, transition_ms: ?u32 = null, exit: ?[]const u8 = null, request_id: []const u8, epoch: ?u32 = null };
 const ActionBody = struct { action: []const u8, brightness: ?u8 = null, seed: ?u32 = null, power: ?bool = null, request_id: []const u8, epoch: u32 };
 const InputBody = struct { control: []const u8, event: []const u8, steps: u8 = 1, request_id: []const u8, epoch: u32 };
 const NotifyBody = struct { text: []const u8, colour: ?[]const u8 = null, duration_s: u16 = 5, transition: ?[]const u8 = null, direction: ?[]const u8 = null, transition_ms: ?u32 = null, exit: ?[]const u8 = null, request_id: []const u8, epoch: u32 };
@@ -233,10 +233,12 @@ pub fn parseRequestId(text: []const u8) ?u64 {
     return std.fmt.parseInt(u64, text, 16) catch null;
 }
 
+const base_names_message = "base must be clock, art or canvas";
+
 fn parseBase(text: []const u8) ?Base {
-    if (std.mem.eql(u8, text, "art")) return .art;
     if (std.mem.eql(u8, text, "clock")) return .clock;
-    if (std.mem.eql(u8, text, "ip")) return .ip;
+    if (std.mem.eql(u8, text, "art")) return .art;
+    if (std.mem.eql(u8, text, "canvas")) return .canvas;
     return null;
 }
 
@@ -403,7 +405,7 @@ pub fn parseBody(kind: BodyKind, body: []const u8, arena: *Arena) Route {
     switch (kind) {
         .scene => {
             const b = json.parse(SceneBody, body, arena) catch |e| return jsonError(e);
-            const base = parseBase(b.base) orelse return bad("invalid_base", "base must be art, clock or ip");
+            const base = parseBase(b.base) orelse return bad("invalid_base", base_names_message);
             const generator: ?scene.Generator = if (b.generator) |g| (parseGenerator(g) orelse return bad("invalid_generator", "unknown generator")) else null;
             const rid = parseRequestId(b.request_id) orelse return bad("invalid_request_id", "request_id must be 1..16 hex digits");
             var style: ?clock.StylePatch = null;
@@ -417,11 +419,7 @@ pub fn parseBody(kind: BodyKind, body: []const u8, arena: *Arena) Route {
                 .reject => |j| return .{ .reject = j },
                 .op => |t| t,
             };
-            var ip_mode: ?ip.Mode = null;
-            if (b.ip) |ib| if (ib.mode) |t| {
-                ip_mode = enumByName(ip.Mode, t) orelse return bad("invalid_ip_mode", "ip mode must be lines, mini, scroll or big");
-            };
-            return .{ .op = .{ .set_scene = .{ .base = base, .generator = generator, .seed = b.seed, .style = style, .ip_mode = ip_mode, .transition = spec, .request_id = rid, .epoch = b.epoch } } };
+            return .{ .op = .{ .set_scene = .{ .base = base, .generator = generator, .seed = b.seed, .style = style, .transition = spec, .request_id = rid, .epoch = b.epoch } } };
         },
         .action => {
             const b = json.parse(ActionBody, body, arena) catch |e| return jsonError(e);
@@ -499,7 +497,7 @@ pub fn parseBody(kind: BodyKind, body: []const u8, arena: *Arena) Route {
                 .clock_spread = style.spread,
                 .clock_digit = style.digit,
                 .brightness = b.brightness,
-                .base = if (b.base) |t| (parseBase(t) orelse return bad("invalid_base", "base must be art, clock or ip")) else null,
+                .base = if (b.base) |t| (parseBase(t) orelse return bad("invalid_base", base_names_message)) else null,
                 .generator = if (b.generator) |g| (parseGenerator(g) orelse return bad("invalid_generator", "unknown generator")) else null,
                 .timezone = b.timezone,
                 .ntp_server = ntp,
@@ -687,11 +685,11 @@ fn paramsJson(comptime table: []const param.Param) []const u8 {
 }
 
 /// the `scenes` document is static.
-pub const scenes_body = "{\"bases\":[\"art\",\"clock\",\"ip\"],\"generators\":[" ++
+pub const scenes_body = "{\"bases\":" ++ namesJson(Base) ++ ",\"generators\":[" ++
     "{\"index\":0,\"name\":\"popsquares\",\"parameters\":" ++ paramsJson(&popsquares.params) ++ "}," ++
     "{\"index\":1,\"name\":\"plasma\",\"parameters\":" ++ paramsJson(&plasma.params) ++ "}," ++
     "{\"index\":2,\"name\":\"cube\",\"parameters\":" ++ paramsJson(&cube.params) ++ "}]," ++
-    "\"parameters\":{\"art\":" ++ paramsJson(&scene.art_params) ++ ",\"clock\":" ++ paramsJson(&clock.params) ++ ",\"ip\":" ++ paramsJson(&ip.params) ++ "}," ++
+    "\"parameters\":{\"art\":" ++ paramsJson(&scene.art_params) ++ ",\"clock\":" ++ paramsJson(&clock.params) ++ ",\"canvas\":" ++ paramsJson(&canvas.params) ++ "}," ++
     "\"clock\":{\"fonts\":" ++ namesJson(clock.Font) ++ ",\"colour_modes\":[\"solid\",\"gradient\"],\"digits\":" ++ namesJson(clock.DigitStyle) ++ ",\"gradients\":[\"horizontal\",\"vertical\",\"diagonal\"],\"spread\":[0,255],\"max_spread\":255},\"ip\":{\"modes\":" ++ namesJson(ip.Mode) ++ "},\"notify\":{\"text_max\":128,\"duration_s\":[1,300]},\"frame\":{\"bytes\":2496,\"duration_s\":[1,300]},\"transitions\":{\"effects\":" ++ namesJson(transition.Effect) ++ ",\"directions\":" ++ namesJson(transition.Direction) ++ ",\"exits\":" ++ namesJson(transition.Exit) ++ ",\"duration_ms\":[0,5000]}}";
 
 // tests
@@ -779,19 +777,23 @@ test "transition fields become a spec with the effect's natural direction and 50
     try std.testing.expectEqual(transition.Exit.none, fe.op.frame.transition.?.exit);
 }
 
-test "the ip mode rides on the scene body and the settings patch" {
+test "the ip layout is a setting only: there is no ip base to put it on" {
     const c = testCreds();
     var arena: Arena = undefined;
     const origins = OriginPolicy{};
-    const s = route(testReq(.PUT, "/api/v1/scene", "", control_header, "application/json", null), "{\"base\":\"ip\",\"ip\":{\"mode\":\"big\"},\"request_id\":\"7\"}", &c, &origins, &arena);
-    try std.testing.expectEqual(ip.Mode.big, s.op.set_scene.ip_mode.?);
-    const plain = route(testReq(.PUT, "/api/v1/scene", "", control_header, "application/json", null), "{\"base\":\"ip\",\"request_id\":\"7\"}", &c, &origins, &arena);
-    try std.testing.expect(plain.op.set_scene.ip_mode == null);
-    try expectReject(route(testReq(.PUT, "/api/v1/scene", "", control_header, "application/json", null), "{\"base\":\"ip\",\"ip\":{\"mode\":\"huge\"},\"request_id\":\"7\"}", &c, &origins, &arena), 400, "invalid_ip_mode");
+    // the scene retired when the canvas took the third button; the address moved to the device menu
+    try expectReject(route(testReq(.PUT, "/api/v1/scene", "", control_header, "application/json", null), "{\"base\":\"ip\",\"request_id\":\"7\"}", &c, &origins, &arena), 400, "invalid_base");
+    try expectReject(route(testReq(.PATCH, "/api/v1/config", "", admin_header, "application/json", null), "{\"base\":\"ip\"}", &c, &origins, &arena), 400, "invalid_base");
+    const canvas_base = route(testReq(.PUT, "/api/v1/scene", "", control_header, "application/json", null), "{\"base\":\"canvas\",\"request_id\":\"7\"}", &c, &origins, &arena);
+    try std.testing.expectEqual(Base.canvas, canvas_base.op.set_scene.base);
+    // but the layout itself is untouched: same key, same four values, and the catalogue still
+    // publishes them from the enum, independently of the base list
     const cp = route(testReq(.PATCH, "/api/v1/config", "", admin_header, "application/json", null), "{\"ip_mode\":\"mini\"}", &c, &origins, &arena);
     try std.testing.expectEqual(ip.Mode.mini, cp.op.config_patch.ip_mode.?);
     try expectReject(route(testReq(.PATCH, "/api/v1/config", "", admin_header, "application/json", null), "{\"ip_mode\":\"huge\"}", &c, &origins, &arena), 400, "invalid_ip_mode");
     try std.testing.expect(std.mem.indexOf(u8, scenes_body, "\"ip\":{\"modes\":[\"lines\",\"mini\",\"scroll\",\"big\"]}") != null);
+    try std.testing.expect(std.mem.startsWith(u8, scenes_body, "{\"bases\":[\"clock\",\"art\",\"canvas\"],"));
+    try std.testing.expect(std.mem.indexOf(u8, scenes_body, "\"canvas\":[]") != null); // the canvas declares nothing yet
 }
 
 test "ntfy settings are admin-only and validated" {

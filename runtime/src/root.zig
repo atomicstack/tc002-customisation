@@ -19,6 +19,7 @@ test {
     _ = @import("scene/clockfont.zig");
     _ = @import("scene/clock.zig");
     _ = @import("scene/ip.zig");
+    _ = @import("scene/canvas.zig");
     _ = @import("scene/menu.zig");
     _ = @import("scene/pages.zig");
     _ = @import("scene/param.zig");

@@ -14,6 +14,7 @@ const tz = @import("tz.zig");
 const clock = @import("clock.zig");
 const ip = @import("ip.zig");
 const menu = @import("menu.zig");
+const canvas = @import("canvas.zig");
 const pages = @import("pages.zig");
 const param = @import("param.zig");
 
@@ -115,9 +116,9 @@ test "physical actions: buttons select the base, rotary and knob depend on the b
     a.action(.rotate_ccw, 0);
     try std.testing.expectEqual(clock.Font.classic, a.clock.style.font);
     a.action(.right, 0);
-    try std.testing.expect(a.base == .ip);
-    a.action(.rotate_ccw, 0);
-    try std.testing.expectEqual(ip.Mode.big, a.ip.mode); // and the layouts
+    try std.testing.expect(a.base == .canvas);
+    a.action(.rotate_ccw, 0); // a canvas has no pages of its own, so the dial does nothing
+    try std.testing.expect(a.base == .canvas);
     a.action(.middle, 0);
     try std.testing.expect(a.base == .art);
     a.action(.rotate_cw, 0);
@@ -216,16 +217,17 @@ test "a request's transition is remembered and the exit pairs it in reverse" {
 }
 
 test "a base change slides the way its button sits on the panel" {
-    // the buttons are laid out left, middle, right and select clock, art, ip. moving to a scene
-    // whose button is further right must bring it in from the right, whichever way the Base enum
-    // happens to be numbered.
+    // the buttons are laid out left, middle, right and select clock, art, canvas, which is also
+    // the enum's order: moving to a scene whose button is further right brings it in from the
+    // right. the two were once different and reading one as the other sent every slide between
+    // the clock and the art the wrong way.
     const cases = [_]struct { from: Base, to: Base, dir: transition.Direction }{
         .{ .from = .clock, .to = .art, .dir = .left },
-        .{ .from = .clock, .to = .ip, .dir = .left },
-        .{ .from = .art, .to = .ip, .dir = .left },
+        .{ .from = .clock, .to = .canvas, .dir = .left },
+        .{ .from = .art, .to = .canvas, .dir = .left },
         .{ .from = .art, .to = .clock, .dir = .right },
-        .{ .from = .ip, .to = .clock, .dir = .right },
-        .{ .from = .ip, .to = .art, .dir = .right },
+        .{ .from = .canvas, .to = .clock, .dir = .right },
+        .{ .from = .canvas, .to = .art, .dir = .right },
     };
     for (cases) |c| {
         var a = Arbiter.init(c.from, .popsquares, 1, tz.utc);
@@ -263,7 +265,7 @@ test "the dial raises a page indicator in every scene it pages, and it fades awa
     };
     var rgb: geometry.Rgb = undefined;
     var plain: geometry.Rgb = undefined;
-    for ([_]Base{ .art, .clock, .ip }) |b| {
+    for ([_]Base{ .art, .clock }) |b| {
         var a = Arbiter.init(b, .popsquares, 1, tz.utc);
         a.action(.rotate_cw, 0); // the dial pages this scene, so the indicator comes up
         a.tick(pages.fade_in_ns, 0);
@@ -287,6 +289,22 @@ test "the dial raises a page indicator in every scene it pages, and it fades awa
     try std.testing.expectEqualSlices(u8, &plain, &rgb);
 }
 
+test "the device menu carries the ip layout in and back out again" {
+    var a = fresh();
+    _ = a.apply(.{ .set_ip_mode = .big }, 0);
+    a.openMenu(0);
+    try std.testing.expectEqual(ip.Mode.big, a.menu_state.?.settings.ip_mode); // it opens showing the truth
+    a.menu_state.?.item = .ip;
+    a.action(.knob_short, 0); // a click opens it for editing
+    a.action(.rotate_cw, 10 * std.time.ns_per_ms);
+    try std.testing.expectEqual(ip.Mode.lines, a.ip.mode); // previewed at once, wrapping past big
+    const r = a.takeMenuRequest();
+    try std.testing.expect(r == null); // and nothing has gone up yet
+    a.tick(menu.commit_delay_ns + 20 * std.time.ns_per_ms, 0);
+    const settled = a.takeMenuRequest().?;
+    try std.testing.expect(settled == .ip_mode and settled.ip_mode == .lines);
+}
+
 test "in the menu a clockwise detent moves right through the items" {
     // the dot row reads left to right, so a clockwise detent walks it rightwards. the driver
     // reports the detent that does that as rotate_cw since the state-code pairs were corrected.
@@ -294,7 +312,7 @@ test "in the menu a clockwise detent moves right through the items" {
     a.openMenu(0);
     try std.testing.expectEqual(menu.Item.brightness, a.menu_state.?.item);
     a.action(.rotate_cw, 0);
-    try std.testing.expectEqual(menu.Item.night, a.menu_state.?.item);
+    try std.testing.expectEqual(menu.Item.ip, a.menu_state.?.item);
     a.action(.rotate_ccw, 0); // and counter-clockwise goes back
     try std.testing.expectEqual(menu.Item.brightness, a.menu_state.?.item);
     a.action(.rotate_ccw, 0); // wrapping backwards off the top lands on exit
@@ -305,7 +323,7 @@ test "the default between base scenes is a slide, and a request still overrides 
     var a = fresh(); // art
     _ = a.apply(.{ .set_base = .clock }, 0); // the clock's button is left of art's
     try std.testing.expectEqual(transition.Spec{ .effect = .slide, .direction = .right }, a.takeTransition().?);
-    _ = a.apply(.{ .set_base = .ip }, 0);
+    _ = a.apply(.{ .set_base = .canvas }, 0);
     try std.testing.expectEqual(transition.Direction.left, a.takeTransition().?.direction);
     _ = a.apply(.{ .set_base = .art }, 0);
     try std.testing.expectEqual(transition.Direction.right, a.takeTransition().?.direction);
@@ -313,7 +331,7 @@ test "the default between base scenes is a slide, and a request still overrides 
     try std.testing.expectEqual(transition.Spec{ .effect = .slide, .direction = .left }, a.takeTransition().?);
     _ = a.apply(.{ .notify = .{ .text = "hi", .colour = white, .duration_s = 1 } }, 0);
     _ = a.takeTransition();
-    _ = a.apply(.{ .set_base = .ip }, 0); // the same base: only the overlay leaves, with the default fade
+    _ = a.apply(.{ .set_base = .canvas }, 0); // the same base: only the overlay leaves, with the default fade
     try std.testing.expectEqual(transition.Effect.fade, a.takeTransition().?.effect);
     _ = a.applyWith(.{ .set_base = .clock }, transition.Spec.cut, 0); // a request still decides
     try std.testing.expectEqual(transition.Effect.cut, a.takeTransition().?.effect);
@@ -386,23 +404,24 @@ test "the knob pages through generators, clock faces and ip layouts" {
     a.action(.rotate_ccw, 0);
     a.action(.rotate_ccw, 0);
     try std.testing.expectEqual(clock.Font.hires, a.clock.style.font); // wraps around
-    _ = a.apply(.{ .set_base = .ip }, 0);
-    a.action(.rotate_ccw, 0);
-    try std.testing.expectEqual(ip.Mode.big, a.ip.mode);
-    a.action(.rotate_cw, 0);
-    try std.testing.expectEqual(ip.Mode.lines, a.ip.mode);
+    _ = a.apply(.{ .set_base = .canvas }, 0);
+    a.action(.rotate_ccw, 0); // a canvas has no pages, so the dial leaves everything alone
+    try std.testing.expectEqual(clock.Font.hires, a.clock.style.font);
     try std.testing.expectEqual(@as(u8, 100), a.brightness); // the knob no longer touches brightness
 }
 
-test "the ip mode bumps only on change and transitions only while the ip scene shows" {
+test "the ip layout bumps only on change and never transitions: no base renders it" {
+    // the address is a page of the device menu now, so setting the layout restyles that page
+    // rather than the panel. the setting and all four renderings are unchanged.
     var a = fresh();
     try std.testing.expectEqual(Result{ .applied = 0 }, a.apply(.{ .set_ip_mode = .lines }, 0));
     try std.testing.expectEqual(Result{ .applied = 1 }, a.apply(.{ .set_ip_mode = .big }, 0));
-    try std.testing.expect(a.takeTransition() == null); // art is showing
-    _ = a.apply(.{ .set_base = .ip }, 0);
-    _ = a.takeTransition();
-    try std.testing.expectEqual(Result{ .applied = 3 }, a.apply(.{ .set_ip_mode = .mini }, 0));
-    try std.testing.expectEqual(transition.Effect.fade, a.takeTransition().?.effect);
+    try std.testing.expect(a.takeTransition() == null);
+    try std.testing.expectEqual(ip.Mode.big, a.ip.mode);
+    a.openMenu(0);
+    try std.testing.expectEqual(Result{ .applied = 2 }, a.apply(.{ .set_ip_mode = .mini }, 0));
+    try std.testing.expect(a.takeTransition() == null); // still no transition, but the menu redraws
+    try std.testing.expect(a.takeDirty());
     try std.testing.expectEqual(ip.Mode.mini, a.ip.mode);
 }
 
@@ -446,18 +465,20 @@ test "brightness and reseed commands" {
 
 test "ip and time updates redraw without changing the revision" {
     var a = fresh();
-    _ = a.apply(.{ .set_base = .ip }, 0);
+    a.openMenu(0); // the address lives on the menu's own page now
+    a.menu_state.?.item = .ip;
     _ = a.takeDirty();
     var rgb: geometry.Rgb = undefined;
     a.render(0, &rgb);
     var expected = geometry.black_rgb;
     font.blit(&expected, 11, 4, "no ip", white);
+    pages.draw(&expected, menu.count, @intFromEnum(menu.Item.ip), pages.alphaAt(0));
     try std.testing.expectEqualSlices(u8, &expected, &rgb);
-    try std.testing.expectEqual(Result{ .applied = 1 }, a.apply(.{ .ip_changed = .{ 10, 0, 0, 5 } }, 0));
+    try std.testing.expectEqual(Result{ .applied = 0 }, a.apply(.{ .ip_changed = .{ 10, 0, 0, 5 } }, 0));
     try std.testing.expect(a.takeDirty());
-    try std.testing.expectEqual(Result{ .applied = 1 }, a.apply(.{ .ip_changed = .{ 10, 0, 0, 5 } }, 0));
+    try std.testing.expectEqual(Result{ .applied = 0 }, a.apply(.{ .ip_changed = .{ 10, 0, 0, 5 } }, 0));
     try std.testing.expect(!a.takeDirty());
-    try std.testing.expectEqual(Result{ .applied = 1 }, a.apply(.time_corrected, 0));
+    try std.testing.expectEqual(Result{ .applied = 0 }, a.apply(.time_corrected, 0));
     try std.testing.expect(a.takeDirty());
 }
 
@@ -471,22 +492,15 @@ fn cycle(comptime E: type, v: E, forward: bool) E {
 }
 const arming_wait_ns: u64 = 2 * s_ns;
 
+/// the base scenes, numbered in the order they sit across the panel, which is the order of the
+/// buttons that select them: left the clock, middle the art, right the canvas. that the numbering
+/// and the layout are the same thing is deliberate — they used to differ, and reading one as the
+/// other sent every clock/art slide the wrong way. the numbers reach the settings file by name and
+/// the ipc only between binaries deployed together, so this order is ours to choose.
 pub const Base = enum(u8) {
-    art = 0,
-    clock = 1,
-    ip = 2,
-
-    /// where the scene sits across the panel, left to right, which is the order of the buttons
-    /// that select it: left is the clock, middle is art, right is ip. the enum's own numbering is
-    /// the settings and ipc encoding and is not a layout: reading it as one made a base change
-    /// slide the wrong way whenever the clock and art were the two involved.
-    pub fn position(self: Base) u8 {
-        return switch (self) {
-            .clock => 0,
-            .art => 1,
-            .ip => 2,
-        };
-    }
+    clock = 0,
+    art = 1,
+    canvas = 2,
 };
 
 pub const Notify = struct { text: [128]u8, len: u8, colour: [3]u8, since_ns: u64, until_ns: u64, transition: transition.Spec };
@@ -496,7 +510,7 @@ pub const Overlay = union(enum) { none, notify: Notify, raw: Raw, stream_arming:
 
 /// what was showing when the running transition began. the renderer composites it as the
 /// effect's old layer, live: the art keeps stepping, the clock ticking, a notification scrolling.
-pub const Outgoing = struct { base: Base, generator: scene.Generator, overlay: Overlay, clock_style: clock.Style, ip_mode: ip.Mode };
+pub const Outgoing = struct { base: Base, generator: scene.Generator, overlay: Overlay, clock_style: clock.Style };
 
 pub const Command = union(enum) {
     set_base: Base,
@@ -538,7 +552,10 @@ pub const Arbiter = struct {
     last_tick_ns: u64 = 0,
     art: scene.Art,
     clock: clock.State,
+    /// the ip address: no longer a base scene, but the device menu has a page for it and the
+    /// layout is still a setting, so the state and its four renderings stay here
     ip: ip.State = .{},
+    canvas: canvas.State = .{},
     /// the settings menu, drawn over everything and taking every control while it is open
     menu_state: ?menu.Menu = null,
     /// what the menu wants the supervisor to do; the renderer takes it and sends it up
@@ -575,7 +592,7 @@ pub const Arbiter = struct {
     }
 
     fn capture(self: *const Arbiter) Outgoing {
-        return .{ .base = self.base, .generator = self.art.generator, .overlay = self.overlay, .clock_style = self.clock.style, .ip_mode = self.ip.mode };
+        return .{ .base = self.base, .generator = self.art.generator, .overlay = self.overlay, .clock_style = self.clock.style };
     }
 
     /// the renderer finished (or cut short) the transition: the old layer is no longer needed
@@ -593,7 +610,7 @@ pub const Arbiter = struct {
                 switch (o.base) {
                     .art => self.art.renderGenerator(o.generator, rgb),
                     .clock => self.clock.renderWith(o.clock_style, wall_ns, rgb),
-                    .ip => self.ip.renderWith(o.ip_mode, self.last_tick_ns, rgb),
+                    .canvas => self.canvas.render(self.last_tick_ns, rgb),
                 }
                 // the same dots as the incoming layer, so a cross-fade leaves them crisp instead
                 // of diluting them into the scene underneath
@@ -628,7 +645,7 @@ pub const Arbiter = struct {
                 if (b != self.base) {
                     // between the base scenes the default is a slide that follows where their
                     // buttons sit: a scene further right comes in from the right, like pages
-                    const forward = b.position() > self.base.position();
+                    const forward = @intFromEnum(b) > @intFromEnum(self.base);
                     self.pending = spec orelse .{ .effect = .slide, .direction = if (forward) .left else .right, .duration_ns = self.default_transition.duration_ns };
                 } else if (self.overlay != .none) self.mark(spec);
                 self.base = b;
@@ -666,7 +683,7 @@ pub const Arbiter = struct {
             },
             .set_ip_mode => |m| {
                 if (!self.ip.setMode(m)) return .{ .applied = self.revision };
-                if (self.base == .ip and self.overlay == .none) self.mark(spec);
+                if (self.menuOpen()) self.dirty = true; // the menu's ip page is what shows it now
                 return .{ .applied = self.bump() };
             },
             .raw => |r| {
@@ -705,14 +722,14 @@ pub const Arbiter = struct {
         switch (a) {
             .left => _ = self.apply(.{ .set_base = .clock }, now_ns),
             .middle => _ = self.apply(.{ .set_base = .art }, now_ns),
-            .right => _ = self.apply(.{ .set_base = .ip }, now_ns),
-            // the knob pages through the current scene: generators in art, faces in the clock,
-            // layouts in ip
+            .right => _ = self.apply(.{ .set_base = .canvas }, now_ns),
+            // the knob pages through the current scene: generators in art, faces in the clock. a
+            // canvas is whatever was pushed to it and has no pages of its own.
             .rotate_cw, .rotate_ccw => {
                 switch (self.base) {
                     .art => _ = self.apply(.{ .select_generator = self.art.neighbour(a == .rotate_cw) }, now_ns),
                     .clock => _ = self.apply(.{ .set_clock_style = .{ .font = cycle(clock.Font, self.clock.style.font, a == .rotate_cw) } }, now_ns),
-                    .ip => _ = self.apply(.{ .set_ip_mode = cycle(ip.Mode, self.ip.mode, a == .rotate_cw) }, now_ns),
+                    .canvas => return,
                 }
                 self.pages_at = now_ns;
                 self.dirty = true;
@@ -728,7 +745,7 @@ pub const Arbiter = struct {
         return switch (self.base) {
             .art => .{ .count = @typeInfo(scene.Generator).@"enum".fields.len, .index = @intFromEnum(self.art.generator) },
             .clock => .{ .count = @typeInfo(clock.Font).@"enum".fields.len, .index = @intFromEnum(self.clock.style.font) },
-            .ip => .{ .count = @typeInfo(ip.Mode).@"enum".fields.len, .index = @intFromEnum(self.ip.mode) },
+            .canvas => .{ .count = 0, .index = 0 },
         };
     }
 
@@ -743,7 +760,7 @@ pub const Arbiter = struct {
         return switch (self.base) {
             .art => self.art.params(),
             .clock => &clock.params,
-            .ip => &ip.params,
+            .canvas => &canvas.params,
         };
     }
 
@@ -751,7 +768,7 @@ pub const Arbiter = struct {
         return switch (self.base) {
             .art => self.art.getParam(index),
             .clock => clock.getParam(self.clock.style, index),
-            .ip => self.ip.getParam(index),
+            .canvas => self.canvas.getParam(index),
         };
     }
 
@@ -772,7 +789,7 @@ pub const Arbiter = struct {
         switch (self.base) {
             .art => self.art.setParam(index, value),
             .clock => clock.setParam(&self.clock.style, index, value),
-            .ip => self.ip.setParam(index, value),
+            .canvas => self.canvas.setParam(index, value),
         }
         self.dirty = true;
     }
@@ -944,7 +961,7 @@ pub const Arbiter = struct {
         switch (self.base) {
             .art => self.art.render(rgb),
             .clock => self.clock.render(wall_ns, rgb),
-            .ip => self.ip.render(self.last_tick_ns, rgb),
+            .canvas => self.canvas.render(self.last_tick_ns, rgb),
         }
     }
 
@@ -987,7 +1004,7 @@ pub const Arbiter = struct {
             .stream_arming, .none => switch (self.base) {
                 .art => self.art.cadence(),
                 .clock => self.clock.cadence(wall_ns),
-                .ip => self.ip.cadence(),
+                .canvas => self.canvas.cadence(),
             },
         };
     }

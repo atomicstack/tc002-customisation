@@ -280,7 +280,7 @@ usage: tc002d [options]
   --knob PATH         rotary evdev node (/dev/input/event68)
   --keymap L,M,R,K    keycodes for left, middle, right, knob (108,105,106,103)
   --tz RULE           posix tz rule for the clock (UTC0)
-  --base art|clock|ip initial base scene (art)
+  --base clock|art|canvas  initial base scene (clock)
   --generator N       initial art generator index (0)
   --seed N            art seed, 0 = from the clock (0)
   --brightness N      1..100 (100)
@@ -304,7 +304,7 @@ the visible output is one **base** scene plus at most one temporary
 |------|---------------|----------------|
 | `art` | a generator: `popsquares` (the same cell simulation as [`led/`](LED-SPI.md#led-native-popsquares-at-60-fps)) or `plasma` (integer sum-of-sines) | continuous, 60 hz |
 | `clock` | local time from a posix tz rule (`AEST-10AEDT,M10.1.0,M4.1.0/3` style, with `Mm.w.d` transitions) or an iana zone name, in one of five fonts and a solid or gradient colour; see [clock styles](#clock-styles) and [time zones](#time-zones) | once per wall-second boundary |
-| `ip` | the ipv4 address in one of four layouts (`ip_mode`, see [ip layouts](#ip-layouts)), or `no ip` | on change only; one step per 33 ms while a layout scrolls |
+| `canvas` | a document of drawing primitives pushed by an integration, or a dim `canvas` when nothing has been pushed | idle, unless an element declares an animation |
 
 | overlay | bounds | behaviour |
 |---------|--------|-----------|
@@ -325,9 +325,9 @@ art stepping, no transfers, no cpu); on fades back in. scene selection,
 notifications and brightness keep applying while the panel is dark, so it
 shows the current state when it comes back. every visible change of scene
 runs a [transition](#transitions), 500 ms by default: a slide between the
-base scenes, following where their buttons sit rather than the enum's own
-numbering (left to right the panel reads clock, art, ip, so a scene further
-right comes in from the right, like pages), a cross-fade when the generator,
+base scenes, following where their buttons sit — left to right the panel reads
+clock, art, canvas, which is also the enum's own numbering, so a scene further
+right comes in from the right, like pages, a cross-fade when the generator,
 a notification (start or end)
 or the showing clock's style changes; raw frames, reseeds and brightness
 switch at once. both durations are renderer options; 0 disables.
@@ -459,11 +459,17 @@ the retained `state` report the effective style under `clock`.
 
 ### ip layouts
 
-the ip scene has four layouts, chosen by the `ip_mode` setting (durable,
-admin over `PATCH /config`, applied at once) or transiently by `PUT /scene`
-and `cmd/scene` with `{"base":"ip","ip":{"mode":...}}`, exactly like a
-transient clock style; `/status` and `/config` report `ip_mode`, `/scenes`
-lists the modes under `ip.modes`:
+the address is a **page of the device menu**, not a base scene: there are three
+buttons and the canvas took the third. it keeps everything it had — the same
+full-panel renderer and all four layouts — and the `ip` item draws it instead
+of the menu's usual name-over-value, because `big` and `scroll` need the whole
+height. turning the dial on that item pages the layouts.
+
+the layout is the `ip_mode` setting (durable, admin over `PATCH /config`,
+applied at once); `/status` and `/config` report it and `/scenes` lists the
+four under `ip.modes`, which is fed from the enum and so is independent of the
+base list. there is no transient form any more: `{"base":"ip"}` on `PUT /scene`
+is `invalid_base`.
 
 | mode | layout |
 |---|---|
@@ -472,8 +478,8 @@ lists the modes under `ip.modes`:
 | `scroll` | one line in the 5×7 font, centred when it fits (up to 8 characters) and otherwise scrolling in from the right one pixel per 33 ms |
 | `big` | one line of 10×14 digits, scrolling |
 
-a layout change while the ip scene is showing runs a transition like a scene
-change.
+a layout change redraws the menu page rather than running a transition: no base
+renders the address now.
 
 ### ntfy
 
@@ -539,14 +545,14 @@ does not know is rejected with `400 rejected`.
 
 ### physical controls
 
-| control | in `art` | in `clock` / `ip` |
-|---------|----------|-------------------|
-| left button (release) | select `clock` | select `clock` |
-| middle button (release) | select `art` | select `art` |
-| right button (release) | select `ip` | select `ip` |
-| knob rotate | next / previous generator | next / previous clock face in the clock; next / previous layout in ip |
-| knob short press | the showing scene's own settings | the showing scene's own settings |
-| knob long press (700 ms) | the [device menu](#the-settings-menu) | the device menu |
+| control | in `art` | in `clock` | in `canvas` |
+|---------|----------|------------|-------------|
+| left button (release) | select `clock` | select `clock` | select `clock` |
+| middle button (release) | select `art` | select `art` | select `art` |
+| right button (release) | select `canvas` | select `canvas` | select `canvas` |
+| knob rotate | next / previous generator | next / previous clock face | nothing: a canvas is what was pushed to it and has no pages |
+| knob short press | the showing scene's own settings | the showing scene's own settings | the showing scene's own settings |
+| knob long press (700 ms) | the [device menu](#the-settings-menu) | the device menu | the device menu |
 
 while the menu is open every control belongs to it; the table above applies
 only when it is closed.
@@ -554,7 +560,7 @@ only when it is closed.
 **the page indicator.** wherever the dial pages something, turning it raises a
 row of dots along the bottom: one per page, the one you are on solid and the
 rest pulled back towards the background. it covers the art generators, the
-clock faces, the ip layouts and the menu's own items. it is deliberately
+clock faces and the menu's own items. it is deliberately
 temporary, because a row left up permanently is a row of a 52x16 panel given
 away: it fades in over 150 ms, holds for 2.5 s and fades out over 600 ms.
 
@@ -646,8 +652,7 @@ declares rather than zeros: the cube starts blue at 100 per cent zoom, and an
 all-zero set is unreachable by editing (speed stops at 1, zoom at 40, a pop at
 250 ms), so it is a safe marker for "never set".
 
-the clock and the ip scene are fixed parts of the runtime and keep named
-settings; a **generator is pluggable**, so its parameters live in generic slots
+the clock is a fixed part of the runtime and keeps named settings; a **generator is pluggable**, so its parameters live in generic slots
 (`generator_params`, eight `u32` each) which the supervisor replays to the
 renderer when it starts. `GET /scenes` carries every table with its kinds,
 ranges and choices, which is the contract the console builds its forms from:
@@ -680,13 +685,14 @@ the current item lit.
 | item | what it does | persists |
 |---|---|---|
 | `brightness` | brightness in ten steps, 10 to 100 | yes |
+| `ip` | the ipv4 address, drawn full-panel in the current [layout](#ip-layouts); the dial pages the four | yes, as `ip_mode` |
 | `night` | the [night brightness schedule](#the-night-brightness-schedule) on or off; reads `no place` when it is on but the device has no location | yes |
 | `night level` | the night end of the ramp, in fives down to 5 and then 1 | yes |
 | `display off` | turns the display off and closes the menu | no, the panel comes back on a restart |
 | `new seed` | reseeds the art at once | no, a seed is not a setting |
 | `mqtt` | the broker connection on or off | yes |
 | `ntfy` | the subscriber on or off | yes |
-| `info` | the address, wifi, battery, time sync and uptime | read only |
+| `info` | wifi, battery, time sync and uptime | read only |
 | `reboot` | asks first, defaulting to no | n/a |
 | `exit` | closes the menu | n/a |
 
@@ -814,7 +820,7 @@ api is for programs, not pages. `allowed_origins` can only be set by editing
 |--------|------|-------|------|-------|
 | `GET` | `/status` | control | | the [status document](#the-status-document) |
 | `GET` | `/scenes` | control | | the static catalogue: bases, generators, notification and frame bounds |
-| `PUT` | `/scene` | control | `{"base":"art\|clock\|ip","generator":"popsquares\|plasma"?,"seed":u32?,"clock":{"font","colour_mode","colour","colour2","gradient","spread"}?,"request_id":hex,"epoch":u32?}` | `{"status":"applied","revision":n,"epoch":n,"request_id":…}` |
+| `PUT` | `/scene` | control | `{"base":"clock\|art\|canvas","generator":"popsquares\|plasma\|cube"?,"seed":u32?,"clock":{"font","colour_mode","colour","colour2","gradient","spread"}?,"request_id":hex,"epoch":u32?}` | `{"status":"applied","revision":n,"epoch":n,"request_id":…}` |
 | `POST` | `/action` | control | `{"action":"brightness\|reseed\|arm_stream","brightness":1..100?,"seed":u32?,"request_id":hex,"epoch":u32}` | as above |
 | `POST` | `/notify` | control | `{"text":"…","colour":"rrggbb"?,"duration_s":1..300?,"request_id":hex,"epoch":u32}` (`duration_s` optional, defaults to 5) | as above |
 | `POST` | `/frame?duration_s=&request_id=&epoch=` | control | `application/octet-stream`, exactly 2,496 bytes | as above |
@@ -888,8 +894,8 @@ sensor.
 |-------|-------|-------------|
 | `brightness` | 1–100 | applied to the renderer at once |
 | `clock_font`, `clock_colour_mode`, `clock_colour`, `clock_colour2`, `clock_gradient`, `clock_spread` | `classic\|mini\|segment\|big\|block\|hires`; `solid\|gradient`; `rrggbb`; `rrggbb`; `horizontal\|vertical\|diagonal`; 0–255 | applied at once; reported as a `clock` object in `/config` |
-| `ip_mode` | `lines\|mini\|scroll\|big` | the ip scene's layout, applied at once; see [ip layouts](#ip-layouts) |
-| `base` | `art`, `clock`, `ip` | applied at once |
+| `ip_mode` | `lines\|mini\|scroll\|big` | the layout of the device menu's ip page, applied at once; see [ip layouts](#ip-layouts) |
+| `base` | `clock`, `art`, `canvas` | applied at once |
 | `generator` | `popsquares`, `plasma`, `cube` | applied at once |
 | `timezone` | a posix tz rule (`AEST-10AEDT,M10.1.0,M4.1.0/3`) or an iana zone name (`Europe/Amsterdam`, case-insensitive), ≤ 64 characters; anything else is rejected | applied at once; a zone name follows that zone's current daylight-saving law |
 | `ntp.server`, `ntp.interval_s` (patch as `ntp_server`, `ntp_interval_s`) | dotted ipv4 or null; 300 or 600 | the sntp client restarts at once and syncs promptly; null disables it |
