@@ -1031,11 +1031,31 @@ admin=<64 hex>
 so driving the api by hand is `CONTROL=$(awk -F= '/^control=/{print $2}' tokens)`
 and then `-H "authorization: Bearer $CONTROL"`.
 
-**use the control token for automations.** an admin token also satisfies every
-control route, so picking the wrong line works and says nothing — and that line
-can rewrite settings, mqtt credentials and stored scripts. control is the one
-that belongs in a shortcut, a home-assistant config or anything you paste into
-a phone.
+**give an integration its own token rather than the built-in one.**
+`POST /tokens` issues a named token you can revoke on its own; the two built-in
+tokens cannot be revoked without invalidating every client at once. the built-in
+admin token also satisfies every control route, so pasting the wrong line into a
+shortcut works and says nothing, while being able to rewrite settings, mqtt
+credentials and stored scripts.
+
+there are three authorities, `read < control < admin`:
+
+| role | reaches |
+|---|---|
+| `read` | `GET` `/status` `/scenes` `/config` `/screen` `/events` `/canvas` `/icons` `/sprites` `/sounds` `/mqtt/status` |
+| `control` | all of the above, every mutating route, **and** `GET /logs` and `GET /berry/scripts` |
+| `admin` | everything, plus settings, mqtt, ntfy, canvas `PUT` and the token routes |
+
+`GET /logs` and `GET /berry/scripts` are deliberately above `read`: the log ring
+is a history of every command including other clients', and the script list is
+your own code. neither is observing a clock.
+
+a named token is never `admin`. one that could be would mint itself more, and
+revocation would stop meaning much.
+
+`last_used_s` lives in memory and resets when the runtime restarts, because netd
+is the process that sees a token used and persisting it would mean a flash write
+per request. `0` means "not since the last restart", not "never".
 
 a file written before this format was 64 raw bytes, control then admin. the
 supervisor still reads that, keeps the same tokens and rewrites the file as
@@ -1088,6 +1108,9 @@ api is for programs, not pages. `allowed_origins` can only be set by editing
 | `GET` | `/mqtt` | admin | | broker settings; `password_set` instead of the password |
 | `PUT` | `/mqtt` | admin | `{"enabled","host","port","username","password","client_id","prefix","tls"}`, any subset | the broker settings |
 | `GET` | `/mqtt/status` | control | | `{"enabled","connected","state","reconnect_delay_s","reconnects","last_error"}` |
+| `GET` | `/tokens` | admin | | `{"clients":[{"name","role","created_s","last_used_s"}],"max":n}`; **never a secret** |
+| `POST` | `/tokens` | admin | `{"name":"kitchen","role":"read\|control"}` | `{"name","role","token":"<64 hex>"}` — the only time a token is returned |
+| `DELETE` | `/tokens/{name}` | admin | | the remaining list. takes effect immediately, no restart |
 | `POST` | `/streams`, `PUT` `/streams/{id}/palette`, `DELETE` `/streams/{id}` | control | | `503 not_implemented` |
 
 json bodies must be `application/json`. `request_id` and `epoch` are both

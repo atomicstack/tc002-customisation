@@ -68,10 +68,14 @@ the stock app and its unauthenticated api are not, and the picture changes:
   labelled text (`control=<64 hex>` / `admin=<64 hex>`) so that choosing a
   token is deliberate: **an admin token satisfies control routes too**, so an
   integration handed the wrong one is over-privileged and nothing says so.
-  gap: there is no rotation or revocation. changing a token means deleting the
-  file and restarting, which invalidates every client at once, and there is no
-  per-client identity to revoke or audit — every api caller is the same
-  anonymous holder of one of two secrets.
+  **named client tokens** ([`RUNTIME.md`](RUNTIME.md)) give an integration its
+  own credential: issued by `POST /api/v1/tokens` under the admin token,
+  revocable one at a time by `DELETE /api/v1/tokens/{name}`, taking effect on the
+  next request with no restart. a client token is `read` or `control` and never
+  `admin`, so it cannot mint more of itself, and a command from one is named in
+  the log ring. the secret is returned exactly once, at issue.
+  gap: the two built-in tokens still have no rotation — changing either means
+  deleting the file and restarting, which invalidates every client at once.
 - **browser writes are refused.** a request carrying an `Origin` header is
   answered `403` unless the origin is on an explicit allow list (empty by
   default), and no cors headers are ever emitted. the destructive stock
