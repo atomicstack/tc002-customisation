@@ -141,6 +141,16 @@ input[type=color]{width:44px;height:28px;padding:2px;border:1px solid var(--line
 #toksecret{flex:1 1 100%;order:3;max-width:none;min-width:0;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px;letter-spacing:.02em}
 #toknew .field{flex-wrap:wrap;row-gap:8px}
 #toklist .field .lab{word-break:break-all}
+.cvsplit{display:flex;gap:18px;flex-wrap:wrap;align-items:flex-start}
+.cvlist{flex:1 1 300px;min-width:0}
+#cvelements{display:block}
+.cvprops{flex:1 1 320px;min-width:0}
+.cvrow{display:flex;align-items:center;gap:8px;padding:5px 0;border-bottom:1px solid var(--line);cursor:pointer}
+.cvrow.sel{background:var(--surface-2)}
+.cvrow .cvname{flex:1;font:12px var(--data);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.cvrow .cvkind{color:var(--muted);font:11px var(--data)}
+#cvform .field{align-items:center}
+#cvvalid.bad{color:var(--bad,#ff6b6b)}
 input[type=file]{font:12px var(--body);color:var(--muted);max-width:220px}
 .counter{font-family:var(--data);font-size:11px;color:var(--muted);margin-left:6px}
 .inline{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
@@ -256,6 +266,7 @@ input[type=file]{font:12px var(--body);color:var(--muted);max-width:220px}
   <nav class="tabbar" role="tablist" aria-label="console sections">
     <button type="button" role="tab" data-tab="scene" aria-selected="true">Scene</button>
     <button type="button" role="tab" data-tab="send" aria-selected="false">Send</button>
+    <button type="button" role="tab" data-tab="canvas" aria-selected="false">Canvas</button>
     <button type="button" role="tab" data-tab="device" aria-selected="false">Device</button>
     <button type="button" role="tab" data-tab="logs" aria-selected="false">Logs</button>
   </nav>
@@ -329,6 +340,30 @@ input[type=file]{font:12px var(--body);color:var(--muted);max-width:220px}
       </div>
     </section>
   </div>
+  <div class="tabpanel" data-panel="canvas" hidden>
+    <section class="card s12 wide" id="canvasCard">
+      <h2>Canvas <span id="cvstate" class="pill">empty</span></h2>
+      <div class="lockmsg">the proxy has no admin token: the canvas is read-only</div>
+      <div class="rows">
+        <div class="field"><span class="lab">Draft<span class="key" id="cvvalid">the runtime's own parser checks every edit</span></span>
+          <button class="btn" id="cvsend">Send to device</button>
+          <button class="btn ghost" id="cvload">Load from device</button>
+          <button class="btn ghost" id="cvclear">Clear draft</button></div>
+      </div>
+      <div class="cvsplit">
+        <div class="cvlist">
+          <div class="field"><span class="lab">Elements<span class="key" id="cvcount">0 of 24</span></span>
+            <select id="cvtype" aria-label="type of element to add"></select><button class="btn" id="cvadd">Add</button></div>
+          <div class="rows" id="cvelements"></div>
+        </div>
+        <div class="cvprops">
+          <div class="rows" id="cvform"></div>
+        </div>
+      </div>
+      <div class="actions"><span class="note">the preview above draws this draft with the runtime's own canvas renderer, and refuses what the device would refuse — nothing here is sent until you press send. animations start when the device installs the document, so a draft animates from the moment you edit it.</span></div>
+    </section>
+  </div>
+
   <div class="tabpanel" data-panel="device" hidden>
 <section class="card s12 wide" id="settingsCard">
       <h2>Settings <span class="pill warn">admin</span></h2>
@@ -782,6 +817,11 @@ function paint(rgb, brightness) {
 }
 function draw() {
   const nowMs = Date.now();
+  if (cvPreviewing) {
+    // the builder owns the preview while its tab is showing, and repaints on every edit
+    requestAnimationFrame(draw);
+    return;
+  }
   if (nowMs >= nextDrawAt) {
     if (!STATUS) {
       paint(S.black(), 100);
@@ -906,6 +946,13 @@ fillTransitionSelects();
 /* ---------- tabs ---------- */
 // the hero stays put; everything else is one panel at a time, so no area scrolls off
 function showTab(name) {
+  // the canvas tab borrows the preview to draw the draft; every other tab hands it back
+  const wasBuilding = cvPreviewing;
+  cvPreviewing = name === 'canvas';
+  if (cvPreviewing) cvRender();
+  // the draft left the shared arbiter on the canvas base with a document that is not the
+  // device's, so the replica has to be put back where the panel actually is
+  else if (wasBuilding && STATUS) { resyncFromState('left the canvas builder'); nextDrawAt = 0; }
   for (const b of document.querySelectorAll('.tabbar button')) b.setAttribute('aria-selected', String(b.dataset.tab === name));
   for (const p of document.querySelectorAll('.tabpanel')) p.hidden = p.dataset.panel !== name;
   try { localStorage.setItem('tc002tab-v2', name); } catch {}
@@ -1338,6 +1385,263 @@ $('mapply').addEventListener('click', async () => {
 });
 $('mcheck').addEventListener('click', mqttStatus);
 
+/* ---------- the canvas builder ----------
+   a draft document edited here and sent whole. every keystroke goes through the runtime's own
+   parser in the wasm, so the preview is what the panel would draw and a refusal quotes the
+   device's own code and message rather than a guess at the rule. nothing reaches the device until
+   Send. */
+
+// which fields belong to which element type. this mirrors `allowedField` in net/api.zig — it
+// decides what the form *offers*, not what is legal: the parser is the judge, and a field this
+// table gets wrong shows up as the runtime's own invalid_element_field rather than as a silently
+// wrong document. a catalogue route would remove the copy; see the coordination note.
+const CV_COMMON = ['id', 'at', 'size', 'tile', 'row', 'of', 'colour', 'animate'];
+const CV_FIELDS = {
+  text: ['text', 'font', 'align'],
+  rect: ['filled'],
+  line: ['to'],
+  circle: ['r', 'filled'],
+  pixel: [],
+  bar: ['value', 'background', 'vertical'],
+  sparkline: ['data', 'data_hex', 'style', 'min', 'max', 'threshold', 'over'],
+  icon: ['icon'],
+  sprite: ['sprite'],
+  tile: ['icon', 'sprite', 'label', 'value_text', 'accent'],
+};
+const CV_KINDS = Object.keys(CV_FIELDS);
+const CV_MOTIONS = ['none', 'hue', 'bounce', 'scramble', 'scroll', 'blink', 'pulse', 'typewriter', 'sweep'];
+const CV_FONTS = ['small', 'mini', 'block', 'big'];
+const CV_ALIGN = ['left', 'centre', 'right'];
+const CV_STYLE = ['line', 'bars', 'area'];
+let CV_ICONS = [];
+
+let cvDraft = { elements: [] };
+let cvSelected = 0;
+let cvMax = 24;
+
+const cvLabel = e => `${e.id ? e.id : '(no id)'}`;
+
+function cvRender() {
+  // the draft through the device's parser and renderer: what it draws, and what it would refuse
+  const r = S.renderCanvasDraft(cvDraft, Date.now());
+  cvFrame = r.rgb;
+  const valid = $('cvvalid');
+  if (r.ok) {
+    valid.classList.remove('bad');
+    valid.textContent = `${cvDraft.elements.length} element${cvDraft.elements.length === 1 ? '' : 's'} · the runtime accepts this`;
+  } else {
+    valid.classList.add('bad');
+    valid.textContent = `the runtime refuses this: ${r.reason}`;
+  }
+  $('cvstate').textContent = cvDraft.elements.length ? `${cvDraft.elements.length} of ${cvMax}` : 'empty';
+  $('cvcount').textContent = `${cvDraft.elements.length} of ${cvMax}`;
+  cvDrawPreview();
+}
+
+// the draft is drawn into the main preview canvas while this tab is showing, so there is one
+// picture of the panel rather than two competing ones
+let cvPreviewing = false;
+let cvFrame = null;
+function cvDrawPreview() {
+  if (!cvPreviewing || !cvFrame) return;
+  paint(cvFrame, STATUS ? STATUS.brightness : 100);
+  $('cap').textContent = `canvas draft · not sent · ${cvDraft.elements.length} element${cvDraft.elements.length === 1 ? '' : 's'}`;
+}
+
+function cvList() {
+  const box = $('cvelements');
+  box.innerHTML = '';
+  cvDraft.elements.forEach((e, i) => {
+    const row = document.createElement('div');
+    row.className = 'cvrow' + (i === cvSelected ? ' sel' : '');
+    const name = document.createElement('span');
+    name.className = 'cvname';
+    name.textContent = cvLabel(e);
+    const kind = document.createElement('span');
+    kind.className = 'cvkind';
+    kind.textContent = e.type;
+    const up = document.createElement('button'); up.className = 'btn ghost'; up.textContent = '↑';
+    const del = document.createElement('button'); del.className = 'btn ghost'; del.textContent = '✕';
+    row.addEventListener('click', ev => { if (ev.target === up || ev.target === del) return; cvSelected = i; cvList(); cvForm(); });
+    up.addEventListener('click', () => {
+      if (i === 0) return;
+      const [m] = cvDraft.elements.splice(i, 1);
+      cvDraft.elements.splice(i - 1, 0, m);
+      cvSelected = i - 1; cvList(); cvForm(); cvRender();
+    });
+    del.addEventListener('click', () => {
+      cvDraft.elements.splice(i, 1);
+      cvSelected = Math.max(0, Math.min(cvSelected, cvDraft.elements.length - 1));
+      cvList(); cvForm(); cvRender();
+    });
+    row.append(name, kind, up, del);
+    box.append(row);
+  });
+  if (!cvDraft.elements.length) {
+    const row = document.createElement('div');
+    row.className = 'actions';
+    row.innerHTML = '<span class="note">an empty document draws the word "canvas" on the panel, which is a state rather than a fault.</span>';
+    box.append(row);
+  }
+}
+
+function cvField(label, key, input) {
+  const f = document.createElement('div');
+  f.className = 'field';
+  // the form is built in javascript, so naming each control by its row is cheaper than minting an
+  // id for a `label for=`. an unnamed select reads as an anonymous box, which test_layout checks
+  if (!input.getAttribute('aria-label')) input.setAttribute('aria-label', label);
+  const l = document.createElement('label');
+  l.textContent = label;
+  const k = document.createElement('span');
+  k.className = 'key';
+  k.textContent = key;
+  l.append(k);
+  f.append(l, input);
+  return f;
+}
+
+function cvInput(el, name, value, oninput) {
+  const i = document.createElement('input');
+  i.type = 'text'; i.value = value == null ? '' : value; i.spellcheck = false;
+  i.addEventListener('input', () => oninput(i.value));
+  return i;
+}
+
+function cvSelect(options, value, onchange) {
+  const s = document.createElement('select');
+  for (const o of options) { const op = document.createElement('option'); op.value = o; op.textContent = o; s.append(op); }
+  s.value = value == null ? options[0] : value;
+  s.addEventListener('change', () => onchange(s.value));
+  return s;
+}
+
+const cvPair = v => Array.isArray(v) ? v.join(',') : '';
+function cvParsePair(text) {
+  const m = String(text).split(',').map(s => parseInt(s.trim(), 10));
+  return m.length === 2 && m.every(Number.isFinite) ? m : null;
+}
+
+function cvSet(e, key, value) {
+  if (value === '' || value == null) delete e[key]; else e[key] = value;
+  cvList(); cvRender();
+}
+
+function cvForm() {
+  const box = $('cvform');
+  box.innerHTML = '';
+  const e = cvDraft.elements[cvSelected];
+  if (!e) {
+    box.innerHTML = '<div class="actions"><span class="note">add an element, or pick one to edit it.</span></div>';
+    return;
+  }
+  box.append(cvField('Type', 'type', cvSelect(CV_KINDS, e.type, v => {
+    // keep only what the new type can carry, so a change of mind does not leave a refused field
+    const keep = new Set(['type', 'id', 'at', 'size', 'tile', 'row', 'of', 'colour', 'animate']);
+    for (const k of Object.keys(e)) if (!keep.has(k)) delete e[k];
+    e.type = v; cvList(); cvForm(); cvRender();
+  })));
+  const fields = CV_COMMON.concat(CV_FIELDS[e.type] || []);
+  for (const f of fields) {
+    if (f === 'animate') continue;
+    if (f === 'at' || f === 'size' || f === 'to') {
+      box.append(cvField(f, `${f} · x,y`, cvInput(e, f, cvPair(e[f]), v => {
+        const pair = cvParsePair(v);
+        if (v === '') { delete e[f]; cvList(); cvRender(); } else if (pair) cvSet(e, f, pair);
+      })));
+    } else if (f === 'font') {
+      box.append(cvField('font', 'small mini block big', cvSelect(['', ...CV_FONTS], e.font || '', v => cvSet(e, 'font', v || undefined))));
+    } else if (f === 'align') {
+      box.append(cvField('align', 'left centre right', cvSelect(['', ...CV_ALIGN], e.align || '', v => cvSet(e, 'align', v || undefined))));
+    } else if (f === 'style') {
+      box.append(cvField('style', 'line bars area', cvSelect(['', ...CV_STYLE], e.style || '', v => cvSet(e, 'style', v || undefined))));
+    } else if (f === 'icon') {
+      box.append(CV_ICONS.length
+        ? cvField('icon', `${CV_ICONS.length} built in`, cvSelect(['', ...CV_ICONS], e.icon || '', v => cvSet(e, 'icon', v || undefined)))
+        : cvField('icon', 'GET /icons is unavailable here \u2014 type a name', cvInput(e, 'icon', e.icon, v => cvSet(e, 'icon', v || undefined))));
+    } else if (f === 'filled' || f === 'vertical') {
+      const cb = document.createElement('input'); cb.type = 'checkbox'; cb.className = 'sw'; cb.checked = !!e[f];
+      cb.addEventListener('change', () => cvSet(e, f, cb.checked ? true : undefined));
+      box.append(cvField(f, f, cb));
+    } else {
+      const numeric = ['r', 'value', 'min', 'max', 'threshold', 'tile', 'row', 'of'].includes(f);
+      box.append(cvField(f, numeric ? `${f} · a number` : f, cvInput(e, f, e[f], v => {
+        if (v === '') return cvSet(e, f, undefined);
+        cvSet(e, f, numeric ? (Number.isFinite(+v) ? +v : v) : v);
+      })));
+    }
+  }
+  // the animation, which is a nested object
+  const a = e.animate || {};
+  box.append(cvField('motion', 'animate.kind', cvSelect(CV_MOTIONS, a.kind || 'none', v => {
+    if (v === 'none') delete e.animate; else e.animate = { ...a, kind: v, ms: a.ms || 1000 };
+    cvForm(); cvRender();
+  })));
+  if (e.animate) {
+    box.append(cvField('period', 'animate.ms', cvInput(e, 'ms', e.animate.ms, v => {
+      e.animate.ms = Number.isFinite(+v) ? +v : e.animate.ms; cvRender();
+    })));
+    box.append(cvField('phase', 'animate.phase · 0-100 of the period', cvInput(e, 'phase', e.animate.phase, v => {
+      if (v === '') delete e.animate.phase; else e.animate.phase = Number.isFinite(+v) ? +v : 0;
+      cvRender();
+    })));
+  }
+}
+
+function cvAdd() {
+  if (cvDraft.elements.length >= cvMax) return toast(`a document holds at most ${cvMax} elements`, true);
+  const type = $('cvtype').value;
+  const e = { type, id: `e${cvDraft.elements.length + 1}`, at: [1, 1], colour: 'ffffff' };
+  if (type === 'text') e.text = 'text';
+  if (type === 'bar') { e.size = [20, 3]; e.value = 50; }
+  if (type === 'rect') e.size = [10, 6];
+  if (type === 'circle') e.r = 4;
+  if (type === 'line') e.to = [20, 8];
+  if (type === 'icon') e.icon = CV_ICONS[0] || 'sun';
+  cvDraft.elements.push(e);
+  cvSelected = cvDraft.elements.length - 1;
+  cvList(); cvForm(); cvRender();
+}
+
+async function cvLoad() {
+  try {
+    const doc = await call('GET', 'canvas');
+    cvDraft = { elements: (doc.elements || []).map(({ age_ms, ...rest }) => rest) };
+    if (Number.isFinite(doc.max_elements)) cvMax = doc.max_elements;
+    cvSelected = 0; cvList(); cvForm(); cvRender();
+    toast(`loaded ${cvDraft.elements.length} element${cvDraft.elements.length === 1 ? '' : 's'} from the device`);
+  } catch (e) { toast(e.message, true); }
+}
+
+async function cvSend() {
+  // refuse locally first, with the runtime's own message: no point spending a round trip to be
+  // told the same thing by the same parser
+  const check = S.renderCanvasDraft(cvDraft, Date.now());
+  if (!check.ok) return toast(`not sent — ${check.reason}`, true);
+  try {
+    await call('PUT', 'canvas', { elements: cvDraft.elements });
+    toast(`sent ${cvDraft.elements.length} element${cvDraft.elements.length === 1 ? '' : 's'}`);
+    if (STATUS && STATUS.base !== 'canvas') toast('the panel is not showing the canvas: switch the base scene to see it', true);
+  } catch (e) { toast(e.message, true); }
+}
+
+function cvClear() { cvDraft = { elements: [] }; cvSelected = 0; cvList(); cvForm(); cvRender(); }
+
+async function cvIcons() {
+  try { CV_ICONS = (await call('GET', 'icons')).names || []; }
+  catch { CV_ICONS = []; }
+}
+
+function cvInit() {
+  fillSelect($('cvtype'), CV_KINDS, 'text');
+  cvList(); cvForm();
+}
+
+$('cvadd').addEventListener('click', cvAdd);
+$('cvload').addEventListener('click', cvLoad);
+$('cvsend').addEventListener('click', cvSend);
+$('cvclear').addEventListener('click', cvClear);
+
 /* ---------- client tokens (admin) ----------
    a named, revocable token for one integration. the secret is returned once by POST /tokens and
    by nothing else, so it is shown once and then dropped: never logged, never stored, never in a
@@ -1589,6 +1893,7 @@ async function loadAll() {
     await loadConfig();
     if (TOKENS.admin) { try { showMqtt(await call('GET', 'mqtt')); } catch (e) { toast(e.message, true); } }
     if (TOKENS.admin) { try { showNtfy(await call('GET', 'ntfy')); } catch (e) { toast(e.message, true); } }
+    cvIcons().then(cvInit);
     if (TOKENS.admin) loadClientTokens();   // not awaited: the panel does not need it to be usable
     await mqttStatus();
     setConn('on', 'connected');

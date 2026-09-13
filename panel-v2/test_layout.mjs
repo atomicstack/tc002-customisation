@@ -240,6 +240,48 @@ test('a client row offers rotate and revoke, and both confirm in place',
                    'arming names the client, so the wrong row cannot be hit blind');
 });
 
+test('the canvas builder validates a draft with the runtime\'s own parser',
+  { skip: chromeAvailable ? false : 'google chrome is not installed' }, async () => {
+  // the point of the builder: the thing that says yes or no is the device's parser compiled to
+  // wasm, so a refusal quotes the runtime's own code and message instead of a guess at the rule
+  const verdicts = await cdp.eval(`
+    (() => {
+      const was = cvDraft;
+      const check = doc => { cvDraft = doc; cvRender(); return document.getElementById('cvvalid').textContent; };
+      const out = {
+        empty: check({ elements: [] }),
+        good: check({ elements: [{ type: 'text', id: 't', at: [1, 4], text: 'hi', colour: 'ffffff' }] }),
+        badField: check({ elements: [{ type: 'icon', id: 'i', at: [0, 0], name: 'heart' }] }),
+        badType: check({ elements: [{ type: 'teleport', id: 'x', at: [0, 0] }] }),
+      };
+      cvDraft = was; cvRender();
+      return out;
+    })()
+  `);
+  assert.match(verdicts.empty, /accepts this/);
+  assert.match(verdicts.good, /1 element . the runtime accepts this/);
+  assert.match(verdicts.badField, /refuses this: unknown_field/, 'the runtime\'s own code, not ours');
+  assert.match(verdicts.badType, /refuses this: invalid_element_type/);
+});
+
+test('the canvas builder draws the draft, not the device',
+  { skip: chromeAvailable ? false : 'google chrome is not installed' }, async () => {
+  const frames = await cdp.eval(`
+    (() => {
+      const was = cvDraft;
+      const lit = doc => { cvDraft = doc; cvRender(); return cvFrame.filter(v => v).length; };
+      const out = {
+        empty: lit({ elements: [] }),
+        drawn: lit({ elements: [{ type: 'rect', id: 'r', at: [0, 0], size: [40, 12], colour: 'ffffff', filled: true }] }),
+      };
+      cvDraft = was; cvRender();
+      return out;
+    })()
+  `);
+  // an empty document draws the hint word; a filled rect covers far more of the panel
+  assert.ok(frames.drawn > frames.empty * 2, `a filled rect lit ${frames.drawn}, the empty hint ${frames.empty}`);
+});
+
 test('the now card fills each metric bar to the fraction the device reports', { skip: chromeAvailable ? false : 'google chrome is not installed' }, async () => {
   await cdp.setWidth(1200);
   const st = await cdp.eval(`fetch('/api/127.0.0.1:${mockPort}/v1/status', { cache: 'no-store' }).then(r => r.json())`);

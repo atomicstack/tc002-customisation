@@ -90,6 +90,8 @@
   }
 
   function frameBytes() { return bytes(E.framePtr(), E.frameLen()); }
+  /* a copy of whatever was last rendered, for a caller that drew without composing */
+  const frame = () => frameBytes().slice();
 
   /* ---------- /status -> arbiter commands ---------- */
 
@@ -336,6 +338,19 @@
     return pushed;
   }
 
+  /* render a draft canvas without touching what the replica is following. the arbiter is shared,
+     so this leaves it on the canvas base with the draft installed — the caller resyncs when it is
+     done. installing alone renders nothing: the frame buffer only changes when the arbiter ticks. */
+  function renderCanvasDraft(doc, nowMs) {
+    const e = need();
+    const at = nowMs || Date.now();
+    e.init(Math.max(0, BASES.indexOf('canvas')), 0, 1);
+    for (const k of Object.keys(applied)) applied[k] = null;
+    const r = installCanvas(doc, at);
+    e.frame(at, at);
+    return { ...r, rgb: frameBytes().slice() };
+  }
+
   /* ---------- trigger replication ----------
      the device streams every statement it applies on GET /events, whoever issued it — the api, a
      button, the knob, mqtt. the replica applies the same statement and lands on the same revision.
@@ -444,7 +459,7 @@
     WIDTH, HEIGHT, PIXELS, RGB_BYTES, WHITE, black, pixelOffset,
     ready, loaded, buildLut, tzParse, TZ_UTC, Art, compose, sceneParams, renderIpLayout,
     agreement, anchorClock, deviceNow, installCanvas, clearCanvas, canvasEmpty, canvasAnimated,
-    applyStatement, setRevision, applyGeneratorParams,
+    applyStatement, setRevision, applyGeneratorParams, frame, renderCanvasDraft,
     canvasBackdated,
     get lastCanvasResult() { return lastCanvasResult; },
     get clockSkewMs() { return clockSkewMs; },
