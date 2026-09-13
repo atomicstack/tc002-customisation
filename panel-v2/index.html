@@ -1425,6 +1425,11 @@ const CV_MOTIONS = ['none', 'hue', 'bounce', 'scramble', 'scroll', 'blink', 'pul
 const CV_MOTION_MS = { hue: 8000, scroll: 33 };
 // these run once and then hold, so they are the ones worth a replay button
 const CV_ARRIVALS = new Set(['scramble', 'typewriter', 'sweep']);
+// what `animate.amount` means, for the two motions that use it, with the runtime's own fallback
+const CV_AMOUNT = {
+  bounce: { label: 'travel', key: 'animate.amount \u00b7 leds, 2 if unset' },
+  blink: { label: 'duty', key: 'animate.amount \u00b7 % of the period lit, 50 if unset' },
+};
 const CV_FONTS = ['small', 'mini', 'block', 'big'];
 const CV_ALIGN = ['left', 'centre', 'right'];
 const CV_STYLE = ['line', 'bars', 'area'];
@@ -1652,7 +1657,12 @@ function cvForm() {
   const a = e.animate || {};
   // touching any of these restarts the draft's clock, so an arrival plays where you can see it
   box.append(cvField('motion', 'animate.kind', cvSelect(CV_MOTIONS, a.kind || 'none', v => {
-    if (v === 'none') delete e.animate; else e.animate = { ...a, kind: v, ms: a.ms || CV_MOTION_MS[v] || 1000 };
+    if (v === 'none') { delete e.animate; cvForm(); return cvReplay(); }
+    e.animate = { ...a, kind: v, ms: a.ms || CV_MOTION_MS[v] || 1000 };
+    // amount and axis belong to the motion that was chosen, not to the element: leaving a
+    // bounce's travel on a hue sends the device a field it has no use for
+    if (!CV_AMOUNT[v]) delete e.animate.amount;
+    if (v !== 'bounce') delete e.animate.axis;
     cvForm(); cvReplay();
   })));
   if (e.animate) {
@@ -1663,6 +1673,22 @@ function cvForm() {
       if (v === '') delete e.animate.phase; else e.animate.phase = Number.isFinite(+v) ? +v : 0;
       cvReplay();
     })));
+    // `amount` is two different fields wearing one name: leds of travel for a bounce, percent of
+    // the period lit for a blink. the other seven motions ignore it, so they are not offered it.
+    const amount = CV_AMOUNT[e.animate.kind];
+    if (amount) {
+      box.append(cvField(amount.label, amount.key, cvInput(e, 'amount', e.animate.amount, v => {
+        if (v === '') delete e.animate.amount;
+        else e.animate.amount = /^\d+$/.test(v.trim()) ? Number(v.trim()) : v;
+        cvReplay();
+      })));
+    }
+    if (e.animate.kind === 'bounce') {
+      box.append(cvField('axis', 'animate.axis \u00b7 x or y, y if unset', cvSelect(['', 'y', 'x'], e.animate.axis || '', v => {
+        if (v === '') delete e.animate.axis; else e.animate.axis = v;
+        cvReplay();
+      })));
+    }
     if (CV_ARRIVALS.has(e.animate.kind)) {
       const b = document.createElement('button');
       b.className = 'btn ghost'; b.textContent = 'replay';

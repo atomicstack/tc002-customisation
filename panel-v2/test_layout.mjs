@@ -482,6 +482,91 @@ test("a sparkline's samples are numbers, not the text that was typed",
   assert.equal(out.descents, 0, 'a rising series draws a staircase, with no step down anywhere');
 });
 
+test('a bounce can be given its travel and its axis, and a blink its duty',
+  { skip: chromeAvailable ? false : 'google chrome is not installed' }, async () => {
+  // `amount` and `axis` had no control at all, so a bounce could only ever have the runtime's
+  // default of two leds along y. `amount` is not one field but two: leds of travel for a bounce,
+  // percent of the period lit for a blink, and nothing at all for the other seven motions.
+  const out = await cdp.eval(`
+    (() => {
+      showTab('canvas');
+      const find = label => [...document.querySelectorAll('#cvform input, #cvform select')]
+        .find(i => i.getAttribute('aria-label') === label);
+      const set = (label, value, ev) => { const c = find(label); if (!c) return false;
+        c.value = value; c.dispatchEvent(new Event(ev, { bubbles: true })); return true; };
+      const build = anim => {
+        cvDraft = { elements: [{ type: 'text', id: 'b', at: [20, 5], text: 'hi',
+                                 colour: 'ffffff', animate: anim }] };
+        cvSelected = 0; cvList(); cvForm(); cvRender();
+      };
+      // how far the element wanders over one period, asked of the renderer rather than guessed
+      const wander = () => {
+        const at = Date.now();
+        S.renderCanvasDraft({ elements: cvDraft.elements }, at);
+        const xs = [], ys = [];
+        for (let k = 0; k <= 1000; k += 40) {
+          S.stepCanvasDraft(at + k);
+          const b = S.canvasBounds(at + k)[0];
+          if (b) { xs.push(b.x0); ys.push(b.y0); }
+        }
+        return { dx: Math.max(...xs) - Math.min(...xs), dy: Math.max(...ys) - Math.min(...ys) };
+      };
+      const res = {};
+
+      build({ kind: 'bounce', ms: 1000 });
+      res.hasTravel = !!find('travel');
+      res.hasAxis = !!find('axis');
+      if (!res.hasTravel || !res.hasAxis) return res;
+      set('travel', '8', 'input');
+      res.travelWrote = cvDraft.elements[0].animate.amount;
+      res.alongY = wander();
+      set('axis', 'x', 'change');
+      res.axisWrote = cvDraft.elements[0].animate.axis;
+      res.alongX = wander();
+
+      // amount is the lit duty for a blink, so the control has to be named for that instead
+      build({ kind: 'blink', ms: 400 });
+      res.blinkTravel = !!find('travel');
+      res.blinkDuty = !!find('duty');
+      res.blinkAxis = !!find('axis');
+      // the fraction of one period the element is lit for, which is what a duty is
+      const litFraction = () => {
+        const at = Date.now();
+        S.renderCanvasDraft({ elements: cvDraft.elements }, at);
+        let lit = 0, n = 0;
+        for (let k = 0; k < 400; k += 10) {
+          const rgb = S.stepCanvasDraft(at + k);
+          if (rgb.some(v => v)) lit++;
+          n++;
+        }
+        return lit / n;
+      };
+      set('duty', '10', 'input');
+      res.dutyLow = litFraction();
+      set('duty', '90', 'input');
+      res.dutyHigh = litFraction();
+      // and it means nothing at all for a hue
+      build({ kind: 'hue', ms: 800 });
+      res.hueAmount = !!find('travel') || !!find('duty') || !!find('axis');
+
+      cvDraft = { elements: [] }; cvSelected = 0; cvEpoch = 0; cvList(); cvForm(); cvRender();
+      showTab('scene');
+      return res;
+    })()
+  `);
+  assert.ok(out.hasTravel, 'a bounce offers a travel');
+  assert.ok(out.hasAxis, 'a bounce offers an axis');
+  assert.equal(out.travelWrote, 8, 'the travel reaches the document as a number');
+  assert.equal(out.axisWrote, 'x', "the axis reaches the document as the runtime's own x/y");
+  assert.ok(out.alongY.dy >= 6 && out.alongY.dx === 0, `eight leds of travel along y moved it ${JSON.stringify(out.alongY)}`);
+  assert.ok(out.alongX.dx >= 6 && out.alongX.dy === 0, `the same travel along x moved it ${JSON.stringify(out.alongX)}`);
+  assert.ok(out.blinkDuty, "a blink's amount is offered as a duty");
+  assert.ok(out.dutyLow < 0.2, `a duty of 10 is lit a tenth of the period, was ${out.dutyLow}`);
+  assert.ok(out.dutyHigh > 0.8, `a duty of 90 is lit nine tenths of it, was ${out.dutyHigh}`);
+  assert.ok(!out.blinkTravel && !out.blinkAxis, 'and a blink has neither travel nor axis');
+  assert.ok(!out.hueAmount, 'a hue uses neither, so it is offered neither');
+});
+
 test('the now card fills each metric bar to the fraction the device reports', { skip: chromeAvailable ? false : 'google chrome is not installed' }, async () => {
   await cdp.setWidth(1200);
   const st = await cdp.eval(`fetch('/api/127.0.0.1:${mockPort}/v1/status', { cache: 'no-store' }).then(r => r.json())`);
