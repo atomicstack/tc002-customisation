@@ -6,6 +6,7 @@
 //!
 //!   tc002-soundprobe [--rate N] [--channels N] [--send-frame]
 const std = @import("std");
+const linux = std.os.linux;
 const sys = @import("sys/linux.zig");
 const log = @import("sys/log.zig");
 const mi = @import("sound/mi.zig");
@@ -34,7 +35,7 @@ fn step(name: []const u8, r: anyerror!void) bool {
     }
 }
 
-fn run(rate: u32, channels: u32, try_frame: bool) !u8 {
+fn run(rate: u32, channels: u32, try_frame: bool, try_mmap: bool) !u8 {
     log.info("opening the audio devices", .{});
     const sys_fd = sys.open(mi.sys_path, .{ .ACCMODE = .RDWR, .CLOEXEC = true }, 0) catch |e| {
         log.err("{s}: {s}", .{ mi.sys_path, @errorName(e) });
@@ -75,6 +76,25 @@ fn run(rate: u32, channels: u32, try_frame: bool) !u8 {
             std.mem.readInt(u32, stat[12..16], .little),
             std.mem.readInt(u32, stat[16..20], .little),
         });
+    }
+
+    if (try_mmap) {
+        // does the driver simply hand out its buffer? if mmap on either fd works, there is nothing
+        // left to decode: write pcm there and tell the channel to drain it.
+        log.info("trying mmap on the audio fds", .{});
+        for ([_]struct { name: []const u8, fd: sys.Fd }{
+            .{ .name = "mi_ao", .fd = ao_fd },
+            .{ .name = "mi_sys", .fd = sys_fd },
+        }) |t| {
+            const rc = linux.mmap(null, 65536, linux.PROT{ .READ = true, .WRITE = true }, .{ .TYPE = .SHARED }, t.fd, 0);
+            const signed: isize = @bitCast(rc);
+            if (signed < 0 and signed > -4096) {
+                log.warn("  mmap({s}): errno {d}", .{ t.name, -signed });
+            } else {
+                log.info("  mmap({s}): ok, 64 kb at 0x{x}", .{ t.name, rc });
+                _ = linux.munmap(@ptrFromInt(rc), 65536);
+            }
+        }
     }
 
     if (try_frame) {
@@ -120,12 +140,15 @@ pub fn main(init: std.process.Init.Minimal) u8 {
     var rate: u32 = 44100;
     var channels: u32 = 1;
     var try_frame = false;
+    var try_mmap = false;
     var i: usize = 1;
     while (i < init.args.vector.len) : (i += 1) {
         const s = std.mem.span(init.args.vector[i]);
         if (std.mem.eql(u8, s, "--rate") and i + 1 < init.args.vector.len) {
             i += 1;
             rate = std.fmt.parseInt(u32, std.mem.span(init.args.vector[i]), 10) catch rate;
+        } else if (std.mem.eql(u8, s, "--mmap")) {
+            try_mmap = true;
         } else if (std.mem.eql(u8, s, "--send-frame")) {
             try_frame = true;
         } else if (std.mem.eql(u8, s, "--channels") and i + 1 < init.args.vector.len) {
@@ -133,7 +156,7 @@ pub fn main(init: std.process.Init.Minimal) u8 {
             channels = std.fmt.parseInt(u32, std.mem.span(init.args.vector[i]), 10) catch channels;
         }
     }
-    return run(rate, channels, try_frame) catch |e| {
+    return run(rate, channels, try_frame, try_mmap) catch |e| {
         log.err("fatal: {s}", .{sys.errText(e)});
         return 1;
     };
