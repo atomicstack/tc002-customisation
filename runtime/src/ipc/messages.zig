@@ -142,6 +142,23 @@ test "fixed hex vectors" {
     try std.testing.expectEqual(@as(u8, @intFromEnum(Kind.frame)), fr[5]);
 }
 
+test "sound settings survive the ipc patch too, which is the layer that drops what it does not know" {
+    const w = try ConfigPatch.fromApi(.{ .sound_enabled = true, .sound_volume = 35 });
+    const a = w.toApi();
+    try std.testing.expectEqual(@as(?bool, true), a.sound_enabled);
+    try std.testing.expectEqual(@as(?u8, 35), a.sound_volume);
+    var buf: [codec.max_message]u8 = undefined;
+    const packet = try encodePacket(.{ .config_patch = w }, 7, 0, &buf);
+    const back = try decodePacket(packet);
+    const b = back.message.config_patch.toApi();
+    try std.testing.expectEqual(@as(?bool, true), b.sound_enabled);
+    try std.testing.expectEqual(@as(?u8, 35), b.sound_volume);
+    // a patch that says nothing about sound must not assert defaults over what is configured
+    const quiet = (try ConfigPatch.fromApi(.{ .brightness = 5 })).toApi();
+    try std.testing.expect(quiet.sound_enabled == null);
+    try std.testing.expect(quiet.sound_volume == null);
+}
+
 test "berry settings survive the ipc patch, which has its own field list and drops what it does not know" {
     const w = try ConfigPatch.fromApi(.{ .berry_enabled = true, .berry_heap_kb = 64, .berry_handler_ms = 120 });
     const a = w.toApi();
@@ -1117,6 +1134,8 @@ pub const ConfigPatch = struct {
     latitude: i16 = 0,
     longitude: i16 = 0,
     berry_enabled: u8 = 0,
+    sound_enabled: u8 = 0,
+    sound_volume: u8 = 0,
     berry_heap_kb: u16 = 0,
     berry_handler_ms: u16 = 0,
 
@@ -1148,9 +1167,11 @@ pub const ConfigPatch = struct {
         pub const berry_enabled: u32 = 1 << 24;
         pub const berry_heap_kb: u32 = 1 << 25;
         pub const berry_handler_ms: u32 = 1 << 26;
+        pub const sound_enabled: u32 = 1 << 27;
+        pub const sound_volume: u32 = 1 << 28;
     };
 
-    pub const fixed_len = 4 + 3 + 65 + 4 + 4 + 2 + 4 + 1 + 65 + 4 + 12 + 7 + (1 + 2 + 2) + 1;
+    pub const fixed_len = 4 + 3 + 65 + 4 + 4 + 2 + 4 + 1 + 65 + 4 + 12 + 7 + (1 + 2 + 2) + (1 + 1) + 1;
     pub const wire_len = fixed_len + api.max_params_per_patch * 6;
 
     pub fn fromApi(p: api.ConfigPatch) error{TooLong}!ConfigPatch {
@@ -1245,6 +1266,14 @@ pub const ConfigPatch = struct {
             w.has |= F.berry_enabled;
             w.berry_enabled = @intFromBool(v);
         }
+        if (p.sound_enabled) |v| {
+            w.has |= F.sound_enabled;
+            w.sound_enabled = @intFromBool(v);
+        }
+        if (p.sound_volume) |v| {
+            w.has |= F.sound_volume;
+            w.sound_volume = v;
+        }
         if (p.berry_heap_kb) |v| {
             w.has |= F.berry_heap_kb;
             w.berry_heap_kb = v;
@@ -1299,6 +1328,8 @@ pub const ConfigPatch = struct {
             .location_auto = if (h & F.location_auto != 0) true else null,
             .berry_enabled = if (h & F.berry_enabled != 0) self.berry_enabled != 0 else null,
             .berry_heap_kb = if (h & F.berry_heap_kb != 0) self.berry_heap_kb else null,
+            .sound_enabled = if (h & F.sound_enabled != 0) self.sound_enabled != 0 else null,
+            .sound_volume = if (h & F.sound_volume != 0) self.sound_volume else null,
             .berry_handler_ms = if (h & F.berry_handler_ms != 0) self.berry_handler_ms else null,
         };
     }
@@ -2015,6 +2046,9 @@ fn encodePayload(msg: Message, out: []u8) usize {
             std.mem.writeInt(u16, out[o + 1 ..][0..2], p.berry_heap_kb, .little);
             std.mem.writeInt(u16, out[o + 3 ..][0..2], p.berry_handler_ms, .little);
             o += 5;
+            out[o] = p.sound_enabled;
+            out[o + 1] = p.sound_volume;
+            o += 2;
             out[o] = p.param_count;
             o += 1;
             for (p.params[0..p.param_count]) |rp| {
@@ -2540,6 +2574,9 @@ pub fn decodePacket(bytes: []const u8) Error!Packet {
             w.berry_heap_kb = std.mem.readInt(u16, b[o + 1 ..][0..2], .little);
             w.berry_handler_ms = std.mem.readInt(u16, b[o + 3 ..][0..2], .little);
             o += 5;
+            w.sound_enabled = b[o];
+            w.sound_volume = b[o + 1];
+            o += 2;
             if (b.len < o + 1) return error.BadPayload;
             w.param_count = @min(b[o], w.params.len);
             o += 1;

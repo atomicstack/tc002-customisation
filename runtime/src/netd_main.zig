@@ -1202,6 +1202,7 @@ const Netd = struct {
         } else o.add("null");
         self.generatorParamsJson(o, c);
         o.fmt(",\"berry\":{{\"enabled\":{},\"heap_kb\":{d},\"handler_ms\":{d}}}", .{ c.berry.enabled, c.berry.heap_kb, c.berry.handler_ms });
+        o.fmt(",\"sound\":{{\"enabled\":{},\"volume\":{d}}}", .{ c.sound.enabled, c.sound.volume });
         o.add(",\"allowed_origins\":[");
         for (c.origins[0..c.origin_count], 0..) |*org, i| {
             if (i > 0) o.add(",");
@@ -1653,7 +1654,7 @@ const Netd = struct {
                 .notify => |n| self.mqttRelay(.{ .notify = messages.Notify.init(n.text, n.colour, n.duration_s, messages.Transition.fromSpec(n.transition)) }, n.request_id, n.epoch, now),
                 .config_patch => |cp| {
                     // the control subset only: transient brightness and scene parameters
-                    const admin_fields = cp.timezone != null or cp.ntp_server != null or cp.ntp_interval_s != null or cp.frame_timeout_ms != null or cp.metrics_interval_s != null or cp.discovery != null or cp.discovery_prefix != null or cp.clock_font != null or cp.clock_colour_mode != null or cp.clock_colour != null or cp.clock_colour2 != null or cp.clock_gradient != null or cp.clock_spread != null or cp.ip_mode != null;
+                    const admin_fields = cp.timezone != null or cp.ntp_server != null or cp.ntp_interval_s != null or cp.frame_timeout_ms != null or cp.metrics_interval_s != null or cp.discovery != null or cp.discovery_prefix != null or cp.clock_font != null or cp.clock_colour_mode != null or cp.clock_colour != null or cp.clock_colour2 != null or cp.clock_gradient != null or cp.clock_spread != null or cp.ip_mode != null or cp.sound_enabled != null or cp.sound_volume != null;
                     if (admin_fields) {
                         var o = Out{ .buf = &json_buf };
                         o.add("{\"status\":\"rejected\",\"error\":\"admin_only\",\"message\":\"durable settings are administered over http\"}");

@@ -61,6 +61,14 @@ pub const Ntfy = struct {
     insecure: bool = false,
 };
 
+/// the speaker. off until asked for, like the script interpreter: a device nobody has told to make
+/// a noise does not make one, and `tc002-audiod` is not spawned.
+pub const Sound = struct {
+    enabled: bool = false,
+    /// 1-100 as the api reports it; audiod maps that onto whatever the hardware wants
+    volume: u8 = 60,
+};
+
 pub const Config = struct {
     revision: u32 = 0,
     saved_revision: u32 = 0,
@@ -81,6 +89,7 @@ pub const Config = struct {
     mqtt: Mqtt = .{},
     ntfy: Ntfy = .{},
     berry: Berry = .{},
+    sound: Sound = .{},
     clock_font: u8 = 0,
     clock_colour_mode: u8 = 0,
     clock_colour: [3]u8 = .{ 255, 255, 255 },
@@ -201,6 +210,11 @@ pub const Config = struct {
             next.latitude = l.lat_c;
             next.longitude = l.lon_c;
         }
+        if (p.sound_enabled) |v| next.sound.enabled = v;
+        if (p.sound_volume) |v| {
+            if (v < api.sound_volume_min or v > api.sound_volume_max) return error.Invalid;
+            next.sound.volume = v;
+        }
         if (p.berry_enabled) |v| next.berry.enabled = v;
         if (p.berry_heap_kb) |v| {
             if (v < api.berry_heap_kb_min or v > api.berry_heap_kb_max) return error.Invalid;
@@ -298,7 +312,7 @@ fn getText(in: []const u8, off: *usize) error{BadPayload}!Text {
 const text_wire = 1 + text_max;
 /// schema, revisions, brightness/base/generator, timezone, ntp, intervals, discovery, origins,
 /// mqtt, the clock style, the night schedule
-pub const encoded_len = 1 + 4 + 4 + 3 + text_wire + 5 + 4 + 2 + 4 + 1 + text_wire + 1 + api.max_origins * text_wire + 1 + text_wire + 2 + 4 * text_wire + 1 + 12 + 8 + 1 + 5 * text_wire + 2 + 1 + param.owner_count * param.max_per_owner * 4 + (1 + 2 + 2);
+pub const encoded_len = 1 + 4 + 4 + 3 + text_wire + 5 + 4 + 2 + 4 + 1 + text_wire + 1 + api.max_origins * text_wire + 1 + text_wire + 2 + 4 * text_wire + 1 + 12 + 8 + 1 + 5 * text_wire + 2 + 1 + param.owner_count * param.max_per_owner * 4 + (1 + 2 + 2) + (1 + 1);
 
 pub fn encode(c: *const Config, out: *[encoded_len]u8) void {
     var o: usize = 0;
@@ -378,6 +392,10 @@ pub fn encode(c: *const Config, out: *[encoded_len]u8) void {
     o += 2;
     std.mem.writeInt(u16, out[o..][0..2], c.berry.handler_ms, .little);
     o += 2;
+    out[o] = @intFromBool(c.sound.enabled);
+    o += 1;
+    out[o] = c.sound.volume;
+    o += 1;
     std.debug.assert(o == encoded_len);
 }
 
@@ -461,6 +479,10 @@ pub fn decode(in: []const u8) error{BadPayload}!Config {
     o += 2;
     c.berry.handler_ms = std.mem.readInt(u16, in[o..][0..2], .little);
     o += 2;
+    c.sound.enabled = in[o] != 0;
+    o += 1;
+    c.sound.volume = in[o];
+    o += 1;
     return c;
 }
 
@@ -513,6 +535,10 @@ const FileForm = struct {
         password: []const u8 = "",
         duration_s: u16 = 10,
         insecure: bool = false,
+    } = .{},
+    sound: struct {
+        enabled: bool = false,
+        volume: u8 = 60,
     } = .{},
     berry: struct {
         enabled: bool = false,
@@ -590,6 +616,7 @@ pub fn toJson(c: *const Config, out: []u8) error{Overflow}![]u8 {
             .duration_s = c.ntfy.duration_s,
             .insecure = c.ntfy.insecure,
         },
+        .sound = .{ .enabled = c.sound.enabled, .volume = c.sound.volume },
         .berry = .{
             .enabled = c.berry.enabled,
             .heap_kb = c.berry.heap_kb,
@@ -661,6 +688,9 @@ pub fn fromJson(bytes: []const u8, arena: []u8) error{ Invalid, TooLong }!Config
         slots.* = scene.generator_defaults[i];
     };
     c.ip_mode = @intFromEnum(api.enumByName(ip.Mode, f.ip_mode) orelse return error.Invalid);
+    c.sound.enabled = f.sound.enabled;
+    if (f.sound.volume < api.sound_volume_min or f.sound.volume > api.sound_volume_max) return error.Invalid;
+    c.sound.volume = f.sound.volume;
     c.berry.enabled = f.berry.enabled;
     if (f.berry.heap_kb < api.berry_heap_kb_min or f.berry.heap_kb > api.berry_heap_kb_max) return error.Invalid;
     c.berry.heap_kb = f.berry.heap_kb;
@@ -668,6 +698,33 @@ pub fn fromJson(bytes: []const u8, arena: []u8) error{ Invalid, TooLong }!Config
     c.berry.handler_ms = f.berry.handler_ms;
     if (tz.resolve(f.timezone) == null) return error.Invalid;
     return c;
+}
+
+test "sound settings round-trip through the patch, the wire and the file" {
+    var c = Config{};
+    try std.testing.expect(!c.sound.enabled); // off until asked for, like berry
+    try std.testing.expectEqual(@as(u8, 60), c.sound.volume);
+
+    try std.testing.expectError(error.Invalid, c.patch(.{ .sound_volume = 0 }));
+    try std.testing.expectError(error.Invalid, c.patch(.{ .sound_volume = 101 }));
+    try c.patch(.{ .sound_enabled = true, .sound_volume = 35 });
+    try std.testing.expect(c.sound.enabled);
+    try std.testing.expectEqual(@as(u8, 35), c.sound.volume);
+
+    // the wire: a setting that does not survive encode/decode is not a setting
+    var buf: [encoded_len]u8 = undefined;
+    encode(&c, &buf);
+    const back = try decode(&buf);
+    try std.testing.expect(back.sound.enabled);
+    try std.testing.expectEqual(@as(u8, 35), back.sound.volume);
+
+    // and the json the settings file actually is
+    var json_buf: [8192]u8 = undefined;
+    const text = try toJson(&c, &json_buf);
+    var arena: [8192]u8 = undefined;
+    const c2 = try fromJson(text, &arena);
+    try std.testing.expect(c2.sound.enabled);
+    try std.testing.expectEqual(@as(u8, 35), c2.sound.volume);
 }
 
 test "berry settings are bounded, because a heap that does not fit is not a heap" {

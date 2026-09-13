@@ -124,6 +124,8 @@ pub const Location = struct { lat_c: i16, lon_c: i16 };
 pub const max_night_lead_min = 120;
 /// the heap a berry vm may be given. the floor is what the interpreter needs to boot (about 4 kb)
 /// with room to do something; the ceiling is what src/berry/vm.zig reserves statically.
+pub const sound_volume_min: u8 = 1;
+pub const sound_volume_max: u8 = 100;
 pub const berry_heap_kb_min: u16 = 16;
 pub const berry_heap_kb_max: u16 = 256;
 /// how long one handler may run. the ceiling stays well under the two seconds of silence that make
@@ -160,6 +162,8 @@ pub const ConfigPatch = struct {
     /// true drops a pinned location and goes back to the timezone's own reference point
     location_auto: ?bool = null,
     berry_enabled: ?bool = null,
+    sound_enabled: ?bool = null,
+    sound_volume: ?u8 = null,
     berry_heap_kb: ?u16 = null,
     berry_handler_ms: ?u16 = null,
 };
@@ -245,6 +249,8 @@ const ConfigBody = struct {
     berry_enabled: ?bool = null,
     berry_heap_kb: ?u16 = null,
     berry_handler_ms: ?u16 = null,
+    sound_enabled: ?bool = null,
+    sound_volume: ?u8 = null,
 };
 /// one element of a pushed document. the strict parser cannot do a tagged union, so every field
 /// any element type takes lives here and `allowedField` refuses the ones that do not belong to the
@@ -972,6 +978,8 @@ pub fn parseBody(kind: BodyKind, body: []const u8, arena: *Arena) Route {
                 .berry_enabled = b.berry_enabled,
                 .berry_heap_kb = b.berry_heap_kb,
                 .berry_handler_ms = b.berry_handler_ms,
+                .sound_enabled = b.sound_enabled,
+                .sound_volume = b.sound_volume,
             } } };
         },
         .canvas_put => {
