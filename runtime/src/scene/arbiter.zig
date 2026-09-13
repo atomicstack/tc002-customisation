@@ -108,6 +108,102 @@ test "a stream frame shows at once, expires on its own, and never bumps the revi
     try std.testing.expect(a.overlay == .none);
 }
 
+test "every applied statement is reported once, with the revision it produced" {
+    var a = fresh();
+    try std.testing.expect(a.takeApplied() == null); // nothing has been applied yet
+
+    _ = a.apply(.{ .brightness = 40 }, 1 * s_ns);
+    const st = a.takeApplied() orelse return error.NothingReported;
+    try std.testing.expectEqual(Statement.Kind.brightness, st.kind);
+    try std.testing.expectEqual(@as(u8, 40), st.brightness);
+    try std.testing.expectEqual(a.revision, st.revision);
+    try std.testing.expectEqual(@as(u64, 1 * s_ns), st.at_ns);
+
+    // taking it clears it: one report per statement, never a repeat
+    try std.testing.expect(a.takeApplied() == null);
+}
+
+test "a command that does not move the revision reports no statement" {
+    var a = fresh();
+    _ = a.takeApplied();
+
+    _ = a.apply(.{ .power = true }, 0); // already on: applied, but nothing changed
+    try std.testing.expect(a.takeApplied() == null);
+
+    _ = a.apply(.time_corrected, 0); // redraws, never a state change
+    try std.testing.expect(a.takeApplied() == null);
+
+    // a stream frame deliberately does not bump the revision, which is also what keeps sixty
+    // frames a second out of the event stream
+    var frame = geometry.black_rgb;
+    _ = a.apply(.{ .stream = .{ .rgb = &frame, .timeout_ms = 500 } }, 0);
+    try std.testing.expect(a.takeApplied() == null);
+}
+
+test "a button press reports the statement it produced, not the button" {
+    var a = fresh(); // starts on art
+    _ = a.takeApplied();
+
+    a.action(.left, 5 * s_ns); // left selects the clock
+    const st = a.takeApplied() orelse return error.NothingReported;
+    try std.testing.expectEqual(Statement.Kind.set_base, st.kind);
+    try std.testing.expectEqual(Base.clock, st.base);
+    try std.testing.expectEqual(@as(u64, 5 * s_ns), st.at_ns);
+}
+
+test "a statement carries what was resolved, not what was asked for" {
+    var a = fresh(); // art, popsquares
+    _ = a.takeApplied();
+
+    // the knob asks for "the next generator", never for one by name; the statement names the one
+    // it landed on, which is the whole point for a mirror replaying it
+    a.action(.rotate_cw, 0);
+    const st = a.takeApplied() orelse return error.NothingReported;
+    try std.testing.expectEqual(Statement.Kind.select_generator, st.kind);
+    try std.testing.expectEqual(a.art.generator, st.generator);
+    try std.testing.expect(st.generator != .popsquares);
+}
+
+test "a notification statement carries its text, colour and duration" {
+    var a = fresh();
+    _ = a.takeApplied();
+
+    _ = a.apply(.{ .notify = .{ .text = "hi", .colour = white, .duration_s = 7 } }, 0);
+    const st = a.takeApplied() orelse return error.NothingReported;
+    try std.testing.expectEqual(Statement.Kind.notify, st.kind);
+    try std.testing.expectEqualStrings("hi", st.textSlice());
+    try std.testing.expectEqual(white, st.colour);
+    try std.testing.expectEqual(@as(u16, 7), st.duration_s);
+}
+
+test "only the newest statement is held: a mirror that missed one resyncs from the revision" {
+    var a = fresh();
+    _ = a.takeApplied();
+
+    _ = a.apply(.{ .brightness = 10 }, 0);
+    _ = a.apply(.{ .brightness = 20 }, 1);
+    const st = a.takeApplied() orelse return error.NothingReported;
+    try std.testing.expectEqual(@as(u8, 20), st.brightness);
+    try std.testing.expectEqual(a.revision, st.revision);
+    try std.testing.expect(a.takeApplied() == null);
+}
+
+test "an overlay expiring is a statement too, not an unexplained revision gap" {
+    var a = fresh();
+    _ = a.apply(.{ .notify = .{ .text = "hi", .colour = white, .duration_s = 2 } }, 0);
+    _ = a.takeApplied();
+
+    // expiry moves the revision from inside `tick`, not `applyWith`. without its own statement a
+    // mirror would see the number jump for no reason it could name, and resync for every
+    // notification that ever ended.
+    a.tick(3 * s_ns, 0);
+    try std.testing.expect(a.overlay == .none);
+    const st = a.takeApplied() orelse return error.NothingReported;
+    try std.testing.expectEqual(Statement.Kind.overlay_expired, st.kind);
+    try std.testing.expectEqual(a.revision, st.revision);
+    try std.testing.expectEqual(@as(u64, 3 * s_ns), st.at_ns);
+}
+
 test "raw frames validate duration, replace a notification, and a base selection clears overlays" {
     var a = fresh();
     _ = a.apply(.{ .notify = .{ .text = "hi", .colour = white, .duration_s = 10 } }, 0);
@@ -586,6 +682,57 @@ pub const Command = union(enum) {
     set_ip_mode: ip.Mode,
 };
 
+/// what the arbiter just applied, in a form that survives leaving this process: a mirror applies
+/// the same statement and lands on the same revision. **resolved, not requested** -- the generator
+/// the knob arrived at, the seed the arbiter actually took, the style after the patch. that is what
+/// lets a replica replay it with no special cases.
+///
+/// big payloads are described rather than carried: a `raw` frame says how long the overlay holds,
+/// not which pixels, because 2,496 bytes per statement would not fit the ipc and a mirror that
+/// wants the pixels can read `/screen`.
+pub const Statement = struct {
+    pub const Kind = enum(u8) {
+        set_base = 0,
+        select_generator = 1,
+        notify = 2,
+        raw = 3,
+        brightness = 4,
+        reseed = 5,
+        arm_stream = 6,
+        power = 7,
+        set_clock_style = 8,
+        set_ip_mode = 9,
+        /// a notification or raw frame reached its deadline and the base came back. it moves the
+        /// revision from inside `tick` rather than `applyWith`, and it is a real state change, so
+        /// it gets a statement of its own instead of leaving a mirror with an unexplained gap.
+        overlay_expired = 10,
+    };
+    pub const text_max = 128;
+
+    kind: Kind,
+    /// the revision this statement produced; a mirror that skips one sees the gap here
+    revision: u32 = 0,
+    /// when it was applied, on the renderer's monotonic clock
+    at_ns: u64 = 0,
+
+    base: Base = .clock,
+    generator: scene.Generator = .popsquares,
+    seed: u32 = 0,
+    brightness: u8 = 0,
+    power: bool = true,
+    ip_mode: ip.Mode = .lines,
+    style: clock.Style = .{},
+    /// how long a notification or raw frame holds the overlay
+    duration_s: u16 = 0,
+    colour: [3]u8 = .{ 0, 0, 0 },
+    text_len: u8 = 0,
+    text: [text_max]u8 = [_]u8{0} ** text_max,
+
+    pub fn textSlice(self: *const Statement) []const u8 {
+        return self.text[0..self.text_len];
+    }
+};
+
 pub const Reject = enum { invalid_text, invalid_duration, invalid_brightness };
 pub const Result = union(enum) { applied: u32, rejected: Reject };
 
@@ -601,6 +748,9 @@ pub const Arbiter = struct {
 
     /// set whenever the visible output changed; the renderer takes it to redraw immediately.
     dirty: bool = true,
+    /// the statement last applied, waiting to be taken. only the newest is held: a consumer that
+    /// misses one sees a revision gap and resyncs, which is cheaper than a queue that can overrun.
+    applied: ?Statement = null,
     /// set when what is shown changes to something else (base, generator, a notification
     /// starting or ending, a restyle of the showing clock); the renderer takes it to run the
     /// effect. raw frames switch at once unless their request names an effect.
@@ -699,9 +849,72 @@ pub const Arbiter = struct {
     pub fn applyWith(self: *Arbiter, cmd: Command, spec: ?transition.Spec, now_ns: u64) Result {
         const before = self.capture();
         const was_pending = self.pending != null;
+        const revision_before = self.revision;
         const res = self.applyInner(cmd, spec, now_ns);
         if (!was_pending and self.pending != null) self.outgoing = before;
+        // every command from every source reaches this one function, so this is the only place a
+        // statement has to be recorded. a command that changed nothing left the revision alone and
+        // is not a statement -- that is what keeps stream frames and clock ticks off the wire.
+        if (self.revision != revision_before) self.recordApplied(cmd, now_ns);
         return res;
+    }
+
+    fn recordApplied(self: *Arbiter, cmd: Command, now_ns: u64) void {
+        var st = Statement{ .kind = undefined, .revision = self.revision, .at_ns = now_ns };
+        switch (cmd) {
+            .set_base => {
+                st.kind = .set_base;
+                st.base = self.base;
+            },
+            .select_generator => {
+                st.kind = .select_generator;
+                st.generator = self.art.generator;
+            },
+            .notify => |n| {
+                st.kind = .notify;
+                st.colour = n.colour;
+                st.duration_s = n.duration_s;
+                st.text_len = @intCast(@min(n.text.len, Statement.text_max));
+                @memcpy(st.text[0..st.text_len], n.text[0..st.text_len]);
+            },
+            .raw => |r| {
+                st.kind = .raw;
+                st.duration_s = r.duration_s;
+            },
+            .brightness => {
+                st.kind = .brightness;
+                st.brightness = self.brightness;
+            },
+            .reseed => {
+                st.kind = .reseed;
+                st.seed = self.art.seed;
+            },
+            .arm_stream => st.kind = .arm_stream,
+            .power => {
+                st.kind = .power;
+                st.power = self.power;
+            },
+            .set_clock_style => {
+                st.kind = .set_clock_style;
+                st.style = self.clock.style;
+            },
+            .set_ip_mode => {
+                st.kind = .set_ip_mode;
+                st.ip_mode = self.ip.mode;
+            },
+            // these never move the revision, so they never reach here: a stream frame is not a
+            // state change, and a clock correction or a new ip address only redraws
+            .stream, .time_corrected, .ip_changed => return,
+        }
+        self.applied = st;
+    }
+
+    /// take the statement last applied, if one is waiting. mirrors `takeDirty` and
+    /// `takeTransition`: the renderer drains it once per loop and forwards it.
+    pub fn takeApplied(self: *Arbiter) ?Statement {
+        const a = self.applied;
+        self.applied = null;
+        return a;
     }
 
     fn applyInner(self: *Arbiter, cmd: Command, spec: ?transition.Spec, now_ns: u64) Result {
@@ -1020,6 +1233,7 @@ pub const Arbiter = struct {
             }
             self.overlay = .none;
             _ = self.bump();
+            self.applied = .{ .kind = .overlay_expired, .revision = self.revision, .at_ns = now_ns };
             if (!was_pending and self.pending != null) self.outgoing = before;
         };
     }
