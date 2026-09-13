@@ -632,16 +632,82 @@ async function refreshStatus(quiet) {
     if (!quiet) toast(e.message, true);
   }
 }
+/* ---------- trigger replication ----------
+   the device streams every trigger it applies, whoever issued it, so the preview follows the panel
+   rather than inferring it from polled state. the mirror runs deliberately behind: an event carries how long
+   ago it was applied, so it is queued and played when the mirror's clock reaches that instant.
+   running behind is what makes the ordering right — nothing has to be guessed, only placed. */
+const MIRROR_DELAY_MS = 750;
+const mirrorNow = () => Date.now() - MIRROR_DELAY_MS;
+let events = null, pending = [], streamState = 'off', lastStatement = '';
+
+function stopEvents() {
+  if (events) { events.close(); events = null; }
+  pending = [];
+  streamState = 'off';
+}
+
+function startEvents() {
+  stopEvents();
+  if (!host()) return;
+  streamState = 'connecting';
+  const es = new EventSource(api('events'));
+  events = es;
+  es.onopen = () => { if (events === es) streamState = 'live'; };
+  es.onerror = () => {
+    // EventSource retries on its own; say so rather than looking connected
+    if (events === es) streamState = 'retrying';
+  };
+  es.onmessage = m => {
+    if (events !== es) return;
+    let ev = null;
+    try { ev = JSON.parse(m.data); } catch { return; }
+    // stamp it with the instant it happened, so the drain can place it
+    pending.push({ at: Date.now() - (Number.isFinite(ev.age_ms) ? ev.age_ms : 0), ev });
+  };
+}
+
+// play everything the mirror's clock has now reached. a statement the replica cannot land on the
+// device's revision means one was missed (or is unreplicable, like a raw frame) -> resync
+function drainEvents(upToMs) {
+  while (pending.length && pending[0].at <= upToMs) {
+    const { at, ev } = pending.shift();
+    const r = S.applyStatement(ev, at + (Number.isFinite(ev.age_ms) ? ev.age_ms : 0));
+    lastStatement = `${ev.cmd}${ev.source ? ' · ' + ev.source : ''}`;
+    if (!r.ok) { pending = []; resyncFromState(r.reason); return; }
+  }
+}
+
+let resyncing = false;
+async function resyncFromState(why) {
+  if (resyncing || !STATUS) return;
+  resyncing = true;
+  try {
+    STATUS = await call('GET', 'status');
+    S.reset(STATUS.base, STATUS.generator, STATUS.seed >>> 0);
+    S.setRevision(STATUS.revision);
+    showConfig(await call('GET', 'config'));
+    if (STATUS.base === 'canvas') await pollCanvas(true);
+    lastStatement = `resynced (${why})`;
+  } catch (e) {
+    lastStatement = `resync failed: ${e.message}`;
+  } finally {
+    resyncing = false;
+  }
+}
+
 const STATUS_POLL_MS = 1000;   // the shadow reconciles once a second
 const SCREEN_POLL_MS = 500;    // and is checked against the panel twice
 function startPolling() {
   stopPolling();
+  startEvents();
   pollTimer = setInterval(() => refreshStatus(true), STATUS_POLL_MS);
   screenTimer = setInterval(pollScreen, SCREEN_POLL_MS);
 }
 function stopPolling() {
   clearInterval(pollTimer); pollTimer = null;
   clearInterval(screenTimer); screenTimer = null;
+  stopEvents();
 }
 
 /* ---------- the live preview from /screen ---------- */
@@ -706,13 +772,18 @@ function draw() {
       // rate, reconciled against /status each second, rather than showing /screen's 2 fps. the
       // live frame is still fetched, but to check the shadow rather than to replace it
       lastStepMs = nowMs;
-      const c = S.compose(STATUS, local, nowMs);
+      // play whatever the mirror's clock has reached, then draw that instant
+      const shown = mirrorNow();
+      drainEvents(shown);
+      const c = S.compose(STATUS, local, shown);
       recentSimFrames.push(c.rgb);
       if (recentSimFrames.length > SIM_FRAME_HISTORY) recentSimFrames.shift();
       const powerOff = STATUS.power === false;
       paint(powerOff ? S.black() : c.rgb, powerOff ? 100 : (local.pending ? 100 : STATUS.brightness));
-      $('cap').textContent = `shadowing the device · epoch ${STATUS.epoch} · revision ${STATUS.revision} · ${c.label}`
-        + `${powerOff ? ' · power off' : ''}${shadowNote()}`;
+      const following = streamState === 'live'
+        ? `following · rev ${S.revision()} · ${MIRROR_DELAY_MS}ms behind${lastStatement ? ' · ' + lastStatement : ''}`
+        : `polling (${streamState})`;
+      $('cap').textContent = `${following} · ${c.label}${powerOff ? ' · power off' : ''}${shadowNote()}`;
       nextDrawAt = nowMs + (c.cadenceMs == null ? 250 : c.cadenceMs);
     }
   }
@@ -1095,6 +1166,9 @@ $('fclear').addEventListener('click', () => {
 /* ---------- settings (admin) ---------- */
 function showConfig(c) {
   CONFIG = c;
+  // the preview draws every generator with its own settings, not the catalogue defaults. these
+  // are settings rather than statements, so they never come down the event stream
+  if (S.loaded()) S.applyGeneratorParams(SCENES, c);
   $('cbright').value = c.brightness; $('cbase').value = c.base;
   fillSelect($('cgen'), SCENES ? SCENES.generators.map(g => g.name) : S.GENERATORS, c.generator);
   $('ctz').value = c.timezone; $('cntp').value = c.ntp.server || ''; $('cntpi').value = String(c.ntp.interval_s);
@@ -1345,6 +1419,10 @@ async function loadAll() {
     liveUnavailable = false; local.live = null; screenFailStreak = 0;
     logNext = 0; logLines = []; renderLogs();
     STATUS = await call('GET', 'status'); onStatus(null);
+    // put the replica where the device is before any statement arrives; without this the first
+    // event fails its revision check and buys a resync that was never needed
+    S.reset(STATUS.base, STATUS.generator, (STATUS.seed >>> 0) || 1);
+    S.setRevision(STATUS.revision);
     SCENES = await call('GET', 'scenes');
     fillBaseButtons(SCENES.bases || [], STATUS.base);
     showBaseRows(STATUS.base);

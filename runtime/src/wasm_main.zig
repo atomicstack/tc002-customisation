@@ -126,6 +126,26 @@ export fn setBrightness(v: u32, now_ms: f64) void {
 export fn setPower(on: u32, now_ms: f64) void {
     _ = arb.apply(.{ .power = on != 0 }, toNs(now_ms));
 }
+/// one generator's own parameter, by owner and slot, whichever scene is showing. generator
+/// parameters are settings rather than statements — they arrive on PATCH /config, not the event
+/// stream — so the console pushes them from /config on a config_revision change. without this the
+/// preview drew every generator with its catalogue defaults: a poly cube came out mono and blue.
+export fn setGeneratorParam(owner: u32, slot: u32, value: u32) void {
+    if (owner > 255 or slot > 255) return;
+    arb.setGeneratorParam(@intCast(owner), @intCast(slot), value);
+}
+
+export fn armStream(now_ms: f64) void {
+    _ = arb.apply(.arm_stream, toNs(now_ms));
+}
+/// the replica's position in the statement stream, to compare with the revision an event carries
+export fn revisionOf() u32 {
+    return arb.revision;
+}
+export fn setRevision(v: u32) void {
+    arb.revision = v;
+}
+
 export fn reseed(seed: u32, now_ms: f64) void {
     _ = arb.apply(.{ .reseed = seed }, toNs(now_ms));
 }

@@ -1,6 +1,6 @@
 #!/usr/bin/python3
 """tests for the panel-v2 proxy. run: /usr/bin/python3 -m unittest test_serve -v"""
-import contextlib, importlib.util, json, os, secrets, socket, subprocess, sys, tempfile, threading, unittest, urllib.error, urllib.request
+import contextlib, http.server, importlib.util, json, os, secrets, socket, socketserver, subprocess, sys, tempfile, threading, unittest, urllib.error, urllib.request
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
@@ -765,6 +765,69 @@ class BaseButtonTests(unittest.TestCase):
                          "the base radiogroup has buttons written into the html; build them from "
                          "GET /scenes so a new or retired base needs no edit here")
         self.assertIn("fillBaseButtons(SCENES.bases", html)
+
+
+class EventStreamTests(unittest.TestCase):
+    """the proxy must hand an event stream to the browser frame by frame. every other response is
+    read whole and forwarded; an sse response never ends, so buffering it would hang the console
+    for ever and hold one of the device's eight connection slots doing nothing."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls._log = serve.Handler.log_message
+        serve.Handler.log_message = lambda *a, **k: None
+        cls.control = secrets.token_hex(32)
+        cls.written = threading.Event()
+
+        outer = cls
+
+        class Origin(http.server.BaseHTTPRequestHandler):
+            def log_message(self, *a):
+                pass
+
+            def do_GET(self):
+                if not self.path.startswith("/api/v1/events"):
+                    self.send_error(404)
+                    return
+                self.send_response(200)
+                self.send_header("Content-Type", "text/event-stream")
+                self.end_headers()
+                self.wfile.write(b'data: {"revision":7,"age_ms":0,"cmd":"set_base","source":"input","base":"clock"}\n\n')
+                self.wfile.flush()
+                # nothing more until the test says so: if the proxy is buffering, the reader
+                # below never sees the first event and the test fails on the timeout
+                outer.written.wait(5)
+                self.wfile.write(b'data: {"revision":8,"age_ms":4,"cmd":"brightness","source":"api","brightness":50}\n\n')
+                self.wfile.flush()
+
+        cls.origin = socketserver.ThreadingTCPServer(("127.0.0.1", 0), Origin)
+        cls.origin.daemon_threads = True
+        cls.origin_port = cls.origin.server_address[1]
+        threading.Thread(target=cls.origin.serve_forever, daemon=True).start()
+        cls.proxy = serve.make_server(0, {"control": cls.control, "admin": cls.control}, HERE)
+        cls.proxy_port = cls.proxy.server_address[1]
+        threading.Thread(target=cls.proxy.serve_forever, daemon=True).start()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.written.set()
+        for s in (cls.origin, cls.proxy):
+            s.shutdown(); s.server_close()
+        serve.Handler.log_message = cls._log
+
+    def test_events_arrive_before_the_stream_ends(self):
+        url = f"http://127.0.0.1:{self.proxy_port}/api/127.0.0.1:{self.origin_port}/v1/events"
+        with urllib.request.urlopen(url, timeout=5) as r:
+            self.assertEqual(r.status, 200)
+            self.assertEqual(r.headers.get("Content-Type"), "text/event-stream")
+            self.assertIsNone(r.headers.get("Content-Length"),
+                              "a stream cannot carry a length, and one would make the browser wait")
+            first = r.readline()
+            self.assertIn(b'"revision":7', first,
+                          "the first event must arrive while the origin still holds the stream open")
+            self.assertEqual(r.readline(), b"\n")
+            type(self).written.set()          # let the origin write the second
+            self.assertIn(b'"revision":8', r.readline())
 
 
 class CatalogueTests(unittest.TestCase):

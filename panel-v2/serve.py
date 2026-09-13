@@ -27,6 +27,9 @@ ADMIN_ROUTES = {("PATCH", "config"), ("POST", "config/save"), ("GET", "mqtt"), (
 # host may carry a port (host:1234) so the mock or a device behind a forward works
 PATH_RE = re.compile(r"^/api/([0-9a-zA-Z.\-]+(?::\d+)?)/v1/([A-Za-z0-9_\-]+(?:/[A-Za-z0-9_\-]+)*)(?:\?(.*))?$")
 DEVICE_TIMEOUT_S = 10
+# longer than the device's sse keepalive, so a quiet stream is not read as a dead one
+STREAM_TIMEOUT_S = 30
+EVENTS_ENDPOINT = "events"
 # the only static files this server will hand back; everything else not under /api/ or /tokens is 404
 STATIC_ALLOW = {"/", "/index.html", "/sim-wasm.js", "/tc002-panel.wasm"}
 
@@ -87,6 +90,45 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(payload)
 
+    def _proxy_stream(self, req, host):
+        """forward an event stream chunk by chunk for as long as both ends are up.
+
+        no content-length and no buffering: the browser's EventSource wants each frame as it is
+        written. the read timeout is deliberately longer than the device's keepalive interval, so a
+        quiet stream is not mistaken for a dead one; a genuinely dead device fails the read and the
+        loop ends, which is what frees netd's slot on the other side."""
+        try:
+            r = urllib.request.urlopen(req, timeout=STREAM_TIMEOUT_S)
+        except urllib.error.HTTPError as e:
+            payload = e.read()
+            self.send_response(e.code)
+            self.send_header("Content-Type", e.headers.get("Content-Type") or "application/json")
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            return self.wfile.write(payload)
+        except Exception as e:
+            return self._json(502, {"error": "proxy", "message": f"cannot reach {host}: {e}"})
+        with r:
+            self.send_response(r.status)
+            self.send_header("Content-Type", r.headers.get("Content-Type") or "text/event-stream")
+            self.send_header("Cache-Control", "no-store")
+            date = r.headers.get("Date")
+            if date:
+                self.send_header("X-Device-Date", date)
+                self.send_header("Access-Control-Expose-Headers", "X-Device-Date")
+            self.end_headers()
+            try:
+                while True:
+                    chunk = r.read1(4096) if hasattr(r, "read1") else r.read(1)
+                    if not chunk:
+                        break
+                    self.wfile.write(chunk)
+                    self.wfile.flush()
+            except (BrokenPipeError, ConnectionResetError):
+                pass    # the browser went away; closing r releases the device's slot
+            except Exception:
+                pass
+
     def _tokens(self):
         t = self.server.tokens
         return self._json(200, {"control": t["control"] is not None, "admin": t["admin"] is not None})
@@ -109,6 +151,10 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         if body is not None:
             req.add_header("Content-Type", self.headers.get("Content-Type") or "application/json")
         try:
+            # an event stream never ends, so it cannot be read into a buffer and forwarded whole
+            # the way every other response is. hold it open and pump it instead.
+            if endpoint == EVENTS_ENDPOINT:
+                return self._proxy_stream(req, host)
             with urllib.request.urlopen(req, timeout=DEVICE_TIMEOUT_S) as r:
                 payload, status, ctype, device_date = r.read(), r.status, r.headers.get("Content-Type") or "application/json", r.headers.get("Date")
         except urllib.error.HTTPError as e:

@@ -122,13 +122,19 @@
     return o.every(n => n <= 255) ? o : null;
   }
 
-  function applyStatus(status, local, nowMs) {
+  /* `follow` is on once the event stream is live. the stream owns everything it carries — base,
+     generator, seed, clock style, ip layout, notifications — and re-applying those from a status
+     poll would undo statements the replica has correctly played. what the stream does *not* carry
+     stays here: the timezone and canvas document (settings, not statements) and the device's ip
+     address, which is an arbiter command with no statement kind. */
+  function applyStatus(status, local, nowMs, follow) {
     const e = need();
     const s = status || {};
 
     const tzText = (local && local.tz && local.tz.text) || TZ_UTC.text;
     if (tzText !== applied.tz) { e.setTz(writeScratch(tzText)); applied.tz = tzText; }
 
+    if (!follow) {
     const base = indexOf(BASES, s.base, 0);
     if (base !== applied.base) { e.setBase(base, nowMs); applied.base = base; }
 
@@ -163,6 +169,8 @@
       const m = indexOf(IP_MODES, s.ip_mode, 0);
       if (m !== applied.ipMode) { e.setIpMode(m, nowMs); applied.ipMode = m; }
     }
+    }   // end of what the event stream owns
+
 
     const addr = ipOctets(s.network && s.network.ip != null ? s.network.ip : s.ip);
     const addrKey = addr ? addr.join('.') : '';
@@ -183,7 +191,9 @@
       applied.canvas = canvasKey;
     }
 
-    /* a notification the console itself sent: the arbiter scrolls it and times it out */
+    /* a notification the console itself sent: the arbiter scrolls it and times it out. while
+       following, the stream's own notify statement has already placed it */
+    if (follow) return;
     const n = s.overlay === 'notify' && local && local.notify ? local.notify : null;
     const nKey = n ? `${n.sinceMs}:${n.text}` : null;
     if (nKey !== applied.notify) {
@@ -225,7 +235,7 @@
 
   /* the console's entry point: a /status document plus what only this page knows, in; one frame,
      a redraw delay and a caption, out. every pixel comes from the wasm. */
-  function compose(status, local, nowMs) {
+  function compose(status, local, nowMs, follow) {
     const e = need();
     const l = local || {};
     if (l.pending) return { rgb: l.pending.slice(), cadenceMs: null, label: 'pending frame' };
@@ -234,7 +244,7 @@
       const rgb = black(); rgb.fill(24);
       return { rgb, cadenceMs: null, label: 'frame (contents unknown: not sent from this page)' };
     }
-    applyStatus(status, l, nowMs);
+    applyStatus(status, l, nowMs, follow === true);
     // two clocks: the browser's elapsed time advances the animation, the device's decides what
     // the clock scene reads. passing one for both made the panel's time the laptop's time
     const cadence = e.frame(nowMs, deviceNow(nowMs));
@@ -296,6 +306,93 @@
   /* whether the last document arrived with the ages that let the clocks be matched */
   const canvasBackdated = () => lastCanvasResult.ok && lastCanvasResult.backdated === true;
 
+  /* ---------- generator parameters ----------
+     these are settings, not statements: they arrive on PATCH /config and never appear on the
+     event stream, so they are pushed from /config whenever config_revision moves. the console read
+     them only to draw its sliders and never gave them to the renderer, which is why a poly cube
+     previewed as a mono blue one. the encoding is the scenes catalogue's: a choice is its index, a
+     colour is 0x00RRGGBB, a number and a toggle are themselves. */
+  function applyGeneratorParams(scenes, config) {
+    const e = need();
+    if (!scenes || !Array.isArray(scenes.generators) || !config || !config.generators) return 0;
+    let pushed = 0;
+    scenes.generators.forEach((gen, owner) => {
+      const held = config.generators[gen.name];
+      if (!held || !Array.isArray(gen.parameters)) return;
+      gen.parameters.forEach((param, slot) => {
+        const raw = held[param.name];
+        if (raw === undefined) return;
+        let v;
+        switch (param.kind) {
+          case 'choice': v = (param.choices || []).indexOf(raw); if (v < 0) return; break;
+          case 'colour': v = hexInt(raw, -1); if (v < 0) return; break;
+          case 'toggle': v = raw ? 1 : 0; break;
+          default: v = Number(raw); if (!Number.isFinite(v)) return; break;
+        }
+        e.setGeneratorParam(owner, slot, v >>> 0);
+        pushed++;
+      });
+    });
+    return pushed;
+  }
+
+  /* ---------- trigger replication ----------
+     the device streams every statement it applies on GET /events, whoever issued it — the api, a
+     button, the knob, mqtt. the replica applies the same statement and lands on the same revision.
+     this is the whole point of the arrangement: nothing is reconstructed from observed state, so
+     there is no piece of device state that can be forgotten. state replication — polling and
+     diffing — is what this replaces, and what /status is still for: the bootstrap snapshot and the
+     resync when a statement is missed.
+
+     every event carries what the device *resolved*, not what was requested — the seed it picked,
+     the whole clock style — so no trigger has to be re-derived at this end. */
+
+  const STATEMENTS = {
+    set_base: (e, ev) => e.setBase(indexOf(BASES, ev.base, 0), ev.at),
+    select_generator: (e, ev) => e.setGenerator(indexOf(GENERATORS, ev.generator, 0), ev.at),
+    brightness: (e, ev) => e.setBrightness(ev.brightness | 0, ev.at),
+    power: (e, ev) => e.setPower(ev.power ? 1 : 0, ev.at),
+    reseed: (e, ev) => e.reseed(ev.seed >>> 0, ev.at),
+    set_ip_mode: (e, ev) => e.setIpMode(indexOf(IP_MODES, ev.ip_mode, 0), ev.at),
+    arm_stream: (e, ev) => e.armStream(ev.at),
+    set_clock_style: (e, ev) => {
+      const c = ev.clock || {};
+      e.setClockStyle(indexOf(CLOCK_FONTS, c.font, -1), indexOf(CLOCK_MODES, c.colour_mode, -1),
+                      indexOf(GRADIENTS, c.gradient, -1), c.spread == null ? -1 : c.spread,
+                      indexOf(DIGIT_STYLES, c.digits, -1),
+                      hexInt(c.colour, -1), hexInt(c.colour2, -1), ev.at);
+    },
+    notify: (e, ev) => e.notify(writeScratch(String(ev.text == null ? '' : ev.text)),
+                                hexInt(ev.colour, 0xffffff), ev.duration_s | 0, ev.at),
+    // the overlay timing out is a real state change with a revision of its own, but the replica's
+    // own tick expires it: applying anything here would double-count
+    overlay_expired: () => {},
+    // the pixels are not on the wire, and 2.5 kB per frame have no business being: a raw frame is
+    // the one statement the replica cannot reproduce, so it says so and resyncs
+    raw: null,
+  };
+
+  /* apply one event. returns {ok} when the replica landed on the event's revision, or
+     {ok:false, reason} when it did not and the caller should resync from state. */
+  function applyStatement(ev, receivedAtMs) {
+    const e = need();
+    const at = receivedAtMs - (Number.isFinite(ev.age_ms) ? ev.age_ms : 0);
+    const fn = STATEMENTS[ev.cmd];
+    if (fn === null) return { ok: false, reason: `${ev.cmd} cannot be replicated from the stream` };
+    if (fn === undefined) return { ok: false, reason: `unknown statement ${ev.cmd}` };
+    fn(e, { ...ev, at });
+    const got = e.revisionOf();
+    if (got !== ev.revision) {
+      // the device applied something this replica did not, or the other way about
+      return { ok: false, reason: `revision ${got} after ${ev.cmd}, device says ${ev.revision}` };
+    }
+    return { ok: true };
+  }
+
+  /* the replica's position, and how to put it where the device is after a bootstrap or resync */
+  const revision = () => need().revisionOf();
+  const setRevision = v => need().setRevision(v >>> 0);
+
   /* ---------- agreement: the shadow, checked against the device ----------
      /screen returns the frame the panel is actually showing. rather than displaying it instead of
      the simulation, compare the two: a shadow you can watch agreeing is worth more than a picture
@@ -348,6 +445,7 @@
     WIDTH, HEIGHT, PIXELS, RGB_BYTES, WHITE, black, pixelOffset,
     ready, loaded, buildLut, tzParse, TZ_UTC, Art, compose, sceneParams, renderIpLayout,
     agreement, anchorClock, deviceNow, installCanvas, clearCanvas, canvasEmpty, canvasAnimated,
+    applyStatement, revision, setRevision, applyGeneratorParams,
     canvasBackdated,
     get lastCanvasResult() { return lastCanvasResult; },
     get clockSkewMs() { return clockSkewMs; },

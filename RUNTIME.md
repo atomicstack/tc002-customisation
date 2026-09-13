@@ -1526,6 +1526,26 @@ here too, with the runtime's own code and message shown in the caption rather
 than a silently empty panel. this is what took the module from 55 kB to
 148 kB: the canvas renderer, 61 icons and the json parser.
 
+the preview is a **replica**, and it follows triggers rather than state. `GET /events` streams
+every statement the arbiter applies, whoever issued it — the api, a button, the knob, mqtt — and
+the console applies the same statement to its own arbiter and checks it landed on the same
+`revision`. nothing is reconstructed from polled state, so there is no piece of device state that
+can be forgotten; every earlier accuracy bug in this preview was exactly that. state replication
+is still what bootstraps it and what recovers it: a statement that does not land on the device's
+revision means one was missed, and the console resyncs from `/status`, `/config` and `/canvas`.
+
+two things the stream does not carry, and so still come from state: `ip_changed` and
+`time_corrected` are arbiter commands with no `Statement.Kind`, so they move the revision without
+an event and show up as a gap that resyncs. a `raw` frame's pixels are deliberately not on the
+wire — 2,496 bytes per frame have no business there — so the replica refuses it and resyncs
+rather than inventing them.
+
+the mirror runs **750 ms behind on purpose**. every event says how long ago it was applied, so it
+is queued and played when the mirror's clock reaches that instant. running behind is what makes
+the ordering right: a statement learned about late is placed where it happened rather than
+guessed at. between statements the replica renders locally at 60 fps, so the panel does no
+per-frame work for it at all.
+
 the preview is a **shadow**, not a snapshot: it runs the scene code at the
 scene's own rate — 60 hz for art, the next whole second for the clock, 33 ms
 for a scrolling layout — and reconciles against the device once a second. what

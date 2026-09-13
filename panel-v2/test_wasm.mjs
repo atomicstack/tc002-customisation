@@ -9,7 +9,7 @@ import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 
 const require = createRequire(import.meta.url);
 const here = dirname(fileURLToPath(import.meta.url));
@@ -356,6 +356,125 @@ test('an animated element ticks on the arbiter\'s clock', () => {
   const frames = [0, 100, 250, 450].map(dt => W.compose(canvasStatus, local, WALL + dt).rgb);
   const distinct = frames.filter((f, i) => i === 0 || bytesDiffering(frames[i - 1], f) !== 0);
   assert.ok(distinct.length > 1, 'a scramble must actually move between frames');
+});
+
+/* ---------- trigger replication ---------- */
+
+// the events below are the runtime agent's, copied from a real device run
+const REAL_EVENTS = [
+  { revision: 7, age_ms: 0, cmd: 'set_base', source: 'input', base: 'clock' },
+  { revision: 8, age_ms: 0, cmd: 'set_clock_style', source: 'input',
+    clock: { font: 'hires', colour_mode: 'solid', colour: 'ffffff', colour2: 'ffffff',
+             gradient: 'horizontal', spread: 255, digits: 'solid' } },
+  { revision: 9, age_ms: 0, cmd: 'brightness', source: 'api', brightness: 50 },
+];
+
+test('the replica follows a statement stream onto the same revision', () => {
+  W.reset('clock', 'popsquares', 1);
+  W.setRevision(6);
+  for (const ev of REAL_EVENTS) {
+    const r = W.applyStatement(ev, WALL);
+    assert.equal(r.ok, true, r.reason || '');
+    assert.equal(W.revision(), ev.revision, `after ${ev.cmd}`);
+  }
+  // and the statements actually reached the renderer, not just the counter. composed in follow
+  // mode, because a status poll re-applying its own view would undo what the stream just set —
+  // the label comes from the status document, so it is the pixels that have to be compared
+  const followed = W.compose({ base: 'clock', overlay: 'none', generator: 'popsquares', brightness: 100 },
+                             localWith(W), WALL, true).rgb.slice();
+  W.reset('clock', 'popsquares', 1);
+  const untouched = W.compose({ base: 'clock', overlay: 'none', generator: 'popsquares', brightness: 100 },
+                              localWith(W), WALL, true).rgb;
+  assert.notEqual(bytesDiffering(followed, untouched), 0, 'the hires clock style should have landed');
+});
+
+test('while following, a status poll does not undo what a statement set', () => {
+  // the stream owns base, generator, seed, clock style, ip layout and notifications; re-applying
+  // those from /status at 1 Hz would fight the replica. what the stream does not carry — the
+  // timezone, the canvas document, the device's ip — still comes from status in both modes
+  W.reset('clock', 'popsquares', 1);
+  W.setRevision(6);
+  W.applyStatement(REAL_EVENTS[1], WALL);          // set_clock_style -> hires
+  const status = { base: 'clock', overlay: 'none', generator: 'popsquares', brightness: 100,
+                   clock: { font: 'classic', colour_mode: 'solid', colour: 'ffffff',
+                            colour2: 'ffffff', gradient: 'horizontal', spread: 255, digits: 'solid' } };
+  const following = W.compose(status, localWith(W), WALL, true).rgb.slice();
+  const polling = W.compose(status, localWith(W), WALL, false).rgb;
+  assert.notEqual(bytesDiffering(following, polling), 0,
+                  'the status document says classic; following must keep the hires the stream set');
+});
+
+test('a missed statement is caught rather than silently applied', () => {
+  W.reset('clock', 'popsquares', 1);
+  W.setRevision(6);
+  assert.equal(W.applyStatement(REAL_EVENTS[0], WALL).ok, true);
+  // the device jumped ahead: something happened this replica never saw
+  const r = W.applyStatement({ revision: 42, age_ms: 0, cmd: 'brightness', source: 'knob', brightness: 80 }, WALL);
+  assert.equal(r.ok, false);
+  assert.match(r.reason, /device says 42/);
+});
+
+test('a raw frame is refused rather than faked, and so is anything unknown', () => {
+  W.reset('clock', 'popsquares', 1);
+  W.setRevision(0);
+  // the pixels are not on the wire and should not be invented
+  const raw = W.applyStatement({ revision: 1, age_ms: 0, cmd: 'raw', source: 'api', duration_s: 5 }, WALL);
+  assert.equal(raw.ok, false);
+  assert.match(raw.reason, /cannot be replicated/);
+  const bogus = W.applyStatement({ revision: 1, age_ms: 0, cmd: 'teleport', source: 'api' }, WALL);
+  assert.equal(bogus.ok, false);
+  assert.match(bogus.reason, /unknown statement/);
+});
+
+test('overlay_expired advances the revision without double-counting', () => {
+  // the overlay timing out is a real state change with a revision of its own, but the replica's
+  // own tick expires it: applying it again would move the arbiter twice
+  W.reset('clock', 'popsquares', 1);
+  W.setRevision(5);
+  const before = W.revision();
+  const r = W.applyStatement({ revision: 5, age_ms: 0, cmd: 'overlay_expired', source: 'renderer' }, WALL);
+  assert.equal(r.ok, true, r.reason || '');
+  assert.equal(W.revision(), before, 'the replica must not bump for it');
+});
+
+test('an event is placed at the instant it happened, not the instant it arrived', () => {
+  // a scrolling notification is the clearest case: where the text sits depends on when it began,
+  // so learning about it late has to move it back, not restart it. (a reseed would not do here —
+  // its timestamp changes nothing about the frame, only its seed does)
+  const status = { base: 'clock', overlay: 'notify', generator: 'popsquares', brightness: 100 };
+  const notifyAt = ageMs => {
+    W.reset('clock', 'popsquares', 1);
+    W.setRevision(0);
+    W.applyStatement({ revision: 1, age_ms: ageMs, cmd: 'notify', source: 'api',
+                       text: 'a much longer notification that scrolls', colour: '00ff88',
+                       duration_s: 60 }, 10_000);
+    return W.compose(status, localWith(W), 10_000, true).rgb.slice();
+  };
+  assert.notEqual(bytesDiffering(notifyAt(0), notifyAt(400)), 0,
+                  'age_ms must move where the statement is applied');
+});
+
+/* ---------- generator parameters ---------- */
+
+test('a generator draws the device\'s settings, not the catalogue defaults', () => {
+  // this is the cube-colour bug: the console read /config only to draw its sliders
+  const scenes = JSON.parse(readFileSync(join(here, 'scenes.json'), 'utf8'));
+  const status = { base: 'art', overlay: 'none', generator: 'cube', brightness: 100, seed: 1 };
+  W.reset('art', 'cube', 1);
+  const defaults = W.compose(status, localWith(W), WALL).rgb.slice();
+  const pushed = W.applyGeneratorParams(scenes, { generators: { cube: {
+    palette: 'poly', colour: 'ffffff', 'hue drift': 15, background: '000000',
+    spin: 'parallel', speed: 6, zoom: 100 } } });
+  assert.equal(pushed, 7, 'every cube parameter should have been pushed');
+  const configured = W.compose(status, localWith(W), WALL).rgb;
+  assert.notEqual(bytesDiffering(defaults, configured), 0, 'the settings must reach the renderer');
+});
+
+test('a parameter the catalogue does not describe is skipped, not guessed', () => {
+  const scenes = JSON.parse(readFileSync(join(here, 'scenes.json'), 'utf8'));
+  assert.equal(W.applyGeneratorParams(scenes, { generators: { cube: { nonesuch: 3 } } }), 0);
+  assert.equal(W.applyGeneratorParams(scenes, { generators: { cube: { palette: 'nonesuch' } } }), 0);
+  assert.equal(W.applyGeneratorParams(null, null), 0);
 });
 
 /* ---------- parity with the hand-written port, where it was still faithful ---------- */
