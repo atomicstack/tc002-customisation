@@ -20,6 +20,7 @@ const messages = @import("ipc/messages.zig");
 const codec = @import("ipc/codec.zig");
 const berry = @import("berry/vm.zig");
 const store = @import("berry/store.zig");
+const berry_api = @import("berry/api.zig");
 const config = @import("supervisor/config.zig");
 
 pub const panic = std.debug.simple_panic;
@@ -142,6 +143,14 @@ pub fn main(init: std.process.Init.Minimal) u8 {
         return 1;
     };
     defer vm.deinit();
+
+    // the natives, then the prelude that gathers them into the tc002 and panel modules
+    berry_api.emit = send;
+    berry_api.register(&vm);
+    if (vm.run("prelude", berry_api.prelude) != .ok) {
+        log.err("the prelude would not run: {s}", .{vm.errorText()});
+        return 1;
+    }
     log.info("berry up: {d} kb of heap, {d} ms per handler", .{ cfg.heap_kb, cfg.handler_ms });
     report();
 

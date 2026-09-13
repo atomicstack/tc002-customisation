@@ -385,6 +385,7 @@ const Supervisor = struct {
     berry_heard_ns: u64 = 0,
     berry_path: [:0]const u8 = "/tmp/tc002/tc002-berryd",
     berry_replacing: bool = false,
+    berry_seq: u64 = 0,
     /// a `PUT` waiting for berryd to say whether it compiles. one at a time: puts are rare, and a
     /// queue here would only buy the ability to have two broken scripts in flight at once.
     berry_pending: ?struct { request_id: u64, deadline_ns: u64 } = null,
@@ -1149,6 +1150,29 @@ const Supervisor = struct {
                     self.sendNetd(.{ .status = self.snapshot }, 0);
                 },
                 .berry_result => |r| self.onBerryResult(r),
+                // what a script asked the device to do. relayed with the supervisor's own epoch and
+                // an id from the high half of the space, exactly as an ntfy notification is: a
+                // script has no idea what the renderer's epoch is and should not have to.
+                .set_base, .brightness, .notify => {
+                    if (self.child_fd == null or lifecycle.state != .running) continue;
+                    var slot: ?*Relay = null;
+                    for (&self.relays) |*r| if (!r.used) {
+                        slot = r;
+                        break;
+                    };
+                    const r = slot orelse continue;
+                    self.berry_seq += 1;
+                    const id: u64 = 0xc000_0000_0000_0000 | self.berry_seq;
+                    if (!self.sendRenderer(p.message, id, lifecycle.epoch)) continue;
+                    r.* = .{ .used = true, .id = id, .deadline_ns = now + relay_timeout_ns, .from_ntfy = true };
+                },
+                .canvas => |v| {
+                    var next = v.doc;
+                    next.revision = self.canvas_doc.revision +% 1;
+                    self.installCanvas(next);
+                    self.sendCanvas();
+                    self.saveCanvas();
+                },
                 else => log.warn("unexpected {s} from berryd", .{@tagName(p.message)}),
             }
         }

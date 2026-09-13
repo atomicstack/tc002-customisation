@@ -11,6 +11,8 @@
 //! cannot reach it, so `zig build test` stays pure zig and needs no c toolchain.
 const std = @import("std");
 const berry = @import("berry/vm.zig");
+const berry_api = @import("berry/api.zig");
+const messages = @import("ipc/messages.zig");
 
 /// what the fixture under test printed. a fixed buffer rather than a list: the sink is a bare
 /// function pointer with nowhere to carry an allocator, and a fixture that prints more than this
@@ -45,6 +47,25 @@ fn steppingClock() u64 {
 }
 
 const fixture_budget_ns: u64 = 50 * std.time.ns_per_ms;
+
+/// what the fixtures asked the device to do. a script cannot see this, which is the point: the
+/// fixture calls tc002.scene('art') and the harness checks a set_base actually left the building.
+var emitted: [64]messages.Kind = undefined;
+var emitted_len: usize = 0;
+
+fn record(msg: messages.Message) void {
+    if (emitted_len == emitted.len) return;
+    emitted[emitted_len] = std.meta.activeTag(msg);
+    emitted_len += 1;
+}
+
+fn emittedCount(kind: messages.Kind) usize {
+    var n: usize = 0;
+    for (emitted[0..emitted_len]) |k| {
+        if (k == kind) n += 1;
+    }
+    return n;
+}
 
 pub fn main(init: std.process.Init) !void {
     const io = init.io;
@@ -93,6 +114,17 @@ pub fn main(init: std.process.Init) !void {
             failed += 1;
             continue;
         };
+        // the same bindings berryd installs, with the messages recorded instead of sent
+        emitted_len = 0;
+        berry_api.emit = record;
+        berry_api.doc = .{};
+        berry_api.register(&vm);
+        if (vm.run("prelude", berry_api.prelude) != .ok) {
+            std.debug.print("  {s}: the prelude would not run: {s}\n", .{ name, vm.errorText() });
+            failed += 1;
+            vm.deinit();
+            continue;
+        }
         const status = vm.runFor(name, source, fixture_budget_ns);
         const message = if (status != .ok) vm.errorText() else "";
 
@@ -107,6 +139,25 @@ pub fn main(init: std.process.Init) !void {
             std.debug.print("  {s}: {s}\n", .{ name, message });
             if (capture_len > 0) std.debug.print("    output: {s}\n", .{captured()});
             failed += 1;
+        } else if (try sidecar(io, arena, dir, name, ".emits")) |wanted| {
+            // one kind per line: the fixture says what it asked the device for, and the harness
+            // checks the message actually left rather than trusting the script's own account
+            var missing: usize = 0;
+            var lines = std.mem.tokenizeAny(u8, wanted, "\r\n");
+            while (lines.next()) |line| {
+                const trimmed = std.mem.trim(u8, line, " ");
+                if (trimmed.len == 0) continue;
+                const kind = std.meta.stringToEnum(messages.Kind, trimmed) orelse {
+                    std.debug.print("  {s}: .emits names an unknown message kind \"{s}\"\n", .{ name, trimmed });
+                    missing += 1;
+                    continue;
+                };
+                if (emittedCount(kind) == 0) {
+                    std.debug.print("  {s}: expected a {s} message, none was emitted\n", .{ name, trimmed });
+                    missing += 1;
+                }
+            }
+            if (missing > 0) failed += 1 else std.debug.print("  {s}: ok, {d} message(s) emitted\n", .{ name, emitted_len });
         } else if (try expectationFor(io, arena, dir, name)) |expected| {
             if (!std.mem.eql(u8, expected, captured())) {
                 std.debug.print("  {s}: printed \"{s}\", expected \"{s}\"\n", .{ name, captured(), expected });
@@ -138,8 +189,13 @@ pub fn main(init: std.process.Init) !void {
 
 /// the `.expected` file beside a fixture, when there is one
 fn expectationFor(io: std.Io, arena: std.mem.Allocator, dir: std.Io.Dir, name: []const u8) !?[]const u8 {
+    return sidecar(io, arena, dir, name, ".expected");
+}
+
+/// a file named after a fixture with a different extension
+fn sidecar(io: std.Io, arena: std.mem.Allocator, dir: std.Io.Dir, name: []const u8, ext: []const u8) !?[]const u8 {
     const stem = name[0 .. name.len - 3];
-    const path = try std.fmt.allocPrint(arena, "{s}.expected", .{stem});
+    const path = try std.fmt.allocPrint(arena, "{s}{s}", .{ stem, ext });
     return dir.readFileAlloc(io, path, arena, .limited(8 * 1024)) catch |e| switch (e) {
         error.FileNotFound => null,
         else => return e,

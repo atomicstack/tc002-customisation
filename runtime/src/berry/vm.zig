@@ -23,7 +23,7 @@ pub const Status = enum(c_int) {
     _,
 };
 
-const Bvm = opaque {};
+pub const Bvm = opaque {};
 
 extern fn be_vm_new() ?*Bvm;
 extern fn be_vm_delete(vm: *Bvm) void;
