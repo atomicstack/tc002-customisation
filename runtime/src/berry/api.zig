@@ -424,6 +424,29 @@ extern fn be_pushstring(vm: *Bvm, str: [*:0]const u8) void;
 extern fn be_pcall(vm: *Bvm, argc: c_int) c_int;
 extern fn be_pop(vm: *Bvm, n: c_int) void;
 
+test "a nul-terminated copy hands over the bytes, not the address of the pointer holding them" {
+    // berry takes `[*:0]const u8`, so every string handed to it is copied and terminated first.
+    // when those buffers moved off berryd's stack the copies stayed correct and `&buf` silently
+    // became a pointer *to the pointer*: berry then read the address's own bytes as a short string
+    // of garbage. nothing on the host noticed, because berryd's dispatch is not reachable from
+    // these tests -- the device said `topic=` and three bytes of rubbish. this is that mistake
+    // made impossible to write.
+    var buf: [16]u8 = undefined;
+    try std.testing.expectEqualStrings("home/x", std.mem.span(zcopy(&buf, "home/x")));
+    try std.testing.expectEqualStrings("", std.mem.span(zcopy(&buf, "")));
+    // and it never runs off the end: the terminator has to fit
+    try std.testing.expectEqualStrings("0123456789abcde", std.mem.span(zcopy(&buf, "0123456789abcdefghij")));
+}
+
+/// a nul-terminated copy of `s` in `buf`, and the pointer to hand berry. always pass the buffer,
+/// never the address of a variable holding a pointer to it.
+pub fn zcopy(buf: []u8, s: []const u8) [*:0]const u8 {
+    const n = @min(s.len, buf.len - 1);
+    @memcpy(buf[0..n], s[0..n]);
+    buf[n] = 0;
+    return @ptrCast(buf.ptr);
+}
+
 /// one argument to a handler: berry is dynamically typed, and these are the only shapes anything
 /// here needs to pass it
 pub const Arg = union(enum) { none, int: i64, text: [*:0]const u8 };

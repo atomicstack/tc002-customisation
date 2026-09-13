@@ -222,26 +222,17 @@ pub fn main(init: std.process.Init.Minimal) u8 {
                                 var payload: [messages.BerryEvent.payload_max + 1]u8 = undefined;
                                 var filter: [messages.BerryEvent.topic_max + 1]u8 = undefined;
                             };
-                            const topic_z = &z.topic;
-                            const payload_z = &z.payload;
-                            const filter_z = &z.filter;
-                            const fl = e.filterSlice();
-                            @memcpy(filter_z[0..fl.len], fl);
-                            filter_z[fl.len] = 0;
-                            const t = e.topicSlice();
-                            const pl = e.payloadSlice();
-                            @memcpy(topic_z[0..t.len], t);
-                            topic_z[t.len] = 0;
-                            @memcpy(payload_z[0..pl.len], pl);
-                            payload_z[pl.len] = 0;
+                            const topic_z = berry_api.zcopy(&z.topic, e.topicSlice());
+                            const payload_z = berry_api.zcopy(&z.payload, e.payloadSlice());
+                            const filter_z = berry_api.zcopy(&z.filter, e.filterSlice());
                             const which: []const u8 = if (e.kind == @intFromEnum(messages.BerryEvent.Op.ntfy)) "ntfy" else "mqtt";
                             if (!berry_api.callGlobal(&vm, "_tc002_dispatch", &.{
                                 .{ .text = if (std.mem.eql(u8, which, "ntfy")) "ntfy" else "mqtt" },
-                                .{ .text = @ptrCast(&topic_z) },
-                                .{ .text = @ptrCast(&payload_z) },
+                                .{ .text = topic_z },
+                                .{ .text = payload_z },
                                 // the filter that matched, so a handler registered with
                                 // `tc002.subscribe(filter, f)` hears only its own topics
-                                .{ .text = @ptrCast(&filter_z) },
+                                .{ .text = filter_z },
                             }, budget_ns)) {
                                 log.warn("a {s} handler failed: {s}", .{ which, vm.errorText() });
                                 vm.clearError();
