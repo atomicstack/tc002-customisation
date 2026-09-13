@@ -181,8 +181,21 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         if path == "/tokens":
             return self._tokens()
         if path in STATIC_ALLOW:
+            # index.html and sim-wasm.js change together, so a browser holding an old copy of one
+            # against a new copy of the other fails in a way that reads as a code bug. drop any
+            # revalidation the browser offers and mark the answer uncacheable: this is a tool on
+            # localhost, and a stale asset costs far more than the fetch does
+            self.headers.replace_header("If-Modified-Since", "") if "If-Modified-Since" in self.headers else None
+            self.headers.replace_header("If-None-Match", "") if "If-None-Match" in self.headers else None
+            self._static = True
             return super().do_GET()
         return self._json(404, {"error": "not_found", "message": f"no such route: {path}"})
+
+    def end_headers(self):
+        # only the static path: the proxy and the json helpers send their own Cache-Control
+        if getattr(self, "_static", False):
+            self.send_header("Cache-Control", "no-store")
+        super().end_headers()
 
     def do_POST(self):
         if self.path.startswith("/api/"):

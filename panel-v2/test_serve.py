@@ -830,6 +830,50 @@ class EventStreamTests(unittest.TestCase):
             self.assertIn(b'"revision":8', r.readline())
 
 
+class StaticCacheTests(unittest.TestCase):
+    """the console's own files must never be cached.
+
+    index.html and sim-wasm.js change together — the page calls into the loader — so a browser
+    holding an old copy of one against a new copy of the other fails with something like
+    `S.setRevision is not a function`, which reads as a code bug and is not one. this is a tool
+    served from localhost; revalidating costs nothing and a stale asset costs an hour."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls._log = serve.Handler.log_message
+        serve.Handler.log_message = lambda *a, **k: None
+        cls.proxy = serve.make_server(0, {"control": None, "admin": None}, HERE)
+        cls.port = cls.proxy.server_address[1]
+        threading.Thread(target=cls.proxy.serve_forever, daemon=True).start()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.proxy.shutdown(); cls.proxy.server_close()
+        serve.Handler.log_message = cls._log
+
+    def test_every_static_file_is_served_uncacheable(self):
+        for path in ("/", "/index.html", "/sim-wasm.js", "/tc002-panel.wasm"):
+            # the wasm is generated, so a checkout that has not run `zig build wasm` has none
+            if path == "/tc002-panel.wasm" and not os.path.exists(os.path.join(HERE, path[1:])):
+                continue
+            with self.subTest(path=path):
+                with urllib.request.urlopen(f"http://127.0.0.1:{self.port}{path}", timeout=5) as r:
+                    self.assertEqual(r.status, 200)
+                    self.assertEqual(r.headers.get("Cache-Control"), "no-store", path)
+
+    def test_a_conditional_request_is_not_answered_with_304(self):
+        # SimpleHTTPRequestHandler answers If-Modified-Since with a 304 by default, which is the
+        # other half of the same problem: no body, so the browser keeps what it had
+        url = f"http://127.0.0.1:{self.port}/sim-wasm.js"
+        with urllib.request.urlopen(url, timeout=5) as r:
+            modified = r.headers.get("Last-Modified")
+        if modified is None:
+            return self.skipTest("no Last-Modified to revalidate against")
+        req = urllib.request.Request(url, headers={"If-Modified-Since": modified})
+        with urllib.request.urlopen(req, timeout=5) as r:
+            self.assertEqual(r.status, 200, "a revalidation must return the file, not a 304")
+
+
 class CatalogueTests(unittest.TestCase):
     """panel-v2/scenes.json is generated from the runtime's tables; a stale copy is the exact bug
     this whole arrangement exists to stop, so it is checked rather than trusted."""

@@ -138,10 +138,8 @@ export fn setGeneratorParam(owner: u32, slot: u32, value: u32) void {
 export fn armStream(now_ms: f64) void {
     _ = arb.apply(.arm_stream, toNs(now_ms));
 }
-/// the replica's position in the statement stream, to compare with the revision an event carries
-export fn revisionOf() u32 {
-    return arb.revision;
-}
+/// put the replica where the device is, at bootstrap and after a resync. reading it back is
+/// `revision()`, which was already here.
 export fn setRevision(v: u32) void {
     arb.revision = v;
 }

@@ -381,7 +381,7 @@
     if (fn === null) return { ok: false, reason: `${ev.cmd} cannot be replicated from the stream` };
     if (fn === undefined) return { ok: false, reason: `unknown statement ${ev.cmd}` };
     fn(e, { ...ev, at });
-    const got = e.revisionOf();
+    const got = e.revision();
     if (got !== ev.revision) {
       // the device applied something this replica did not, or the other way about
       return { ok: false, reason: `revision ${got} after ${ev.cmd}, device says ${ev.revision}` };
@@ -390,7 +390,6 @@
   }
 
   /* the replica's position, and how to put it where the device is after a bootstrap or resync */
-  const revision = () => need().revisionOf();
   const setRevision = v => need().setRevision(v >>> 0);
 
   /* ---------- agreement: the shadow, checked against the device ----------
@@ -445,7 +444,7 @@
     WIDTH, HEIGHT, PIXELS, RGB_BYTES, WHITE, black, pixelOffset,
     ready, loaded, buildLut, tzParse, TZ_UTC, Art, compose, sceneParams, renderIpLayout,
     agreement, anchorClock, deviceNow, installCanvas, clearCanvas, canvasEmpty, canvasAnimated,
-    applyStatement, revision, setRevision, applyGeneratorParams,
+    applyStatement, setRevision, applyGeneratorParams,
     canvasBackdated,
     get lastCanvasResult() { return lastCanvasResult; },
     get clockSkewMs() { return clockSkewMs; },
