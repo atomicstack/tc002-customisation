@@ -11,6 +11,7 @@ const sse = @import("net/sse.zig");
 const sound_store = @import("sound/store.zig");
 const api = @import("net/api.zig");
 const clients = @import("net/clients.zig");
+const berry_store = @import("berry/store.zig");
 const json = @import("net/json.zig");
 const mqtt = @import("net/mqtt.zig");
 const messages = @import("ipc/messages.zig");
@@ -68,7 +69,7 @@ const mqtt_frame_envelope = 8 + 4 + 2 + geometry.rgb_bytes;
 const Tag = enum(u64) { timer = 1, supervisor = 2, listener = 3, mqtt = 4, conn_base = 16 };
 
 const ConnState = enum { free, reading, relaying, writing, streaming };
-const Awaiting = enum { none, renderer_result, status, config, save_result, screen, logs, canvas, sprites, berry_scripts, berry_result, sound_list, sound_result, client_result };
+const Awaiting = enum { none, renderer_result, status, config, save_result, screen, logs, canvas, sprites, berry_scripts, berry_source, berry_result, sound_list, sound_result, client_result };
 
 /// as many script topics as netd will hold. the supervisor enforces the same bound; this is the
 /// copy that does the subscribing.
@@ -552,6 +553,7 @@ const Netd = struct {
             .sound_play => |sp| self.ask(c, .{ .sound_cmd = messages.SoundCmd.init(.play, sp.name, sp.volume orelse 0, sp.loop) }, .sound_result, now),
             .sound_stop => self.ask(c, .{ .sound_cmd = messages.SoundCmd.init(.stop, "", 0, false) }, .sound_result, now),
             .berry_list => self.ask(c, .berry_list_get, .berry_scripts, now),
+            .berry_get => |b| self.ask(c, .{ .berry_script_get = .{ .name = berry_store.Name.init(b.name) } }, .berry_source, now),
             .berry_put => |b| self.ask(c, .{ .berry_script = messages.BerryScript.init(.put, b.name, b.source) }, .berry_result, now),
             .berry_delete => |b| self.ask(c, .{ .berry_script = messages.BerryScript.init(.delete, b.name, "") }, .berry_result, now),
             .scenes => {
@@ -932,6 +934,19 @@ const Netd = struct {
         self.flushConn(c, now);
     }
 
+    /// one stored script, as text. an empty echoed name is the supervisor saying there is none of
+    /// that name -- unambiguous even for a script whose source is zero bytes.
+    fn onBerrySource(self: *Netd, request_id: u64, b: messages.BerryScript, now: u64) void {
+        const c = self.findConn(true, request_id) orelse return;
+        if (b.name.len == 0) {
+            self.respondError(c, 404, "not_found", "no script of that name");
+        } else {
+            // text/plain, exactly as it was stored and exactly what PUT accepts back
+            self.respond(c, 200, "text/plain; charset=utf-8", b.source[0..b.len]);
+        }
+        self.flushConn(c, now);
+    }
+
     fn onClientResult(self: *Netd, request_id: u64, r: messages.ClientResult, now: u64) void {
         const c = self.findConn(true, request_id) orelse return;
         switch (r.status) {
@@ -1031,6 +1046,7 @@ const Netd = struct {
                 .result => |r| self.onResult(p.request_id, r, now),
                 .save_result => |r| self.onSaveResult(p.request_id, r, now),
                 .client_result => |r| self.onClientResult(p.request_id, r, now),
+                .berry_script => |b| self.onBerrySource(p.request_id, b, now),
                 .canvas => |*d| self.onCanvas(p.request_id, d, now),
                 .canvas_error => |e| self.onCanvasError(p.request_id, e, now),
                 .sprite_list => |*l| self.onSpriteList(p.request_id, l, now),

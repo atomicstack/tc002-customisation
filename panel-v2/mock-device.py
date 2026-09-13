@@ -261,6 +261,8 @@ class Device:
         self.boot_id = secrets.token_hex(4)
         self.epoch, self.revision, self.minted = 1, 0, 0
         self.clients = []  # named api tokens: {name, role, token, created_s, last_used_s}
+        self.scripts = {}  # berry scripts: name -> source
+        self.berry_enabled = False
         self.base, self.generator, self.brightness = "art", "popsquares", 100
         self.power = True
         self.clock = dict(DEFAULT_CLOCK)   # the effective style: the durable defaults, or a transient scene block over them
@@ -457,6 +459,37 @@ class Device:
         return {"enabled": False, "connected": False, "state": "disconnected", "reconnect_delay_s": 0, "reconnects": self.reconnects, "last_error": ""}
 
     # commands (all validated; every accepted one bumps the renderer revision)
+
+    def berry_list(self):
+        return {"enabled": self.berry_enabled,
+                "scripts": [{"name": n, "bytes": len(src)} for n, src in sorted(self.scripts.items())],
+                "used": sum(len(v) for v in self.scripts.values()), "capacity": BERRY_BUDGET}
+
+    def berry_get(self, name):
+        if not valid_script_name(name):
+            raise Reject(400, "invalid_script_name", "a script name is 1..32 of letters, digits, -, _ or .")
+        if name not in self.scripts:
+            raise Reject(404, "not_found", "no script of that name")
+        return self.scripts[name]
+
+    def berry_put(self, name, source):
+        if not valid_script_name(name):
+            raise Reject(400, "invalid_script_name", "a script name is 1..32 of letters, digits, -, _ or .")
+        if len(source) > SCRIPT_MAX:
+            raise Reject(413, "body_too_large", f"a script is at most {SCRIPT_MAX} bytes")
+        used = sum(len(v) for n, v in self.scripts.items() if n != name)
+        if used + len(source) > BERRY_BUDGET:
+            raise Reject(409, "conflict", "the script store is full")
+        self.scripts[name] = source
+        self.log(f"script stored: {name} ({len(source)} bytes)")
+        return self.berry_list()
+
+    def berry_delete(self, name):
+        if name not in self.scripts:
+            raise Reject(404, "not_found", "no script of that name")
+        del self.scripts[name]
+        self.log(f"script deleted: {name}")
+        return self.berry_list()
 
     def client_by_token(self, token):
         for c in self.clients:
@@ -828,13 +861,23 @@ ROUTES = {("GET", "status"): "read", ("GET", "scenes"): "read", ("PUT", "scene")
           ("GET", "canvas"): "read", ("PUT", "canvas"): "admin",
           ("PATCH", "canvas"): "control", ("DELETE", "canvas"): "control",
           # named client tokens: admin only, all three
-          ("GET", "tokens"): "admin", ("POST", "tokens"): "admin"}
+          ("GET", "tokens"): "admin", ("POST", "tokens"): "admin",
+          # berry: the vm's state and the script list read at control, writes are admin
+          ("GET", "berry"): "control", ("GET", "berry/scripts"): "control"}
 
 
 # mirrors the device, where this is derived from what a listing fits in one response buffer
 # (net/clients.zig). it cannot be derived here, so it is copied: if the device's number moves,
 # move this with it, or capacity testing against the mock quietly disagrees with the real thing.
 MAX_CLIENTS = 99
+# mirrors runtime/src/berry/store.zig
+SCRIPT_MAX = 8000
+BERRY_BUDGET = 64 * 1024
+SCRIPT_NAME_RE = re.compile(r"^[a-zA-Z0-9_.-]{1,32}$")
+
+
+def valid_script_name(name):
+    return bool(SCRIPT_NAME_RE.match(name)) and not name.startswith(".")
 NAME_RE = re.compile(r"^[a-zA-Z0-9_.-]{1,32}$")
 
 
@@ -847,6 +890,12 @@ def route_lookup(method, endpoint):
     """(authority, known) for an endpoint, mirroring the runtime's route(): stream routes are a
     path family (`streams`, `streams/{id}`, `streams/{id}/palette`) matched by pattern, not by an
     exact (method, endpoint) pair, so they cannot live in the ROUTES table."""
+    if endpoint.startswith("berry/scripts/"):
+        rest = endpoint[len("berry/scripts/"):]
+        if "/" not in rest and rest:
+            # reading a script is control like the listing; writing and deleting are admin
+            return {"GET": "control", "PUT": "admin", "DELETE": "admin"}.get(method), True
+        return None, True
     if endpoint.startswith("tokens/"):
         rest = endpoint[len("tokens/"):]
         if "/" not in rest and rest:
@@ -883,6 +932,14 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
     def _applied(self, revision, rid):
         self._send(200, {"status": "applied", "revision": revision, "epoch": self.server.device.epoch, "request_id": "%016x" % rid})
+
+    def _send_text(self, status, text):
+        payload = text.encode()
+        self.send_response(status)
+        self.send_header("Content-Type", "text/plain; charset=utf-8")
+        self.send_header("Content-Length", str(len(payload)))
+        self.end_headers()
+        self.wfile.write(payload)
 
     def _json_body(self, schema):
         n = int(self.headers.get("Content-Length") or 0)
@@ -957,6 +1014,22 @@ class Handler(http.server.BaseHTTPRequestHandler):
             return self._error(503, "not_implemented", "stream sessions are not available in this release")
         try:
             with d.lock:
+                if endpoint == "berry":
+                    return self._send(200, {"enabled": d.berry_enabled, "running": False, "restarts": 0})
+                if endpoint == "berry/scripts":
+                    return self._send(200, d.berry_list())
+                if endpoint.startswith("berry/scripts/"):
+                    name = endpoint[len("berry/scripts/"):]
+                    if method == "GET":
+                        # text/plain, exactly as stored and exactly what PUT takes back
+                        return self._send_text(200, d.berry_get(name))
+                    if method == "DELETE":
+                        return self._send(200, d.berry_delete(name))
+                    n = int(self.headers.get("Content-Length") or 0)
+                    ct = (self.headers.get("Content-Type") or "").split(";")[0].strip().lower()
+                    if ct != "text/plain":
+                        raise Reject(415, "unsupported_media_type", "a script is text/plain")
+                    return self._send(200, d.berry_put(name, self.rfile.read(n).decode("utf-8", "replace")))
                 if endpoint == "tokens" and method == "GET":
                     return self._send(200, d.client_list())
                 if endpoint == "tokens" and method == "POST":

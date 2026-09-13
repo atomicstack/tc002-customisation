@@ -1809,6 +1809,17 @@ const Supervisor = struct {
                     log.info("client token issued: {s} ({s})", .{ a.name.slice(), @tagName(role) });
                     self.sendNetd(.{ .client_result = .{ .status = .applied, .name = a.name, .role = a.role, .token = token } }, p.request_id);
                 },
+                .berry_script_get => |g| {
+                    // reply with the script, or with an empty name meaning there is none
+                    var out = messages.BerryScript{};
+                    var it = script_store.iterate();
+                    while (it.next()) |e| {
+                        if (!std.mem.eql(u8, e.name, g.name.slice())) continue;
+                        out = messages.BerryScript.init(.put, e.name, e.source);
+                        break;
+                    }
+                    self.sendNetd(.{ .berry_script = out }, p.request_id);
+                },
                 .client_rotate => |r| {
                     var token: api.Token = undefined;
                     sys.getrandom(&token) catch {

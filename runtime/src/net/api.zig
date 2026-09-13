@@ -133,6 +133,7 @@ pub const Op = union(enum) {
     /// a script's source, compiled before it is stored
     berry_put: struct { name: []const u8, source: []const u8 },
     berry_delete: struct { name: []const u8 },
+    berry_get: struct { name: []const u8 },
     sprite_put: canvas.Sprite,
     sprite_delete: canvas.Id,
 };
@@ -743,6 +744,9 @@ pub fn route(req: http.Request, body: []const u8, creds: *const Credentials, sto
         if (std.mem.indexOfScalar(u8, rest, '/') == null and rest.len > 0) {
             // both are admin: a script can drive the panel and publish to the broker, which is a
             // different thing to hand out than the ability to read what is on the screen
+            // reading a script is control, matching the list: a split where a token may enumerate
+            // names but not read them protects little, and an editor needs admin to save anyway.
+            if (req.method == .GET) matched = .{ .method = .GET, .path = "/api/v1/berry/scripts/{name}", .authority = .control };
             if (req.method == .PUT) matched = .{ .method = .PUT, .path = "/api/v1/berry/scripts/{name}", .authority = .admin };
             if (req.method == .DELETE) matched = .{ .method = .DELETE, .path = "/api/v1/berry/scripts/{name}", .authority = .admin };
         }
@@ -786,6 +790,7 @@ pub fn route(req: http.Request, body: []const u8, creds: *const Credentials, sto
     if (std.mem.eql(u8, ep.path, "/api/v1/berry/scripts/{name}")) {
         const name = req.path["/api/v1/berry/scripts/".len..];
         if (!berry_store.validName(name)) return bad("invalid_script_name", "a name is 1 to 32 characters of letters, digits, dash, underscore and dot");
+        if (req.method == .GET) return .{ .op = .{ .berry_get = .{ .name = name } } };
         if (req.method == .DELETE) return .{ .op = .{ .berry_delete = .{ .name = name } } };
         if (!isText(req.content_type)) return .{ .reject = .{ .status = 415, .code = "unsupported_media_type", .message = "a script is text/plain" } };
         if (body.len > berry_store.script_max) return .{ .reject = .{ .status = 413, .code = "body_too_large", .message = "a script is at most 8000 bytes" } };
@@ -1895,4 +1900,28 @@ test "rotation is its own route, and never a silent overwrite of create" {
     try expectReject(R.go(&c, &origins, &arena, .POST, "/api/v1/tokens/has space/rotate", admin_header, ""), 400, "invalid_name");
     try expectReject(R.go(&c, &origins, &arena, .POST, "/api/v1/tokens/kitchen/rotate", admin_header, "{\"role\":\"admin\"}"), 400, "invalid_role");
     try expectReject(R.go(&c, &origins, &arena, .GET, "/api/v1/tokens/kitchen/rotate", admin_header, ""), 405, "method_not_allowed");
+}
+
+test "a stored script can be read back, at the same authority as the listing" {
+    const c = testCreds();
+    var arena: Arena = undefined;
+    const origins = OriginPolicy{};
+    const R = struct {
+        fn go(cc: *const Credentials, o: *const OriginPolicy, a: *Arena, m: http.Method, path: []const u8, hdr: []const u8) Route {
+            return route(testReq(m, path, "", hdr, null, null), "", cc, &no_clients, o, a, test_minted);
+        }
+    };
+    const got = R.go(&c, &origins, &arena, .GET, "/api/v1/berry/scripts/autoexec", control_header);
+    try std.testing.expectEqualStrings("autoexec", got.op.berry_get.name);
+    // the list is control, so reading one is too -- writing one is still admin. asserted through
+    // the router rather than the endpoint table, because a `{name}` route is matched dynamically
+    // and does not appear in it.
+    try expectReject(R.go(&c, &origins, &arena, .DELETE, "/api/v1/berry/scripts/autoexec", control_header), 403, "forbidden");
+    try std.testing.expect(R.go(&c, &origins, &arena, .DELETE, "/api/v1/berry/scripts/autoexec", admin_header) == .op);
+    try std.testing.expect(R.go(&c, &origins, &arena, .GET, "/api/v1/berry/scripts/autoexec", admin_header) == .op);
+    // a read token is below the listing's authority and so below this one
+    var store = clients.Store{};
+    try store.add("wall", .read, [_]u8{0x77} ** 32, 1);
+    try expectReject(route(testReq(.GET, "/api/v1/berry/scripts/autoexec", "", "Bearer " ++ "77" ** 32, null, null), "", &c, &store, &origins, &arena, test_minted), 403, "forbidden");
+    try expectReject(R.go(&c, &origins, &arena, .GET, "/api/v1/berry/scripts/has space", control_header), 400, "invalid_script_name");
 }

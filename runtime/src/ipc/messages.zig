@@ -370,6 +370,10 @@ pub const Kind = enum(u8) {
     /// replace a client's secret in place. not add-then-remove: at capacity there is no free slot
     /// to add into, which is exactly when rotation matters most.
     client_rotate = 81,
+    /// netd -> supervisor: read one stored script back. the reply is a `berry_script`; an empty
+    /// echoed name means there is no script of that name, which stays unambiguous even for a
+    /// script whose source is zero bytes.
+    berry_script_get = 82,
     /// supervisor -> netd: the outcome, carrying the new secret on an issue. this is the only
     /// message a token ever travels back in, and netd returns it to the caller exactly once.
     client_result = 80,
@@ -1158,6 +1162,23 @@ pub const ClientRemove = struct {
     }
 };
 
+/// just a script name, for asking after one
+pub const BerryName = struct {
+    pub const wire_len = 1 + store.name_max;
+    name: store.Name = .{},
+
+    pub fn put(self: BerryName, out: []u8) void {
+        out[0] = self.name.len;
+        @memcpy(out[1..][0..store.name_max], &self.name.bytes);
+    }
+    pub fn get(b: []const u8) BerryName {
+        var n = BerryName{};
+        n.name.len = @min(b[0], store.name_max);
+        @memcpy(&n.name.bytes, b[1..][0..store.name_max]);
+        return n;
+    }
+};
+
 pub const ClientRotate = struct {
     pub const wire_len = 1 + clients.name_max + 1 + 1;
     name: clients.Name = .{},
@@ -1927,6 +1948,7 @@ pub const Message = union(Kind) {
     client_add: ClientAdd,
     client_remove: ClientRemove,
     client_rotate: ClientRotate,
+    berry_script_get: BerryName,
     client_result: ClientResult,
 };
 
@@ -2089,6 +2111,10 @@ fn encodePayload(msg: Message, out: []u8) usize {
         .client_rotate => |r| {
             r.put(out);
             return ClientRotate.wire_len;
+        },
+        .berry_script_get => |n| {
+            n.put(out);
+            return BerryName.wire_len;
         },
         .client_result => |r| {
             r.put(out);
@@ -2575,6 +2601,9 @@ pub fn decodePacket(bytes: []const u8) Error!Packet {
         },
         .client_rotate => blk: {
             break :blk .{ .client_rotate = ClientRotate.get(try fixed(p, ClientRotate.wire_len)) };
+        },
+        .berry_script_get => blk: {
+            break :blk .{ .berry_script_get = BerryName.get(try fixed(p, BerryName.wire_len)) };
         },
         .client_result => blk: {
             break :blk .{ .client_result = try ClientResult.get(try fixed(p, ClientResult.wire_len)) };

@@ -216,8 +216,14 @@ been handed the whole set. that is what makes a script survive a power cycle.
 |---|---|---|---|
 | `GET` | `/api/v1/berry` | control | — `{"state","heap_bytes","heap_used","heap_high_water","alloc_failures","stops"}` |
 | `GET` | `/api/v1/berry/scripts` | control | — `{"used","budget","scripts":[{"name","bytes","compiled"}…]}` |
+| `GET` | `/api/v1/berry/scripts/{name}` | control | — the source as `text/plain`, or 404 |
 | `PUT` | `/api/v1/berry/scripts/{name}` | **admin** | `text/plain`, at most 8,000 bytes |
 | `DELETE` | `/api/v1/berry/scripts/{name}` | **admin** | — |
+
+reading a script back is **control**, the same as listing them: a split where a
+token could enumerate names but not read them protects little, and an editor
+needs admin to save anyway. the source comes back byte for byte as stored, so
+`GET` then `PUT` is a faithful round trip.
 
 writing a script needs the **admin** token, not the control token: a script can
 drive the panel for ever, so storing one is a different kind of act from sending
