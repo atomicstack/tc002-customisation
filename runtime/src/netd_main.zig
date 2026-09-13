@@ -52,7 +52,7 @@ const in_buf_len = http.max_head + json.max_body;
 // each element carrying its placement, colour, animation and age. rendered as json that reaches
 // about 10 kb, so a buffer of 4 kb could not return a full document at all -- a client could
 // create a canvas it was unable to read back. measured, not estimated: see runtime.md.
-const out_buf_len = 13312;
+const out_buf_len = http.response_buf_len;
 const request_timeout_ns: u64 = 5 * ns_per_s;
 const idle_timeout_ns: u64 = 10 * ns_per_s;
 /// a quiet stream writes a comment this often, inside the idle window. the write is the point: it
@@ -68,7 +68,7 @@ const mqtt_frame_envelope = 8 + 4 + 2 + geometry.rgb_bytes;
 const Tag = enum(u64) { timer = 1, supervisor = 2, listener = 3, mqtt = 4, conn_base = 16 };
 
 const ConnState = enum { free, reading, relaying, writing, streaming };
-const Awaiting = enum { none, renderer_result, status, config, save_result, screen, logs, canvas, sprites, berry_scripts, berry_result, sound_list, sound_result };
+const Awaiting = enum { none, renderer_result, status, config, save_result, screen, logs, canvas, sprites, berry_scripts, berry_result, sound_list, sound_result, client_result };
 
 /// as many script topics as netd will hold. the supervisor enforces the same bound; this is the
 /// copy that does the subscribing.
@@ -585,6 +585,20 @@ const Netd = struct {
                 self.ask(c, .{ .config_patch = w }, .config, now);
             },
             .config_save => |s| self.ask(c, .{ .config_save = .{ .has_revision = @intFromBool(s.revision != null), .revision = s.revision orelse 0 } }, .save_result, now),
+            // the listing is answered from netd's own copy: it already holds the whole set, so a
+            // round trip to the supervisor would tell it nothing it does not know.
+            .client_list => {
+                const listing = clients.renderList(&self.clients, &json_buf) orelse {
+                    self.respondError(c, 500, "internal", "the client listing did not fit a response");
+                    self.flushConn(c, now);
+                    return;
+                };
+                self.respond(c, 200, "application/json", listing);
+                self.flushConn(c, now);
+            },
+            // issuing and revoking go to the supervisor, which owns the file and is its only writer
+            .client_add => |a| self.ask(c, .{ .client_add = .{ .name = clients.Name.init(a.name), .role = @intFromEnum(a.role) } }, .client_result, now),
+            .client_remove => |r| self.ask(c, .{ .client_remove = .{ .name = clients.Name.init(r.name) } }, .client_result, now),
             .mqtt_get => {
                 if (!self.have_cfg) {
                     self.respondError(c, 503, "not_ready", "settings not received yet");
@@ -894,6 +908,33 @@ const Netd = struct {
         self.flushConn(c, now);
     }
 
+    fn onClientResult(self: *Netd, request_id: u64, r: messages.ClientResult, now: u64) void {
+        const c = self.findConn(true, request_id) orelse return;
+        switch (r.status) {
+            .applied => {
+                // an issue carries the secret, a revoke does not. this is the only time a token is
+                // ever returned, so the caller gets one chance to keep it.
+                var o = Out{ .buf = &json_buf };
+                if (std.mem.allEqual(u8, &r.token, 0)) {
+                    const listing = clients.renderList(&self.clients, &json_buf) orelse {
+                        self.respondError(c, 500, "internal", "the client listing did not fit a response");
+                        self.flushConn(c, now);
+                        return;
+                    };
+                    self.respond(c, 200, "application/json", listing);
+                } else {
+                    const role: clients.Role = if (r.role == @intFromEnum(clients.Role.control)) .control else .read;
+                    o.fmt("{{\"name\":\"{s}\",\"role\":\"{s}\",\"token\":\"{x}\"}}", .{ r.name.slice(), @tagName(role), &r.token });
+                    self.respond(c, 200, "application/json", o.slice());
+                }
+            },
+            .conflict => self.respondError(c, 409, "conflict", "that name is taken, or the client store is full"),
+            .rejected => self.respondError(c, 404, "not_found", "no client of that name"),
+            else => self.respondError(c, 503, "unavailable", "the client store is unavailable"),
+        }
+        self.flushConn(c, now);
+    }
+
     fn onSaveResult(self: *Netd, request_id: u64, r: messages.SaveResult, now: u64) void {
         const c = self.findConn(true, request_id) orelse return;
         switch (r.status) {
@@ -957,6 +998,7 @@ const Netd = struct {
                 .status => |st| self.onStatus(p.request_id, st, now),
                 .result => |r| self.onResult(p.request_id, r, now),
                 .save_result => |r| self.onSaveResult(p.request_id, r, now),
+                .client_result => |r| self.onClientResult(p.request_id, r, now),
                 .canvas => |*d| self.onCanvas(p.request_id, d, now),
                 .canvas_error => |e| self.onCanvasError(p.request_id, e, now),
                 .sprite_list => |*l| self.onSpriteList(p.request_id, l, now),

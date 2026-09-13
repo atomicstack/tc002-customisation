@@ -98,6 +98,9 @@ pub const Op = union(enum) {
     /// one chunk of a sound on its way to the store; `final` commits what has been assembled
     sound_put: struct { name: []const u8, offset: u32, final: bool, data: []const u8 },
     sound_delete: struct { name: []const u8 },
+    client_list,
+    client_add: struct { name: []const u8, role: clients.Role },
+    client_remove: struct { name: []const u8 },
     sound_play: struct { name: []const u8, volume: ?u8, loop: bool },
     sound_stop,
     /// a remote control event: the same paths as a physical press
@@ -227,6 +230,7 @@ const ClockBody = struct { font: ?[]const u8 = null, colour_mode: ?[]const u8 = 
 /// table says how to read it: a choice by its name, a colour as rrggbb, a number in decimal, a
 /// toggle as on or off. `GET /scenes` publishes the table, so a client needs nothing else.
 const GenParamBody = struct { scene: []const u8, name: []const u8, value: []const u8 };
+const TokensBody = struct { name: []const u8, role: []const u8 };
 const SceneBody = struct { base: []const u8, generator: ?[]const u8 = null, seed: ?u32 = null, clock: ?ClockBody = null, transition: ?[]const u8 = null, direction: ?[]const u8 = null, transition_ms: ?u32 = null, exit: ?[]const u8 = null, request_id: ?[]const u8 = null, epoch: ?u32 = null };
 const ActionBody = struct { action: []const u8, brightness: ?u8 = null, seed: ?u32 = null, power: ?bool = null, request_id: ?[]const u8 = null, epoch: ?u32 = null };
 const InputBody = struct { control: []const u8, event: []const u8, steps: u8 = 1, request_id: ?[]const u8 = null, epoch: ?u32 = null };
@@ -672,6 +676,10 @@ const endpoints = [_]Endpoint{
     .{ .method = .GET, .path = "/api/v1/berry", .authority = .control },
     .{ .method = .GET, .path = "/api/v1/berry/scripts", .authority = .control },
     .{ .method = .POST, .path = "/api/v1/input", .authority = .control },
+    // named client tokens. admin for all three: issuing is how access is granted, and a token
+    // that could issue tokens would make revocation meaningless.
+    .{ .method = .GET, .path = "/api/v1/tokens", .authority = .admin },
+    .{ .method = .POST, .path = "/api/v1/tokens", .authority = .admin },
 };
 
 /// `text/plain`, with or without a charset parameter
@@ -703,6 +711,14 @@ pub fn route(req: http.Request, body: []const u8, creds: *const Credentials, sto
         if (std.mem.indexOfScalar(u8, rest, '/') == null and rest.len > 0) {
             if (req.method == .PUT) matched = .{ .method = .PUT, .path = "/api/v1/sprites/{id}", .authority = .admin };
             if (req.method == .DELETE) matched = .{ .method = .DELETE, .path = "/api/v1/sprites/{id}", .authority = .control };
+        }
+    }
+    const tokens_prefix = "/api/v1/tokens/";
+    if (std.mem.startsWith(u8, req.path, tokens_prefix)) {
+        path_known = true;
+        const rest = req.path[tokens_prefix.len..];
+        if (std.mem.indexOfScalar(u8, rest, '/') == null and rest.len > 0) {
+            if (req.method == .DELETE) matched = .{ .method = .DELETE, .path = "/api/v1/tokens/{name}", .authority = .admin };
         }
     }
     const sounds_prefix = "/api/v1/sounds/";
@@ -783,6 +799,20 @@ pub fn route(req: http.Request, body: []const u8, creds: *const Credentials, sto
         return bad("invalid_format", "format must be json or raw");
     }
     if (std.mem.eql(u8, ep.path, "/api/v1/events")) return .{ .op = .events };
+    if (std.mem.eql(u8, ep.path, "/api/v1/tokens")) {
+        if (req.method == .GET) return .{ .op = .client_list };
+        const b = json.parse(TokensBody, body, arena) catch |e| return jsonError(e);
+        if (!clients.validName(b.name)) return bad("invalid_name", "a name is 1..32 of letters, digits, -, _ or . and may not start with a dot");
+        const role = std.meta.stringToEnum(clients.Role, b.role) orelse return bad("invalid_role", "role must be read or control");
+        return .{ .op = .{ .client_add = .{ .name = b.name, .role = role } } };
+    }
+    if (std.mem.eql(u8, ep.path, "/api/v1/tokens/{name}")) {
+        const name = req.path[tokens_prefix.len..];
+        // control and admin are not clients: they are not in this namespace at all, so a request
+        // to revoke one is a request about something that does not exist here.
+        if (!clients.validName(name)) return bad("invalid_name", "a name is 1..32 of letters, digits, -, _ or . and may not start with a dot");
+        return .{ .op = .{ .client_remove = .{ .name = name } } };
+    }
     if (std.mem.eql(u8, ep.path, "/api/v1/sounds")) return .{ .op = .sound_list };
     if (std.mem.eql(u8, ep.path, "/api/v1/sound")) return parseBody(.sound, body, arena, generated_id);
     if (std.mem.eql(u8, ep.path, "/api/v1/sounds/{name}")) {
@@ -1778,4 +1808,54 @@ test "a control client reaches control routes but not admin ones" {
     const origins = OriginPolicy{};
     try std.testing.expect(route(testReq(.POST, "/api/v1/notify", "", hdr, "application/json", null), "{\"text\":\"x\"}", &c, &store, &origins, &arena, test_minted) == .op);
     try expectReject(route(testReq(.GET, "/api/v1/mqtt", "", hdr, null, null), "", &c, &store, &origins, &arena, test_minted), 403, "forbidden");
+}
+
+test "the token routes are admin only, and validate before they reach the supervisor" {
+    const c = testCreds();
+    var arena: Arena = undefined;
+    const origins = OriginPolicy{};
+    const R = struct {
+        fn go(cc: *const Credentials, o: *const OriginPolicy, a: *Arena, m: http.Method, path: []const u8, hdr: []const u8, body: []const u8) Route {
+            return route(testReq(m, path, "", hdr, if (body.len > 0) "application/json" else null, null), body, cc, &no_clients, o, a, test_minted);
+        }
+    };
+    // admin issues, lists and revokes
+    try std.testing.expect(R.go(&c, &origins, &arena, .GET, "/api/v1/tokens", admin_header, "") == .op);
+    const made = R.go(&c, &origins, &arena, .POST, "/api/v1/tokens", admin_header, "{\"name\":\"kitchen\",\"role\":\"control\"}");
+    try std.testing.expectEqualStrings("kitchen", made.op.client_add.name);
+    try std.testing.expectEqual(clients.Role.control, made.op.client_add.role);
+    const gone = R.go(&c, &origins, &arena, .DELETE, "/api/v1/tokens/kitchen", admin_header, "");
+    try std.testing.expectEqualStrings("kitchen", gone.op.client_remove.name);
+
+    // a control token cannot reach any of them: issuing is how access is granted
+    try expectReject(R.go(&c, &origins, &arena, .GET, "/api/v1/tokens", control_header, ""), 403, "forbidden");
+    try expectReject(R.go(&c, &origins, &arena, .POST, "/api/v1/tokens", control_header, "{\"name\":\"x\",\"role\":\"read\"}"), 403, "forbidden");
+    try expectReject(R.go(&c, &origins, &arena, .DELETE, "/api/v1/tokens/x", control_header, ""), 403, "forbidden");
+
+    // validation happens here, not after a round trip
+    try expectReject(R.go(&c, &origins, &arena, .POST, "/api/v1/tokens", admin_header, "{\"name\":\"has space\",\"role\":\"read\"}"), 400, "invalid_name");
+    try expectReject(R.go(&c, &origins, &arena, .POST, "/api/v1/tokens", admin_header, "{\"name\":\".hidden\",\"role\":\"read\"}"), 400, "invalid_name");
+    try expectReject(R.go(&c, &origins, &arena, .POST, "/api/v1/tokens", admin_header, "{\"name\":\"ok\",\"role\":\"wizard\"}"), 400, "invalid_role");
+    try expectReject(R.go(&c, &origins, &arena, .POST, "/api/v1/tokens", admin_header, "{\"name\":\"ok\",\"role\":\"admin\"}"), 400, "invalid_role");
+    try expectReject(R.go(&c, &origins, &arena, .POST, "/api/v1/tokens", admin_header, "{\"name\":\"ok\"}"), 400, "missing_field");
+    try expectReject(R.go(&c, &origins, &arena, .DELETE, "/api/v1/tokens/has space", admin_header, ""), 400, "invalid_name");
+}
+
+test "a full store still renders a listing that fits one response" {
+    // this is the whole reason max_clients is derived rather than chosen. worst case throughout:
+    // every name at full length, every timestamp at full width.
+    var store = clients.Store{};
+    var i: usize = 0;
+    while (i < clients.max_clients) : (i += 1) {
+        var name: [clients.name_max]u8 = undefined;
+        _ = std.fmt.bufPrint(&name, "{s}{d:0>4}", .{"n" ** (clients.name_max - 4), i}) catch unreachable;
+        try store.add(&name, .control, [_]u8{@intCast(i & 0xff)} ** 32, std.math.minInt(i64));
+    }
+    var buf: [http.response_buf_len]u8 = undefined;
+    const listing = clients.renderList(&store, &buf);
+    try std.testing.expect(listing != null);
+    try std.testing.expectEqual(clients.max_clients, store.len);
+    // and it really is the whole store, not a quietly shortened one
+    try std.testing.expect(std.mem.indexOf(u8, listing.?, "0000") != null);
+    try std.testing.expect(std.mem.indexOf(u8, listing.?, "0000") != null);
 }

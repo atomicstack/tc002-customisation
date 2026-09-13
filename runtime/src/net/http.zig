@@ -7,6 +7,13 @@
 //! content-length it cannot know nor a close it must not do.
 const std = @import("std");
 
+/// netd's response buffer. it lives here rather than in netd so that anything bounded by "must fit
+/// one response" -- the canvas document, the client listing -- can derive its bound from the same
+/// number instead of a copy that drifts. measured, not estimated: a full canvas renders to about
+/// 10 kb, and a 4 kb buffer could not return one at all, which would let a client create something
+/// it was unable to read back.
+pub const response_buf_len = 13312;
+
 pub const max_head = 4096;
 
 pub const Method = enum { GET, PUT, POST, PATCH, DELETE, other };

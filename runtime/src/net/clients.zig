@@ -2,6 +2,7 @@
 //! holder of one of two shared secrets. the store is fixed-capacity like every buffer here.
 const std = @import("std");
 const api = @import("api.zig");
+const http = @import("http.zig");
 
 const testing = std.testing;
 
@@ -13,8 +14,20 @@ pub const Role = enum(u8) { read = 0, control = 1 };
 /// a name is a path segment in `DELETE /api/v1/tokens/{name}` and a token in the log ring
 pub const name_max = 32;
 
-/// placeholder until task 7 derives it from the listing that has to fit one response
-pub const max_clients = 120;
+/// a listing row at its widest: a full-length name and both timestamps at full width.
+const listing_row_max = "{\"name\":\"\",\"role\":\"control\",\"created_s\":-9223372036854775808,\"last_used_s\":-9223372036854775808},".len + name_max;
+const listing_envelope = "{\"clients\":[],\"max\":65535}".len + 512; // plus room for the http head
+
+/// as many clients as `GET /api/v1/tokens` can return in one response. this is the constraint that
+/// actually binds -- not the ipc packet, which clients do not travel in as a set -- and it is the
+/// same rule the response buffer itself was sized by: a device must not accept something it cannot
+/// then show you. derived, so that adding a field to the row lowers this rather than silently
+/// truncating a reply.
+pub const max_clients = (http.response_buf_len - listing_envelope) / listing_row_max;
+
+comptime {
+    std.debug.assert(max_clients >= 16);
+}
 
 /// a client name as it travels over ipc: fixed width, because every buffer here is.
 pub const Name = struct {
@@ -52,6 +65,32 @@ pub const Client = struct {
     created_s: i64 = 0,
     last_used_s: i64 = 0,
 };
+
+/// render the listing. returns null rather than a truncated reply if it would not fit, which is
+/// the failure `max_clients` exists to make impossible -- so a null here means the derivation
+/// above is wrong, not that the caller asked for too much.
+pub fn renderList(store: *const Store, out: []u8) ?[]const u8 {
+    var w: usize = 0;
+    const put = struct {
+        fn f(buf: []u8, at: *usize, comptime f_: []const u8, args: anytype) bool {
+            const r = std.fmt.bufPrint(buf[at.*..], f_, args) catch return false;
+            at.* += r.len;
+            return true;
+        }
+    }.f;
+    if (!put(out, &w, "{{\"clients\":[", .{})) return null;
+    for (store.entries[0..store.len], 0..) |c, i| {
+        if (!put(out, &w, "{s}{{\"name\":\"{s}\",\"role\":\"{s}\",\"created_s\":{d},\"last_used_s\":{d}}}", .{
+            if (i > 0) "," else "",
+            c.name.slice(),
+            @tagName(c.role),
+            c.created_s,
+            c.last_used_s,
+        })) return null;
+    }
+    if (!put(out, &w, "],\"max\":{d}}}", .{max_clients})) return null;
+    return out[0..w];
+}
 
 pub const Store = struct {
     entries: [max_clients]Client = [_]Client{.{}} ** max_clients,

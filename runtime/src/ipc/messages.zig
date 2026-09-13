@@ -364,6 +364,12 @@ pub const Kind = enum(u8) {
     /// how many follow, so the receiver knows when it holds a whole generation.
     clients_reset = 76,
     client_set = 77,
+    /// netd -> supervisor: issue or revoke. the supervisor owns the file and is the only writer.
+    client_add = 78,
+    client_remove = 79,
+    /// supervisor -> netd: the outcome, carrying the new secret on an issue. this is the only
+    /// message a token ever travels back in, and netd returns it to the caller exactly once.
+    client_result = 80,
 };
 
 /// what the supervisor tells a fresh berryd about itself. the settings are the supervisor's, so
@@ -1115,6 +1121,64 @@ comptime {
     std.debug.assert(@sizeOf(Message) <= codec.max_payload);
 }
 
+pub const ClientAdd = struct {
+    pub const wire_len = 1 + clients.name_max + 1;
+    name: clients.Name = .{},
+    role: u8 = 0,
+
+    pub fn put(self: ClientAdd, out: []u8) void {
+        out[0] = self.name.len;
+        @memcpy(out[1..][0..clients.name_max], &self.name.bytes);
+        out[1 + clients.name_max] = self.role;
+    }
+    pub fn get(b: []const u8) ClientAdd {
+        var a = ClientAdd{ .role = b[1 + clients.name_max] };
+        a.name.len = @min(b[0], clients.name_max);
+        @memcpy(&a.name.bytes, b[1..][0..clients.name_max]);
+        return a;
+    }
+};
+
+pub const ClientRemove = struct {
+    pub const wire_len = 1 + clients.name_max;
+    name: clients.Name = .{},
+
+    pub fn put(self: ClientRemove, out: []u8) void {
+        out[0] = self.name.len;
+        @memcpy(out[1..][0..clients.name_max], &self.name.bytes);
+    }
+    pub fn get(b: []const u8) ClientRemove {
+        var r = ClientRemove{};
+        r.name.len = @min(b[0], clients.name_max);
+        @memcpy(&r.name.bytes, b[1..][0..clients.name_max]);
+        return r;
+    }
+};
+
+pub const ClientResult = struct {
+    pub const wire_len = 1 + 1 + clients.name_max + 1 + api.token_len;
+    status: Status = .applied,
+    name: clients.Name = .{},
+    role: u8 = 0,
+    /// zero on a revoke; the freshly issued secret on an add
+    token: api.Token = [_]u8{0} ** api.token_len,
+
+    pub fn put(self: ClientResult, out: []u8) void {
+        out[0] = @intFromEnum(self.status);
+        out[1] = self.name.len;
+        @memcpy(out[2..][0..clients.name_max], &self.name.bytes);
+        out[2 + clients.name_max] = self.role;
+        @memcpy(out[3 + clients.name_max ..][0..api.token_len], &self.token);
+    }
+    pub fn get(b: []const u8) !ClientResult {
+        var r = ClientResult{ .status = enumFromInt(Status, b[0]) orelse return error.BadPayload, .role = b[2 + clients.name_max] };
+        r.name.len = @min(b[1], clients.name_max);
+        @memcpy(&r.name.bytes, b[2..][0..clients.name_max]);
+        @memcpy(&r.token, b[3 + clients.name_max ..][0..api.token_len]);
+        return r;
+    }
+};
+
 /// how many `client_set` messages follow. a receiver swaps in the new set only once it holds
 /// this many, so no request authenticates against half of one generation and half of the next.
 pub const ClientsReset = struct { count: u8 = 0 };
@@ -1836,6 +1900,9 @@ pub const Message = union(Kind) {
     sound_list: SoundList,
     clients_reset: ClientsReset,
     client_set: ClientSet,
+    client_add: ClientAdd,
+    client_remove: ClientRemove,
+    client_result: ClientResult,
 };
 
 pub const Packet = struct { request_id: u64, epoch: u32, message: Message };
@@ -1985,6 +2052,18 @@ fn encodePayload(msg: Message, out: []u8) usize {
         .clients_reset => |r| {
             out[0] = r.count;
             return 1;
+        },
+        .client_add => |a| {
+            a.put(out);
+            return ClientAdd.wire_len;
+        },
+        .client_remove => |r| {
+            r.put(out);
+            return ClientRemove.wire_len;
+        },
+        .client_result => |r| {
+            r.put(out);
+            return ClientResult.wire_len;
         },
         .stream_frame => |f| {
             std.mem.writeInt(u32, out[0..4], f.seq, .big);
@@ -2458,6 +2537,15 @@ pub fn decodePacket(bytes: []const u8) Error!Packet {
         },
         .clients_reset => blk: {
             break :blk .{ .clients_reset = .{ .count = (try fixed(p, 1))[0] } };
+        },
+        .client_add => blk: {
+            break :blk .{ .client_add = ClientAdd.get(try fixed(p, ClientAdd.wire_len)) };
+        },
+        .client_remove => blk: {
+            break :blk .{ .client_remove = ClientRemove.get(try fixed(p, ClientRemove.wire_len)) };
+        },
+        .client_result => blk: {
+            break :blk .{ .client_result = try ClientResult.get(try fixed(p, ClientResult.wire_len)) };
         },
         .berry_list_get => blk: {
             _ = try fixed(p, 0);

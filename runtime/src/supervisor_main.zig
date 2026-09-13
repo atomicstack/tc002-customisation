@@ -1775,6 +1775,38 @@ const Supervisor = struct {
                     self.persistSettings();
                     self.sendNetd(.{ .config = self.cfg }, p.request_id);
                 },
+                .client_add => |a| {
+                    var token: api.Token = undefined;
+                    sys.getrandom(&token) catch {
+                        self.sendNetd(.{ .client_result = .{ .status = .unavailable } }, p.request_id);
+                        continue;
+                    };
+                    const role: clients.Role = if (a.role == @intFromEnum(clients.Role.control)) .control else .read;
+                    self.clients.add(a.name.slice(), role, token, unixNow()) catch {
+                        self.sendNetd(.{ .client_result = .{ .status = .conflict } }, p.request_id);
+                        continue;
+                    };
+                    if (self.saveCredentials() != .applied) {
+                        // the file did not take it, so neither does memory: the alternative is a
+                        // token that works until the next restart and then silently does not.
+                        _ = self.clients.remove(a.name.slice());
+                        self.sendNetd(.{ .client_result = .{ .status = .unavailable } }, p.request_id);
+                        continue;
+                    }
+                    self.pushClients();
+                    log.info("client token issued: {s} ({s})", .{ a.name.slice(), @tagName(role) });
+                    self.sendNetd(.{ .client_result = .{ .status = .applied, .name = a.name, .role = a.role, .token = token } }, p.request_id);
+                },
+                .client_remove => |r| {
+                    if (!self.clients.remove(r.name.slice())) {
+                        self.sendNetd(.{ .client_result = .{ .status = .rejected } }, p.request_id);
+                        continue;
+                    }
+                    _ = self.saveCredentials();
+                    self.pushClients();
+                    log.info("client token revoked: {s}", .{r.name.slice()});
+                    self.sendNetd(.{ .client_result = .{ .status = .applied, .name = r.name } }, p.request_id);
+                },
                 .config_save => |cs| {
                     if (cs.has_revision != 0 and cs.revision != self.cfg.revision) {
                         self.sendNetd(.{ .save_result = .{ .status = .conflict, .saved_revision = self.cfg.saved_revision } }, p.request_id);
