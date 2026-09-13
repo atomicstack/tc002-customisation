@@ -367,6 +367,9 @@ pub const Kind = enum(u8) {
     /// netd -> supervisor: issue or revoke. the supervisor owns the file and is the only writer.
     client_add = 78,
     client_remove = 79,
+    /// replace a client's secret in place. not add-then-remove: at capacity there is no free slot
+    /// to add into, which is exactly when rotation matters most.
+    client_rotate = 81,
     /// supervisor -> netd: the outcome, carrying the new secret on an issue. this is the only
     /// message a token ever travels back in, and netd returns it to the caller exactly once.
     client_result = 80,
@@ -1155,6 +1158,27 @@ pub const ClientRemove = struct {
     }
 };
 
+pub const ClientRotate = struct {
+    pub const wire_len = 1 + clients.name_max + 1 + 1;
+    name: clients.Name = .{},
+    /// zero leaves the role alone; rotation is about the secret
+    has_role: u8 = 0,
+    role: u8 = 0,
+
+    pub fn put(self: ClientRotate, out: []u8) void {
+        out[0] = self.name.len;
+        @memcpy(out[1..][0..clients.name_max], &self.name.bytes);
+        out[1 + clients.name_max] = self.has_role;
+        out[2 + clients.name_max] = self.role;
+    }
+    pub fn get(b: []const u8) ClientRotate {
+        var r = ClientRotate{ .has_role = b[1 + clients.name_max], .role = b[2 + clients.name_max] };
+        r.name.len = @min(b[0], clients.name_max);
+        @memcpy(&r.name.bytes, b[1..][0..clients.name_max]);
+        return r;
+    }
+};
+
 pub const ClientResult = struct {
     pub const wire_len = 1 + 1 + clients.name_max + 1 + api.token_len;
     status: Status = .applied,
@@ -1902,6 +1926,7 @@ pub const Message = union(Kind) {
     client_set: ClientSet,
     client_add: ClientAdd,
     client_remove: ClientRemove,
+    client_rotate: ClientRotate,
     client_result: ClientResult,
 };
 
@@ -2060,6 +2085,10 @@ fn encodePayload(msg: Message, out: []u8) usize {
         .client_remove => |r| {
             r.put(out);
             return ClientRemove.wire_len;
+        },
+        .client_rotate => |r| {
+            r.put(out);
+            return ClientRotate.wire_len;
         },
         .client_result => |r| {
             r.put(out);
@@ -2543,6 +2572,9 @@ pub fn decodePacket(bytes: []const u8) Error!Packet {
         },
         .client_remove => blk: {
             break :blk .{ .client_remove = ClientRemove.get(try fixed(p, ClientRemove.wire_len)) };
+        },
+        .client_rotate => blk: {
+            break :blk .{ .client_rotate = ClientRotate.get(try fixed(p, ClientRotate.wire_len)) };
         },
         .client_result => blk: {
             break :blk .{ .client_result = try ClientResult.get(try fixed(p, ClientResult.wire_len)) };

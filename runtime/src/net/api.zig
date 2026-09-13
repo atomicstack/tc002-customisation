@@ -101,6 +101,7 @@ pub const Op = union(enum) {
     client_list,
     client_add: struct { name: []const u8, role: clients.Role },
     client_remove: struct { name: []const u8 },
+    client_rotate: struct { name: []const u8, role: ?clients.Role },
     sound_play: struct { name: []const u8, volume: ?u8, loop: bool },
     sound_stop,
     /// a remote control event: the same paths as a physical press
@@ -231,6 +232,7 @@ const ClockBody = struct { font: ?[]const u8 = null, colour_mode: ?[]const u8 = 
 /// toggle as on or off. `GET /scenes` publishes the table, so a client needs nothing else.
 const GenParamBody = struct { scene: []const u8, name: []const u8, value: []const u8 };
 const TokensBody = struct { name: []const u8, role: []const u8 };
+const RotateBody = struct { role: ?[]const u8 = null };
 const SceneBody = struct { base: []const u8, generator: ?[]const u8 = null, seed: ?u32 = null, clock: ?ClockBody = null, transition: ?[]const u8 = null, direction: ?[]const u8 = null, transition_ms: ?u32 = null, exit: ?[]const u8 = null, request_id: ?[]const u8 = null, epoch: ?u32 = null };
 const ActionBody = struct { action: []const u8, brightness: ?u8 = null, seed: ?u32 = null, power: ?bool = null, request_id: ?[]const u8 = null, epoch: ?u32 = null };
 const InputBody = struct { control: []const u8, event: []const u8, steps: u8 = 1, request_id: ?[]const u8 = null, epoch: ?u32 = null };
@@ -719,6 +721,8 @@ pub fn route(req: http.Request, body: []const u8, creds: *const Credentials, sto
         const rest = req.path[tokens_prefix.len..];
         if (std.mem.indexOfScalar(u8, rest, '/') == null and rest.len > 0) {
             if (req.method == .DELETE) matched = .{ .method = .DELETE, .path = "/api/v1/tokens/{name}", .authority = .admin };
+        } else if (std.mem.endsWith(u8, rest, "/rotate") and std.mem.count(u8, rest, "/") == 1) {
+            if (req.method == .POST) matched = .{ .method = .POST, .path = "/api/v1/tokens/{name}/rotate", .authority = .admin };
         }
     }
     const sounds_prefix = "/api/v1/sounds/";
@@ -805,6 +809,16 @@ pub fn route(req: http.Request, body: []const u8, creds: *const Credentials, sto
         if (!clients.validName(b.name)) return bad("invalid_name", "a name is 1..32 of letters, digits, -, _ or . and may not start with a dot");
         const role = std.meta.stringToEnum(clients.Role, b.role) orelse return bad("invalid_role", "role must be read or control");
         return .{ .op = .{ .client_add = .{ .name = b.name, .role = role } } };
+    }
+    if (std.mem.eql(u8, ep.path, "/api/v1/tokens/{name}/rotate")) {
+        const rest = req.path[tokens_prefix.len..];
+        const name = rest[0 .. rest.len - "/rotate".len];
+        if (!clients.validName(name)) return bad("invalid_name", "a name is 1..32 of letters, digits, -, _ or . and may not start with a dot");
+        // an empty body rotates the secret and leaves the role alone
+        if (body.len == 0) return .{ .op = .{ .client_rotate = .{ .name = name, .role = null } } };
+        const b = json.parse(RotateBody, body, arena) catch |e| return jsonError(e);
+        const role = if (b.role) |r| (std.meta.stringToEnum(clients.Role, r) orelse return bad("invalid_role", "role must be read or control")) else null;
+        return .{ .op = .{ .client_rotate = .{ .name = name, .role = role } } };
     }
     if (std.mem.eql(u8, ep.path, "/api/v1/tokens/{name}")) {
         const name = req.path[tokens_prefix.len..];
@@ -1858,4 +1872,27 @@ test "a full store still renders a listing that fits one response" {
     // and it really is the whole store, not a quietly shortened one
     try std.testing.expect(std.mem.indexOf(u8, listing.?, "0000") != null);
     try std.testing.expect(std.mem.indexOf(u8, listing.?, "0000") != null);
+}
+
+test "rotation is its own route, and never a silent overwrite of create" {
+    const c = testCreds();
+    var arena: Arena = undefined;
+    const origins = OriginPolicy{};
+    const R = struct {
+        fn go(cc: *const Credentials, o: *const OriginPolicy, a: *Arena, m: http.Method, path: []const u8, hdr: []const u8, body: []const u8) Route {
+            return route(testReq(m, path, "", hdr, if (body.len > 0) "application/json" else null, null), body, cc, &no_clients, o, a, test_minted);
+        }
+    };
+    const bare = R.go(&c, &origins, &arena, .POST, "/api/v1/tokens/kitchen/rotate", admin_header, "");
+    try std.testing.expectEqualStrings("kitchen", bare.op.client_rotate.name);
+    try std.testing.expect(bare.op.client_rotate.role == null); // unchanged unless supplied
+
+    const with_role = R.go(&c, &origins, &arena, .POST, "/api/v1/tokens/kitchen/rotate", admin_header, "{\"role\":\"read\"}");
+    try std.testing.expectEqual(clients.Role.read, with_role.op.client_rotate.role.?);
+
+    // re-creating an existing name is still a 409 elsewhere; rotation never happens by accident
+    try expectReject(R.go(&c, &origins, &arena, .POST, "/api/v1/tokens/kitchen/rotate", control_header, ""), 403, "forbidden");
+    try expectReject(R.go(&c, &origins, &arena, .POST, "/api/v1/tokens/has space/rotate", admin_header, ""), 400, "invalid_name");
+    try expectReject(R.go(&c, &origins, &arena, .POST, "/api/v1/tokens/kitchen/rotate", admin_header, "{\"role\":\"admin\"}"), 400, "invalid_role");
+    try expectReject(R.go(&c, &origins, &arena, .GET, "/api/v1/tokens/kitchen/rotate", admin_header, ""), 405, "method_not_allowed");
 }

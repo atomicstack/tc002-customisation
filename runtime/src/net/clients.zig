@@ -109,6 +109,24 @@ pub const Store = struct {
         self.len += 1;
     }
 
+    /// replace a client's secret in place. rotation is not create-then-revoke: at capacity there
+    /// is no free slot, so that shape cannot rotate the token you would most need to, and it is
+    /// two calls where a failure between them leaves either two live secrets or a dead client.
+    /// `created_s` moves to now, because for a credential the age that matters is the secret's;
+    /// `last_used_s` resets to zero, which is then a useful signal that nothing has picked the new
+    /// secret up yet. the role is unchanged unless one is supplied.
+    pub fn rotate(self: *Store, name: []const u8, token: api.Token, now_s: i64, role: ?Role) bool {
+        for (self.entries[0..self.len]) |*c| {
+            if (!std.mem.eql(u8, c.name.slice(), name)) continue;
+            c.token = token;
+            c.created_s = now_s;
+            c.last_used_s = 0;
+            if (role) |r| c.role = r;
+            return true;
+        }
+        return false;
+    }
+
     pub fn remove(self: *Store, name: []const u8) bool {
         for (self.entries[0..self.len], 0..) |*c, i| {
             if (!std.mem.eql(u8, c.name.slice(), name)) continue;
@@ -182,4 +200,37 @@ test "an invalid name never reaches the store" {
     var s = Store{};
     try testing.expectError(error.InvalidName, s.add("has space", .read, [_]u8{1} ** 32, 100));
     try testing.expectEqual(@as(usize, 0), s.len);
+}
+
+test "rotation replaces the secret in place, and works when the store is full" {
+    var s = Store{};
+    // fill it: rotation must not need a free slot, which is exactly when it matters most
+    var i: usize = 0;
+    while (i < max_clients) : (i += 1) {
+        var buf: [8]u8 = undefined;
+        try s.add(std.fmt.bufPrint(&buf, "c{d}", .{i}) catch unreachable, .control, [_]u8{@intCast(i & 0xff)} ** 32, 100);
+    }
+    try testing.expectError(error.StoreFull, s.add("another", .read, [_]u8{9} ** 32, 200));
+
+    const before = s.find("c0").?.*;
+    try testing.expect(s.rotate("c0", [_]u8{0xee} ** 32, 500, null));
+    const after = s.find("c0").?;
+    try testing.expectEqual([_]u8{0xee} ** 32, after.token);
+    try testing.expectEqual(@as(i64, 500), after.created_s); // the age that matters is the secret's
+    try testing.expectEqual(@as(i64, 0), after.last_used_s); // nothing has picked the new one up yet
+    try testing.expectEqual(before.role, after.role); // unchanged when none is supplied
+    try testing.expectEqual(max_clients, s.len); // no slot consumed
+    try testing.expect(s.match([_]u8{0} ** 32) == null); // the old secret is gone
+    try testing.expectEqual(@as(?usize, 0), s.match([_]u8{0xee} ** 32));
+}
+
+test "rotation can change the role, and refuses a name that is not a client" {
+    var s = Store{};
+    try s.add("wall", .read, [_]u8{1} ** 32, 100);
+    try testing.expect(s.rotate("wall", [_]u8{2} ** 32, 200, .control));
+    try testing.expectEqual(Role.control, s.find("wall").?.role);
+    // control and admin are not clients and are not in this namespace
+    try testing.expect(!s.rotate("absent", [_]u8{3} ** 32, 200, null));
+    try testing.expect(!s.rotate("control", [_]u8{3} ** 32, 200, null));
+    try testing.expect(!s.rotate("admin", [_]u8{3} ** 32, 200, null));
 }

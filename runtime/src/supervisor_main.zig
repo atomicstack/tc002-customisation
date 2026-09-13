@@ -1797,6 +1797,34 @@ const Supervisor = struct {
                     log.info("client token issued: {s} ({s})", .{ a.name.slice(), @tagName(role) });
                     self.sendNetd(.{ .client_result = .{ .status = .applied, .name = a.name, .role = a.role, .token = token } }, p.request_id);
                 },
+                .client_rotate => |r| {
+                    var token: api.Token = undefined;
+                    sys.getrandom(&token) catch {
+                        self.sendNetd(.{ .client_result = .{ .status = .unavailable } }, p.request_id);
+                        continue;
+                    };
+                    const before = self.clients.find(r.name.slice()) orelse {
+                        self.sendNetd(.{ .client_result = .{ .status = .rejected } }, p.request_id);
+                        continue;
+                    };
+                    const kept = before.*;
+                    const role: ?clients.Role = if (r.has_role != 0)
+                        (if (r.role == @intFromEnum(clients.Role.control)) .control else .read)
+                    else
+                        null;
+                    _ = self.clients.rotate(r.name.slice(), token, unixNow(), role);
+                    if (self.saveCredentials() != .applied) {
+                        // put the old secret back: a rotation that is not on disk is a token that
+                        // works until the next restart and then silently does not
+                        _ = self.clients.rotate(r.name.slice(), kept.token, kept.created_s, kept.role);
+                        self.sendNetd(.{ .client_result = .{ .status = .unavailable } }, p.request_id);
+                        continue;
+                    }
+                    self.pushClients();
+                    const now_role = self.clients.find(r.name.slice()).?.role;
+                    log.info("client token rotated: {s} ({s})", .{ r.name.slice(), @tagName(now_role) });
+                    self.sendNetd(.{ .client_result = .{ .status = .applied, .name = r.name, .role = @intFromEnum(now_role), .token = token } }, p.request_id);
+                },
                 .client_remove => |r| {
                     if (!self.clients.remove(r.name.slice())) {
                         self.sendNetd(.{ .client_result = .{ .status = .rejected } }, p.request_id);

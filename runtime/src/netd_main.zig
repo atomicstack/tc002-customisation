@@ -88,6 +88,8 @@ const Conn = struct {
     awaiting: Awaiting = .none,
     pending_id: u64 = 0,
     client_id: u64 = 0,
+    /// the named client that presented this request's token, if it was one
+    client: ?clients.Name = null,
     /// a screen read wants octets rather than the json document
     screen_raw: bool = false,
     out: [out_buf_len]u8 = undefined,
@@ -477,19 +479,23 @@ const Netd = struct {
         return self.status.epoch;
     }
 
-    /// who asked, when a named token asked. a built-in token logs nothing extra, so the line's
-    /// presence is itself the signal that an integration did this rather than the console.
-    fn attribute(self: *Netd, c: *Conn) void {
+    /// note which client asked, on every authenticated request rather than only on commands: a
+    /// read token never relays, so hanging this off the relay path left last_used at zero for
+    /// exactly the clients where "is anything still using this?" is the useful question.
+    fn noteClient(self: *Netd, c: *Conn) void {
+        c.client = null;
         const auth = api.authenticate(&(self.creds orelse return), &self.clients, c.req.authorization);
         const name = auth.client orelse return;
+        c.client = name;
         for (self.clients.entries[0..self.clients.len]) |*entry| {
             if (std.mem.eql(u8, entry.name.slice(), name.slice())) entry.last_used_s = @intCast(sys.realtimeNs() / std.time.ns_per_s);
         }
-        log.info("api command from client {s}", .{name.slice()});
     }
 
     fn relay(self: *Netd, c: *Conn, msg: messages.Message, request_id: u64, epoch: u32, now: u64) void {
-        self.attribute(c);
+        // a built-in token logs nothing extra, so the line's presence is itself the signal that an
+        // integration did this rather than the console.
+        if (c.client) |name| log.info("api command from client {s}", .{name.slice()});
         c.client_id = request_id;
         if (!self.sendSupervisor(msg, request_id, epoch)) {
             self.respondError(c, 503, "supervisor_unavailable", "the local channel is unavailable");
@@ -611,6 +617,11 @@ const Netd = struct {
             // issuing and revoking go to the supervisor, which owns the file and is its only writer
             .client_add => |a| self.ask(c, .{ .client_add = .{ .name = clients.Name.init(a.name), .role = @intFromEnum(a.role) } }, .client_result, now),
             .client_remove => |r| self.ask(c, .{ .client_remove = .{ .name = clients.Name.init(r.name) } }, .client_result, now),
+            .client_rotate => |r| self.ask(c, .{ .client_rotate = .{
+                .name = clients.Name.init(r.name),
+                .has_role = @intFromBool(r.role != null),
+                .role = if (r.role) |role| @intFromEnum(role) else 0,
+            } }, .client_result, now),
             .mqtt_get => {
                 if (!self.have_cfg) {
                     self.respondError(c, 503, "not_ready", "settings not received yet");
@@ -670,6 +681,7 @@ const Netd = struct {
             return;
         };
         const origins = if (self.have_cfg) self.cfg.originPolicy() else api.OriginPolicy{};
+        self.noteClient(c);
         switch (api.route(c.req, body, &creds, &self.clients, &origins, &arena, self.newId())) {
             .reject => |j| {
                 self.respondError(c, j.status, j.code, j.message);
@@ -1000,6 +1012,14 @@ const Netd = struct {
                         log.warn("client {s} refused by the store", .{c.name.slice()});
                         return;
                     };
+                    // last_used is netd's own observation and does not travel, so carry it across
+                    // the rebuild by name. without this, issuing or revoking any client would
+                    // silently reset when every other client was last seen.
+                    if (self.clients.find(c.name.slice())) |known| {
+                        // a rotated secret is a new credential, so its use starts again from zero
+                        if (std.mem.eql(u8, &known.token, &c.token))
+                            self.incoming_clients.entries[self.incoming_clients.len - 1].last_used_s = known.last_used_s;
+                    }
                     // the set is complete when its indices are; the supervisor sends them in order
                     if (self.incoming_clients.len == self.expected_clients) {
                         self.clients = self.incoming_clients;

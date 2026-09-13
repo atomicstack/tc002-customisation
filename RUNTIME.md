@@ -1053,6 +1053,15 @@ your own code. neither is observing a clock.
 a named token is never `admin`. one that could be would mint itself more, and
 revocation would stop meaning much.
 
+**rotating replaces a secret in place** rather than issuing a second token and
+revoking the first. at capacity there is no free slot, so create-then-revoke
+could not rotate the token you would most need to; it is also two calls where a
+failure between them leaves either two live secrets or a dead client. the old
+secret stops working immediately. `POST /tokens` still answers `409` for a name
+that exists, so a mistyped re-create cannot quietly replace a working
+integration's credential — rotation has its own verb precisely so it never
+happens by accident.
+
 `last_used_s` lives in memory and resets when the runtime restarts, because netd
 is the process that sees a token used and persisting it would mean a flash write
 per request. `0` means "not since the last restart", not "never".
@@ -1110,6 +1119,7 @@ api is for programs, not pages. `allowed_origins` can only be set by editing
 | `GET` | `/mqtt/status` | control | | `{"enabled","connected","state","reconnect_delay_s","reconnects","last_error"}` |
 | `GET` | `/tokens` | admin | | `{"clients":[{"name","role","created_s","last_used_s"}],"max":n}`; **never a secret** |
 | `POST` | `/tokens` | admin | `{"name":"kitchen","role":"read\|control"}` | `{"name","role","token":"<64 hex>"}` — the only time a token is returned |
+| `POST` | `/tokens/{name}/rotate` | admin | `{"role":"read\|control"}?` (optional) | `{"name","role","token"}` — a new secret in place; `created_s` becomes now, `last_used_s` resets, the role is unchanged unless supplied |
 | `DELETE` | `/tokens/{name}` | admin | | the remaining list. takes effect immediately, no restart |
 | `POST` | `/streams`, `PUT` `/streams/{id}/palette`, `DELETE` `/streams/{id}` | control | | `503 not_implemented` |
 

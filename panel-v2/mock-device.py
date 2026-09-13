@@ -483,6 +483,22 @@ class Device:
         self.log(f"client token issued: {name} ({role})")
         return {"name": name, "role": role, "token": token}
 
+    def client_rotate(self, name, role=None):
+        """replace the secret in place. not create-then-revoke: at capacity there is no free slot,
+        which is exactly when rotation matters most."""
+        if role is not None and role not in ("read", "control"):
+            raise Reject(400, "invalid_role", "role must be read or control")
+        for c in self.clients:
+            if c["name"] == name:
+                c["token"] = secrets.token_hex(32)
+                c["created_s"] = int(time.time())  # the age that matters is the secret's
+                c["last_used_s"] = 0               # nothing has picked the new one up yet
+                if role is not None:
+                    c["role"] = role
+                self.log(f"client token rotated: {name} ({c['role']})")
+                return {"name": name, "role": c["role"], "token": c["token"]}
+        raise Reject(404, "not_found", "no client of that name")
+
     def client_remove(self, name):
         # control and admin are not clients and are not in this namespace
         for i, c in enumerate(self.clients):
@@ -791,6 +807,7 @@ SCHEMAS = {
                 "night", "night_brightness", "night_lead_min", "latitude", "longitude", "location_auto"}, set()),
     "config/save": ({"revision"}, set()),
     "tokens": ({"name", "role"}, {"name", "role"}),
+    "tokens/rotate": ({"role"}, set()),
     # the canvas body is stored, not checked: the element schema is the runtime's and this file
     # does not keep a second copy of it. PUT sends elements, PATCH sends values
     "canvas": ({"elements", "values"}, set()),
@@ -831,6 +848,8 @@ def route_lookup(method, endpoint):
         rest = endpoint[len("tokens/"):]
         if "/" not in rest and rest:
             return ("admin" if method == "DELETE" else None), True
+        if rest.endswith("/rotate") and rest.count("/") == 1:
+            return ("admin" if method == "POST" else None), True
         return None, True
     if endpoint == "streams":
         return ("control" if method == "POST" else None), True
@@ -940,6 +959,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 if endpoint == "tokens" and method == "POST":
                     body = self._json_body("tokens")
                     return self._send(200, d.client_add(body["name"], body["role"]))
+                if endpoint.startswith("tokens/") and endpoint.endswith("/rotate") and method == "POST":
+                    name = endpoint[len("tokens/"):-len("/rotate")]
+                    body = self._json_body("tokens/rotate") if int(self.headers.get("Content-Length") or 0) else {}
+                    return self._send(200, d.client_rotate(name, body.get("role")))
                 if endpoint.startswith("tokens/") and method == "DELETE":
                     return self._send(200, d.client_remove(endpoint[len("tokens/"):]))
                 if endpoint == "status":

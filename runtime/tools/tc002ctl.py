@@ -34,6 +34,7 @@ commands:
   config                              effective settings (admin token needed for patch/save)
   tokens                              list named client tokens (admin)
   token-new NAME [--role read|control]   issue one; the secret is shown once (admin)
+  token-rotate NAME [--role read|control]   new secret in place; shown once (admin)
   token-revoke NAME                   revoke one, effective immediately (admin)
   config-set key=value ...            patch settings; keys: brightness base generator timezone ntp_server
                                       ntp_interval_s frame_timeout_ms metrics_interval_s discovery discovery_prefix
@@ -160,7 +161,7 @@ def main():
     ap.add_argument("--ca-file", dest="ca_file")
     a = ap.parse_args()
     admin_commands = {"config-set", "config-save", "mqtt", "mqtt-set", "ntfy", "ntfy-set",
-                      "tokens", "token-new", "token-revoke"}
+                      "tokens", "token-new", "token-rotate", "token-revoke"}
     token = load_token(a, a.admin or a.command in admin_commands)
     rid = secrets.token_hex(8)
     c = a.command
@@ -171,6 +172,9 @@ def main():
     if c == "token-new":
         # the secret comes back once and is never retrievable again
         return show(*call(a, "POST", "/tokens", {"name": a.args[0], "role": a.role}, token=token))
+    if c == "token-rotate":
+        body = {"role": a.role} if "--role" in sys.argv else {}
+        return show(*call(a, "POST", f"/tokens/{a.args[0]}/rotate", body, token=token))
     if c == "token-revoke":
         return show(*call(a, "DELETE", f"/tokens/{a.args[0]}", token=token))
     if c == "scenes":
