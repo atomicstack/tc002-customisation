@@ -477,7 +477,19 @@ const Netd = struct {
         return self.status.epoch;
     }
 
+    /// who asked, when a named token asked. a built-in token logs nothing extra, so the line's
+    /// presence is itself the signal that an integration did this rather than the console.
+    fn attribute(self: *Netd, c: *Conn) void {
+        const auth = api.authenticate(&(self.creds orelse return), &self.clients, c.req.authorization);
+        const name = auth.client orelse return;
+        for (self.clients.entries[0..self.clients.len]) |*entry| {
+            if (std.mem.eql(u8, entry.name.slice(), name.slice())) entry.last_used_s = @intCast(sys.realtimeNs() / std.time.ns_per_s);
+        }
+        log.info("api command from client {s}", .{name.slice()});
+    }
+
     fn relay(self: *Netd, c: *Conn, msg: messages.Message, request_id: u64, epoch: u32, now: u64) void {
+        self.attribute(c);
         c.client_id = request_id;
         if (!self.sendSupervisor(msg, request_id, epoch)) {
             self.respondError(c, 503, "supervisor_unavailable", "the local channel is unavailable");
