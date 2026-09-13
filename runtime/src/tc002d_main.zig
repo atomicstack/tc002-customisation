@@ -106,6 +106,19 @@ const Renderer = struct {
     /// command that caused it, so the supervisor can tell an api statement from an ntfy one out of
     /// the relay table it already keeps; zero for statements nobody asked for, like an overlay
     /// reaching its deadline.
+    /// apply a queue of actions and report each statement it produces. the buttons and the knob
+    /// reach here from evdev; `POST /api/v1/input` reaches here having been mapped to the same
+    /// actions. one path, so the two cannot disagree about what a press is -- and so the injected
+    /// route actually exercises the physical one.
+    fn applyActions(self: *Renderer, queue: *const actions.ActionQueue, now: u64, request_id: u64) void {
+        for (queue.slice()) |a| {
+            arb.action(a, now);
+            // per action, not per queue: a single drain would lose all but the last statement when
+            // one press produces more than one
+            self.sendApplied(now, request_id, .input);
+        }
+    }
+
     fn sendApplied(self: *Renderer, now: u64, request_id: u64, source: messages.Applied.Source) void {
         const st = arb.takeApplied() orelse return;
         const age_ms: u32 = @intCast(@min((now -| st.at_ns) / std.time.ns_per_ms, std.math.maxInt(u32)));
@@ -385,7 +398,7 @@ const Renderer = struct {
                 var queue = actions.ActionQueue{};
                 var edges = actions.EdgeQueue{};
                 if (!self.mapper.inject(control, event, i.steps, now, &queue, &edges)) break :blk arbiter.Result{ .rejected = .invalid_text };
-                for (queue.slice()) |a| arb.action(a, now);
+                self.applyActions(&queue, now, p.request_id);
                 self.sendEdges(&edges);
                 break :blk arbiter.Result{ .applied = arb.revision };
             },
@@ -396,8 +409,9 @@ const Renderer = struct {
             .rejected => .rejected,
         };
         // before the reply: `.result` retires the supervisor's relay slot, and that slot is how it
-        // knows whether this statement came from the api or from ntfy
-        self.sendApplied(now, p.request_id, if (p.message == .input) .input else .local);
+        // knows whether this statement came from the api or from ntfy. anything from an input
+        // packet has already been reported by `applyActions`, with the button as its source.
+        self.sendApplied(now, p.request_id, .local);
         _ = cache.insert(p.request_id, status, arb.revision, now);
         self.reply(p.request_id, status, arb.revision);
     }
@@ -449,7 +463,7 @@ const Renderer = struct {
         if (self.keys) |fd| self.drainDevice(fd, now, &queue, &edges);
         if (self.knob) |fd| self.drainDevice(fd, now, &queue, &edges);
         self.mapper.poll(now, &queue, &edges);
-        for (queue.slice()) |a| arb.action(a, now);
+        self.applyActions(&queue, now, 0);
         if (queue.dropped > 0) {
             self.dropped_actions += queue.dropped;
             log.warn("dropped {d} physical actions under load", .{queue.dropped});
