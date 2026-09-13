@@ -71,17 +71,57 @@ helpers; several of those never reach the driver at all.
 
 **`MI_AO_SetMute` (nr 13) is the one to call first when testing on a device somebody lives with.**
 
+## payload layouts
+
+measured by reading how the library fills each payload, not taken from a header.
+
+**`MI_AO_SetPubAttr` (56 b)** — the one that decides the sample format:
+
+```
+memset(inner, 0, 56)
+inner[+0]  = AoDevId            (u32)
+memcpy(inner+4, pstPubAttr, 52) (the caller's MI_AUDIO_Attr_t, verbatim)
+```
+
+so the attribute struct is **52 bytes copied straight through**. its *fields* are
+not decoded — only its size. the published mstar/sigmastar shape for
+`MI_AUDIO_Attr_t` (sample rate, bit width, work mode, sound mode, then frame and
+point counts, then an i2s config block) fits 52 bytes, but that is a hypothesis
+to check against the device, not a measurement. **it is the thing to verify first
+and the thing most likely to turn a silent test into a loud one.**
+
+**`MI_SYS_*` payloads** follow the same envelope. the calls the audio path needs:
+
+| call | nr | request | inner |
+|---|---:|---|---:|
+| `MI_SYS_Init` | 0 | `0x80046900` | 4 b |
+| `MI_SYS_Mmap` | 10 | `0xc018690a` | 24 b |
+| `MI_SYS_Munmap` | 11 | `0x4008690b` | 8 b |
+| `MI_SYS_MMA_Alloc` | 27 | `0xc030691b` | 48 b |
+| `MI_SYS_MMA_Free` | 28 | `0x4008691c` | 8 b |
+| `MI_SYS_FlushInvCache` | 29 | `0x4008691d` | 8 b |
+
+all 49 exported `MI_SYS_*` calls decode with the same technique and the same
+magic `'i'`; the six above are the ones playback uses.
+
+## the playback path, as it now looks
+
+1. `MI_SYS_MMA_Alloc` — a physically contiguous buffer for the samples
+2. `MI_SYS_Mmap` — map it into this process
+3. write pcm into it
+4. `MI_SYS_FlushInvCache` — make it visible to the dma engine
+5. `MI_AO_SetPubAttr` / `Enable` / `EnableChn` — configure and open the device
+6. `MI_AO_SendFrame` — whose payload is only `{dev, chn}`, because the samples are
+   already in the shared buffer
+
 ## what is not recovered yet
 
-**the data plane.** `MI_AO_SendFrame`'s payload is only 8 bytes — room for `{dev, chn}` and nothing
-else — because the pcm does not travel through the ioctl. the library references `MI_SYS_Mmap` and
-`MI_SYS_Munmap`, so the samples go through an mi_sys shared buffer and the ioctl only says which
-device and channel to drain. finishing playback therefore needs the equivalent recovery for
-`/lib/libmi_sys.so` and `/dev/mi_sys` (also `crw-------`, root only).
+**`MI_AO_SendFrame`'s two words.** its 8-byte payload is built at `r7+0x60` from a value computed
+earlier in a 216-byte stack frame; the second word is copied from `r7+0xa8`. that it is `{dev, chn}`
+is an inference from the size and from the `MI_SYS_Mmap` dependency, not something traced through.
 
-**the struct fields.** the sizes above are exact; the field layouts are not yet decoded. the
-56-byte `SetPubAttr` payload is the one that matters — it carries sample rate, channel count and
-bit depth, and getting it wrong is how a test turns into a noise rather than into silence.
+**the field layouts inside `MI_AUDIO_Attr_t` and the `MI_SYS` payloads.** sizes are exact,
+fields are not.
 
 ## about the codecs
 
