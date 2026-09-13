@@ -1560,6 +1560,15 @@ function cvField(label, key, input) {
   return f;
 }
 
+// samples as the field shows them, whether they arrived as an array from the device or are being
+// typed. a token that is not a number is left alone rather than silently turned into one: it goes
+// to the runtime as it stands and comes back refused, which is the answer the device would give.
+const cvSampleText = v => Array.isArray(v) ? v.join(',') : (v == null ? '' : String(v));
+function cvParseSamples(text) {
+  return text.split(',').map(s => s.trim()).filter(s => s !== '')
+    .map(s => /^\d+$/.test(s) ? Number(s) : s);
+}
+
 function cvInput(el, name, value, oninput) {
   const i = document.createElement('input');
   i.type = 'text'; i.value = value == null ? '' : value; i.spellcheck = false;
@@ -1618,6 +1627,15 @@ function cvForm() {
       box.append(CV_ICONS.length
         ? cvField('icon', `${CV_ICONS.length} built in`, cvSelect(['', ...CV_ICONS], e.icon || '', v => cvSet(e, 'icon', v || undefined)))
         : cvField('icon', 'GET /icons is unavailable here \u2014 type a name', cvInput(e, 'icon', e.icon, v => cvSet(e, 'icon', v || undefined))));
+    } else if (f === 'data') {
+      // a list of samples, not a string. the runtime's `data` takes an array of numbers, but its
+      // json type also accepts a string and reads the bytes, so sending "1,2,3" verbatim drew the
+      // digits and the commas as samples — 49, 44, 50, 44, 51 — a square wave climbing one led per
+      // pair. GET /canvas hands the samples back as an array, so the same field renders both ways.
+      box.append(cvField(f, 'samples · 0-255, comma separated', cvInput(e, f, cvSampleText(e[f]), v => {
+        if (v.trim() === '') return cvSet(e, f, undefined);
+        cvSet(e, f, cvParseSamples(v));
+      })));
     } else if (f === 'filled' || f === 'vertical') {
       const cb = document.createElement('input'); cb.type = 'checkbox'; cb.className = 'sw'; cb.checked = !!e[f];
       cb.addEventListener('change', () => cvSet(e, f, cb.checked ? true : undefined));

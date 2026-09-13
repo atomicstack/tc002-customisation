@@ -440,6 +440,48 @@ test('the canvas builder animates the draft it is drawing',
   assert.equal(out.blink, 'false,true', 'the blink was seen both lit and dark');
 });
 
+test("a sparkline's samples are numbers, not the text that was typed",
+  { skip: chromeAvailable ? false : 'google chrome is not installed' }, async () => {
+  // `data` is a list of samples, but the field is free text, so it was sent as the string the user
+  // typed. the runtime's `data: ?[]const u8` takes a json string as readily as an array of
+  // numbers, and reads its bytes: "1,2,3,4,5,6,7,8" became 49,44,50,44,51... — the digits and the
+  // commas — which draws a square wave climbing one led per pair rather than a rising staircase.
+  const out = await cdp.eval(`
+    (() => {
+      showTab('canvas');
+      cvDraft = { elements: [{ type: 'sparkline', id: 'g', at: [0, 0], size: [52, 16],
+                               style: 'bars', colour: 'ffffff' }] };
+      cvSelected = 0; cvList(); cvForm(); cvRender();
+      const field = [...document.querySelectorAll('#cvform input')]
+        .find(i => i.getAttribute('aria-label') === 'data');
+      if (!field) return { error: 'the sparkline has no data field' };
+      field.value = '1,2,3,4,5,6,7,8';
+      field.dispatchEvent(new Event('input', { bubbles: true }));
+      // the height of each column of the drawn frame: a rising series never steps down
+      const prof = [];
+      for (let x = 0; x < 52; x++) {
+        let top = null;
+        for (let y = 0; y < 16; y++) {
+          const o = (y * 52 + x) * 3;
+          if (cvFrame[o] | cvFrame[o + 1] | cvFrame[o + 2]) { top = y; break; }
+        }
+        prof.push(top === null ? 0 : 16 - top);
+      }
+      let descents = 0;
+      for (let i = 1; i < prof.length; i++) if (prof[i] < prof[i - 1]) descents++;
+      const res = { data: cvDraft.elements[0].data, descents, shown: field.value,
+                    valid: document.getElementById('cvvalid').textContent };
+      cvDraft = { elements: [] }; cvSelected = 0; cvEpoch = 0; cvList(); cvForm(); cvRender();
+      showTab('scene');
+      return res;
+    })()
+  `);
+  assert.equal(out.error, undefined, out.error);
+  assert.deepEqual(out.data, [1, 2, 3, 4, 5, 6, 7, 8], 'the samples reach the renderer as numbers');
+  assert.match(out.valid, /accepts this/, 'and the runtime accepts the document');
+  assert.equal(out.descents, 0, 'a rising series draws a staircase, with no step down anywhere');
+});
+
 test('the now card fills each metric bar to the fraction the device reports', { skip: chromeAvailable ? false : 'google chrome is not installed' }, async () => {
   await cdp.setWidth(1200);
   const st = await cdp.eval(`fetch('/api/127.0.0.1:${mockPort}/v1/status', { cache: 'no-store' }).then(r => r.json())`);
