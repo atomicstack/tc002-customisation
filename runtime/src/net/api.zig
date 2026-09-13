@@ -12,6 +12,7 @@ const clock = @import("../scene/clock.zig");
 const transition = @import("../panel/transition.zig");
 const ip = @import("../scene/ip.zig");
 const canvas = @import("../scene/canvas.zig");
+const sound_store = @import("../sound/store.zig");
 const icons = @import("../scene/icons.zig");
 const param = @import("../scene/param.zig");
 const cube = @import("../scene/cube.zig");
@@ -76,6 +77,13 @@ pub const Op = union(enum) {
     logs: struct { after: u32 },
     /// subscribe to every statement this device applies, as an sse stream that does not end
     events,
+    /// the stored sounds
+    sound_list,
+    /// one chunk of a sound on its way to the store; `final` commits what has been assembled
+    sound_put: struct { name: []const u8, offset: u32, final: bool, data: []const u8 },
+    sound_delete: struct { name: []const u8 },
+    sound_play: struct { name: []const u8, volume: ?u8, loop: bool },
+    sound_stop,
     /// a remote control event: the same paths as a physical press
     input: struct { control: actions.Control, event: actions.EdgeEvent, steps: u8, request_id: u64, epoch: u32 },
     notify: struct { text: []const u8, colour: [3]u8, duration_s: u16, transition: ?transition.Spec, request_id: u64, epoch: u32 },
@@ -203,6 +211,10 @@ const SceneBody = struct { base: []const u8, generator: ?[]const u8 = null, seed
 const ActionBody = struct { action: []const u8, brightness: ?u8 = null, seed: ?u32 = null, power: ?bool = null, request_id: []const u8, epoch: u32 };
 const InputBody = struct { control: []const u8, event: []const u8, steps: u8 = 1, request_id: []const u8, epoch: u32 };
 const NotifyBody = struct { text: []const u8, colour: ?[]const u8 = null, duration_s: u16 = 5, transition: ?[]const u8 = null, direction: ?[]const u8 = null, transition_ms: ?u32 = null, exit: ?[]const u8 = null, request_id: []const u8, epoch: u32 };
+/// `{"name":"chime"}` to play, `{"stop":true}` to stop. volume is optional and means "louder or
+/// quieter than the setting, just for this one".
+const SoundBody = struct { name: ?[]const u8 = null, volume: ?u8 = null, loop: ?bool = null, stop: ?bool = null };
+
 const ConfigBody = struct {
     brightness: ?u8 = null,
     base: ?[]const u8 = null,
@@ -627,6 +639,8 @@ const endpoints = [_]Endpoint{
     .{ .method = .GET, .path = "/api/v1/screen", .authority = .control },
     .{ .method = .GET, .path = "/api/v1/logs", .authority = .control },
     .{ .method = .GET, .path = "/api/v1/events", .authority = .control },
+    .{ .method = .GET, .path = "/api/v1/sounds", .authority = .control },
+    .{ .method = .POST, .path = "/api/v1/sound", .authority = .control },
     .{ .method = .GET, .path = "/api/v1/berry", .authority = .control },
     .{ .method = .GET, .path = "/api/v1/berry/scripts", .authority = .control },
     .{ .method = .POST, .path = "/api/v1/input", .authority = .control },
@@ -660,6 +674,17 @@ pub fn route(req: http.Request, body: []const u8, creds: *const Credentials, ori
         if (std.mem.indexOfScalar(u8, rest, '/') == null and rest.len > 0) {
             if (req.method == .PUT) matched = .{ .method = .PUT, .path = "/api/v1/sprites/{id}", .authority = .admin };
             if (req.method == .DELETE) matched = .{ .method = .DELETE, .path = "/api/v1/sprites/{id}", .authority = .control };
+        }
+    }
+    const sounds_prefix = "/api/v1/sounds/";
+    if (std.mem.startsWith(u8, req.path, sounds_prefix)) {
+        path_known = true;
+        const rest = req.path[sounds_prefix.len..];
+        if (std.mem.indexOfScalar(u8, rest, '/') == null and rest.len > 0) {
+            // admin for both, like a script: a stored sound plays on a device somebody lives with,
+            // long after the request that stored it
+            if (req.method == .PUT) matched = .{ .method = .PUT, .path = "/api/v1/sounds/{name}", .authority = .admin };
+            if (req.method == .DELETE) matched = .{ .method = .DELETE, .path = "/api/v1/sounds/{name}", .authority = .admin };
         }
     }
     const scripts_prefix = "/api/v1/berry/scripts/";
@@ -729,6 +754,18 @@ pub fn route(req: http.Request, body: []const u8, creds: *const Credentials, ori
         return bad("invalid_format", "format must be json or raw");
     }
     if (std.mem.eql(u8, ep.path, "/api/v1/events")) return .{ .op = .events };
+    if (std.mem.eql(u8, ep.path, "/api/v1/sounds")) return .{ .op = .sound_list };
+    if (std.mem.eql(u8, ep.path, "/api/v1/sound")) return parseBody(.sound, body, arena);
+    if (std.mem.eql(u8, ep.path, "/api/v1/sounds/{name}")) {
+        const name = req.path[sounds_prefix.len..];
+        if (!sound_store.validName(name)) return bad("invalid_name", "a sound name is 1..32 of letters, digits, -, _ or .");
+        if (req.method == .DELETE) return .{ .op = .{ .sound_delete = .{ .name = name } } };
+        const offset_text = queryValue(req.query, "offset") orelse "0";
+        const offset = std.fmt.parseInt(u32, offset_text, 10) catch return bad("invalid_offset", "offset must be a byte count");
+        if (body.len > sound_store.chunk_max) return bad("body_too_large", "a sound arrives in chunks of at most 4096 bytes");
+        const final = std.mem.eql(u8, queryValue(req.query, "final") orelse "0", "1");
+        return .{ .op = .{ .sound_put = .{ .name = name, .offset = offset, .final = final, .data = body } } };
+    }
     if (std.mem.eql(u8, ep.path, "/api/v1/logs")) {
         const after_text = queryValue(req.query, "after") orelse "0";
         const after = std.fmt.parseInt(u32, after_text, 10) catch return bad("invalid_after", "after must be a sequence number");
@@ -755,7 +792,7 @@ pub fn route(req: http.Request, body: []const u8, creds: *const Credentials, ori
 }
 
 
-pub const BodyKind = enum { scene, action, notify, config_patch, config_save, mqtt_put, ntfy_put, input, canvas_put, canvas_patch };
+pub const BodyKind = enum { scene, action, notify, config_patch, config_save, mqtt_put, ntfy_put, input, canvas_put, canvas_patch, sound };
 
 pub fn enumByName(comptime E: type, text: []const u8) ?E {
     inline for (@typeInfo(E).@"enum".fields) |f| if (std.mem.eql(u8, text, f.name)) return @enumFromInt(f.value);
@@ -858,6 +895,14 @@ pub fn parseBody(kind: BodyKind, body: []const u8, arena: *Arena) Route {
             if (b.steps != 1 and !turning) return bad("invalid_steps", "steps applies to cw and ccw only");
             const rid = parseRequestId(b.request_id) orelse return bad("invalid_request_id", "request_id must be 1..16 hex digits");
             return .{ .op = .{ .input = .{ .control = control, .event = event, .steps = b.steps, .request_id = rid, .epoch = b.epoch } } };
+        },
+        .sound => {
+            const b = json.parse(SoundBody, body, arena) catch |e| return jsonError(e);
+            if (b.stop) |st| if (st) return .{ .op = .sound_stop };
+            const name = b.name orelse return bad("missing_field", "name, or stop:true");
+            if (!sound_store.validName(name)) return bad("invalid_name", "a sound name is 1..32 of letters, digits, -, _ or .");
+            if (b.volume) |v| if (v < 1 or v > 100) return bad("invalid_volume", "volume must be 1..100");
+            return .{ .op = .{ .sound_play = .{ .name = name, .volume = b.volume, .loop = b.loop orelse false } } };
         },
         .notify => {
             const b = json.parse(NotifyBody, body, arena) catch |e| return jsonError(e);
@@ -1159,6 +1204,62 @@ test "the event stream is a control-authority get, and nothing else" {
     // read: there is nothing to post to it
     try expectReject(route(testReq(.GET, "/api/v1/events", "", null, null, null), "", &c, &origins, &arena), 401, "unauthorized");
     try expectReject(route(testReq(.POST, "/api/v1/events", "", control_header, null, null), "", &c, &origins, &arena), 405, "method_not_allowed");
+}
+
+test "the sound routes: reads are control, writing a sound is admin" {
+    const c = testCreds();
+    var arena: Arena = undefined;
+    var origins = OriginPolicy{};
+
+    const list = route(testReq(.GET, "/api/v1/sounds", "", control_header, null, null), "", &c, &origins, &arena);
+    try std.testing.expect(list == .op and list.op == .sound_list);
+
+    // storing a sound is admin, for the same reason a script is: it plays on a device somebody
+    // lives with, long after the request that stored it
+    try expectReject(route(testReq(.PUT, "/api/v1/sounds/chime", "offset=0", control_header, "application/octet-stream", null), "RIFF", &c, &origins, &arena), 403, "forbidden");
+    try expectReject(route(testReq(.DELETE, "/api/v1/sounds/chime", "", control_header, null, null), "", &c, &origins, &arena), 403, "forbidden");
+
+    const put = route(testReq(.PUT, "/api/v1/sounds/chime", "offset=0", admin_header, "application/octet-stream", null), "RIFF", &c, &origins, &arena);
+    try std.testing.expect(put == .op and put.op == .sound_put);
+    try std.testing.expectEqualStrings("chime", put.op.sound_put.name);
+    try std.testing.expectEqual(@as(u32, 0), put.op.sound_put.offset);
+    try std.testing.expect(!put.op.sound_put.final);
+    try std.testing.expectEqualStrings("RIFF", put.op.sound_put.data);
+}
+
+test "an upload names the offset it believes it is at, and says when it is done" {
+    const c = testCreds();
+    var arena: Arena = undefined;
+    var origins = OriginPolicy{};
+
+    const mid = route(testReq(.PUT, "/api/v1/sounds/chime", "offset=4096", admin_header, "application/octet-stream", null), "abcd", &c, &origins, &arena);
+    try std.testing.expectEqual(@as(u32, 4096), mid.op.sound_put.offset);
+    try std.testing.expect(!mid.op.sound_put.final);
+
+    const last = route(testReq(.PUT, "/api/v1/sounds/chime", "offset=8192&final=1", admin_header, "application/octet-stream", null), "z", &c, &origins, &arena);
+    try std.testing.expect(last.op.sound_put.final);
+
+    // an offset that is not a number is refused rather than treated as zero, which would silently
+    // overwrite the beginning of the sound
+    try expectReject(route(testReq(.PUT, "/api/v1/sounds/chime", "offset=x", admin_header, "application/octet-stream", null), "a", &c, &origins, &arena), 400, "invalid_offset");
+    // and a name that is not a name
+    try expectReject(route(testReq(.PUT, "/api/v1/sounds/has%20space", "offset=0", admin_header, "application/octet-stream", null), "a", &c, &origins, &arena), 400, "invalid_name");
+}
+
+test "playing a sound is control, and stopping needs no name" {
+    const c = testCreds();
+    var arena: Arena = undefined;
+    var origins = OriginPolicy{};
+    const play = route(testReq(.POST, "/api/v1/sound", "", control_header, "application/json", null), "{\"name\":\"chime\",\"volume\":80,\"loop\":true}", &c, &origins, &arena);
+    try std.testing.expect(play == .op and play.op == .sound_play);
+    try std.testing.expectEqualStrings("chime", play.op.sound_play.name);
+    try std.testing.expectEqual(@as(?u8, 80), play.op.sound_play.volume);
+    try std.testing.expect(play.op.sound_play.loop);
+
+    const stop = route(testReq(.POST, "/api/v1/sound", "", control_header, "application/json", null), "{\"stop\":true}", &c, &origins, &arena);
+    try std.testing.expect(stop == .op and stop.op == .sound_stop);
+
+    try expectReject(route(testReq(.POST, "/api/v1/sound", "", control_header, "application/json", null), "{\"name\":\"chime\",\"volume\":0}", &c, &origins, &arena), 400, "invalid_volume");
 }
 
 test "authentication is constant-time bearer matching of either token" {
