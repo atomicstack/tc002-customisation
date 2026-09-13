@@ -1,6 +1,10 @@
 //! a bounded http/1.1 request parser and response writer. one request per connection, headers
 //! limited to 4,096 bytes, no chunked requests, no content or transfer encodings, every response
 //! carries `connection: close`. pure: the sockets live in netd.
+//!
+//! that last part holds for every response *this* module builds. the one response that does not end
+//! -- the event stream -- writes its own head in `sse.zig`, because it can carry neither a
+//! content-length it cannot know nor a close it must not do.
 const std = @import("std");
 
 pub const max_head = 4096;
