@@ -205,6 +205,15 @@ fn subscribeFn(vm: ?*Bvm) callconv(.c) c_int {
     return be_returnnilvalue(v);
 }
 
+fn unsubscribeFn(vm: ?*Bvm) callconv(.c) c_int {
+    const v = vm.?;
+    const topic = argText(v, 1);
+    if (topic.len == 0 or topic.len > messages.BerryEvent.topic_max) return refuse(v, "a topic is 1 to 96 characters");
+    const e = messages.BerryEvent.init(.unsubscribe, topic, "") orelse return refuse(v, "a topic is 1 to 96 characters");
+    send(.{ .berry_event = e });
+    return be_returnnilvalue(v);
+}
+
 fn publishFn(vm: ?*Bvm) callconv(.c) c_int {
     const v = vm.?;
     const topic = argText(v, 1);
@@ -286,6 +295,7 @@ const bindings = [_]Binding{
     .{ .name = "_tc002_brightness", .f = brightnessFn },
     .{ .name = "_tc002_notify", .f = notifyFn },
     .{ .name = "_tc002_subscribe", .f = subscribeFn },
+    .{ .name = "_tc002_unsubscribe", .f = unsubscribeFn },
     .{ .name = "_tc002_publish", .f = publishFn },
     .{ .name = "_tc002_play", .f = playFn },
     .{ .name = "_tc002_stop_sound", .f = stopSoundFn },
@@ -316,6 +326,7 @@ pub const prelude =
     \\tc002.brightness = _tc002_brightness
     \\tc002.notify = _tc002_notify
     \\tc002.subscribe = _tc002_subscribe
+    \\tc002.unsubscribe = _tc002_unsubscribe
     \\tc002.publish = _tc002_publish
     \\tc002.play = _tc002_play
     \\tc002.stop_sound = _tc002_stop_sound

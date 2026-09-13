@@ -81,6 +81,7 @@ same refusal — `tc002.brightness(0)` raises rather than quietly clamping.
 | `tc002.brightness(n)` | 1–100 | outside the range it raises |
 | `tc002.notify(text, colour, seconds)` | colour defaults white, seconds defaults 5 | the same overlay `POST /notify` uses |
 | `tc002.subscribe(filter)` | an mqtt topic filter, `+` and `#` allowed | up to eight; see [mqtt](#mqtt) |
+| `tc002.unsubscribe(filter)` | the same filter, exactly as given to `subscribe` | frees its slot and tells the broker |
 | `tc002.publish(topic, payload)` | | through the device's own broker connection |
 | `tc002.play(name, volume, loop)` | volume 1–100 (0 = the setting), loop defaults false | plays a stored sound; see [sound](RUNTIME.md#sound) |
 | `tc002.stop_sound()` | | stops whatever is playing |
@@ -176,6 +177,15 @@ connection comes back, so a reconnect does not silently stop delivering.
 
 a filter is not a prefix. `home/+/state` matches `home/kitchen/state` but not
 `home/kitchen/light/state`; `home/#` matches everything below `home/`.
+
+**the list belongs to the vm's lifetime.** `tc002.unsubscribe(filter)` gives a slot
+back, and every one is dropped when berryd restarts — which is what happens when
+`berry.enabled`, the heap or the handler budget change — because a fresh vm has
+declared nothing yet. whatever runs then declares its topics again. before this the
+list only filled: a deleted script's topic stayed subscribed until the device was
+power cycled. a filter the device is no longer subscribed to still reaches nothing
+even if the broker is mid-reconnect, because the supervisor's list is what a
+reconnect replays.
 
 ```berry
 tc002.subscribe('home/+/doorbell')

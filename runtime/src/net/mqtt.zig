@@ -6,7 +6,7 @@ const std = @import("std");
 
 pub const max_packet = 4096;
 
-pub const PacketType = enum(u4) { connect = 1, connack = 2, publish = 3, puback = 4, subscribe = 8, suback = 9, pingreq = 12, pingresp = 13, disconnect = 14 };
+pub const PacketType = enum(u4) { connect = 1, connack = 2, publish = 3, puback = 4, subscribe = 8, suback = 9, unsubscribe = 10, unsuback = 11, pingreq = 12, pingresp = 13, disconnect = 14 };
 
 pub const Error = error{ Overflow, Malformed, Incomplete };
 
@@ -146,6 +146,19 @@ pub fn encodeSubscribe(out: []u8, packet_id: u16, topics: []const []const u8, qo
         p += 1;
     }
     return frame(out, (@as(u8, @intFromEnum(PacketType.subscribe)) << 4) | 0x02, p - 5);
+}
+
+/// unsubscribe carries the filters alone -- no qos byte, unlike subscribe. the broker answers
+/// `unsuback`, which the client does not wait on: a filter the device has stopped matching is
+/// already not reaching a script, and a lost unsuback would otherwise wedge the connection.
+pub fn encodeUnsubscribe(out: []u8, packet_id: u16, topics: []const []const u8) Error!usize {
+    if (out.len < 5) return error.Overflow;
+    var p: usize = 5;
+    if (out.len < p + 2) return error.Overflow;
+    std.mem.writeInt(u16, out[p..][0..2], packet_id, .big);
+    p += 2;
+    for (topics) |t| p += try writeString(out[p..], t);
+    return frame(out, (@as(u8, @intFromEnum(PacketType.unsubscribe)) << 4) | 0x02, p - 5);
 }
 
 pub fn encodePingreq(out: []u8) Error!usize {
@@ -466,6 +479,28 @@ test "a rejected connack and a connect timeout back off" {
     try std.testing.expectEqual(Directive.close, d.poll(10 * s));
     try std.testing.expectEqual(@as(u16, 1), d.packetId());
     try std.testing.expectEqual(@as(u16, 2), d.packetId());
+}
+
+test "unsubscribe encodes the filters without the qos byte subscribe carries" {
+    var out: [64]u8 = undefined;
+    var topics = [_][]const u8{ "home/+/state", "home/doorbell" };
+    const n = try encodeUnsubscribe(&out, 0x0102, topics[0..2]);
+    try std.testing.expectEqual(@as(u8, (10 << 4) | 0x02), out[0]);
+    // remaining length, then the packet id, then each filter as a length-prefixed string
+    try std.testing.expectEqual(@as(u8, 2 + 2 + 12 + 2 + 13), out[1]);
+    try std.testing.expectEqual(@as(u16, 0x0102), std.mem.readInt(u16, out[2..4], .big));
+    try std.testing.expectEqualStrings("home/+/state", out[6..18]);
+    try std.testing.expectEqualStrings("home/doorbell", out[20..33]);
+    try std.testing.expectEqual(@as(usize, 33), n);
+    var tiny: [4]u8 = undefined;
+    try std.testing.expectError(error.Overflow, encodeUnsubscribe(&tiny, 1, topics[0..1]));
+}
+
+test "an unsuback is ignored rather than breaking the connection" {
+    // the client does not wait on it: a filter the device stopped matching already reaches nobody
+    const packet = [_]u8{ (11 << 4), 2, 0x01, 0x02 };
+    const d = try decode(&packet);
+    try std.testing.expectEqual(@as(u4, 11), d.packet.other);
 }
 
 test "topic filters match the way the broker says they do" {

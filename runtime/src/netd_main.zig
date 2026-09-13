@@ -1971,7 +1971,7 @@ const Netd = struct {
     /// topics a script asked for, handed over by the supervisor. netd does the subscribing because
     /// it owns the broker connection; the supervisor owns the list because it outlives this process.
     fn onBerryEvent(self: *Netd, e: messages.BerryEvent, now: u64) void {
-        switch (@as(messages.BerryEvent.Op, @enumFromInt(@min(e.kind, 3)))) {
+        switch (@as(messages.BerryEvent.Op, @enumFromInt(@min(e.kind, messages.BerryEvent.op_max)))) {
             .subscribe => {
                 const wanted = e.topicSlice();
                 for (0..self.berry_topic_count) |i| {
@@ -1990,6 +1990,30 @@ const Netd = struct {
                     self.mqttQueue(n);
                     self.mqttFlush();
                     log.info("subscribed to {s} for a script", .{wanted});
+                }
+            },
+            .unsubscribe => {
+                const wanted = e.topicSlice();
+                for (0..self.berry_topic_count) |i| {
+                    if (!std.mem.eql(u8, self.berry_topics[i][0..self.berry_topic_len[i]], wanted)) continue;
+                    const last = self.berry_topic_count - 1;
+                    if (i != last) {
+                        self.berry_topics[i] = self.berry_topics[last];
+                        self.berry_topic_len[i] = self.berry_topic_len[last];
+                    }
+                    self.berry_topic_len[last] = 0;
+                    self.berry_topic_count = last;
+                    // the broker only needs telling while there is a connection to tell it on; a
+                    // reconnect resubscribes from the supervisor's list, which no longer has it
+                    if (self.m_connected) {
+                        const space = self.mqttSpace();
+                        var one = [_][]const u8{wanted};
+                        const n = mqtt.encodeUnsubscribe(space, self.client.packetId(), one[0..1]) catch return;
+                        self.mqttQueue(n);
+                        self.mqttFlush();
+                        log.info("unsubscribed from {s}", .{wanted});
+                    }
+                    return;
                 }
             },
             .publish => {

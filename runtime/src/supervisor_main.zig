@@ -1351,8 +1351,9 @@ const Supervisor = struct {
                     self.sendNetd(.{ .status = self.snapshot }, 0);
                 },
                 .berry_result => |r| self.onBerryResult(r),
-                .berry_event => |e| switch (@as(messages.BerryEvent.Op, @enumFromInt(@min(e.kind, 3)))) {
+                .berry_event => |e| switch (@as(messages.BerryEvent.Op, @enumFromInt(@min(e.kind, messages.BerryEvent.op_max)))) {
                     .subscribe => self.onBerrySubscribe(e),
+                    .unsubscribe => self.onBerryUnsubscribe(e),
                     .publish => self.sendNetd(.{ .berry_event = e }, 0),
                     else => {},
                 },
@@ -1513,6 +1514,7 @@ const Supervisor = struct {
     /// hand berryd every script we hold, then tell it the set is complete so it can run the
     /// autoexec. a fresh vm knows nothing; this is what makes a saved script survive a power cycle.
     fn pushScripts(self: *Supervisor) void {
+        self.dropBerryTopics();
         var it = script_store.iterate();
         while (it.next()) |e| self.sendBerry(.{ .berry_script = messages.BerryScript.init(.put, e.name, e.source) });
         self.sendBerry(.{ .berry_script = messages.BerryScript.init(.reload, "", "") });
@@ -1611,7 +1613,39 @@ const Supervisor = struct {
         self.sendNetd(.{ .berry_event = e }, 0);
     }
 
+    fn onBerryUnsubscribe(self: *Supervisor, e: messages.BerryEvent) void {
+        const topic = e.topicSlice();
+        for (0..self.berry_topic_count) |i| {
+            if (!std.mem.eql(u8, self.berry_topics[i][0..self.berry_topic_len[i]], topic)) continue;
+            // order does not matter, so the last entry fills the hole
+            const last = self.berry_topic_count - 1;
+            if (i != last) {
+                self.berry_topics[i] = self.berry_topics[last];
+                self.berry_topic_len[i] = self.berry_topic_len[last];
+            }
+            self.berry_topic_len[last] = 0;
+            self.berry_topic_count = last;
+            log.info("no longer subscribed to {s} for a script", .{topic});
+            self.sendNetd(.{ .berry_event = e }, 0);
+            return;
+        }
+    }
+
+    /// a fresh berryd has declared nothing, so nothing may be held on its behalf. without this a
+    /// topic outlived the script that asked for it -- delete the script, edit out the `subscribe`,
+    /// restart the vm, and the device stayed subscribed until it was power cycled, with the eight
+    /// slots filling one way only.
+    fn dropBerryTopics(self: *Supervisor) void {
+        for (0..self.berry_topic_count) |i| {
+            const e = messages.BerryEvent.init(.unsubscribe, self.berry_topics[i][0..self.berry_topic_len[i]], "") orelse continue;
+            self.sendNetd(.{ .berry_event = e }, 0);
+        }
+        if (self.berry_topic_count > 0) log.info("dropped {d} script topic(s): the vm is starting over", .{self.berry_topic_count});
+        self.berry_topic_count = 0;
+    }
+
     /// hand netd every topic a script has asked for. called when netd is spawned, because a fresh
+    /// netd knows nothing and the broker connection it makes is a new one.    /// hand netd every topic a script has asked for. called when netd is spawned, because a fresh
     /// netd knows nothing and the broker connection it makes is a new one.
     fn pushBerryTopics(self: *Supervisor) void {
         for (0..self.berry_topic_count) |i| {

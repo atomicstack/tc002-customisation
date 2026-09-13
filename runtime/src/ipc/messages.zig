@@ -486,7 +486,12 @@ pub const BerryEvent = struct {
         subscribe = 2,
         /// berryd -> supervisor -> netd: publish this
         publish = 3,
+        /// berryd -> supervisor -> netd: stop delivering this topic. the supervisor also sends one
+        /// per held topic when berryd restarts, because a fresh vm has declared nothing yet.
+        unsubscribe = 4,
     };
+    /// how many ops there are, for the `@min` that keeps a bad byte off the enum
+    pub const op_max = @intFromEnum(Op.unsubscribe);
 
     /// as many topics as a device will subscribe to on a script's behalf. eight is not a physical
     /// bound; it is the point past which a clock is doing something a clock should not. it lives

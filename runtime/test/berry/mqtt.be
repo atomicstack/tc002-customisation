@@ -14,3 +14,6 @@ var notes = []
 tc002.on('ntfy', def (topic, message, n) notes.push(message) end)
 _tc002_dispatch('ntfy', '', 'the parcel is here', 0)
 assert(notes[0] == 'the parcel is here', 'got ' + str(notes))
+
+# and stops caring, which used to be impossible: a topic outlived the script that asked for it
+tc002.unsubscribe("home/doorbell")
