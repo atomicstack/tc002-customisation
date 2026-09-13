@@ -130,10 +130,36 @@ so `MI_AUDIO_Frame_t` is **288 bytes** with the buffer at +8 and the length at +
 **`0xA005200D` means the device's buffer is full** — the vendor spins on it rather than treating it
 as an error.
 
+### verified on the device, 2026-09-13
+
+`zig build soundprobe` builds `tc002-soundprobe`, which walks the control plane and prints what each
+ioctl returned. on the unit, at 44,100 hz mono, **every one succeeded**:
+
+```
+MI_SYS_Init: ok      MI_AO_SetPubAttr: ok   MI_AO_Enable: ok     MI_AO_EnableChn: ok
+MI_AO_SetMute: ok    MI_AO_QueryChnStat: ok MI_AO_DisableChn: ok MI_AO_Disable: ok
+```
+
+so the envelope, the request numbers and the 52-byte attribute payload are **confirmed correct on
+hardware**, not merely recovered. the renderer kept presenting throughout and the device was
+unaffected.
+
+`MI_AO_SendFrame` was then tried with candidate payloads, with silence in the buffer. `{dev=0,
+chn=0}` and `{0, &frame}` both returned success — which proves nothing on its own, because an ioctl
+returning 0 does not mean samples were queued, and `QueryChnStat` stayed all zeros. a third variant
+(`{&frame, 0}`) segfaulted the probe process; the device itself was untouched.
+
 **what is still not recovered** is the last hop: how `MI_AO_SendFrame` turns that 288-byte frame into
-the 8-byte `{?, ?}` payload its ioctl carries. it makes no `memcpy` and no `MI_SYS_Mmap` call of its
-own, so one of those two words is presumably a pointer the driver follows, but tracing it through a
-216-byte stack frame has not been done. **that is the one thing between this runtime and a sound.**
+the 8-byte `{?, ?}` payload its ioctl carries. it does copy: there is a loop inside it
+reading 16-bit samples from the caller's buffer and writing them, strided, into a destination the
+function obtained earlier. the vendor's *player* never allocates that destination — `libzkmedia.so`
+calls neither `MI_SYS_MMA_Alloc` nor `MI_SYS_Mmap` — so the buffer is obtained inside
+`MI_AO_SendFrame` itself, lazily, which is why the library references those two calls at all.
+
+replicating it therefore needs three more things: the 48-byte `MI_SYS_MMA_Alloc` payload, the
+24-byte `MI_SYS_Mmap` payload, and `mmap` in `sys/linux.zig`, which does not have it. **that is what
+stands between this runtime and a sound**, and it is a larger piece of work than the control plane
+was.
 
 **`MI_SYS_*` payloads** follow the same envelope. the calls the audio path needs:
 

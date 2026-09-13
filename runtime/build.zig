@@ -94,6 +94,22 @@ pub fn build(b: *std.Build) void {
         }),
         .linkage = .static,
     });
+    // a diagnostic: walks the audio control plane and prints what each ioctl returned
+    const soundprobe = b.addExecutable(.{
+        .name = "tc002-soundprobe",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/soundprobe_main.zig"),
+            .target = device,
+            .optimize = optimize,
+            .link_libc = false,
+            .strip = strip,
+            .single_threaded = true,
+        }),
+        .linkage = .static,
+    });
+    const soundprobe_step = b.step("soundprobe", "build tc002-soundprobe: open the audio devices and report each ioctl");
+    soundprobe_step.dependOn(&b.addInstallArtifact(soundprobe, .{}).step);
+
     const bench_step = b.step("ipcbench", "build tc002-ipcbench: round-trip latency and frame throughput over the ipc socket");
     bench_step.dependOn(&b.addInstallArtifact(ipcbench, .{}).step);
 
