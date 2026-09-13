@@ -123,6 +123,15 @@
     message(text, bad = false) { this.el('scriptMessage').textContent = text; this.el('scriptMessage').classList.toggle('bad',bad); }
     storageWarning(text) { this.el('scriptStorage').textContent = text; this.el('scriptStorage').hidden = !text; }
     visible(active) { this.active = active; if (active) this.activate(); }
+    recoverLocal() {
+      if(this.session || !this.device) return;
+      const records=this.drafts.list(this.device);
+      let name; try {name=this.storage?.getItem(`tc002.script-selection:${this.device}`);} catch {}
+      const record=records.find(d=>d.name===name) || records[0];
+      if(!record) return;
+      this.session=new M.ScriptSession(this.drafts,this.device,record.name,record.base,this.io(this.device));
+      this.el('scriptSource').value=this.session.source; this.paint(); this.renderList();
+    }
     async activate() {
       const connection = this.connection(), device = connection.device.trim();
       const generation = ++this.generation;
@@ -132,6 +141,7 @@
       }
       this.opening = true; this.renderState(); this.renderList();
       if (!device || !connection.control) {
+        this.recoverLocal();
         this.opening = false; this.message(device ? 'a control token is needed to read device scripts.' : 'enter a device address to open its scripts.',true); this.renderState(); return;
       }
       try {
@@ -149,12 +159,23 @@
       } catch (e) {
         if (generation !== this.generation) return;
         this.message(`cannot read scripts: ${e.message}. local drafts are still available.`,true);
+        this.recoverLocal();
         this.renderList();
       } finally {
         if (generation === this.generation) { this.opening = false; this.renderState(); this.poll(); }
       }
     }
     names() { return [...new Set([...this.entries.map(e => e.name), ...this.drafts.list(this.device).map(d => d.name)])].sort(); }
+    async refreshCatalogue(device) {
+      try {
+        const list=await this.request(device,'GET','berry/scripts');
+        if(device !== this.device) return;
+        this.entries=list.scripts || [];
+        this.el('scriptBudget').textContent=`${list.used} / ${list.budget ?? list.capacity} bytes on device`;
+      } catch {
+        if(device === this.device) this.el('scriptBudget').textContent='store usage unavailable — refresh to retry';
+      }
+    }
     renderList() {
       const list = this.el('scriptList'); list.replaceChildren();
       for (const name of this.names()) {
@@ -226,6 +247,8 @@
         if(this.session !== session) return;
         const didRun=method !== 'save';
         this.message(didRun ? 'script ran. output and errors appear below.' : result.written ? 'saved to device.' : 'already up to date — no device write.');
+        const note=result?.runResponse?.note ?? result?.note;
+        if(didRun && note !== undefined) this.message(`script ran. result: ${note}`);
         if(method === 'save' && result.written && (result.response?.enabled === false || ['off','disabled'].includes(this.vmState))) {
           this.message('saved to device; scripting is disabled, so the source was not compiled.');
         }
@@ -241,7 +264,12 @@
         this.message(e.message,true);
         const line=e.message.match(/(?:line\s+|:)(\d+)(?::|\b)/i);
         this.errorLine=line ? Number(line[1]) : null; this.el('scriptErrorLine').hidden=!this.errorLine;
-      } finally { if(this.session === session) { this.renderState(); this.renderList(); } }
+      } finally {
+        // a save may have succeeded even when the following run failed. reread only: never
+        // repeat a write to update the list or its store usage.
+        if(method !== 'runSaved') await this.refreshCatalogue(session.device);
+        if(this.session === session) { this.renderState(); this.renderList(); }
+      }
     }
     confirm(id, prompt, action) {
       const button=this.el(id);
@@ -280,7 +308,7 @@
         this.entries=this.entries.filter(e=>e.name !== session.name);
         this.message('deleted from device. a local draft is kept in this browser.');
       } catch(e) { if(this.session === session) this.message(e.message,true); }
-      finally { this.opening=false; this.renderState(); this.renderList(); }
+      finally { await this.refreshCatalogue(session.device); this.opening=false; this.renderState(); this.renderList(); }
     }
     download() {
       if(!this.session) return;

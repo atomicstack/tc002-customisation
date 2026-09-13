@@ -299,7 +299,7 @@ name and the source version they were based on. it also remembers the selected
 script per device. reloads and script/device switches recover that work without
 uploading it. storage is scoped to this browser and console origin: changing the
 proxy port uses a different store; clearing browser storage removes drafts.
-credentials are never placed in webstorage.
+proxy authentication tokens are never placed in webstorage.
 
 storage denial, quota exhaustion or a conflicting browser tab leaves the current
 text in memory, displays a warning and protects page unload while any such draft
