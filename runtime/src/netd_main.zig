@@ -10,6 +10,7 @@ const http = @import("net/http.zig");
 const sse = @import("net/sse.zig");
 const sound_store = @import("sound/store.zig");
 const api = @import("net/api.zig");
+const clients = @import("net/clients.zig");
 const json = @import("net/json.zig");
 const mqtt = @import("net/mqtt.zig");
 const messages = @import("ipc/messages.zig");
@@ -171,6 +172,8 @@ const Netd = struct {
     status: messages.StatusSnapshot = .{},
     status_at_ns: u64 = 0,
     next_id: u64 = 0x8000_0000_0000_0000,
+    /// named client tokens, replaced wholesale whenever the supervisor pushes the set
+    clients: clients.Store = .{},
     supervisor_dead: bool = false,
     /// statements seen from the supervisor since start, streams opened, and subscribers dropped
     /// for falling behind
@@ -638,7 +641,7 @@ const Netd = struct {
             return;
         };
         const origins = if (self.have_cfg) self.cfg.originPolicy() else api.OriginPolicy{};
-        switch (api.route(c.req, body, &creds, &origins, &arena, self.newId())) {
+        switch (api.route(c.req, body, &creds, &self.clients, &origins, &arena, self.newId())) {
             .reject => |j| {
                 self.respondError(c, j.status, j.code, j.message);
                 self.flushConn(c, now);
