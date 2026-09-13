@@ -368,6 +368,17 @@
     return { ...r, rgb: frameBytes().slice() };
   }
 
+  /* advance the draft already installed to `nowMs`, without reinstalling it. an install starts
+     every animation clock at the instant of the install, so a preview that called
+     renderCanvasDraft on each paint sat at elapsed zero for ever — a hue that never turned and a
+     blink that never went dark. the caller keeps the document; only the clock moves. */
+  function stepCanvasDraft(nowMs) {
+    const e = need();
+    const at = nowMs || Date.now();
+    e.frame(at, at);
+    return frameBytes().slice();
+  }
+
   /* ---------- trigger replication ----------
      the device streams every statement it applies on GET /events, whoever issued it — the api, a
      button, the knob, mqtt. the replica applies the same statement and lands on the same revision.
@@ -476,7 +487,8 @@
     WIDTH, HEIGHT, PIXELS, RGB_BYTES, WHITE, black, pixelOffset,
     ready, loaded, buildLut, tzParse, TZ_UTC, Art, compose, sceneParams, renderIpLayout,
     agreement, anchorClock, deviceNow, installCanvas, clearCanvas, canvasEmpty, canvasAnimated,
-    applyStatement, setRevision, applyGeneratorParams, frame, renderCanvasDraft, canvasBounds,
+    applyStatement, setRevision, applyGeneratorParams, frame, renderCanvasDraft,
+    stepCanvasDraft, canvasBounds,
     canvasBackdated,
     get lastCanvasResult() { return lastCanvasResult; },
     get clockSkewMs() { return clockSkewMs; },

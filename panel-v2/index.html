@@ -362,7 +362,7 @@ input[type=file]{font:12px var(--body);color:var(--muted);max-width:220px}
           <div class="rows" id="cvform"></div>
         </div>
       </div>
-      <div class="actions"><span class="note">the preview above draws this draft with the runtime's own canvas renderer, and refuses what the device would refuse — nothing here is sent until you press send. press an element to select it, press the same spot again to reach what is under it, drag to move, drag a corner to resize. the list is front to back, as a layer list is. animations start when the device installs the document, so a draft animates from the moment you edit it.</span></div>
+      <div class="actions"><span class="note">the preview above draws this draft with the runtime's own canvas renderer, and refuses what the device would refuse — nothing here is sent until you press send. press an element to select it, press the same spot again to reach what is under it, drag to move, drag a corner to resize. the list is front to back, as a layer list is. the draft animates on a clock of its own, so a hue turns and a blink blinks here exactly as it would on the panel; changing a motion restarts it, and an arrival has a replay button.</span></div>
     </section>
   </div>
 
@@ -825,7 +825,9 @@ function paint(rgb, brightness) {
 function draw() {
   const nowMs = Date.now();
   if (cvPreviewing) {
-    // the builder owns the preview while its tab is showing, and repaints on every edit
+    // the builder owns the preview while its tab is showing. it repaints on every edit, and on
+    // every frame as well once something in the draft is moving
+    cvTick(nowMs);
     requestAnimationFrame(draw);
     return;
   }
@@ -956,7 +958,7 @@ function showTab(name) {
   // the canvas tab borrows the preview to draw the draft; every other tab hands it back
   const wasBuilding = cvPreviewing;
   cvPreviewing = name === 'canvas';
-  if (cvPreviewing) cvRender();
+  if (cvPreviewing) cvReplay();
   // the draft left the shared arbiter on the canvas base with a document that is not the
   // device's, so the replica has to be put back where the panel actually is
   else if (wasBuilding && STATUS) { resyncFromState('left the canvas builder'); nextDrawAt = 0; }
@@ -1418,6 +1420,11 @@ const CV_FIELDS = {
 };
 const CV_KINDS = Object.keys(CV_FIELDS);
 const CV_MOTIONS = ['none', 'hue', 'bounce', 'scramble', 'scroll', 'blink', 'pulse', 'typewriter', 'sweep'];
+// the period the runtime picks when a document names none (net/api.zig): a hue round in one second
+// is a strobe, and a scroll is paced per pixel rather than per turn
+const CV_MOTION_MS = { hue: 8000, scroll: 33 };
+// these run once and then hold, so they are the ones worth a replay button
+const CV_ARRIVALS = new Set(['scramble', 'typewriter', 'sweep']);
 const CV_FONTS = ['small', 'mini', 'block', 'big'];
 const CV_ALIGN = ['left', 'centre', 'right'];
 const CV_STYLE = ['line', 'bars', 'area'];
@@ -1430,10 +1437,17 @@ let cvMax = 24;
 const cvLabel = e => `${e.id ? e.id : '(no id)'}`;
 
 function cvRender() {
-  // the draft through the device's parser and renderer: what it draws, and what it would refuse
-  const r = S.renderCanvasDraft(cvDraft, Date.now());
+  // the draft through the device's parser and renderer: what it draws, and what it would refuse.
+  // installing restarts every animation clock, and an edit is an install, so the draft's own
+  // elapsed time is handed back to the renderer as an age — the same channel GET /canvas uses to
+  // put the mirror in phase with the panel. without it a hue would jump back to its first frame
+  // on every keystroke, and dragging an animated element would freeze it.
+  const now = Date.now();
+  if (!cvEpoch) cvEpoch = now;
+  const r = S.renderCanvasDraft({ elements: cvDraft.elements, age_ms: now - cvEpoch }, now);
   cvFrame = r.rgb;
-  cvBounds = S.canvasBounds(Date.now());
+  cvBounds = S.canvasBounds(now);
+  cvAnimated = r.ok ? S.canvasAnimated() : 0;
   const valid = $('cvvalid');
   if (r.ok) {
     valid.classList.remove('bad');
@@ -1451,6 +1465,22 @@ function cvRender() {
 // picture of the panel rather than two competing ones
 let cvPreviewing = false;
 let cvFrame = null;
+// when the draft's animation clocks started, and how many elements the renderer says are moving
+let cvEpoch = 0, cvAnimated = 0;
+
+// restart the draft's animations. the looping motions do not need it — they are indifferent to
+// where zero is — but scramble, typewriter and sweep run once and hold, so without a way to put
+// the clock back they are over before you have finished choosing them
+function cvReplay() { cvEpoch = Date.now(); cvRender(); }
+
+// one frame of the draft. a still document is left alone: it is already on screen, and repainting
+// 832 leds sixty times a second to show the same picture is a cost with nothing to show for it
+function cvTick(nowMs) {
+  if (!cvAnimated) return;
+  cvFrame = S.stepCanvasDraft(nowMs);
+  cvBounds = S.canvasBounds(nowMs);   // a moving element takes its selection box with it
+  cvDrawPreview();
+}
 function cvDrawPreview() {
   if (!cvPreviewing || !cvFrame) return;
   paint(cvFrame, STATUS ? STATUS.brightness : 100);
@@ -1602,18 +1632,26 @@ function cvForm() {
   }
   // the animation, which is a nested object
   const a = e.animate || {};
+  // touching any of these restarts the draft's clock, so an arrival plays where you can see it
   box.append(cvField('motion', 'animate.kind', cvSelect(CV_MOTIONS, a.kind || 'none', v => {
-    if (v === 'none') delete e.animate; else e.animate = { ...a, kind: v, ms: a.ms || 1000 };
-    cvForm(); cvRender();
+    if (v === 'none') delete e.animate; else e.animate = { ...a, kind: v, ms: a.ms || CV_MOTION_MS[v] || 1000 };
+    cvForm(); cvReplay();
   })));
   if (e.animate) {
     box.append(cvField('period', 'animate.ms', cvInput(e, 'ms', e.animate.ms, v => {
-      e.animate.ms = Number.isFinite(+v) ? +v : e.animate.ms; cvRender();
+      e.animate.ms = Number.isFinite(+v) ? +v : e.animate.ms; cvReplay();
     })));
     box.append(cvField('phase', 'animate.phase · 0-100 of the period', cvInput(e, 'phase', e.animate.phase, v => {
       if (v === '') delete e.animate.phase; else e.animate.phase = Number.isFinite(+v) ? +v : 0;
-      cvRender();
+      cvReplay();
     })));
+    if (CV_ARRIVALS.has(e.animate.kind)) {
+      const b = document.createElement('button');
+      b.className = 'btn ghost'; b.textContent = 'replay';
+      b.title = 'play the arrival again'; b.setAttribute('aria-label', 'replay the arrival');
+      b.addEventListener('click', cvReplay);
+      box.append(cvField('arrival', 'runs once, then holds', b));
+    }
   }
 }
 
@@ -1803,6 +1841,9 @@ async function cvLoad() {
     const doc = await call('GET', 'canvas');
     cvDraft = { elements: (doc.elements || []).map(({ age_ms, ...rest }) => rest) };
     if (Number.isFinite(doc.max_elements)) cvMax = doc.max_elements;
+    // the device has been running this document for a while: carry on from where it is rather
+    // than replaying every arrival the moment it lands here
+    cvEpoch = Number.isFinite(doc.age_ms) ? Date.now() - doc.age_ms : 0;
     cvSelected = 0; cvList(); cvForm(); cvRender();
     toast(`loaded ${cvDraft.elements.length} element${cvDraft.elements.length === 1 ? '' : 's'} from the device`);
   } catch (e) { toast(e.message, true); }
@@ -1820,7 +1861,7 @@ async function cvSend() {
   } catch (e) { toast(e.message, true); }
 }
 
-function cvClear() { cvDraft = { elements: [] }; cvSelected = 0; cvList(); cvForm(); cvRender(); }
+function cvClear() { cvDraft = { elements: [] }; cvSelected = 0; cvEpoch = 0; cvList(); cvForm(); cvRender(); }
 
 async function cvIcons() {
   try { CV_ICONS = (await call('GET', 'icons')).names || []; }

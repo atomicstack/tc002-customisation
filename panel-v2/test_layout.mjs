@@ -399,6 +399,47 @@ test('the canvas builder draws the draft, not the device',
   assert.ok(frames.drawn > frames.empty * 2, `a filled rect lit ${frames.drawn}, the empty hint ${frames.empty}`);
 });
 
+test('the canvas builder animates the draft it is drawing',
+  { skip: chromeAvailable ? false : 'google chrome is not installed' }, async () => {
+  // installing a document starts every animation clock at the moment of the install, so a preview
+  // that reinstalled the draft on each paint sat at elapsed zero for ever: a hue that never turned
+  // and a blink that never went dark. the draft now runs on a clock of its own.
+  const start = await cdp.eval(`
+    (() => {
+      showTab('canvas');
+      cvDraft = { elements: [
+        { type: 'rect', id: 'h', at: [2, 2], size: [20, 10], colour: 'ff0000', filled: true, animate: { kind: 'hue', ms: 500 } },
+        { type: 'text', id: 'b', at: [30, 5], text: 'hi', colour: 'ffffff', animate: { kind: 'blink', ms: 300 } },
+      ] };
+      cvSelected = 0; cvList(); cvForm(); cvRender();
+      window.__first = Array.from(cvFrame);
+      // sample the blinking text's own corner of the panel while the loop runs
+      window.__blink = [];
+      const litAt = () => { let n = 0; for (let y = 0; y < 16; y++) for (let x = 29; x < 52; x++) {
+        const o = (y * 52 + x) * 3; if (cvFrame[o] | cvFrame[o + 1] | cvFrame[o + 2]) n++; } return n; };
+      const tick = () => { window.__blink.push(litAt() > 0); if (window.__blink.length < 40) setTimeout(tick, 30); };
+      tick();
+      return { lit: cvFrame.filter(v => v).length };
+    })()
+  `);
+  assert.ok(start.lit > 0, 'the draft drew something to begin with');
+  await sleep(1400);
+  const out = await cdp.eval(`
+    (() => {
+      const now = Array.from(cvFrame);
+      let moved = 0;
+      for (let i = 0; i < now.length; i++) if (now[i] !== window.__first[i]) moved++;
+      const res = { moved, blink: [...new Set(window.__blink)].sort().join(','), samples: window.__blink.length };
+      cvDraft = { elements: [] }; cvSelected = 0; cvList(); cvForm(); cvRender();
+      showTab('scene');
+      return res;
+    })()
+  `);
+  assert.ok(out.samples > 10, `the sampler ran (${out.samples} samples)`);
+  assert.ok(out.moved > 0, 'the hue turned: the frame is not the one drawn a second and a half ago');
+  assert.equal(out.blink, 'false,true', 'the blink was seen both lit and dark');
+});
+
 test('the now card fills each metric bar to the fraction the device reports', { skip: chromeAvailable ? false : 'google chrome is not installed' }, async () => {
   await cdp.setWidth(1200);
   const st = await cdp.eval(`fetch('/api/127.0.0.1:${mockPort}/v1/status', { cache: 'no-store' }).then(r => r.json())`);
