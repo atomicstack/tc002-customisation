@@ -89,6 +89,7 @@ test "every message kind round-trips through a packet" {
         .berry_list_get,
         .{ .berry_event = BerryEvent.init(.mqtt, "home/doorbell", "pressed") },
         .{ .berry_event = BerryEvent.init(.subscribe, "home/+/state", "") },
+        .{ .stream_frame = .{ .seq = 12345, .timeout_ms = 250, .rgb = geometry.black_rgb } },
         .{ .menu_request = .{ .kind = @intFromEnum(MenuRequest.Kind.brightness), .value = 70 } },
         .{ .menu_request = .{ .kind = @intFromEnum(MenuRequest.Kind.reboot) } },
         .{ .set_param = .{ .base = 1, .index = 3, .value = 0xff8000 } },
@@ -300,6 +301,12 @@ pub const Kind = enum(u8) {
     /// anything that happens *to* a script, and the two things a script asks of the broker. one
     /// kind rather than six: they all carry a topic-shaped string and a payload-shaped one.
     berry_event = 66,
+    /// a frame in a stream. deliberately not `frame`: that one is a discrete command and passes
+    /// through the renderer's deduplication window, which holds 128 ids for sixty seconds and so
+    /// caps discrete commands at about two a second. a stream frame is idempotent -- the last one
+    /// wins and a lost one is simply a lost frame -- so there is nothing for dedup to protect, and
+    /// it is carried outside it.
+    stream_frame = 67,
 };
 
 /// what the supervisor tells a fresh berryd about itself. the settings are the supervisor's, so
@@ -352,6 +359,19 @@ pub const BerryStatus = struct {
             .stops = std.mem.readInt(u32, b[16..20], .little),
         };
     }
+};
+
+/// one frame of a stream. the sequence number is what lets the renderer say how many it dropped or
+/// coalesced rather than leaving everyone to guess.
+pub const StreamFrame = struct {
+    seq: u32 = 0,
+    /// how long this frame stands if no other arrives. the supervisor fills it from
+    /// `frame_timeout_ms`, so the deadman travels with the frame and needs no arming handshake to
+    /// be correct: a script that dies mid-animation leaves a panel that clears itself.
+    timeout_ms: u16 = 500,
+    rgb: geometry.Rgb = geometry.black_rgb,
+
+    pub const wire_len = 4 + 2 + geometry.rgb_bytes;
 };
 
 /// an event for a script, or a request from one. it travels in both directions because the shapes
@@ -1412,6 +1432,7 @@ pub const Message = union(Kind) {
     berry_list_get,
     berry_scripts: BerryScripts,
     berry_event: BerryEvent,
+    stream_frame: StreamFrame,
 };
 
 pub const Packet = struct { request_id: u64, epoch: u32, message: Message };
@@ -1523,6 +1544,12 @@ fn encodePayload(msg: Message, out: []u8) usize {
         .berry_event => |e| {
             e.put(out);
             return BerryEvent.wire_len;
+        },
+        .stream_frame => |f| {
+            std.mem.writeInt(u32, out[0..4], f.seq, .big);
+            std.mem.writeInt(u16, out[4..6], f.timeout_ms, .big);
+            @memcpy(out[6..][0..geometry.rgb_bytes], &f.rgb);
+            return StreamFrame.wire_len;
         },
         .berry_scripts => |l| {
             std.mem.writeInt(u32, out[0..4], l.used, .little);
@@ -1987,6 +2014,14 @@ pub fn decodePacket(bytes: []const u8) Error!Packet {
         },
         .berry_event => blk: {
             break :blk .{ .berry_event = BerryEvent.get(try fixed(p, BerryEvent.wire_len)) };
+        },
+        .stream_frame => blk: {
+            const b = try fixed(p, StreamFrame.wire_len);
+            break :blk .{ .stream_frame = .{
+                .seq = std.mem.readInt(u32, b[0..4], .big),
+                .timeout_ms = std.mem.readInt(u16, b[4..6], .big),
+                .rgb = b[6..][0..geometry.rgb_bytes].*,
+            } };
         },
         .berry_scripts => blk: {
             if (p.len < 9) return error.BadPayload;

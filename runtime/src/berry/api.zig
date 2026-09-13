@@ -19,6 +19,7 @@ const canvas = @import("../scene/canvas.zig");
 const icons = @import("../scene/icons.zig");
 const messages = @import("../ipc/messages.zig");
 const arbiter = @import("../scene/arbiter.zig");
+const geometry = @import("../panel/geometry.zig");
 
 const Bvm = vm_mod.Bvm;
 
@@ -218,6 +219,43 @@ fn showFn(vm: ?*Bvm) callconv(.c) c_int {
     return be_returnvalue(v);
 }
 
+/// the document rendered to pixels and pushed as one frame of a stream.
+///
+/// the script draws with the same panel calls it would use for a canvas document; what differs is
+/// where the result goes. a document installed on the canvas is animated by the renderer and is
+/// bounded by the command path's two-a-second deduplication window. a pushed frame is pixels, and
+/// the script owns every one of them at up to sixty a second.
+///
+/// the rendering happens here, in zig, against the renderer's own canvas code -- which is what
+/// makes this affordable: twenty native draw calls measured 0.20 ms on the device, against 10.8 ms
+/// for a script that touches all 832 pixels itself.
+fn pushFn(vm: ?*Bvm) callconv(.c) c_int {
+    const v = vm.?;
+    stream_state.doc = doc;
+    stream_seq +%= 1;
+    if (vm_mod.clock) |f| last_push_ns = f();
+    var frame: geometry.Rgb = geometry.black_rgb;
+    stream_state.render(if (vm_mod.clock) |f| f() else 0, &frame);
+    send(.{ .stream_frame = .{ .seq = stream_seq, .rgb = frame } });
+    be_pushint(v, stream_seq);
+    return be_returnvalue(v);
+}
+
+fn streamFn(vm: ?*Bvm) callconv(.c) c_int {
+    send(.arm_stream);
+    return be_returnnilvalue(vm.?);
+}
+
+/// the canvas state pushed frames are rendered through: the same code the renderer runs, so a
+/// pushed frame and an installed document draw identically
+var stream_state: canvas.State = .{};
+var stream_seq: u32 = 0;
+
+/// when the last frame was pushed. berryd looks at this to decide how often to run script timers:
+/// a device driving an animation needs a tick fine enough to hit sixty frames a second, and an
+/// idle one should not be woken sixty times a second to find there is nothing to do.
+pub var last_push_ns: u64 = 0;
+
 // -- registration
 
 const Binding = struct { name: [*:0]const u8, f: *const fn (vm: ?*Bvm) callconv(.c) c_int };
@@ -234,6 +272,8 @@ const bindings = [_]Binding{
     .{ .name = "_panel_text", .f = textFn },
     .{ .name = "_panel_icon", .f = iconFn },
     .{ .name = "_panel_show", .f = showFn },
+    .{ .name = "_panel_stream", .f = streamFn },
+    .{ .name = "_panel_push", .f = pushFn },
 };
 
 /// gathers the underscored natives into two modules, and keeps the event bookkeeping here rather
@@ -261,6 +301,8 @@ pub const prelude =
     \\panel.text = _panel_text
     \\panel.icon = _panel_icon
     \\panel.show = _panel_show
+    \\panel.stream = _panel_stream
+    \\panel.push = _panel_push
     \\tc002._handlers = {}
     \\tc002._timers = []
     \\tc002.on = def (event, f)

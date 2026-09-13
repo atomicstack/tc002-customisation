@@ -1167,6 +1167,15 @@ const Supervisor = struct {
                     .publish => self.sendNetd(.{ .berry_event = e }, 0),
                     else => {},
                 },
+                // a stream frame goes straight to the renderer: no relay slot, no result, no
+                // deduplication. the deadman travels with it so a script that stops sending leaves
+                // a panel that clears itself rather than one frozen on its last frame.
+                .stream_frame => |f| {
+                    if (self.child_fd == null or lifecycle.state != .running) continue;
+                    var out = f;
+                    out.timeout_ms = self.cfg.frame_timeout_ms;
+                    _ = self.sendRenderer(.{ .stream_frame = out }, 0, lifecycle.epoch);
+                },
                 // what a script asked the device to do. relayed with the supervisor's own epoch and
                 // an id from the high half of the space, exactly as an ntfy notification is: a
                 // script has no idea what the renderer's epoch is and should not have to.

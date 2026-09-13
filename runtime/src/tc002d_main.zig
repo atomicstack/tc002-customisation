@@ -293,6 +293,20 @@ const Renderer = struct {
                 }
                 return;
             },
+            .stream_frame => |f| {
+                // deliberately ahead of the deduplication window. a stream frame is idempotent --
+                // the last one wins, and a lost one is a lost frame rather than a lost side effect
+                // -- so there is nothing for dedup to protect, and 128 ids over sixty seconds would
+                // cap a stream at about two frames a second. still epoch-gated: a renderer restart
+                // invalidates a stream in flight exactly as it invalidates everything else.
+                if (p.epoch == self.cfg.epoch) {
+                    _ = arb.apply(.{ .stream = .{ .rgb = &f.rgb, .timeout_ms = f.timeout_ms } }, now);
+                    self.forceRedraw();
+                }
+                // no reply: a stream that answered every frame would spend more time talking about
+                // frames than showing them
+                return;
+            },
             .screen_get => {
                 // a read: what is on the panel now, outside the epoch and dedup rules
                 self.send(.{ .screen = .{ .revision = arb.revision, .brightness = arb.brightness, .power = @intFromBool(arb.power), .rgb = out_rgb } }, p.request_id);

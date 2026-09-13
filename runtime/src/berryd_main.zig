@@ -35,6 +35,11 @@ const report_interval_ns: u64 = 1 * std.time.ns_per_s;
 /// script needs and coarse enough that an idle device is not woken sixty times a second for
 /// nothing -- the renderer already owns that job.
 const tick_interval_ns: u64 = 100 * std.time.ns_per_ms;
+/// while a script is pushing frames, timers are looked at often enough to drive sixty a second.
+/// the panel cannot show more than that, so there is nothing above it worth waking for.
+const stream_tick_interval_ns: u64 = 16 * std.time.ns_per_ms;
+/// how long after the last pushed frame the fine tick keeps running
+const stream_idle_ns: u64 = 2 * std.time.ns_per_s;
 /// the settings should arrive immediately after the spawn; without them there is nothing to be
 const config_wait_ns: u64 = 10 * std.time.ns_per_s;
 
@@ -253,7 +258,8 @@ pub fn main(init: std.process.Init.Minimal) u8 {
                         report();
                         next_report = now + report_interval_ns;
                     }
-                    sys.timerfdArmAt(timer, now + tick_interval_ns) catch {};
+                    const streaming = berry_api.last_push_ns != 0 and now -| berry_api.last_push_ns < stream_idle_ns;
+                    sys.timerfdArmAt(timer, now + if (streaming) stream_tick_interval_ns else tick_interval_ns) catch {};
                 },
             }
         }

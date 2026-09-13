@@ -80,6 +80,34 @@ test "long notifications scroll with continuous cadence and bounded offset" {
     try std.testing.expect(a.overlay == .notify);
 }
 
+test "a stream frame shows at once, expires on its own, and never bumps the revision" {
+    var a = Arbiter.init(.clock, .popsquares, 1, tz.utc);
+    var frame = geometry.black_rgb;
+    frame[0] = 0x7f;
+    const before = a.revision;
+
+    // a frame is not a state change: sixty revisions a second would make the number meaningless
+    try std.testing.expectEqual(Result{ .applied = before }, a.apply(.{ .stream = .{ .rgb = &frame, .timeout_ms = 500 } }, 0));
+    try std.testing.expect(a.overlay == .raw);
+    try std.testing.expectEqual(before, a.revision);
+    try std.testing.expectEqual(@as(u32, 1), a.stream_frames);
+
+    // still up just before the deadline, gone just after: that is the deadman a dead script needs
+    a.tick(400 * std.time.ns_per_ms, 0);
+    try std.testing.expect(a.overlay == .raw);
+    a.tick(501 * std.time.ns_per_ms, 0);
+    try std.testing.expect(a.overlay == .none);
+
+    // two frames between one present is a coalesce, counted rather than hidden
+    _ = a.apply(.{ .stream = .{ .rgb = &frame, .timeout_ms = 500 } }, 600 * std.time.ns_per_ms);
+    _ = a.apply(.{ .stream = .{ .rgb = &frame, .timeout_ms = 500 } }, 601 * std.time.ns_per_ms);
+    try std.testing.expectEqual(@as(u32, 1), a.stream_coalesced);
+
+    // and the user still wins: a base selection clears the stream
+    _ = a.apply(.{ .set_base = .clock }, 700 * std.time.ns_per_ms);
+    try std.testing.expect(a.overlay == .none);
+}
+
 test "raw frames validate duration, replace a notification, and a base selection clears overlays" {
     var a = fresh();
     _ = a.apply(.{ .notify = .{ .text = "hi", .colour = white, .duration_s = 10 } }, 0);
@@ -542,6 +570,9 @@ pub const Command = union(enum) {
     select_generator: scene.Generator,
     notify: struct { text: []const u8, colour: [3]u8, duration_s: u16 },
     raw: struct { rgb: *const geometry.Rgb, duration_s: u16 },
+    /// one frame of a stream: the same overlay slot as `raw`, a deadline in milliseconds rather
+    /// than seconds, and no revision bump
+    stream: struct { rgb: *const geometry.Rgb, timeout_ms: u16 },
     brightness: u8,
     reseed: u32,
     arm_stream,
@@ -564,6 +595,10 @@ pub const Arbiter = struct {
     revision: u32 = 0,
     brightness: u8 = 100,
     power: bool = true,
+    /// frames accepted on the stream, and how many were overwritten before they could be shown
+    stream_frames: u32 = 0,
+    stream_coalesced: u32 = 0,
+
     /// set whenever the visible output changed; the renderer takes it to redraw immediately.
     dirty: bool = true,
     /// set when what is shown changes to something else (base, generator, a notification
@@ -722,6 +757,18 @@ pub const Arbiter = struct {
                 self.overlay = .{ .raw = .{ .rgb = r.rgb.*, .until_ns = now_ns + @as(u64, r.duration_s) * s_ns, .transition = t } };
                 if (!t.instant()) self.pending = t;
                 return .{ .applied = self.bump() };
+            },
+            .stream => |st| {
+                // a frame already waiting to be presented is being overwritten: that is a coalesce,
+                // and counting it is the difference between "the device is slow" and "you are
+                // sending faster than sixty a second, which it cannot show"
+                if (self.dirty and self.overlay == .raw) self.stream_coalesced +|= 1;
+                self.overlay = .{ .raw = .{ .rgb = st.rgb.*, .until_ns = now_ns + @as(u64, st.timeout_ms) * std.time.ns_per_ms, .transition = transition.Spec.cut } };
+                self.stream_frames +|= 1;
+                self.dirty = true;
+                // deliberately not bump(): a frame is not a state change, and sixty of them a
+                // second would leave the revision meaning nothing at all
+                return .{ .applied = self.revision };
             },
             .brightness => |b| {
                 if (b < 1 or b > 100) return .{ .rejected = .invalid_brightness };
