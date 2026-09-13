@@ -1,9 +1,10 @@
 # the custom runtime (`runtime/`)
 
-a replacement for the stock application on the tc002: four static arm binaries
-and one tiny shared object, written in zig 0.16 with no libc, that take over
-the panel, the buttons and the knob, and expose an authenticated http and mqtt
-api of their own. while it runs, the stock `zkgui` app (and with it the stock
+a replacement for the stock application on the tc002: five static arm binaries
+and one tiny shared object, written in zig 0.16, that take over the panel, the
+buttons and the knob, and expose an authenticated http and mqtt api of their own.
+only `tc002-berryd`, which hosts the [script interpreter](#scripting-berry),
+links libc; the rest build with `link_libc = false`. while it runs, the stock `zkgui` app (and with it the stock
 http api on port 80, the cloud client, the built-in apps) is not running.
 
 the **code** here is volatile: binaries, logs and the panel lock live under
@@ -1229,10 +1230,14 @@ them — own the pixels at sixty frames a second. off by default; a device that 
 never been told to run scripts is not running one, and `tc002-berryd` is not even
 spawned.
 
-the interpreter is vendored at `runtime/vendor/berry/` (upstream `6e6e621`,
-mit, with its `coc` output committed). `runtime/vendor/berry/README.md` has the
-config table and what was changed. it is the one binary here that links libc:
-berry's error model is `setjmp`/`longjmp` and it formats reals with `snprintf`.
+**[`SCRIPTING.md`](SCRIPTING.md) is the reference**: the language, the `tc002` and
+`panel` api, events, the store, the bounds and how to test a script. what follows
+is only where berryd sits in this runtime.
+
+the interpreter is vendored at `runtime/vendor/berry/` (upstream `6e6e621`, mit,
+with its `coc` output committed). `runtime/vendor/berry/README.md` has the config
+table and what was changed. it is the one binary here that links libc: berry's
+error model is `setjmp`/`longjmp` and it formats reals with `snprintf`.
 
 ### why a process of its own
 
@@ -1250,75 +1255,24 @@ the interpreter costs far more than the boundary. on this device:
 | touches all 832 pixels itself | 10.8 ms | 65% |
 
 so the boundary is free and berryd runs on the second core, where a slow script is
-somewhere the renderer's 60 fps loop never looks.
+somewhere the renderer's 60 fps loop never looks. isolating it also means a wedged
+or runaway interpreter is a process the supervisor can kill, not a fault in the
+renderer.
 
-### what a script can do
+### how it is held
 
-`tc002` and `panel` are globals, assembled by a prelude in
-`src/berry/api.zig` — which is also the only place the script-facing names are
-written down.
-
-```berry
-tc002.scene('canvas')                  # clock, art or canvas
-tc002.brightness(40)
-tc002.notify('doorbell', 0xff0000, 5)
-tc002.subscribe('home/doorbell')       # mqtt in
-tc002.publish('tc002/hello', 'hi')     # mqtt out
-tc002.on('button', def (control, event, steps) ... end)
-tc002.on('mqtt',   def (topic, payload, n) ... end)
-tc002.on('ntfy',   def (topic, message, n) ... end)
-tc002.every(1000, def () ... end)
-tc002.after(250,  def () ... end)
-
-panel.clear()
-panel.rect(0, 0, 52, 16, 0x001020, 1)
-panel.text(2, 4, 'hi', 0xffffff)
-panel.icon(40, 4, 'clock', 0xffaa00)
-panel.pixel(51, 0, 0xff0000)
-panel.show()                           # install as a canvas document
-panel.stream(); panel.push()           # or own the frame, up to 60 a second
-```
-
-the vocabulary is the api's on purpose: bases are `clock|art|canvas`, icons are
-the names `/icons` lists, colours are `0xrrggbb` or `'rrggbb'`. a call turns into
-the same ipc message an http request turns into, and hears the same refusal —
-`tc002.brightness(0)` raises rather than quietly clamping.
-
-`print` reaches `GET /logs`: berryd's output goes to stdout, which the supervisor
-already reads into the log ring for every child it spawns.
-
-### the script store
-
-`config/scripts.bin` on `/data`, written with the same `saveFileAtomic` as
-`canvas.bin`. not a directory — `sys/linux.zig` has no `readdir` and a directory
-cannot be updated atomically — and not a fixed number of slots either. the bounds
-are the physical ones:
-
-| bound | value | where it comes from |
-|---|---|---|
-| one script | 8,000 bytes | it must reach berryd in one ipc datagram; there is no chunking |
-| the whole store | 64 kb | the supervisor's static save buffer, and the arena it implies |
-| one name | 32 bytes | it is a path segment and a log token; letters, digits, `-`, `_`, `.` |
-
-the count is whatever fits, and a full store reports `n of 65536 bytes used`
-rather than "no free slot". the script named `autoexec` runs once berryd has been
-handed the whole set, which is what makes a script survive a power cycle.
-
-### what a script cannot do
-
-| bound | mechanism |
+| concern | mechanism |
 |---|---|
-| memory | one fixed arena (`berry.heap_kb`, default 256 kb). full, and berry raises; nothing else on the device notices |
-| cpu | berry's observability hook fires every 2¹⁶ instructions — about 7.8 ms here — and stops a handler past `berry.handler_ms` (default 100) |
-| a wedged vm | berryd reports every second; two seconds of silence and the supervisor kills it. a script looping forever leaves the process alive and silent, so silence is the only signal |
-| a dead script mid-animation | every stream frame carries `frame_timeout_ms`; the panel clears itself |
-| the network | berryd holds no network descriptor: it cannot bind, connect or resolve |
-| the filesystem | `BE_USE_FILE_SYSTEM` is off; `open()` raises `io_error` |
-| settings, tokens, credentials | there is no binding for them. scripts change what is on the panel, not what the device is |
+| lifecycle | spawned by the supervisor only while `berry.enabled`, uid 1001, restarted with backoff; **replaced** on any berry settings change, because a heap cannot be resized under a live vm |
+| liveness | berryd reports every second; two seconds of silence and the supervisor kills it. a script looping forever leaves the process alive and silent, so silence is the only signal |
+| memory | one fixed arena (`berry.heap_kb`), so a full heap raises inside berry and nothing else on the device notices |
+| cpu | berry's observability hook stops a handler past `berry.handler_ms`, twenty times over before the silence threshold could fire |
+| reach | no network descriptor, no filesystem, no binding to settings or credentials |
 
-the two watchdogs are deliberately ordered: a runaway handler dies at 100 ms,
-twenty times over before the 2 s silence threshold could make the supervisor think
-berryd itself is wedged.
+the ipc it speaks is in [the local channel](#the-local-channel-ipc): the
+supervisor hands it `berry_config`, each stored script and then `reload`, the
+`input` edges and `berry_event` arrivals; it sends back `berry_status`,
+`berry_result`, `berry_event` (subscribe and publish) and `stream_frame`.
 
 ### the frame stream
 
@@ -1339,25 +1293,6 @@ and the user always wins.
 
 measured on the device: a bouncing block pushed by a script ran at **60 fps
 sustained (720 frames in 12 s) at 5% cpu**, using 22 kb of a 256 kb heap.
-
-### settings
-
-`berry.enabled` (default false), `berry.heap_kb` (16–256, default 256) and
-`berry.handler_ms` (10–1000, default 100), patched through `/config` like any
-other setting. berryd takes its heap once and cannot resize it under a live vm, so
-any berry settings change **replaces the process** rather than reconfiguring it.
-
-subscribed mqtt topics are not settings: a script declares them at runtime with
-`tc002.subscribe`, the supervisor holds the list (up to eight) and replays it
-whenever netd is spawned or the broker connection comes back.
-
-### testing
-
-`zig build test-berry` runs `.be` fixtures in `runtime/test/berry/` through the
-same interpreter the device runs, on the host, with the bindings installed and the
-messages recorded rather than sent. a fixture can declare what it expected to emit
-in a sibling `.emits` file, and what it expected to print in a `.expected` one. a
-fixture named `*.fail.be` **must** fail — that is the harness testing itself.
 
 ## mqtt
 

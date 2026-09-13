@@ -19,7 +19,8 @@ only zig 0.16.0 is required (`brew install zig`); the build refuses other versio
 
 ```bash
 cd runtime
-zig build            # zig-out/bin/tc002d, zig-out/bin/tc002-supervisor, zig-out/lib/libtc002-bootstrap.so (arm, static, no libc)
+zig build            # all five binaries into zig-out/bin plus zig-out/lib/libtc002-bootstrap.so
+                     # (arm, static; no libc in anything but tc002-berryd)
 zig build test       # host unit tests of every pure module
 zig build check      # elf sanity of the bootstrap: arm et_dyn, no dt_needed, has init_array
 zig build wasm       # the scene code as wasm for the console preview -> ../panel-v2/tc002-panel.wasm

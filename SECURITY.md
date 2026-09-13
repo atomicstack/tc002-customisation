@@ -73,6 +73,21 @@ the stock app and its unauthenticated api are not, and the picture changes:
   two inherited descriptors and no access to the token or settings files.
   gap: `/dev/socket/property_service` is world-writable on this init, so the
   uid change alone does not deny it the property service.
+- **scripts run on the device, and that is the largest thing a token buys.**
+  the berry interpreter ([`SCRIPTING.md`](SCRIPTING.md)) is **off by default** and
+  `tc002-berryd` is not spawned until `berry.enabled`. storing a script needs the
+  **admin** token, not the control token, because a script drives the panel
+  indefinitely where a notification is one event. there is deliberately **no
+  `eval` route**: nothing accepts source and runs it without storing it, so there
+  is no separate arbitrary-code surface to gate. what a stored script can reach is
+  bounded by construction rather than by policy — it runs as uid 1001 with **no
+  network descriptor** (it cannot bind, connect or resolve), **no filesystem**
+  (`BE_USE_FILE_SYSTEM` is off, `be_filelib.c` is not compiled in, and the entry
+  points the linker still wants refuse), and **no binding to settings, tokens or
+  credentials**. a fixed heap and a handler deadline mean a runaway script is
+  stopped inside its own vm, and a wedged one is a process the supervisor kills.
+  gap: scripts are stored in clear on `/data`, readable by root, and anyone with
+  the admin token can replace `autoexec`, which runs on every start.
 - **still no tls.** the tokens travel in plain http and plain mqtt; anyone on
   the network path can read them. the build reports `transport: plaintext`
   and is intended for an isolated lan only.
@@ -82,7 +97,8 @@ the stock app and its unauthenticated api are not, and the picture changes:
   it is. neither has been exercised on the device yet.
 - **the cloud client is gone** with the stock app: nothing talks to
   `api.ulanzistudio.com`, and no calendar or social credentials are sent
-  anywhere. (nothing syncs the clock either; see `RUNTIME.md`.)
+  anywhere. the clock is set by the runtime's own sntp client against a server
+  you configure, which is unauthenticated — see `RUNTIME.md`.
 
 the mqtt password, when set, is written in clear to the runtime's settings
 file (`/tmp/tc002/config/config.json`, mode 0600, root only, tmpfs).

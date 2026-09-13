@@ -36,7 +36,8 @@ commands:
                                       ntp_interval_s frame_timeout_ms metrics_interval_s discovery discovery_prefix
                                       clock_font clock_colour_mode clock_colour clock_colour2 clock_gradient
                                       clock_spread ip_mode night night_brightness night_lead_min latitude
-                                      longitude location_auto; timezone takes a posix rule or an iana name
+                                      longitude location_auto berry_enabled berry_heap_kb berry_handler_ms
+                                      (scripting: see SCRIPTING.md); timezone takes a posix rule or an iana name
                                       (Europe/Amsterdam), which also places the device for the night schedule
   config-save [revision]              write the settings file, optionally only at that revision
   mqtt                                broker settings (password never returned)

@@ -22,6 +22,7 @@ docs, one topic each:
 | [`CUSTOM-APP.md`](CUSTOM-APP.md) | the custom-app frame payload shared by http and mqtt: text, draw primitives, bitmaps, gifs, lifecycle |
 | [`LED-SPI.md`](LED-SPI.md) | how the led matrix is really driven (spidev0.0 + a gpio latch, 3072-byte frames), how to take it over, and the native 60 fps renderer in `led/` |
 | [`RUNTIME.md`](RUNTIME.md) | the custom runtime in `runtime/` that replaces the stock app while it runs: how it hooks the boot chain, the supervisor / renderer / network daemon split, scenes and controls, its own authenticated http and mqtt api, what has been measured and what is still missing |
+| [`SCRIPTING.md`](SCRIPTING.md) | running berry scripts on the device: the `tc002` and `panel` api, events from the buttons, mqtt and ntfy, drawing and the sixty-frame-a-second stream, the script store, and what a script is not allowed to do |
 | [`CANVAS.md`](CANVAS.md) | canvas mode, in pictures: every font, numeral, icon and drawing primitive the runtime offers, and the animations as recordings — each one a photograph of the panel rather than a drawing of it |
 | [`SECURITY.md`](SECURITY.md) | every security observation in one place, with mitigations |
 
@@ -35,7 +36,7 @@ tools:
 | [`tc002-ntp-patch.py`](tc002-ntp-patch.py) | make the clock sync every n minutes instead of every 2 h, and/or from your own ntp server — patches the app library in tmpfs, nothing in flash |
 | [`led/`](led/) | popsquares generative art running on the device at 60 fps, straight to the panel over spi — static armv7 binary built with zig, plus an adb start/stop wrapper |
 | [`led-zig/`](led-zig/) | full-parity idiomatic zig renderer with typed modules, colocated tests, native dry-run, static armv7 build, and adb wrapper |
-| [`runtime/`](runtime/) | the custom runtime: a supervisor, a renderer (popsquares, plasma, clock, ip, notifications, raw frames, buttons and knob) and an unprivileged network daemon with a bearer-authenticated `/api/v1` and an mqtt client with home-assistant discovery, plus the bootstrap the vendor loader runs and a memory-audit tool. zig 0.16, static armv7, no libc, volatile under `/tmp`. reference in [`RUNTIME.md`](RUNTIME.md) |
+| [`runtime/`](runtime/) | the custom runtime: a supervisor, a renderer (popsquares, plasma, clock, ip, notifications, raw frames, buttons and knob), an unprivileged network daemon with a bearer-authenticated `/api/v1` and an mqtt client with home-assistant discovery, and a sandboxed berry script interpreter ([`SCRIPTING.md`](SCRIPTING.md)), plus the bootstrap the vendor loader runs and a memory-audit tool. zig 0.16, static armv7, volatile under `/tmp`, and no libc in anything but the script interpreter. reference in [`RUNTIME.md`](RUNTIME.md) |
 | [`panel-v2/`](panel-v2/) | the same idea for the custom runtime in [`RUNTIME.md`](RUNTIME.md): a local proxy that holds the api tokens and a page that drives scenes, clock fonts and colours, notifications, frames, settings, mqtt, remote presses, display power and the log ring, with a live 52×16 preview that runs the runtime's own scene code, cross-compiled to webassembly by `zig build wasm` (so the preview cannot drift from the device) |
 
 related: [pixdeck](https://github.com/cailurus/PixDeck) is a working stock-firmware
@@ -362,8 +363,10 @@ open "x-apple.systempreferences:com.apple.preference.security?Privacy_LocalNetwo
   the network. confirm it against a factory-fresh unit before relying on it.
 - the custom runtime in `runtime/` has been run on the device **volatile only**
   (everything under `/tmp`, stock after a power cycle) and measured on a warm
-  system; there is no persistent install, no tls and no sntp yet. see
-  [`RUNTIME.md`](RUNTIME.md#what-is-not-there-yet).
+  system; there is no persistent install and no tls. the clock is synced by an
+  sntp client with the caveats listed in
+  [`RUNTIME.md`](RUNTIME.md#what-is-not-there-yet), which is also where the rest
+  of the gap list lives.
 
 ## disclaimer
 
