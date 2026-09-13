@@ -8,6 +8,7 @@ const sys = @import("sys/linux.zig");
 const log = @import("sys/log.zig");
 const http = @import("net/http.zig");
 const sse = @import("net/sse.zig");
+const sound_store = @import("sound/store.zig");
 const api = @import("net/api.zig");
 const json = @import("net/json.zig");
 const mqtt = @import("net/mqtt.zig");
@@ -66,7 +67,7 @@ const mqtt_frame_envelope = 8 + 4 + 2 + geometry.rgb_bytes;
 const Tag = enum(u64) { timer = 1, supervisor = 2, listener = 3, mqtt = 4, conn_base = 16 };
 
 const ConnState = enum { free, reading, relaying, writing, streaming };
-const Awaiting = enum { none, renderer_result, status, config, save_result, screen, logs, canvas, sprites, berry_scripts, berry_result };
+const Awaiting = enum { none, renderer_result, status, config, save_result, screen, logs, canvas, sprites, berry_scripts, berry_result, sound_list, sound_result };
 
 /// as many script topics as netd will hold. the supervisor enforces the same bound; this is the
 /// copy that does the subscribing.
@@ -228,6 +229,41 @@ const Netd = struct {
 
     /// a statement as applied on the device. counted here so the count is visible before anything
     /// subscribes to them; the event stream that fans them out is next.
+    fn onSoundList(self: *Netd, request_id: u64, l: *const messages.SoundList, now: u64) void {
+        const c = self.findConn(true, request_id) orelse return;
+        if (c.awaiting != .sound_list) return;
+        var o = Out{ .buf = &json_buf };
+        o.fmt("{{\"used\":{d},\"budget\":{d},\"sounds\":[", .{ l.used, sound_store.budget });
+        for (0..@min(l.count, messages.SoundList.max_entries)) |i| {
+            if (i != 0) o.add(",");
+            o.add("{\"name\":");
+            o.str(l.names[i].slice());
+            o.fmt(",\"bytes\":{d}}}", .{l.bytes[i]});
+        }
+        o.add("]}");
+        if (o.overflow) self.respondError(c, 500, "internal", "the sound list did not fit") else self.respond(c, 200, "application/json", o.slice());
+        self.flushConn(c, now);
+    }
+
+    fn onSoundResult(self: *Netd, request_id: u64, r: messages.SoundResult, now: u64) void {
+        const c = self.findConn(true, request_id) orelse return;
+        if (c.awaiting != .sound_result) return;
+        switch (r.status) {
+            .applied => {
+                var o = Out{ .buf = &json_buf };
+                o.fmt("{{\"status\":\"ok\",\"used\":{d},\"budget\":{d}}}", .{ r.used, sound_store.budget });
+                self.respond(c, 200, "application/json", o.slice());
+            },
+            .rejected => self.respondError(c, 400, "rejected", "the sound was refused: check the name, the offset and the format"),
+            .overload => self.respondError(c, 409, "no_room", "the sound store is full"),
+            .expired => self.respondError(c, 409, "expired", "no upload is in progress for that name"),
+            .conflict => self.respondError(c, 409, "conflict", "the offset is not where this upload had reached"),
+            .unavailable => self.respondError(c, 503, "sound_unavailable", "the speaker is not enabled"),
+            else => self.respondError(c, 500, "internal", "the sound store failed"),
+        }
+        self.flushConn(c, now);
+    }
+
     fn onApplied(self: *Netd, a: messages.Applied, now: u64) void {
         self.applied_seen +%= 1;
         var buf: [sse.event_max]u8 = undefined;
@@ -483,6 +519,14 @@ const Netd = struct {
                 self.flushConn(c, now);
             },
             .events => self.beginStream(c, now),
+            .sound_list => self.ask(c, .sound_list_get, .sound_list, now),
+            .sound_put => |sp| {
+                const put_op: messages.SoundPut.Op = if (sp.offset == 0 and !sp.final) .begin else if (sp.final) .commit else .chunk;
+                self.ask(c, .{ .sound_put = messages.SoundPut.init(put_op, sp.name, sp.offset, sp.data) }, .sound_result, now);
+            },
+            .sound_delete => |sd| self.ask(c, .{ .sound_put = messages.SoundPut.init(.delete, sd.name, 0, "") }, .sound_result, now),
+            .sound_play => |sp| self.ask(c, .{ .sound_cmd = messages.SoundCmd.init(.play, sp.name, sp.volume orelse 0, sp.loop) }, .sound_result, now),
+            .sound_stop => self.ask(c, .{ .sound_cmd = messages.SoundCmd.init(.stop, "", 0, false) }, .sound_result, now),
             .berry_list => self.ask(c, .berry_list_get, .berry_scripts, now),
             .berry_put => |b| self.ask(c, .{ .berry_script = messages.BerryScript.init(.put, b.name, b.source) }, .berry_result, now),
             .berry_delete => |b| self.ask(c, .{ .berry_script = messages.BerryScript.init(.delete, b.name, "") }, .berry_result, now),
@@ -890,6 +934,8 @@ const Netd = struct {
                 .berry_scripts => |*l| self.onBerryScripts(p.request_id, l, now),
                 .berry_event => |e| self.onBerryEvent(e, now),
                 .berry_result => |r| self.onBerryResult(p.request_id, r, now),
+                .sound_list => |*l| self.onSoundList(p.request_id, l, now),
+                .sound_result => |r| self.onSoundResult(p.request_id, r, now),
                 .screen => |*sc| self.onScreen(p.request_id, sc, now),
                 .log_lines => |*l| self.onLogs(p.request_id, l, now),
                 .input => |i| self.onInput(i),
