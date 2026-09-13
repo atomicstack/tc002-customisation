@@ -260,6 +260,7 @@ class Device:
         self.started = time.monotonic()
         self.boot_id = secrets.token_hex(4)
         self.epoch, self.revision, self.minted = 1, 0, 0
+        self.clients = []  # named api tokens: {name, role, token, created_s, last_used_s}
         self.base, self.generator, self.brightness = "art", "popsquares", 100
         self.power = True
         self.clock = dict(DEFAULT_CLOCK)   # the effective style: the durable defaults, or a transient scene block over them
@@ -456,6 +457,40 @@ class Device:
         return {"enabled": False, "connected": False, "state": "disconnected", "reconnect_delay_s": 0, "reconnects": self.reconnects, "last_error": ""}
 
     # commands (all validated; every accepted one bumps the renderer revision)
+
+    def client_by_token(self, token):
+        for c in self.clients:
+            if c["token"] == token:
+                return c
+        return None
+
+    def client_list(self):
+        return {"clients": [{k: c[k] for k in ("name", "role", "created_s", "last_used_s")} for c in self.clients],
+                "max": MAX_CLIENTS}
+
+    def client_add(self, name, role):
+        if not valid_client_name(name):
+            raise Reject(400, "invalid_name", "a name is 1..32 of [a-zA-Z0-9._-] and may not start with a dot")
+        if role not in ("read", "control"):
+            raise Reject(400, "invalid_role", "role must be read or control")
+        if any(c["name"] == name for c in self.clients):
+            raise Reject(409, "conflict", "a client of that name already exists")
+        if len(self.clients) >= MAX_CLIENTS:
+            raise Reject(409, "conflict", "the client store is full")
+        token = secrets.token_hex(32)
+        self.clients.append({"name": name, "role": role, "token": token,
+                             "created_s": int(time.time()), "last_used_s": 0})
+        self.log(f"client token issued: {name} ({role})")
+        return {"name": name, "role": role, "token": token}
+
+    def client_remove(self, name):
+        # control and admin are not clients and are not in this namespace
+        for i, c in enumerate(self.clients):
+            if c["name"] == name:
+                del self.clients[i]
+                self.log(f"client token revoked: {name}")
+                return self.client_list()
+        raise Reject(404, "not_found", "no client of that name")
 
     def mint_id(self):
         # the device mints ids with the top bit set so they cannot collide with a client's own
@@ -755,6 +790,7 @@ SCHEMAS = {
                 "clock_digit", "ip_mode", "generator_params",
                 "night", "night_brightness", "night_lead_min", "latitude", "longitude", "location_auto"}, set()),
     "config/save": ({"revision"}, set()),
+    "tokens": ({"name", "role"}, {"name", "role"}),
     # the canvas body is stored, not checked: the element schema is the runtime's and this file
     # does not keep a second copy of it. PUT sends elements, PATCH sends values
     "canvas": ({"elements", "values"}, set()),
@@ -763,23 +799,39 @@ SCHEMAS = {
     "ntfy": ({"enabled", "url", "topic", "token", "username", "password", "duration_s", "insecure", "ca"}, set()),
 }
 
-ROUTES = {("GET", "status"): "control", ("GET", "scenes"): "control", ("PUT", "scene"): "control",
+ROUTES = {("GET", "status"): "read", ("GET", "scenes"): "read", ("PUT", "scene"): "control",
           ("POST", "action"): "control", ("POST", "input"): "control", ("GET", "logs"): "control",
-          ("GET", "config"): "control", ("PATCH", "config"): "admin",
+          ("GET", "config"): "read", ("PATCH", "config"): "admin",
           ("POST", "config/save"): "admin", ("POST", "notify"): "control", ("POST", "frame"): "control",
-          ("GET", "mqtt"): "admin", ("PUT", "mqtt"): "admin", ("GET", "mqtt/status"): "control",
+          ("GET", "mqtt"): "admin", ("PUT", "mqtt"): "admin", ("GET", "mqtt/status"): "read",
           ("GET", "ntfy"): "admin", ("PUT", "ntfy"): "admin",
           # the canvas: stored, not validated. the runtime checks a document against a schema this
           # file deliberately does not reimplement — the console's preview parses it with the
           # runtime's own parser and says so when it would be refused, which is the honest split
-          ("GET", "canvas"): "control", ("PUT", "canvas"): "admin",
-          ("PATCH", "canvas"): "control", ("DELETE", "canvas"): "control"}
+          ("GET", "canvas"): "read", ("PUT", "canvas"): "admin",
+          ("PATCH", "canvas"): "control", ("DELETE", "canvas"): "control",
+          # named client tokens: admin only, all three
+          ("GET", "tokens"): "admin", ("POST", "tokens"): "admin"}
+
+
+MAX_CLIENTS = 120
+NAME_RE = re.compile(r"^[a-zA-Z0-9_.-]{1,32}$")
+
+
+def valid_client_name(name):
+    # no commas: the device's credentials file separates a client's fields with one
+    return bool(NAME_RE.match(name)) and not name.startswith(".")
 
 
 def route_lookup(method, endpoint):
     """(authority, known) for an endpoint, mirroring the runtime's route(): stream routes are a
     path family (`streams`, `streams/{id}`, `streams/{id}/palette`) matched by pattern, not by an
     exact (method, endpoint) pair, so they cannot live in the ROUTES table."""
+    if endpoint.startswith("tokens/"):
+        rest = endpoint[len("tokens/"):]
+        if "/" not in rest and rest:
+            return ("admin" if method == "DELETE" else None), True
+        return None, True
     if endpoint == "streams":
         return ("control" if method == "POST" else None), True
     if endpoint.startswith("streams/"):
@@ -869,14 +921,27 @@ class Handler(http.server.BaseHTTPRequestHandler):
                                "this route does not accept that method" if known else "no such route")
         auth = self.headers.get("Authorization") or ""
         have = "admin" if auth == f"Bearer {d.admin}" else "control" if auth == f"Bearer {d.control}" else None
+        if have is None and auth.startswith("Bearer "):
+            c = d.client_by_token(auth[len("Bearer "):])
+            if c is not None:
+                have = c["role"]
+                c["last_used_s"] = int(time.time())
         if have is None:
             return self._error(401, "unauthorized", "a valid bearer token is required")
-        if need == "admin" and have != "admin":
+        rank = {"read": 0, "control": 1, "admin": 2}
+        if rank[have] < rank[need]:
             return self._error(403, "forbidden", "this route requires a higher authority")
         if endpoint == "streams" or endpoint.startswith("streams/"):
             return self._error(503, "not_implemented", "stream sessions are not available in this release")
         try:
             with d.lock:
+                if endpoint == "tokens" and method == "GET":
+                    return self._send(200, d.client_list())
+                if endpoint == "tokens" and method == "POST":
+                    body = self._json_body("tokens")
+                    return self._send(200, d.client_add(body["name"], body["role"]))
+                if endpoint.startswith("tokens/") and method == "DELETE":
+                    return self._send(200, d.client_remove(endpoint[len("tokens/"):]))
                 if endpoint == "status":
                     return self._send(200, d.status())
                 if endpoint == "scenes":
