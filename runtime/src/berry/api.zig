@@ -18,6 +18,7 @@ const vm_mod = @import("vm.zig");
 const canvas = @import("../scene/canvas.zig");
 const icons = @import("../scene/icons.zig");
 const messages = @import("../ipc/messages.zig");
+const sound_store = @import("../sound/store.zig");
 const arbiter = @import("../scene/arbiter.zig");
 const geometry = @import("../panel/geometry.zig");
 
@@ -212,6 +213,23 @@ fn publishFn(vm: ?*Bvm) callconv(.c) c_int {
     return be_returnnilvalue(v);
 }
 
+fn playFn(vm: ?*Bvm) callconv(.c) c_int {
+    const v = vm.?;
+    const name = argText(v, 1);
+    if (!sound_store.validName(name)) return refuse(v, "a sound name is 1 to 32 of letters, digits, -, _ or .");
+    const volume = argInt(v, 2, 0);
+    if (volume < 0 or volume > 100) return refuse(v, "volume is 1 to 100, or 0 for the setting");
+    const loop = argInt(v, 3, 0) != 0;
+    send(.{ .sound_cmd = messages.SoundCmd.init(.play, name, @intCast(volume), loop) });
+    return be_returnnilvalue(v);
+}
+
+fn stopSoundFn(vm: ?*Bvm) callconv(.c) c_int {
+    const v = vm.?;
+    send(.{ .sound_cmd = messages.SoundCmd.init(.stop, "", 0, false) });
+    return be_returnnilvalue(v);
+}
+
 fn showFn(vm: ?*Bvm) callconv(.c) c_int {
     const v = vm.?;
     send(.{ .canvas = .{ .doc = doc } });
@@ -266,6 +284,8 @@ const bindings = [_]Binding{
     .{ .name = "_tc002_notify", .f = notifyFn },
     .{ .name = "_tc002_subscribe", .f = subscribeFn },
     .{ .name = "_tc002_publish", .f = publishFn },
+    .{ .name = "_tc002_play", .f = playFn },
+    .{ .name = "_tc002_stop_sound", .f = stopSoundFn },
     .{ .name = "_panel_clear", .f = clearFn },
     .{ .name = "_panel_pixel", .f = pixelFn },
     .{ .name = "_panel_rect", .f = rectFn },
@@ -294,6 +314,8 @@ pub const prelude =
     \\tc002.notify = _tc002_notify
     \\tc002.subscribe = _tc002_subscribe
     \\tc002.publish = _tc002_publish
+    \\tc002.play = _tc002_play
+    \\tc002.stop_sound = _tc002_stop_sound
     \\panel = module('panel')
     \\panel.clear = _panel_clear
     \\panel.pixel = _panel_pixel
