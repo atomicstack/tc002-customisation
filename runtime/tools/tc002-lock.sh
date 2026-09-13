@@ -6,7 +6,7 @@
 #        tc002-lock.sh release ["<text>"] | status | note "<text>"
 set -u
 LOCK=${TC002_LOCK_FILE:-/tmp/tc002-lock.txt}
-AGENT=${TC002_AGENT:-fable-b}
+AGENT=${TC002_AGENT:-runtime-agent}
 STALE_S=${TC002_LOCK_STALE_S:-1800}
 POLL_S=${TC002_LOCK_POLL_S:-10}
 
