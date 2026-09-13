@@ -281,7 +281,8 @@ var canvas_reject_len: u8 = 0;
 export fn installCanvas(len: u32, now_ms: f64) u32 {
     const body = scratch[0..@min(len, scratch.len)];
     canvas_reject_len = 0;
-    switch (api.parseBody(.canvas_put, body, &canvas_arena)) {
+    // a canvas document carries no request id, so the minted-id argument is unused here
+    switch (api.parseBody(.canvas_put, body, &canvas_arena, 0)) {
         .op => |op| switch (op) {
             .canvas_put => |doc| {
                 arb.canvas.install(doc, toNs(now_ms));

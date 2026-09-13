@@ -251,7 +251,7 @@ class Device:
         self.lock = threading.Lock()
         self.started = time.monotonic()
         self.boot_id = secrets.token_hex(4)
-        self.epoch, self.revision = 1, 0
+        self.epoch, self.revision, self.minted = 1, 0, 0
         self.base, self.generator, self.brightness = "art", "popsquares", 100
         self.power = True
         self.clock = dict(DEFAULT_CLOCK)   # the effective style: the durable defaults, or a transient scene block over them
@@ -449,10 +449,13 @@ class Device:
 
     # commands (all validated; every accepted one bumps the renderer revision)
 
+    def mint_id(self):
+        # the device mints ids with the top bit set so they cannot collide with a client's own
+        self.minted += 1
+        return f"{(1 << 63) | self.minted:016x}"
+
     def check_epoch(self, epoch, required):
         if epoch is None:
-            if required:
-                raise Reject(400, "missing_field", "a required field is absent")
             return
         if epoch != self.epoch:
             raise Reject(409, "stale_epoch", "the renderer epoch changed; read status and retry")
@@ -573,14 +576,18 @@ class Device:
             raise Reject(400, "missing_duration", "duration_s is required in the query")
         if d < 1 or d > 300:
             raise Reject(400, "invalid_duration", "duration_s must be 1..300")
-        rid = query.get("request_id", [""])[0]
-        if not HEX_ID.match(rid):
-            raise Reject(400, "missing_request_id", "request_id (hex) is required in the query")
-        try:
-            epoch = int(query["epoch"][0])
-        except (KeyError, ValueError):
-            raise Reject(400, "missing_epoch", "epoch is required in the query")
-        self.check_epoch(epoch, True)
+        rid = query.get("request_id", [None])[0]
+        if rid is None:
+            rid = self.mint_id()
+        elif not HEX_ID.match(rid):
+            raise Reject(400, "invalid_request_id", "request_id must be 1..16 hex digits")
+        epoch = None
+        if "epoch" in query:
+            try:
+                epoch = int(query["epoch"][0])
+            except ValueError:
+                raise Reject(400, "invalid_epoch", "epoch must be a number")
+        self.check_epoch(epoch, False)
         self.log(f"frame {d} s")
         return self.set_overlay("frame", d), rid
 
@@ -730,10 +737,10 @@ class Device:
 
 # request schemas: allowed and required keys, as the runtime's strict json enforces
 SCHEMAS = {
-    "scene": ({"base", "generator", "seed", "clock", "ip", "transition", "direction", "transition_ms", "exit", "request_id", "epoch"}, {"base", "request_id"}),
-    "action": ({"action", "brightness", "seed", "power", "request_id", "epoch"}, {"action", "request_id", "epoch"}),
-    "input": ({"control", "event", "steps", "request_id", "epoch"}, {"control", "event", "request_id", "epoch"}),
-    "notify": ({"text", "colour", "duration_s", "transition", "direction", "transition_ms", "exit", "request_id", "epoch"}, {"text", "request_id", "epoch"}),
+    "scene": ({"base", "generator", "seed", "clock", "ip", "transition", "direction", "transition_ms", "exit", "request_id", "epoch"}, {"base"}),
+    "action": ({"action", "brightness", "seed", "power", "request_id", "epoch"}, {"action"}),
+    "input": ({"control", "event", "steps", "request_id", "epoch"}, {"control", "event"}),
+    "notify": ({"text", "colour", "duration_s", "transition", "direction", "transition_ms", "exit", "request_id", "epoch"}, {"text"}),
     "config": ({"brightness", "base", "generator", "timezone", "ntp_server", "ntp_interval_s", "frame_timeout_ms",
                 "metrics_interval_s", "discovery", "discovery_prefix", "expected_revision",
                 "clock_font", "clock_colour_mode", "clock_colour", "clock_colour2", "clock_gradient", "clock_spread",
@@ -819,7 +826,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
         return body
 
     def _rid(self, body):
-        rid = body.get("request_id", "")
+        rid = body.get("request_id")
+        if rid is None:
+            return int(self.server.device.mint_id(), 16)
         if not isinstance(rid, str) or not HEX_ID.match(rid):
             raise Reject(400, "invalid_request_id", "request_id must be 1..16 hex digits")
         return int(rid, 16)

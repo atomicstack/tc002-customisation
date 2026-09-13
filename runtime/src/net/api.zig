@@ -70,7 +70,7 @@ pub const Op = union(enum) {
     status,
     scenes,
     set_scene: struct { base: Base, generator: ?scene.Generator, seed: ?u32, style: ?clock.StylePatch, transition: ?transition.Spec, request_id: u64, epoch: ?u32 },
-    action: struct { kind: ActionKind, brightness: ?u8, seed: ?u32, power: ?bool, request_id: u64, epoch: u32 },
+    action: struct { kind: ActionKind, brightness: ?u8, seed: ?u32, power: ?bool, request_id: u64, epoch: ?u32 },
     /// the framebuffer as shown; `raw` = octets instead of the json document
     screen: struct { raw: bool },
     /// a page of the supervisor's log ring after this sequence number
@@ -85,9 +85,9 @@ pub const Op = union(enum) {
     sound_play: struct { name: []const u8, volume: ?u8, loop: bool },
     sound_stop,
     /// a remote control event: the same paths as a physical press
-    input: struct { control: actions.Control, event: actions.EdgeEvent, steps: u8, request_id: u64, epoch: u32 },
-    notify: struct { text: []const u8, colour: [3]u8, duration_s: u16, transition: ?transition.Spec, request_id: u64, epoch: u32 },
-    frame: struct { rgb: *const geometry.Rgb, duration_s: u16, transition: ?transition.Spec, request_id: u64, epoch: u32 },
+    input: struct { control: actions.Control, event: actions.EdgeEvent, steps: u8, request_id: u64, epoch: ?u32 },
+    notify: struct { text: []const u8, colour: [3]u8, duration_s: u16, transition: ?transition.Spec, request_id: u64, epoch: ?u32 },
+    frame: struct { rgb: *const geometry.Rgb, duration_s: u16, transition: ?transition.Spec, request_id: u64, epoch: ?u32 },
     config_get,
     config_patch: ConfigPatch,
     config_save: struct { revision: ?u32 },
@@ -211,10 +211,10 @@ const ClockBody = struct { font: ?[]const u8 = null, colour_mode: ?[]const u8 = 
 /// table says how to read it: a choice by its name, a colour as rrggbb, a number in decimal, a
 /// toggle as on or off. `GET /scenes` publishes the table, so a client needs nothing else.
 const GenParamBody = struct { scene: []const u8, name: []const u8, value: []const u8 };
-const SceneBody = struct { base: []const u8, generator: ?[]const u8 = null, seed: ?u32 = null, clock: ?ClockBody = null, transition: ?[]const u8 = null, direction: ?[]const u8 = null, transition_ms: ?u32 = null, exit: ?[]const u8 = null, request_id: []const u8, epoch: ?u32 = null };
-const ActionBody = struct { action: []const u8, brightness: ?u8 = null, seed: ?u32 = null, power: ?bool = null, request_id: []const u8, epoch: u32 };
-const InputBody = struct { control: []const u8, event: []const u8, steps: u8 = 1, request_id: []const u8, epoch: u32 };
-const NotifyBody = struct { text: []const u8, colour: ?[]const u8 = null, duration_s: u16 = 5, transition: ?[]const u8 = null, direction: ?[]const u8 = null, transition_ms: ?u32 = null, exit: ?[]const u8 = null, request_id: []const u8, epoch: u32 };
+const SceneBody = struct { base: []const u8, generator: ?[]const u8 = null, seed: ?u32 = null, clock: ?ClockBody = null, transition: ?[]const u8 = null, direction: ?[]const u8 = null, transition_ms: ?u32 = null, exit: ?[]const u8 = null, request_id: ?[]const u8 = null, epoch: ?u32 = null };
+const ActionBody = struct { action: []const u8, brightness: ?u8 = null, seed: ?u32 = null, power: ?bool = null, request_id: ?[]const u8 = null, epoch: ?u32 = null };
+const InputBody = struct { control: []const u8, event: []const u8, steps: u8 = 1, request_id: ?[]const u8 = null, epoch: ?u32 = null };
+const NotifyBody = struct { text: []const u8, colour: ?[]const u8 = null, duration_s: u16 = 5, transition: ?[]const u8 = null, direction: ?[]const u8 = null, transition_ms: ?u32 = null, exit: ?[]const u8 = null, request_id: ?[]const u8 = null, epoch: ?u32 = null };
 /// `{"name":"chime"}` to play, `{"stop":true}` to stop. volume is optional and means "louder or
 /// quieter than the setting, just for this one".
 const SoundBody = struct { name: ?[]const u8 = null, volume: ?u8 = null, loop: ?bool = null, stop: ?bool = null };
@@ -334,6 +334,11 @@ fn jsonError(e: json.Error) Route {
         error.InvalidJson => bad("invalid_json", "the body is not valid json for this schema"),
     };
 }
+
+/// ids the device mints for a client that sent none. the renderer's deduplication window matches
+/// on the id alone, so a minted id must never land on one a client chose: the top bit is reserved
+/// for the device, which puts every minted id out of reach of a counter or a hand-picked number.
+pub const generated_mask: u64 = @as(u64, 1) << 63;
 
 pub fn parseRequestId(text: []const u8) ?u64 {
     if (text.len == 0 or text.len > 16) return null;
@@ -667,7 +672,7 @@ fn sufficient(have: Authority, need: Authority) bool {
 }
 
 /// classify a complete request. `body` is exactly `content-length` bytes.
-pub fn route(req: http.Request, body: []const u8, creds: *const Credentials, origins: *const OriginPolicy, arena: *Arena) Route {
+pub fn route(req: http.Request, body: []const u8, creds: *const Credentials, origins: *const OriginPolicy, arena: *Arena, generated_id: u64) Route {
     // origin first: reject disallowed origins before any work
     if (!origins.allows(req.origin)) return .{ .reject = .{ .status = 403, .code = "origin_denied", .message = "this origin is not allowed" } };
     // path and method
@@ -761,7 +766,7 @@ pub fn route(req: http.Request, body: []const u8, creds: *const Credentials, ori
     }
     if (std.mem.eql(u8, ep.path, "/api/v1/events")) return .{ .op = .events };
     if (std.mem.eql(u8, ep.path, "/api/v1/sounds")) return .{ .op = .sound_list };
-    if (std.mem.eql(u8, ep.path, "/api/v1/sound")) return parseBody(.sound, body, arena);
+    if (std.mem.eql(u8, ep.path, "/api/v1/sound")) return parseBody(.sound, body, arena, generated_id);
     if (std.mem.eql(u8, ep.path, "/api/v1/sounds/{name}")) {
         const name = req.path[sounds_prefix.len..];
         if (!sound_store.validName(name)) return bad("invalid_name", "a sound name is 1..32 of letters, digits, -, _ or .");
@@ -781,19 +786,19 @@ pub fn route(req: http.Request, body: []const u8, creds: *const Credentials, ori
 
     if (std.mem.eql(u8, ep.path, "/api/v1/frame")) {
         if (!isOctets(req.content_type)) return .{ .reject = .{ .status = 415, .code = "unsupported_media_type", .message = "frames are application/octet-stream" } };
-        return parseFrame(req.query, body);
+        return parseFrame(req.query, body, generated_id);
     }
     // everything below is json
     if (!isJson(req.content_type)) return .{ .reject = .{ .status = 415, .code = "unsupported_media_type", .message = "this route takes application/json" } };
-    if (std.mem.eql(u8, ep.path, "/api/v1/scene")) return parseBody(.scene, body, arena);
-    if (std.mem.eql(u8, ep.path, "/api/v1/action")) return parseBody(.action, body, arena);
-    if (std.mem.eql(u8, ep.path, "/api/v1/notify")) return parseBody(.notify, body, arena);
-    if (std.mem.eql(u8, ep.path, "/api/v1/config")) return parseBody(.config_patch, body, arena);
-    if (std.mem.eql(u8, ep.path, "/api/v1/config/save")) return parseBody(.config_save, body, arena);
-    if (std.mem.eql(u8, ep.path, "/api/v1/mqtt")) return parseBody(.mqtt_put, body, arena);
-    if (std.mem.eql(u8, ep.path, "/api/v1/ntfy")) return parseBody(.ntfy_put, body, arena);
-    if (std.mem.eql(u8, ep.path, "/api/v1/input")) return parseBody(.input, body, arena);
-    if (std.mem.eql(u8, ep.path, "/api/v1/canvas")) return parseBody(if (req.method == .PUT) .canvas_put else .canvas_patch, body, arena);
+    if (std.mem.eql(u8, ep.path, "/api/v1/scene")) return parseBody(.scene, body, arena, generated_id);
+    if (std.mem.eql(u8, ep.path, "/api/v1/action")) return parseBody(.action, body, arena, generated_id);
+    if (std.mem.eql(u8, ep.path, "/api/v1/notify")) return parseBody(.notify, body, arena, generated_id);
+    if (std.mem.eql(u8, ep.path, "/api/v1/config")) return parseBody(.config_patch, body, arena, generated_id);
+    if (std.mem.eql(u8, ep.path, "/api/v1/config/save")) return parseBody(.config_save, body, arena, generated_id);
+    if (std.mem.eql(u8, ep.path, "/api/v1/mqtt")) return parseBody(.mqtt_put, body, arena, generated_id);
+    if (std.mem.eql(u8, ep.path, "/api/v1/ntfy")) return parseBody(.ntfy_put, body, arena, generated_id);
+    if (std.mem.eql(u8, ep.path, "/api/v1/input")) return parseBody(.input, body, arena, generated_id);
+    if (std.mem.eql(u8, ep.path, "/api/v1/canvas")) return parseBody(if (req.method == .PUT) .canvas_put else .canvas_patch, body, arena, generated_id);
     return .{ .reject = .{ .status = 404, .code = "not_found", .message = "no such route" } };
 }
 
@@ -836,14 +841,14 @@ pub const icons_body = blk: {
 };
 
 /// a raw frame: exactly 2,496 rgb bytes, with duration, request id and epoch in the query.
-pub fn parseFrame(query: []const u8, body: []const u8) Route {
+pub fn parseFrame(query: []const u8, body: []const u8, generated_id: u64) Route {
     if (body.len != geometry.rgb_bytes) return bad("invalid_frame", "a frame is exactly 2496 rgb888 bytes");
     const duration_text = queryValue(query, "duration_s") orelse return bad("missing_duration", "duration_s is required in the query");
     const duration = std.fmt.parseInt(u16, duration_text, 10) catch return bad("invalid_duration", "duration_s must be 1..300");
     if (duration < 1 or duration > 300) return bad("invalid_duration", "duration_s must be 1..300");
-    const rid = parseRequestId(queryValue(query, "request_id") orelse "") orelse return bad("missing_request_id", "request_id (hex) is required in the query");
-    const epoch_text = queryValue(query, "epoch") orelse return bad("missing_epoch", "epoch is required in the query");
-    const epoch = std.fmt.parseInt(u32, epoch_text, 10) catch return bad("invalid_epoch", "epoch must be a number");
+    const rid = if (queryValue(query, "request_id")) |t| (parseRequestId(t) orelse return bad("invalid_request_id", "request_id must be 1..16 hex digits")) else generated_id;
+    var epoch: ?u32 = null;
+    if (queryValue(query, "epoch")) |t| epoch = std.fmt.parseInt(u32, t, 10) catch return bad("invalid_epoch", "epoch must be a number");
     var ms: ?u32 = null;
     if (queryValue(query, "transition_ms")) |t| ms = std.fmt.parseInt(u32, t, 10) catch return bad("invalid_transition_ms", "transition_ms must be 0..5000");
     const spec = switch (parseTransition(queryValue(query, "transition"), queryValue(query, "direction"), ms, queryValue(query, "exit"), .cut)) {
@@ -854,13 +859,13 @@ pub fn parseFrame(query: []const u8, body: []const u8) Route {
 }
 
 /// a json body for one of the schemas; shared by http routes and mqtt command topics.
-pub fn parseBody(kind: BodyKind, body: []const u8, arena: *Arena) Route {
+pub fn parseBody(kind: BodyKind, body: []const u8, arena: *Arena, generated_id: u64) Route {
     switch (kind) {
         .scene => {
             const b = json.parse(SceneBody, body, arena) catch |e| return jsonError(e);
             const base = parseBase(b.base) orelse return bad("invalid_base", base_names_message);
             const generator: ?scene.Generator = if (b.generator) |g| (parseGenerator(g) orelse return bad("invalid_generator", "unknown generator")) else null;
-            const rid = parseRequestId(b.request_id) orelse return bad("invalid_request_id", "request_id must be 1..16 hex digits");
+            const rid = if (b.request_id) |t| (parseRequestId(t) orelse return bad("invalid_request_id", "request_id must be 1..16 hex digits")) else generated_id;
             var style: ?clock.StylePatch = null;
             if (b.clock) |cb| {
                 switch (parseClockStyle(cb.font, cb.colour_mode, cb.colour, cb.colour2, cb.gradient, cb.spread, cb.digits)) {
@@ -876,7 +881,7 @@ pub fn parseBody(kind: BodyKind, body: []const u8, arena: *Arena) Route {
         },
         .action => {
             const b = json.parse(ActionBody, body, arena) catch |e| return jsonError(e);
-            const rid = parseRequestId(b.request_id) orelse return bad("invalid_request_id", "request_id must be 1..16 hex digits");
+            const rid = if (b.request_id) |t| (parseRequestId(t) orelse return bad("invalid_request_id", "request_id must be 1..16 hex digits")) else generated_id;
             var kind_found: ?ActionKind = null;
             inline for (@typeInfo(ActionKind).@"enum".fields) |f| if (std.mem.eql(u8, b.action, f.name)) {
                 kind_found = @enumFromInt(f.value);
@@ -899,7 +904,7 @@ pub fn parseBody(kind: BodyKind, body: []const u8, arena: *Arena) Route {
             if (event == .long and control != .knob) return bad("invalid_event", "only the knob has a long press");
             if (b.steps < 1 or b.steps > 16) return bad("invalid_steps", "steps must be 1..16");
             if (b.steps != 1 and !turning) return bad("invalid_steps", "steps applies to cw and ccw only");
-            const rid = parseRequestId(b.request_id) orelse return bad("invalid_request_id", "request_id must be 1..16 hex digits");
+            const rid = if (b.request_id) |t| (parseRequestId(t) orelse return bad("invalid_request_id", "request_id must be 1..16 hex digits")) else generated_id;
             return .{ .op = .{ .input = .{ .control = control, .event = event, .steps = b.steps, .request_id = rid, .epoch = b.epoch } } };
         },
         .sound => {
@@ -916,7 +921,7 @@ pub fn parseBody(kind: BodyKind, body: []const u8, arena: *Arena) Route {
             for (b.text) |c| if (c < 0x20 or c > 0x7e) return bad("invalid_text", "text must be 1..128 printable ascii characters");
             if (b.duration_s < 1 or b.duration_s > 300) return bad("invalid_duration", "duration_s must be 1..300");
             const colour = if (b.colour) |c| (parseColour(c) orelse return bad("invalid_colour", "colour must be rrggbb hex")) else [3]u8{ 255, 255, 255 };
-            const rid = parseRequestId(b.request_id) orelse return bad("invalid_request_id", "request_id must be 1..16 hex digits");
+            const rid = if (b.request_id) |t| (parseRequestId(t) orelse return bad("invalid_request_id", "request_id must be 1..16 hex digits")) else generated_id;
             const spec = switch (parseTransition(b.transition, b.direction, b.transition_ms, b.exit, .fade)) {
                 .reject => |j| return .{ .reject = j },
                 .op => |t| t,
@@ -1184,6 +1189,8 @@ fn testCreds() Credentials {
     return c;
 }
 
+/// what netd would have minted for a request that carried no id of its own.
+const test_minted: u64 = generated_mask | 0x5ee;
 const control_header = "Bearer " ++ "11" ** 32;
 const admin_header = "Bearer " ++ "22" ** 32;
 
@@ -1205,13 +1212,13 @@ test "the event stream is a control-authority get, and nothing else" {
     const c = testCreds();
     var arena: Arena = undefined;
     var origins = OriginPolicy{};
-    const r = route(testReq(.GET, "/api/v1/events", "", control_header, null, null), "", &c, &origins, &arena);
+    const r = route(testReq(.GET, "/api/v1/events", "", control_header, null, null), "", &c, &origins, &arena, test_minted);
     try std.testing.expect(r == .op and r.op == .events);
 
     // reading every statement the device applies is a control-authority thing to do, and it is a
     // read: there is nothing to post to it
-    try expectReject(route(testReq(.GET, "/api/v1/events", "", null, null, null), "", &c, &origins, &arena), 401, "unauthorized");
-    try expectReject(route(testReq(.POST, "/api/v1/events", "", control_header, null, null), "", &c, &origins, &arena), 405, "method_not_allowed");
+    try expectReject(route(testReq(.GET, "/api/v1/events", "", null, null, null), "", &c, &origins, &arena, test_minted), 401, "unauthorized");
+    try expectReject(route(testReq(.POST, "/api/v1/events", "", control_header, null, null), "", &c, &origins, &arena, test_minted), 405, "method_not_allowed");
 }
 
 test "the sound routes: reads are control, writing a sound is admin" {
@@ -1219,15 +1226,15 @@ test "the sound routes: reads are control, writing a sound is admin" {
     var arena: Arena = undefined;
     var origins = OriginPolicy{};
 
-    const list = route(testReq(.GET, "/api/v1/sounds", "", control_header, null, null), "", &c, &origins, &arena);
+    const list = route(testReq(.GET, "/api/v1/sounds", "", control_header, null, null), "", &c, &origins, &arena, test_minted);
     try std.testing.expect(list == .op and list.op == .sound_list);
 
     // storing a sound is admin, for the same reason a script is: it plays on a device somebody
     // lives with, long after the request that stored it
-    try expectReject(route(testReq(.PUT, "/api/v1/sounds/chime", "offset=0", control_header, "application/octet-stream", null), "RIFF", &c, &origins, &arena), 403, "forbidden");
-    try expectReject(route(testReq(.DELETE, "/api/v1/sounds/chime", "", control_header, null, null), "", &c, &origins, &arena), 403, "forbidden");
+    try expectReject(route(testReq(.PUT, "/api/v1/sounds/chime", "offset=0", control_header, "application/octet-stream", null), "RIFF", &c, &origins, &arena, test_minted), 403, "forbidden");
+    try expectReject(route(testReq(.DELETE, "/api/v1/sounds/chime", "", control_header, null, null), "", &c, &origins, &arena, test_minted), 403, "forbidden");
 
-    const put = route(testReq(.PUT, "/api/v1/sounds/chime", "offset=0", admin_header, "application/octet-stream", null), "RIFF", &c, &origins, &arena);
+    const put = route(testReq(.PUT, "/api/v1/sounds/chime", "offset=0", admin_header, "application/octet-stream", null), "RIFF", &c, &origins, &arena, test_minted);
     try std.testing.expect(put == .op and put.op == .sound_put);
     try std.testing.expectEqualStrings("chime", put.op.sound_put.name);
     try std.testing.expectEqual(@as(u32, 0), put.op.sound_put.offset);
@@ -1240,34 +1247,34 @@ test "an upload names the offset it believes it is at, and says when it is done"
     var arena: Arena = undefined;
     var origins = OriginPolicy{};
 
-    const mid = route(testReq(.PUT, "/api/v1/sounds/chime", "offset=4096", admin_header, "application/octet-stream", null), "abcd", &c, &origins, &arena);
+    const mid = route(testReq(.PUT, "/api/v1/sounds/chime", "offset=4096", admin_header, "application/octet-stream", null), "abcd", &c, &origins, &arena, test_minted);
     try std.testing.expectEqual(@as(u32, 4096), mid.op.sound_put.offset);
     try std.testing.expect(!mid.op.sound_put.final);
 
-    const last = route(testReq(.PUT, "/api/v1/sounds/chime", "offset=8192&final=1", admin_header, "application/octet-stream", null), "z", &c, &origins, &arena);
+    const last = route(testReq(.PUT, "/api/v1/sounds/chime", "offset=8192&final=1", admin_header, "application/octet-stream", null), "z", &c, &origins, &arena, test_minted);
     try std.testing.expect(last.op.sound_put.final);
 
     // an offset that is not a number is refused rather than treated as zero, which would silently
     // overwrite the beginning of the sound
-    try expectReject(route(testReq(.PUT, "/api/v1/sounds/chime", "offset=x", admin_header, "application/octet-stream", null), "a", &c, &origins, &arena), 400, "invalid_offset");
+    try expectReject(route(testReq(.PUT, "/api/v1/sounds/chime", "offset=x", admin_header, "application/octet-stream", null), "a", &c, &origins, &arena, test_minted), 400, "invalid_offset");
     // and a name that is not a name
-    try expectReject(route(testReq(.PUT, "/api/v1/sounds/has%20space", "offset=0", admin_header, "application/octet-stream", null), "a", &c, &origins, &arena), 400, "invalid_name");
+    try expectReject(route(testReq(.PUT, "/api/v1/sounds/has%20space", "offset=0", admin_header, "application/octet-stream", null), "a", &c, &origins, &arena, test_minted), 400, "invalid_name");
 }
 
 test "playing a sound is control, and stopping needs no name" {
     const c = testCreds();
     var arena: Arena = undefined;
     var origins = OriginPolicy{};
-    const play = route(testReq(.POST, "/api/v1/sound", "", control_header, "application/json", null), "{\"name\":\"chime\",\"volume\":80,\"loop\":true}", &c, &origins, &arena);
+    const play = route(testReq(.POST, "/api/v1/sound", "", control_header, "application/json", null), "{\"name\":\"chime\",\"volume\":80,\"loop\":true}", &c, &origins, &arena, test_minted);
     try std.testing.expect(play == .op and play.op == .sound_play);
     try std.testing.expectEqualStrings("chime", play.op.sound_play.name);
     try std.testing.expectEqual(@as(?u8, 80), play.op.sound_play.volume);
     try std.testing.expect(play.op.sound_play.loop);
 
-    const stop = route(testReq(.POST, "/api/v1/sound", "", control_header, "application/json", null), "{\"stop\":true}", &c, &origins, &arena);
+    const stop = route(testReq(.POST, "/api/v1/sound", "", control_header, "application/json", null), "{\"stop\":true}", &c, &origins, &arena, test_minted);
     try std.testing.expect(stop == .op and stop.op == .sound_stop);
 
-    try expectReject(route(testReq(.POST, "/api/v1/sound", "", control_header, "application/json", null), "{\"name\":\"chime\",\"volume\":0}", &c, &origins, &arena), 400, "invalid_volume");
+    try expectReject(route(testReq(.POST, "/api/v1/sound", "", control_header, "application/json", null), "{\"name\":\"chime\",\"volume\":0}", &c, &origins, &arena, test_minted), 400, "invalid_volume");
 }
 
 test "authentication is constant-time bearer matching of either token" {
@@ -1284,48 +1291,48 @@ test "status codes: origin, route, method, credentials, authority" {
     const c = testCreds();
     var arena: Arena = undefined;
     var origins = OriginPolicy{};
-    try expectReject(route(testReq(.GET, "/api/v1/status", "", control_header, null, "http://evil"), "", &c, &origins, &arena), 403, "origin_denied");
+    try expectReject(route(testReq(.GET, "/api/v1/status", "", control_header, null, "http://evil"), "", &c, &origins, &arena, test_minted), 403, "origin_denied");
     origins.allowed[0] = "http://panel";
     origins.count = 1;
-    try std.testing.expect(route(testReq(.GET, "/api/v1/status", "", control_header, null, "http://panel"), "", &c, &origins, &arena) == .op);
-    try expectReject(route(testReq(.GET, "/api/v1/nope", "", control_header, null, null), "", &c, &origins, &arena), 404, "not_found");
-    try expectReject(route(testReq(.DELETE, "/api/v1/status", "", control_header, null, null), "", &c, &origins, &arena), 405, "method_not_allowed");
-    try expectReject(route(testReq(.GET, "/api/v1/status", "", null, null, null), "", &c, &origins, &arena), 401, "unauthorized");
-    try expectReject(route(testReq(.PATCH, "/api/v1/config", "", control_header, "application/json", null), "{}", &c, &origins, &arena), 403, "forbidden");
-    try std.testing.expect(route(testReq(.PATCH, "/api/v1/config", "", admin_header, "application/json", null), "{}", &c, &origins, &arena) == .op);
-    try std.testing.expect(route(testReq(.GET, "/api/v1/status", "", admin_header, null, null), "", &c, &origins, &arena).op == .status);
+    try std.testing.expect(route(testReq(.GET, "/api/v1/status", "", control_header, null, "http://panel"), "", &c, &origins, &arena, test_minted) == .op);
+    try expectReject(route(testReq(.GET, "/api/v1/nope", "", control_header, null, null), "", &c, &origins, &arena, test_minted), 404, "not_found");
+    try expectReject(route(testReq(.DELETE, "/api/v1/status", "", control_header, null, null), "", &c, &origins, &arena, test_minted), 405, "method_not_allowed");
+    try expectReject(route(testReq(.GET, "/api/v1/status", "", null, null, null), "", &c, &origins, &arena, test_minted), 401, "unauthorized");
+    try expectReject(route(testReq(.PATCH, "/api/v1/config", "", control_header, "application/json", null), "{}", &c, &origins, &arena, test_minted), 403, "forbidden");
+    try std.testing.expect(route(testReq(.PATCH, "/api/v1/config", "", admin_header, "application/json", null), "{}", &c, &origins, &arena, test_minted) == .op);
+    try std.testing.expect(route(testReq(.GET, "/api/v1/status", "", admin_header, null, null), "", &c, &origins, &arena, test_minted).op == .status);
 }
 
 test "transition fields become a spec with the effect's natural direction and 500 ms" {
     const c = testCreds();
     var arena: Arena = undefined;
     const origins = OriginPolicy{};
-    const s = route(testReq(.PUT, "/api/v1/scene", "", control_header, "application/json", null), "{\"base\":\"clock\",\"transition\":\"swipe_in\",\"request_id\":\"7\"}", &c, &origins, &arena);
+    const s = route(testReq(.PUT, "/api/v1/scene", "", control_header, "application/json", null), "{\"base\":\"clock\",\"transition\":\"swipe_in\",\"request_id\":\"7\"}", &c, &origins, &arena, test_minted);
     try std.testing.expectEqual(transition.Spec{ .effect = .swipe_in, .direction = .left, .duration_ns = 500_000_000 }, s.op.set_scene.transition.?);
-    const n = route(testReq(.POST, "/api/v1/notify", "", control_header, "application/json", null), "{\"text\":\"x\",\"request_id\":\"1\",\"epoch\":1,\"transition\":\"rain\",\"transition_ms\":1200}", &c, &origins, &arena);
+    const n = route(testReq(.POST, "/api/v1/notify", "", control_header, "application/json", null), "{\"text\":\"x\",\"request_id\":\"1\",\"epoch\":1,\"transition\":\"rain\",\"transition_ms\":1200}", &c, &origins, &arena, test_minted);
     try std.testing.expectEqual(transition.Spec{ .effect = .rain, .direction = .down, .duration_ns = 1_200_000_000 }, n.op.notify.transition.?);
-    const d = route(testReq(.POST, "/api/v1/notify", "", control_header, "application/json", null), "{\"text\":\"x\",\"request_id\":\"1\",\"epoch\":1,\"direction\":\"up\"}", &c, &origins, &arena);
+    const d = route(testReq(.POST, "/api/v1/notify", "", control_header, "application/json", null), "{\"text\":\"x\",\"request_id\":\"1\",\"epoch\":1,\"direction\":\"up\"}", &c, &origins, &arena, test_minted);
     try std.testing.expectEqual(transition.Spec{ .effect = .fade, .direction = .up, .duration_ns = 500_000_000 }, d.op.notify.transition.?);
-    const none = route(testReq(.POST, "/api/v1/notify", "", control_header, "application/json", null), "{\"text\":\"x\",\"request_id\":\"1\",\"epoch\":1}", &c, &origins, &arena);
+    const none = route(testReq(.POST, "/api/v1/notify", "", control_header, "application/json", null), "{\"text\":\"x\",\"request_id\":\"1\",\"epoch\":1}", &c, &origins, &arena, test_minted);
     try std.testing.expect(none.op.notify.transition == null);
-    try expectReject(route(testReq(.POST, "/api/v1/notify", "", control_header, "application/json", null), "{\"text\":\"x\",\"request_id\":\"1\",\"epoch\":1,\"transition\":\"warp\"}", &c, &origins, &arena), 400, "invalid_transition");
-    try expectReject(route(testReq(.PUT, "/api/v1/scene", "", control_header, "application/json", null), "{\"base\":\"art\",\"direction\":\"sideways\",\"request_id\":\"7\"}", &c, &origins, &arena), 400, "invalid_direction");
-    try expectReject(route(testReq(.PUT, "/api/v1/scene", "", control_header, "application/json", null), "{\"base\":\"art\",\"transition_ms\":5001,\"request_id\":\"7\"}", &c, &origins, &arena), 400, "invalid_transition_ms");
+    try expectReject(route(testReq(.POST, "/api/v1/notify", "", control_header, "application/json", null), "{\"text\":\"x\",\"request_id\":\"1\",\"epoch\":1,\"transition\":\"warp\"}", &c, &origins, &arena, test_minted), 400, "invalid_transition");
+    try expectReject(route(testReq(.PUT, "/api/v1/scene", "", control_header, "application/json", null), "{\"base\":\"art\",\"direction\":\"sideways\",\"request_id\":\"7\"}", &c, &origins, &arena, test_minted), 400, "invalid_direction");
+    try expectReject(route(testReq(.PUT, "/api/v1/scene", "", control_header, "application/json", null), "{\"base\":\"art\",\"transition_ms\":5001,\"request_id\":\"7\"}", &c, &origins, &arena, test_minted), 400, "invalid_transition_ms");
     const frame = [_]u8{7} ** geometry.rgb_bytes;
-    const f = route(testReq(.POST, "/api/v1/frame", "duration_s=5&request_id=ab&epoch=1&transition=expand&transition_ms=0", control_header, "application/octet-stream", null), &frame, &c, &origins, &arena);
+    const f = route(testReq(.POST, "/api/v1/frame", "duration_s=5&request_id=ab&epoch=1&transition=expand&transition_ms=0", control_header, "application/octet-stream", null), &frame, &c, &origins, &arena, test_minted);
     try std.testing.expectEqual(transition.Spec{ .effect = .expand, .direction = .left, .duration_ns = 0 }, f.op.frame.transition.?);
-    const plain = route(testReq(.POST, "/api/v1/frame", "duration_s=5&request_id=ab&epoch=1", control_header, "application/octet-stream", null), &frame, &c, &origins, &arena);
+    const plain = route(testReq(.POST, "/api/v1/frame", "duration_s=5&request_id=ab&epoch=1", control_header, "application/octet-stream", null), &frame, &c, &origins, &arena, test_minted);
     try std.testing.expect(plain.op.frame.transition == null);
-    try expectReject(route(testReq(.POST, "/api/v1/frame", "duration_s=5&request_id=ab&epoch=1&transition_ms=x", control_header, "application/octet-stream", null), &frame, &c, &origins, &arena), 400, "invalid_transition_ms");
+    try expectReject(route(testReq(.POST, "/api/v1/frame", "duration_s=5&request_id=ab&epoch=1&transition_ms=x", control_header, "application/octet-stream", null), &frame, &c, &origins, &arena, test_minted), 400, "invalid_transition_ms");
     try std.testing.expect(std.mem.indexOf(u8, scenes_body, "\"transitions\":{\"effects\":[\"fade\",\"cut\",\"slide\",\"swipe_out\"") != null);
     try std.testing.expect(std.mem.endsWith(u8, scenes_body, "\"directions\":[\"left\",\"right\",\"up\",\"down\"],\"exits\":[\"reverse\",\"same\",\"none\"],\"duration_ms\":[0,5000]}}"));
-    const e = route(testReq(.POST, "/api/v1/notify", "", control_header, "application/json", null), "{\"text\":\"x\",\"request_id\":\"1\",\"epoch\":1,\"transition\":\"swipe_in\",\"exit\":\"same\"}", &c, &origins, &arena);
+    const e = route(testReq(.POST, "/api/v1/notify", "", control_header, "application/json", null), "{\"text\":\"x\",\"request_id\":\"1\",\"epoch\":1,\"transition\":\"swipe_in\",\"exit\":\"same\"}", &c, &origins, &arena, test_minted);
     try std.testing.expectEqual(transition.Exit.same, e.op.notify.transition.?.exit);
     try std.testing.expectEqual(transition.Exit.reverse, n.op.notify.transition.?.exit);
-    const only_exit = route(testReq(.POST, "/api/v1/notify", "", control_header, "application/json", null), "{\"text\":\"x\",\"request_id\":\"1\",\"epoch\":1,\"exit\":\"none\"}", &c, &origins, &arena);
+    const only_exit = route(testReq(.POST, "/api/v1/notify", "", control_header, "application/json", null), "{\"text\":\"x\",\"request_id\":\"1\",\"epoch\":1,\"exit\":\"none\"}", &c, &origins, &arena, test_minted);
     try std.testing.expectEqual(transition.Spec{ .effect = .fade, .direction = .left, .duration_ns = 500_000_000, .exit = .none }, only_exit.op.notify.transition.?);
-    try expectReject(route(testReq(.POST, "/api/v1/notify", "", control_header, "application/json", null), "{\"text\":\"x\",\"request_id\":\"1\",\"epoch\":1,\"exit\":\"back\"}", &c, &origins, &arena), 400, "invalid_exit");
-    const fe = route(testReq(.POST, "/api/v1/frame", "duration_s=5&request_id=ab&epoch=1&transition=slide&exit=none", control_header, "application/octet-stream", null), &frame, &c, &origins, &arena);
+    try expectReject(route(testReq(.POST, "/api/v1/notify", "", control_header, "application/json", null), "{\"text\":\"x\",\"request_id\":\"1\",\"epoch\":1,\"exit\":\"back\"}", &c, &origins, &arena, test_minted), 400, "invalid_exit");
+    const fe = route(testReq(.POST, "/api/v1/frame", "duration_s=5&request_id=ab&epoch=1&transition=slide&exit=none", control_header, "application/octet-stream", null), &frame, &c, &origins, &arena, test_minted);
     try std.testing.expectEqual(transition.Exit.none, fe.op.frame.transition.?.exit);
 }
 
@@ -1334,15 +1341,15 @@ test "the ip layout is a setting only: there is no ip base to put it on" {
     var arena: Arena = undefined;
     const origins = OriginPolicy{};
     // the scene retired when the canvas took the third button; the address moved to the device menu
-    try expectReject(route(testReq(.PUT, "/api/v1/scene", "", control_header, "application/json", null), "{\"base\":\"ip\",\"request_id\":\"7\"}", &c, &origins, &arena), 400, "invalid_base");
-    try expectReject(route(testReq(.PATCH, "/api/v1/config", "", admin_header, "application/json", null), "{\"base\":\"ip\"}", &c, &origins, &arena), 400, "invalid_base");
-    const canvas_base = route(testReq(.PUT, "/api/v1/scene", "", control_header, "application/json", null), "{\"base\":\"canvas\",\"request_id\":\"7\"}", &c, &origins, &arena);
+    try expectReject(route(testReq(.PUT, "/api/v1/scene", "", control_header, "application/json", null), "{\"base\":\"ip\",\"request_id\":\"7\"}", &c, &origins, &arena, test_minted), 400, "invalid_base");
+    try expectReject(route(testReq(.PATCH, "/api/v1/config", "", admin_header, "application/json", null), "{\"base\":\"ip\"}", &c, &origins, &arena, test_minted), 400, "invalid_base");
+    const canvas_base = route(testReq(.PUT, "/api/v1/scene", "", control_header, "application/json", null), "{\"base\":\"canvas\",\"request_id\":\"7\"}", &c, &origins, &arena, test_minted);
     try std.testing.expectEqual(Base.canvas, canvas_base.op.set_scene.base);
     // but the layout itself is untouched: same key, same four values, and the catalogue still
     // publishes them from the enum, independently of the base list
-    const cp = route(testReq(.PATCH, "/api/v1/config", "", admin_header, "application/json", null), "{\"ip_mode\":\"mini\"}", &c, &origins, &arena);
+    const cp = route(testReq(.PATCH, "/api/v1/config", "", admin_header, "application/json", null), "{\"ip_mode\":\"mini\"}", &c, &origins, &arena, test_minted);
     try std.testing.expectEqual(ip.Mode.mini, cp.op.config_patch.ip_mode.?);
-    try expectReject(route(testReq(.PATCH, "/api/v1/config", "", admin_header, "application/json", null), "{\"ip_mode\":\"huge\"}", &c, &origins, &arena), 400, "invalid_ip_mode");
+    try expectReject(route(testReq(.PATCH, "/api/v1/config", "", admin_header, "application/json", null), "{\"ip_mode\":\"huge\"}", &c, &origins, &arena, test_minted), 400, "invalid_ip_mode");
     try std.testing.expect(std.mem.indexOf(u8, scenes_body, "\"ip\":{\"modes\":[\"lines\",\"mini\",\"scroll\",\"big\"]}") != null);
     try std.testing.expect(std.mem.startsWith(u8, scenes_body, "{\"bases\":[\"clock\",\"art\",\"canvas\"],"));
     try std.testing.expect(std.mem.indexOf(u8, scenes_body, "\"canvas\":[]") != null); // the canvas declares nothing yet
@@ -1352,56 +1359,56 @@ test "ntfy settings are admin-only and validated" {
     const c = testCreds();
     var arena: Arena = undefined;
     const origins = OriginPolicy{};
-    const p = route(testReq(.PUT, "/api/v1/ntfy", "", admin_header, "application/json", null), "{\"enabled\":true,\"url\":\"https://ntfy.sh\",\"topic\":\"tc002-alerts\",\"token\":\"tk_abc\",\"duration_s\":12,\"ca\":\"-----BEGIN CERTIFICATE-----\\nAA==\\n-----END CERTIFICATE-----\"}", &c, &origins, &arena);
+    const p = route(testReq(.PUT, "/api/v1/ntfy", "", admin_header, "application/json", null), "{\"enabled\":true,\"url\":\"https://ntfy.sh\",\"topic\":\"tc002-alerts\",\"token\":\"tk_abc\",\"duration_s\":12,\"ca\":\"-----BEGIN CERTIFICATE-----\\nAA==\\n-----END CERTIFICATE-----\"}", &c, &origins, &arena, test_minted);
     try std.testing.expectEqualStrings("tc002-alerts", p.op.ntfy_put.topic.?);
     try std.testing.expectEqual(@as(?u16, 12), p.op.ntfy_put.duration_s);
     try std.testing.expect(p.op.ntfy_put.ca.?.len > 20);
-    try std.testing.expect(route(testReq(.GET, "/api/v1/ntfy", "", admin_header, null, null), "", &c, &origins, &arena).op == .ntfy_get);
-    try expectReject(route(testReq(.GET, "/api/v1/ntfy", "", control_header, null, null), "", &c, &origins, &arena), 403, "forbidden");
-    try expectReject(route(testReq(.PUT, "/api/v1/ntfy", "", admin_header, "application/json", null), "{\"url\":\"ntfy.sh\"}", &c, &origins, &arena), 400, "invalid_url");
-    try expectReject(route(testReq(.PUT, "/api/v1/ntfy", "", admin_header, "application/json", null), "{\"topic\":\"has space\"}", &c, &origins, &arena), 400, "invalid_topic");
-    try expectReject(route(testReq(.PUT, "/api/v1/ntfy", "", admin_header, "application/json", null), "{\"duration_s\":0}", &c, &origins, &arena), 400, "invalid_duration");
-    try expectReject(route(testReq(.PUT, "/api/v1/ntfy", "", admin_header, "application/json", null), "{\"ca\":\"not a pem\"}", &c, &origins, &arena), 400, "invalid_ca");
+    try std.testing.expect(route(testReq(.GET, "/api/v1/ntfy", "", admin_header, null, null), "", &c, &origins, &arena, test_minted).op == .ntfy_get);
+    try expectReject(route(testReq(.GET, "/api/v1/ntfy", "", control_header, null, null), "", &c, &origins, &arena, test_minted), 403, "forbidden");
+    try expectReject(route(testReq(.PUT, "/api/v1/ntfy", "", admin_header, "application/json", null), "{\"url\":\"ntfy.sh\"}", &c, &origins, &arena, test_minted), 400, "invalid_url");
+    try expectReject(route(testReq(.PUT, "/api/v1/ntfy", "", admin_header, "application/json", null), "{\"topic\":\"has space\"}", &c, &origins, &arena, test_minted), 400, "invalid_topic");
+    try expectReject(route(testReq(.PUT, "/api/v1/ntfy", "", admin_header, "application/json", null), "{\"duration_s\":0}", &c, &origins, &arena, test_minted), 400, "invalid_duration");
+    try expectReject(route(testReq(.PUT, "/api/v1/ntfy", "", admin_header, "application/json", null), "{\"ca\":\"not a pem\"}", &c, &origins, &arena, test_minted), 400, "invalid_ca");
 }
 
 test "notify and scene bodies become typed operations with validation" {
     const c = testCreds();
     var arena: Arena = undefined;
     const origins = OriginPolicy{};
-    const r = route(testReq(.POST, "/api/v1/notify", "", control_header, "application/json; charset=utf-8", null), "{\"text\":\"hello\",\"colour\":\"#ff8000\",\"duration_s\":30,\"request_id\":\"a1b2\",\"epoch\":3}", &c, &origins, &arena);
+    const r = route(testReq(.POST, "/api/v1/notify", "", control_header, "application/json; charset=utf-8", null), "{\"text\":\"hello\",\"colour\":\"#ff8000\",\"duration_s\":30,\"request_id\":\"a1b2\",\"epoch\":3}", &c, &origins, &arena, test_minted);
     try std.testing.expectEqualStrings("hello", r.op.notify.text);
     try std.testing.expectEqual([3]u8{ 0xff, 0x80, 0x00 }, r.op.notify.colour);
     try std.testing.expectEqual(@as(u64, 0xa1b2), r.op.notify.request_id);
     try std.testing.expectEqual(@as(u32, 3), r.op.notify.epoch);
-    try expectReject(route(testReq(.POST, "/api/v1/notify", "", control_header, "text/plain", null), "{}", &c, &origins, &arena), 415, "unsupported_media_type");
-    try expectReject(route(testReq(.POST, "/api/v1/notify", "", control_header, "application/json", null), "{\"text\":\"x\",\"request_id\":\"1\",\"epoch\":1,\"extra\":1}", &c, &origins, &arena), 400, "unknown_field");
-    try expectReject(route(testReq(.POST, "/api/v1/notify", "", control_header, "application/json", null), "{\"text\":\"x\",\"request_id\":\"1\",\"epoch\":1,\"duration_s\":301}", &c, &origins, &arena), 400, "invalid_duration");
-    try expectReject(route(testReq(.POST, "/api/v1/notify", "", control_header, "application/json", null), "{\"text\":\"x\",\"request_id\":\"zz\",\"epoch\":1}", &c, &origins, &arena), 400, "invalid_request_id");
-    const s = route(testReq(.PUT, "/api/v1/scene", "", control_header, "application/json", null), "{\"base\":\"art\",\"generator\":\"plasma\",\"seed\":9,\"request_id\":\"7\"}", &c, &origins, &arena);
+    try expectReject(route(testReq(.POST, "/api/v1/notify", "", control_header, "text/plain", null), "{}", &c, &origins, &arena, test_minted), 415, "unsupported_media_type");
+    try expectReject(route(testReq(.POST, "/api/v1/notify", "", control_header, "application/json", null), "{\"text\":\"x\",\"request_id\":\"1\",\"epoch\":1,\"extra\":1}", &c, &origins, &arena, test_minted), 400, "unknown_field");
+    try expectReject(route(testReq(.POST, "/api/v1/notify", "", control_header, "application/json", null), "{\"text\":\"x\",\"request_id\":\"1\",\"epoch\":1,\"duration_s\":301}", &c, &origins, &arena, test_minted), 400, "invalid_duration");
+    try expectReject(route(testReq(.POST, "/api/v1/notify", "", control_header, "application/json", null), "{\"text\":\"x\",\"request_id\":\"zz\",\"epoch\":1}", &c, &origins, &arena, test_minted), 400, "invalid_request_id");
+    const s = route(testReq(.PUT, "/api/v1/scene", "", control_header, "application/json", null), "{\"base\":\"art\",\"generator\":\"plasma\",\"seed\":9,\"request_id\":\"7\"}", &c, &origins, &arena, test_minted);
     try std.testing.expectEqual(Base.art, s.op.set_scene.base);
     try std.testing.expectEqual(scene.Generator.plasma, s.op.set_scene.generator.?);
     try std.testing.expectEqual(@as(?u32, null), s.op.set_scene.epoch);
     try std.testing.expect(s.op.set_scene.style == null);
-    const cs = route(testReq(.PUT, "/api/v1/scene", "", control_header, "application/json", null), "{\"base\":\"clock\",\"clock\":{\"font\":\"big\",\"colour_mode\":\"gradient\",\"colour\":\"ff8000\",\"colour2\":\"#ffc000\"},\"request_id\":\"7\"}", &c, &origins, &arena);
+    const cs = route(testReq(.PUT, "/api/v1/scene", "", control_header, "application/json", null), "{\"base\":\"clock\",\"clock\":{\"font\":\"big\",\"colour_mode\":\"gradient\",\"colour\":\"ff8000\",\"colour2\":\"#ffc000\"},\"request_id\":\"7\"}", &c, &origins, &arena, test_minted);
     try std.testing.expectEqual(clock.Font.big, cs.op.set_scene.style.?.font.?);
     try std.testing.expectEqual(clock.ColourMode.gradient, cs.op.set_scene.style.?.mode.?);
     try std.testing.expectEqual([3]u8{ 0xff, 0xc0, 0x00 }, cs.op.set_scene.style.?.colour2.?);
     try std.testing.expect(cs.op.set_scene.style.?.gradient == null);
     try std.testing.expect(cs.op.set_scene.style.?.spread == null);
-    const sp = route(testReq(.PUT, "/api/v1/scene", "", control_header, "application/json", null), "{\"base\":\"clock\",\"clock\":{\"font\":\"block\",\"spread\":120},\"request_id\":\"7\"}", &c, &origins, &arena);
+    const sp = route(testReq(.PUT, "/api/v1/scene", "", control_header, "application/json", null), "{\"base\":\"clock\",\"clock\":{\"font\":\"block\",\"spread\":120},\"request_id\":\"7\"}", &c, &origins, &arena, test_minted);
     try std.testing.expectEqual(clock.Font.block, sp.op.set_scene.style.?.font.?);
     try std.testing.expectEqual(@as(?u8, 120), sp.op.set_scene.style.?.spread);
-    try expectReject(route(testReq(.PUT, "/api/v1/scene", "", control_header, "application/json", null), "{\"base\":\"clock\",\"clock\":{\"spread\":300},\"request_id\":\"7\"}", &c, &origins, &arena), 400, "invalid_json");
-    try expectReject(route(testReq(.PUT, "/api/v1/scene", "", control_header, "application/json", null), "{\"base\":\"clock\",\"clock\":{\"font\":\"comic\"},\"request_id\":\"7\"}", &c, &origins, &arena), 400, "invalid_font");
-    try expectReject(route(testReq(.PUT, "/api/v1/scene", "", control_header, "application/json", null), "{\"base\":\"clock\",\"clock\":{\"gradient\":\"radial\"},\"request_id\":\"7\"}", &c, &origins, &arena), 400, "invalid_gradient");
-    try expectReject(route(testReq(.PUT, "/api/v1/scene", "", control_header, "application/json", null), "{\"base\":\"clock\",\"clock\":{\"colour\":\"red\"},\"request_id\":\"7\"}", &c, &origins, &arena), 400, "invalid_colour");
-    const a = route(testReq(.POST, "/api/v1/action", "", control_header, "application/json", null), "{\"action\":\"brightness\",\"brightness\":40,\"request_id\":\"8\",\"epoch\":2}", &c, &origins, &arena);
+    try expectReject(route(testReq(.PUT, "/api/v1/scene", "", control_header, "application/json", null), "{\"base\":\"clock\",\"clock\":{\"spread\":300},\"request_id\":\"7\"}", &c, &origins, &arena, test_minted), 400, "invalid_json");
+    try expectReject(route(testReq(.PUT, "/api/v1/scene", "", control_header, "application/json", null), "{\"base\":\"clock\",\"clock\":{\"font\":\"comic\"},\"request_id\":\"7\"}", &c, &origins, &arena, test_minted), 400, "invalid_font");
+    try expectReject(route(testReq(.PUT, "/api/v1/scene", "", control_header, "application/json", null), "{\"base\":\"clock\",\"clock\":{\"gradient\":\"radial\"},\"request_id\":\"7\"}", &c, &origins, &arena, test_minted), 400, "invalid_gradient");
+    try expectReject(route(testReq(.PUT, "/api/v1/scene", "", control_header, "application/json", null), "{\"base\":\"clock\",\"clock\":{\"colour\":\"red\"},\"request_id\":\"7\"}", &c, &origins, &arena, test_minted), 400, "invalid_colour");
+    const a = route(testReq(.POST, "/api/v1/action", "", control_header, "application/json", null), "{\"action\":\"brightness\",\"brightness\":40,\"request_id\":\"8\",\"epoch\":2}", &c, &origins, &arena, test_minted);
     try std.testing.expectEqual(ActionKind.brightness, a.op.action.kind);
-    const pw = route(testReq(.POST, "/api/v1/action", "", control_header, "application/json", null), "{\"action\":\"power\",\"power\":false,\"request_id\":\"9\",\"epoch\":2}", &c, &origins, &arena);
+    const pw = route(testReq(.POST, "/api/v1/action", "", control_header, "application/json", null), "{\"action\":\"power\",\"power\":false,\"request_id\":\"9\",\"epoch\":2}", &c, &origins, &arena, test_minted);
     try std.testing.expectEqual(ActionKind.power, pw.op.action.kind);
     try std.testing.expectEqual(@as(?bool, false), pw.op.action.power);
-    try expectReject(route(testReq(.POST, "/api/v1/action", "", control_header, "application/json", null), "{\"action\":\"power\",\"request_id\":\"9\",\"epoch\":2}", &c, &origins, &arena), 400, "missing_power");
-    try expectReject(route(testReq(.POST, "/api/v1/action", "", control_header, "application/json", null), "{\"action\":\"brightness\",\"brightness\":0,\"request_id\":\"8\",\"epoch\":2}", &c, &origins, &arena), 400, "invalid_brightness");
+    try expectReject(route(testReq(.POST, "/api/v1/action", "", control_header, "application/json", null), "{\"action\":\"power\",\"request_id\":\"9\",\"epoch\":2}", &c, &origins, &arena, test_minted), 400, "missing_power");
+    try expectReject(route(testReq(.POST, "/api/v1/action", "", control_header, "application/json", null), "{\"action\":\"brightness\",\"brightness\":0,\"request_id\":\"8\",\"epoch\":2}", &c, &origins, &arena, test_minted), 400, "invalid_brightness");
 }
 
 test "frames are raw octets with query parameters; oversized json is 413" {
@@ -1409,14 +1416,14 @@ test "frames are raw octets with query parameters; oversized json is 413" {
     var arena: Arena = undefined;
     const origins = OriginPolicy{};
     const frame = [_]u8{7} ** geometry.rgb_bytes;
-    const r = route(testReq(.POST, "/api/v1/frame", "duration_s=5&request_id=ab&epoch=1", control_header, "application/octet-stream", null), &frame, &c, &origins, &arena);
+    const r = route(testReq(.POST, "/api/v1/frame", "duration_s=5&request_id=ab&epoch=1", control_header, "application/octet-stream", null), &frame, &c, &origins, &arena, test_minted);
     try std.testing.expectEqual(@as(u16, 5), r.op.frame.duration_s);
     try std.testing.expectEqual(@as(u8, 7), r.op.frame.rgb[100]);
-    try expectReject(route(testReq(.POST, "/api/v1/frame", "duration_s=5&request_id=ab&epoch=1", control_header, "application/octet-stream", null), frame[0..100], &c, &origins, &arena), 400, "invalid_frame");
-    try expectReject(route(testReq(.POST, "/api/v1/frame", "request_id=ab&epoch=1", control_header, "application/octet-stream", null), &frame, &c, &origins, &arena), 400, "missing_duration");
-    try expectReject(route(testReq(.POST, "/api/v1/frame", "duration_s=5", control_header, "application/json", null), &frame, &c, &origins, &arena), 415, "unsupported_media_type");
+    try expectReject(route(testReq(.POST, "/api/v1/frame", "duration_s=5&request_id=ab&epoch=1", control_header, "application/octet-stream", null), frame[0..100], &c, &origins, &arena, test_minted), 400, "invalid_frame");
+    try expectReject(route(testReq(.POST, "/api/v1/frame", "request_id=ab&epoch=1", control_header, "application/octet-stream", null), &frame, &c, &origins, &arena, test_minted), 400, "missing_duration");
+    try expectReject(route(testReq(.POST, "/api/v1/frame", "duration_s=5", control_header, "application/json", null), &frame, &c, &origins, &arena, test_minted), 415, "unsupported_media_type");
     const big = [_]u8{' '} ** (json.max_body + 1);
-    try expectReject(route(testReq(.POST, "/api/v1/notify", "", control_header, "application/json", null), &big, &c, &origins, &arena), 413, "body_too_large");
+    try expectReject(route(testReq(.POST, "/api/v1/notify", "", control_header, "application/json", null), &big, &c, &origins, &arena, test_minted), 413, "body_too_large");
 }
 
 test "the night schedule's fields, and a location that has to arrive in one piece" {
@@ -1424,51 +1431,51 @@ test "the night schedule's fields, and a location that has to arrive in one piec
     var arena: Arena = undefined;
     const origins = OriginPolicy{};
     const req = testReq(.PATCH, "/api/v1/config", "", admin_header, "application/json", null);
-    const p = route(req, "{\"night\":true,\"night_brightness\":8,\"night_lead_min\":45,\"latitude\":-33.87,\"longitude\":151.215}", &c, &origins, &arena);
+    const p = route(req, "{\"night\":true,\"night_brightness\":8,\"night_lead_min\":45,\"latitude\":-33.87,\"longitude\":151.215}", &c, &origins, &arena, test_minted);
     try std.testing.expectEqual(@as(?bool, true), p.op.config_patch.night);
     try std.testing.expectEqual(@as(?u8, 8), p.op.config_patch.night_brightness);
     try std.testing.expectEqual(@as(?u8, 45), p.op.config_patch.night_lead_min);
     try std.testing.expectEqual(@as(i16, -3387), p.op.config_patch.location.?.lat_c);
     try std.testing.expectEqual(@as(i16, 15122), p.op.config_patch.location.?.lon_c); // rounded, not truncated
-    const off = route(req, "{\"night\":false,\"location_auto\":true}", &c, &origins, &arena);
+    const off = route(req, "{\"night\":false,\"location_auto\":true}", &c, &origins, &arena, test_minted);
     try std.testing.expectEqual(@as(?bool, false), off.op.config_patch.night);
     try std.testing.expectEqual(@as(?bool, true), off.op.config_patch.location_auto);
     try std.testing.expect(off.op.config_patch.location == null);
 
-    try expectReject(route(req, "{\"night_brightness\":0}", &c, &origins, &arena), 400, "invalid_night_brightness");
-    try expectReject(route(req, "{\"night_brightness\":101}", &c, &origins, &arena), 400, "invalid_night_brightness");
-    try expectReject(route(req, "{\"night_lead_min\":121}", &c, &origins, &arena), 400, "invalid_night_lead");
-    try expectReject(route(req, "{\"latitude\":-33.87}", &c, &origins, &arena), 400, "invalid_location");
-    try expectReject(route(req, "{\"longitude\":151.21}", &c, &origins, &arena), 400, "invalid_location");
-    try expectReject(route(req, "{\"latitude\":-91,\"longitude\":0}", &c, &origins, &arena), 400, "invalid_latitude");
-    try expectReject(route(req, "{\"latitude\":0,\"longitude\":181}", &c, &origins, &arena), 400, "invalid_longitude");
+    try expectReject(route(req, "{\"night_brightness\":0}", &c, &origins, &arena, test_minted), 400, "invalid_night_brightness");
+    try expectReject(route(req, "{\"night_brightness\":101}", &c, &origins, &arena, test_minted), 400, "invalid_night_brightness");
+    try expectReject(route(req, "{\"night_lead_min\":121}", &c, &origins, &arena, test_minted), 400, "invalid_night_lead");
+    try expectReject(route(req, "{\"latitude\":-33.87}", &c, &origins, &arena, test_minted), 400, "invalid_location");
+    try expectReject(route(req, "{\"longitude\":151.21}", &c, &origins, &arena, test_minted), 400, "invalid_location");
+    try expectReject(route(req, "{\"latitude\":-91,\"longitude\":0}", &c, &origins, &arena, test_minted), 400, "invalid_latitude");
+    try expectReject(route(req, "{\"latitude\":0,\"longitude\":181}", &c, &origins, &arena, test_minted), 400, "invalid_longitude");
 }
 
 test "config, mqtt and streams routes" {
     const c = testCreds();
     var arena: Arena = undefined;
     const origins = OriginPolicy{};
-    const p = route(testReq(.PATCH, "/api/v1/config", "", admin_header, "application/json", null), "{\"brightness\":30,\"timezone\":\"AEST-10AEDT,M10.1.0,M4.1.0/3\",\"ntp_server\":\"10.0.0.5\",\"ntp_interval_s\":300,\"expected_revision\":4}", &c, &origins, &arena);
+    const p = route(testReq(.PATCH, "/api/v1/config", "", admin_header, "application/json", null), "{\"brightness\":30,\"timezone\":\"AEST-10AEDT,M10.1.0,M4.1.0/3\",\"ntp_server\":\"10.0.0.5\",\"ntp_interval_s\":300,\"expected_revision\":4}", &c, &origins, &arena, test_minted);
     try std.testing.expectEqual(@as(?u8, 30), p.op.config_patch.brightness);
     try std.testing.expectEqual([4]u8{ 10, 0, 0, 5 }, p.op.config_patch.ntp_server.?);
     try std.testing.expectEqual(@as(?u32, 4), p.op.config_patch.expected_revision);
-    try expectReject(route(testReq(.PATCH, "/api/v1/config", "", admin_header, "application/json", null), "{\"ntp_server\":\"time.example\"}", &c, &origins, &arena), 400, "invalid_ntp_server");
-    const cp = route(testReq(.PATCH, "/api/v1/config", "", admin_header, "application/json", null), "{\"clock_font\":\"segment\",\"clock_colour_mode\":\"gradient\",\"clock_colour\":\"00ff80\",\"clock_gradient\":\"vertical\"}", &c, &origins, &arena);
+    try expectReject(route(testReq(.PATCH, "/api/v1/config", "", admin_header, "application/json", null), "{\"ntp_server\":\"time.example\"}", &c, &origins, &arena, test_minted), 400, "invalid_ntp_server");
+    const cp = route(testReq(.PATCH, "/api/v1/config", "", admin_header, "application/json", null), "{\"clock_font\":\"segment\",\"clock_colour_mode\":\"gradient\",\"clock_colour\":\"00ff80\",\"clock_gradient\":\"vertical\"}", &c, &origins, &arena, test_minted);
     try std.testing.expectEqual(clock.Font.segment, cp.op.config_patch.clock_font.?);
     try std.testing.expectEqual(clock.Gradient.vertical, cp.op.config_patch.clock_gradient.?);
     try std.testing.expect(cp.op.config_patch.clock_colour2 == null);
-    const sp2 = route(testReq(.PATCH, "/api/v1/config", "", admin_header, "application/json", null), "{\"clock_spread\":64,\"timezone\":\"Europe/Amsterdam\"}", &c, &origins, &arena);
+    const sp2 = route(testReq(.PATCH, "/api/v1/config", "", admin_header, "application/json", null), "{\"clock_spread\":64,\"timezone\":\"Europe/Amsterdam\"}", &c, &origins, &arena, test_minted);
     try std.testing.expectEqual(@as(?u8, 64), sp2.op.config_patch.clock_spread);
     try std.testing.expectEqualStrings("Europe/Amsterdam", sp2.op.config_patch.timezone.?);
-    try expectReject(route(testReq(.PATCH, "/api/v1/config", "", admin_header, "application/json", null), "{\"clock_colour_mode\":\"rainbow\"}", &c, &origins, &arena), 400, "invalid_colour_mode");
-    try std.testing.expect(route(testReq(.POST, "/api/v1/config/save", "", admin_header, "application/json", null), "", &c, &origins, &arena).op == .config_save);
-    const m = route(testReq(.PUT, "/api/v1/mqtt", "", admin_header, "application/json", null), "{\"host\":\"10.0.0.2\",\"port\":1883,\"username\":\"tc002\",\"password\":\"Secret1\",\"enabled\":true}", &c, &origins, &arena);
+    try expectReject(route(testReq(.PATCH, "/api/v1/config", "", admin_header, "application/json", null), "{\"clock_colour_mode\":\"rainbow\"}", &c, &origins, &arena, test_minted), 400, "invalid_colour_mode");
+    try std.testing.expect(route(testReq(.POST, "/api/v1/config/save", "", admin_header, "application/json", null), "", &c, &origins, &arena, test_minted).op == .config_save);
+    const m = route(testReq(.PUT, "/api/v1/mqtt", "", admin_header, "application/json", null), "{\"host\":\"10.0.0.2\",\"port\":1883,\"username\":\"tc002\",\"password\":\"Secret1\",\"enabled\":true}", &c, &origins, &arena, test_minted);
     try std.testing.expectEqualStrings("Secret1", m.op.mqtt_put.password.?);
-    try expectReject(route(testReq(.GET, "/api/v1/mqtt", "", control_header, null, null), "", &c, &origins, &arena), 403, "forbidden");
-    try std.testing.expect(route(testReq(.GET, "/api/v1/mqtt/status", "", control_header, null, null), "", &c, &origins, &arena).op == .mqtt_status);
-    try std.testing.expect(route(testReq(.POST, "/api/v1/streams", "", control_header, "application/json", null), "{}", &c, &origins, &arena).op == .streams_create);
-    try std.testing.expect(route(testReq(.DELETE, "/api/v1/streams/abcd", "", control_header, null, null), "", &c, &origins, &arena).op == .streams_delete);
-    try std.testing.expect(route(testReq(.PUT, "/api/v1/streams/abcd/palette", "", control_header, "application/octet-stream", null), "", &c, &origins, &arena).op == .streams_palette);
+    try expectReject(route(testReq(.GET, "/api/v1/mqtt", "", control_header, null, null), "", &c, &origins, &arena, test_minted), 403, "forbidden");
+    try std.testing.expect(route(testReq(.GET, "/api/v1/mqtt/status", "", control_header, null, null), "", &c, &origins, &arena, test_minted).op == .mqtt_status);
+    try std.testing.expect(route(testReq(.POST, "/api/v1/streams", "", control_header, "application/json", null), "{}", &c, &origins, &arena, test_minted).op == .streams_create);
+    try std.testing.expect(route(testReq(.DELETE, "/api/v1/streams/abcd", "", control_header, null, null), "", &c, &origins, &arena, test_minted).op == .streams_delete);
+    try std.testing.expect(route(testReq(.PUT, "/api/v1/streams/abcd/palette", "", control_header, "application/octet-stream", null), "", &c, &origins, &arena, test_minted).op == .streams_palette);
     try std.testing.expectEqual([4]u8{ 10, 0, 0, 111 }, parseIpv4("10.0.0.111").?);
     try std.testing.expect(parseIpv4("10.0.0") == null);
     try std.testing.expect(parseIpv4("256.0.0.1") == null);
@@ -1478,26 +1485,26 @@ test "screen, logs and input routes" {
     const c = testCreds();
     var arena: Arena = undefined;
     const origins = OriginPolicy{};
-    try std.testing.expect(!route(testReq(.GET, "/api/v1/screen", "", control_header, null, null), "", &c, &origins, &arena).op.screen.raw);
-    try std.testing.expect(route(testReq(.GET, "/api/v1/screen", "format=raw", control_header, null, null), "", &c, &origins, &arena).op.screen.raw);
-    try expectReject(route(testReq(.GET, "/api/v1/screen", "format=png", control_header, null, null), "", &c, &origins, &arena), 400, "invalid_format");
-    try std.testing.expectEqual(@as(u32, 0), route(testReq(.GET, "/api/v1/logs", "", control_header, null, null), "", &c, &origins, &arena).op.logs.after);
-    try std.testing.expectEqual(@as(u32, 41), route(testReq(.GET, "/api/v1/logs", "after=41", control_header, null, null), "", &c, &origins, &arena).op.logs.after);
-    try expectReject(route(testReq(.GET, "/api/v1/logs", "after=x", control_header, null, null), "", &c, &origins, &arena), 400, "invalid_after");
-    try expectReject(route(testReq(.GET, "/api/v1/logs", "", null, null, null), "", &c, &origins, &arena), 401, "unauthorized");
-    const i = route(testReq(.POST, "/api/v1/input", "", control_header, "application/json", null), "{\"control\":\"rotary\",\"event\":\"ccw\",\"steps\":3,\"request_id\":\"c\",\"epoch\":1}", &c, &origins, &arena);
+    try std.testing.expect(!route(testReq(.GET, "/api/v1/screen", "", control_header, null, null), "", &c, &origins, &arena, test_minted).op.screen.raw);
+    try std.testing.expect(route(testReq(.GET, "/api/v1/screen", "format=raw", control_header, null, null), "", &c, &origins, &arena, test_minted).op.screen.raw);
+    try expectReject(route(testReq(.GET, "/api/v1/screen", "format=png", control_header, null, null), "", &c, &origins, &arena, test_minted), 400, "invalid_format");
+    try std.testing.expectEqual(@as(u32, 0), route(testReq(.GET, "/api/v1/logs", "", control_header, null, null), "", &c, &origins, &arena, test_minted).op.logs.after);
+    try std.testing.expectEqual(@as(u32, 41), route(testReq(.GET, "/api/v1/logs", "after=41", control_header, null, null), "", &c, &origins, &arena, test_minted).op.logs.after);
+    try expectReject(route(testReq(.GET, "/api/v1/logs", "after=x", control_header, null, null), "", &c, &origins, &arena, test_minted), 400, "invalid_after");
+    try expectReject(route(testReq(.GET, "/api/v1/logs", "", null, null, null), "", &c, &origins, &arena, test_minted), 401, "unauthorized");
+    const i = route(testReq(.POST, "/api/v1/input", "", control_header, "application/json", null), "{\"control\":\"rotary\",\"event\":\"ccw\",\"steps\":3,\"request_id\":\"c\",\"epoch\":1}", &c, &origins, &arena, test_minted);
     try std.testing.expectEqual(actions.Control.rotary, i.op.input.control);
     try std.testing.expectEqual(actions.EdgeEvent.ccw, i.op.input.event);
     try std.testing.expectEqual(@as(u8, 3), i.op.input.steps);
-    const k = route(testReq(.POST, "/api/v1/input", "", control_header, "application/json", null), "{\"control\":\"knob\",\"event\":\"long\",\"request_id\":\"c\",\"epoch\":1}", &c, &origins, &arena);
+    const k = route(testReq(.POST, "/api/v1/input", "", control_header, "application/json", null), "{\"control\":\"knob\",\"event\":\"long\",\"request_id\":\"c\",\"epoch\":1}", &c, &origins, &arena, test_minted);
     try std.testing.expectEqual(actions.EdgeEvent.long, k.op.input.event);
     try std.testing.expectEqual(@as(u8, 1), k.op.input.steps);
-    try expectReject(route(testReq(.POST, "/api/v1/input", "", control_header, "application/json", null), "{\"control\":\"left\",\"event\":\"cw\",\"request_id\":\"c\",\"epoch\":1}", &c, &origins, &arena), 400, "invalid_event");
-    try expectReject(route(testReq(.POST, "/api/v1/input", "", control_header, "application/json", null), "{\"control\":\"left\",\"event\":\"long\",\"request_id\":\"c\",\"epoch\":1}", &c, &origins, &arena), 400, "invalid_event");
-    try expectReject(route(testReq(.POST, "/api/v1/input", "", control_header, "application/json", null), "{\"control\":\"rotary\",\"event\":\"click\",\"request_id\":\"c\",\"epoch\":1}", &c, &origins, &arena), 400, "invalid_event");
-    try expectReject(route(testReq(.POST, "/api/v1/input", "", control_header, "application/json", null), "{\"control\":\"middle\",\"event\":\"click\",\"steps\":2,\"request_id\":\"c\",\"epoch\":1}", &c, &origins, &arena), 400, "invalid_steps");
-    try expectReject(route(testReq(.POST, "/api/v1/input", "", control_header, "application/json", null), "{\"control\":\"rotary\",\"event\":\"cw\",\"steps\":17,\"request_id\":\"c\",\"epoch\":1}", &c, &origins, &arena), 400, "invalid_steps");
-    try expectReject(route(testReq(.POST, "/api/v1/input", "", control_header, "application/json", null), "{\"control\":\"pedal\",\"event\":\"click\",\"request_id\":\"c\",\"epoch\":1}", &c, &origins, &arena), 400, "invalid_control");
+    try expectReject(route(testReq(.POST, "/api/v1/input", "", control_header, "application/json", null), "{\"control\":\"left\",\"event\":\"cw\",\"request_id\":\"c\",\"epoch\":1}", &c, &origins, &arena, test_minted), 400, "invalid_event");
+    try expectReject(route(testReq(.POST, "/api/v1/input", "", control_header, "application/json", null), "{\"control\":\"left\",\"event\":\"long\",\"request_id\":\"c\",\"epoch\":1}", &c, &origins, &arena, test_minted), 400, "invalid_event");
+    try expectReject(route(testReq(.POST, "/api/v1/input", "", control_header, "application/json", null), "{\"control\":\"rotary\",\"event\":\"click\",\"request_id\":\"c\",\"epoch\":1}", &c, &origins, &arena, test_minted), 400, "invalid_event");
+    try expectReject(route(testReq(.POST, "/api/v1/input", "", control_header, "application/json", null), "{\"control\":\"middle\",\"event\":\"click\",\"steps\":2,\"request_id\":\"c\",\"epoch\":1}", &c, &origins, &arena, test_minted), 400, "invalid_steps");
+    try expectReject(route(testReq(.POST, "/api/v1/input", "", control_header, "application/json", null), "{\"control\":\"rotary\",\"event\":\"cw\",\"steps\":17,\"request_id\":\"c\",\"epoch\":1}", &c, &origins, &arena, test_minted), 400, "invalid_steps");
+    try expectReject(route(testReq(.POST, "/api/v1/input", "", control_header, "application/json", null), "{\"control\":\"pedal\",\"event\":\"click\",\"request_id\":\"c\",\"epoch\":1}", &c, &origins, &arena, test_minted), 400, "invalid_control");
 }
 
 test "a canvas document is parsed whole, with every field checked against its element type" {
@@ -1512,7 +1519,7 @@ test "a canvas document is parsed whole, with every field checked against its el
         \\ {"id":"g","type":"sparkline","at":[0,13],"size":[52,3],"style":"bars","data":[1,9,4],"threshold":8,"over":"ff0000"},
         \\ {"type":"line","at":[0,12],"to":[51,12],"colour":"202020"},
         \\ {"id":"b","type":"bar","row":3,"of":4,"value":60,"background":"101010"}]}
-    , &c, &origins, &arena);
+    , &c, &origins, &arena, test_minted);
     const d = r.op.canvas_put;
     try std.testing.expectEqual(@as(u8, 5), d.count);
     try std.testing.expectEqualStrings("living room", d.textOf(d.elements[0].body.text.span));
@@ -1526,26 +1533,26 @@ test "a canvas document is parsed whole, with every field checked against its el
     try std.testing.expectEqual(@as(u8, 60), d.elements[4].body.bar.value);
 
     // samples as hex, for a document that would not otherwise fit
-    const hexed = route(put, "{\"elements\":[{\"type\":\"sparkline\",\"data_hex\":\"01090f\"}]}", &c, &origins, &arena);
+    const hexed = route(put, "{\"elements\":[{\"type\":\"sparkline\",\"data_hex\":\"01090f\"}]}", &c, &origins, &arena, test_minted);
     try std.testing.expectEqualSlices(u8, &[_]u8{ 1, 9, 15 }, hexed.op.canvas_put.dataOf(hexed.op.canvas_put.elements[0].body.sparkline.span));
 
     // a field that does not belong to the type is a mistake worth hearing about
-    try expectReject(route(put, "{\"elements\":[{\"type\":\"rect\",\"text\":\"hi\"}]}", &c, &origins, &arena), 400, "invalid_element_field");
-    try expectReject(route(put, "{\"elements\":[{\"type\":\"bar\",\"r\":4}]}", &c, &origins, &arena), 400, "invalid_element_field");
-    try expectReject(route(put, "{\"elements\":[{\"type\":\"pixel\",\"filled\":true}]}", &c, &origins, &arena), 400, "invalid_element_field");
+    try expectReject(route(put, "{\"elements\":[{\"type\":\"rect\",\"text\":\"hi\"}]}", &c, &origins, &arena, test_minted), 400, "invalid_element_field");
+    try expectReject(route(put, "{\"elements\":[{\"type\":\"bar\",\"r\":4}]}", &c, &origins, &arena, test_minted), 400, "invalid_element_field");
+    try expectReject(route(put, "{\"elements\":[{\"type\":\"pixel\",\"filled\":true}]}", &c, &origins, &arena, test_minted), 400, "invalid_element_field");
     // and so is a nonsense value
-    try expectReject(route(put, "{\"elements\":[{\"type\":\"blob\"}]}", &c, &origins, &arena), 400, "invalid_element_type");
-    try expectReject(route(put, "{\"elements\":[{\"type\":\"text\"}]}", &c, &origins, &arena), 400, "missing_text");
-    try expectReject(route(put, "{\"elements\":[{\"type\":\"line\",\"at\":[0,0]}]}", &c, &origins, &arena), 400, "missing_to");
-    try expectReject(route(put, "{\"elements\":[{\"type\":\"text\",\"text\":\"x\",\"font\":\"comic\"}]}", &c, &origins, &arena), 400, "invalid_font");
-    try expectReject(route(put, "{\"elements\":[{\"type\":\"text\",\"text\":\"x\",\"colour\":\"nope\"}]}", &c, &origins, &arena), 400, "invalid_colour");
-    try expectReject(route(put, "{\"elements\":[{\"type\":\"text\",\"text\":\"x\",\"id\":\"far_too_long\"}]}", &c, &origins, &arena), 400, "invalid_element_id");
-    try expectReject(route(put, "{\"elements\":[{\"type\":\"sparkline\",\"data_hex\":\"abc\"}]}", &c, &origins, &arena), 400, "invalid_data");
+    try expectReject(route(put, "{\"elements\":[{\"type\":\"blob\"}]}", &c, &origins, &arena, test_minted), 400, "invalid_element_type");
+    try expectReject(route(put, "{\"elements\":[{\"type\":\"text\"}]}", &c, &origins, &arena, test_minted), 400, "missing_text");
+    try expectReject(route(put, "{\"elements\":[{\"type\":\"line\",\"at\":[0,0]}]}", &c, &origins, &arena, test_minted), 400, "missing_to");
+    try expectReject(route(put, "{\"elements\":[{\"type\":\"text\",\"text\":\"x\",\"font\":\"comic\"}]}", &c, &origins, &arena, test_minted), 400, "invalid_font");
+    try expectReject(route(put, "{\"elements\":[{\"type\":\"text\",\"text\":\"x\",\"colour\":\"nope\"}]}", &c, &origins, &arena, test_minted), 400, "invalid_colour");
+    try expectReject(route(put, "{\"elements\":[{\"type\":\"text\",\"text\":\"x\",\"id\":\"far_too_long\"}]}", &c, &origins, &arena, test_minted), 400, "invalid_element_id");
+    try expectReject(route(put, "{\"elements\":[{\"type\":\"sparkline\",\"data_hex\":\"abc\"}]}", &c, &origins, &arena, test_minted), 400, "invalid_data");
     // placement: one way or the other, not both, and `of` means nothing alone
-    try expectReject(route(put, "{\"elements\":[{\"type\":\"pixel\",\"tile\":1,\"of\":3,\"at\":[0,0]}]}", &c, &origins, &arena), 400, "invalid_placement");
-    try expectReject(route(put, "{\"elements\":[{\"type\":\"pixel\",\"tile\":1}]}", &c, &origins, &arena), 400, "invalid_placement");
-    try expectReject(route(put, "{\"elements\":[{\"type\":\"pixel\",\"of\":3}]}", &c, &origins, &arena), 400, "invalid_placement");
-    try expectReject(route(put, "{\"elements\":[{\"type\":\"rect\",\"size\":[-1,4]}]}", &c, &origins, &arena), 400, "invalid_placement");
+    try expectReject(route(put, "{\"elements\":[{\"type\":\"pixel\",\"tile\":1,\"of\":3,\"at\":[0,0]}]}", &c, &origins, &arena, test_minted), 400, "invalid_placement");
+    try expectReject(route(put, "{\"elements\":[{\"type\":\"pixel\",\"tile\":1}]}", &c, &origins, &arena, test_minted), 400, "invalid_placement");
+    try expectReject(route(put, "{\"elements\":[{\"type\":\"pixel\",\"of\":3}]}", &c, &origins, &arena, test_minted), 400, "invalid_placement");
+    try expectReject(route(put, "{\"elements\":[{\"type\":\"rect\",\"size\":[-1,4]}]}", &c, &origins, &arena, test_minted), 400, "invalid_placement");
 }
 
 test "a document read back can be put back: age_ms is accepted and ignored" {
@@ -1561,7 +1568,7 @@ test "a document read back can be put back: age_ms is accepted and ignored" {
         \\ {"id":"t","type":"text","at":[0,0],"text":"21.4C","age_ms":1840,
         \\  "animate":{"kind":"scramble","ms":2500}},
         \\ {"type":"rect","at":[0,8],"size":[10,4],"age_ms":0}]}
-    , &c, &origins, &arena);
+    , &c, &origins, &arena, test_minted);
     const d = r.op.canvas_put;
     try std.testing.expectEqual(@as(u8, 2), d.count);
     try std.testing.expectEqualStrings("21.4C", d.textOf(d.elements[0].body.text.span));
@@ -1575,7 +1582,7 @@ test "a canvas patch carries values by id, and the canvas routes have their own 
     var arena: Arena = undefined;
     const origins = OriginPolicy{};
     const patch = testReq(.PATCH, "/api/v1/canvas", "", control_header, "application/json", null);
-    const r = route(patch, "{\"values\":[{\"id\":\"t\",\"text\":\"21.1C\"},{\"id\":\"g\",\"data\":[4,5]},{\"id\":\"b\",\"value\":70,\"colour\":\"00ff00\"}]}", &c, &origins, &arena);
+    const r = route(patch, "{\"values\":[{\"id\":\"t\",\"text\":\"21.1C\"},{\"id\":\"g\",\"data\":[4,5]},{\"id\":\"b\",\"value\":70,\"colour\":\"00ff00\"}]}", &c, &origins, &arena, test_minted);
     const p = r.op.canvas_patch;
     try std.testing.expectEqual(@as(u8, 3), p.count);
     try std.testing.expectEqualStrings("21.1C", p.items[0].slice());
@@ -1584,14 +1591,14 @@ test "a canvas patch carries values by id, and the canvas routes have their own 
     try std.testing.expectEqual(canvas.Field.value | canvas.Field.colour, p.items[2].has);
     try std.testing.expectEqual(@as(u8, 70), p.items[2].value);
 
-    try expectReject(route(patch, "{\"values\":[{\"id\":\"t\"}]}", &c, &origins, &arena), 400, "empty_value");
-    try expectReject(route(patch, "{\"values\":[{\"id\":\"\",\"value\":1}]}", &c, &origins, &arena), 400, "invalid_element_id");
-    try expectReject(route(patch, "{\"values\":[{\"id\":\"t\",\"text\":\"x\",\"data\":[1]}]}", &c, &origins, &arena), 400, "invalid_element_field");
+    try expectReject(route(patch, "{\"values\":[{\"id\":\"t\"}]}", &c, &origins, &arena, test_minted), 400, "empty_value");
+    try expectReject(route(patch, "{\"values\":[{\"id\":\"\",\"value\":1}]}", &c, &origins, &arena, test_minted), 400, "invalid_element_id");
+    try expectReject(route(patch, "{\"values\":[{\"id\":\"t\",\"text\":\"x\",\"data\":[1]}]}", &c, &origins, &arena, test_minted), 400, "invalid_element_field");
 
     // reading is control, replacing the whole document is admin
-    try std.testing.expect(route(testReq(.GET, "/api/v1/canvas", "", control_header, null, null), "", &c, &origins, &arena).op == .canvas_get);
-    try std.testing.expect(route(testReq(.DELETE, "/api/v1/canvas", "", control_header, null, null), "", &c, &origins, &arena).op == .canvas_clear);
-    try expectReject(route(testReq(.PUT, "/api/v1/canvas", "", control_header, "application/json", null), "{\"elements\":[]}", &c, &origins, &arena), 403, "forbidden");
+    try std.testing.expect(route(testReq(.GET, "/api/v1/canvas", "", control_header, null, null), "", &c, &origins, &arena, test_minted).op == .canvas_get);
+    try std.testing.expect(route(testReq(.DELETE, "/api/v1/canvas", "", control_header, null, null), "", &c, &origins, &arena, test_minted).op == .canvas_clear);
+    try expectReject(route(testReq(.PUT, "/api/v1/canvas", "", control_header, "application/json", null), "{\"elements\":[]}", &c, &origins, &arena, test_minted), 403, "forbidden");
 }
 
 test "an animation is declared per element, and only where it makes sense" {
@@ -1605,7 +1612,7 @@ test "an animation is declared per element, and only where it makes sense" {
         \\ {"id":"d","type":"circle","r":3,"animate":{"kind":"hue"}},
         \\ {"id":"b","type":"bar","value":50,"animate":{"kind":"bounce","amount":3,"axis":"x","phase":50}},
         \\ {"id":"g","type":"sparkline","data":[1,2],"animate":{"kind":"sweep","ms":900}}]}
-    , &c, &origins, &arena);
+    , &c, &origins, &arena, test_minted);
     const d = r.op.canvas_put;
     try std.testing.expectEqual(canvas.Motion.scramble, d.elements[0].anim.kind);
     try std.testing.expectEqual(@as(u16, 600), d.elements[0].anim.ms);
@@ -1615,11 +1622,62 @@ test "an animation is declared per element, and only where it makes sense" {
     try std.testing.expectEqual(canvas.Motion.sweep, d.elements[3].anim.kind);
 
     // a motion that cannot mean anything for that element is refused rather than ignored
-    try expectReject(route(put, "{\"elements\":[{\"type\":\"rect\",\"animate\":{\"kind\":\"scramble\"}}]}", &c, &origins, &arena), 400, "invalid_motion");
-    try expectReject(route(put, "{\"elements\":[{\"type\":\"text\",\"text\":\"x\",\"animate\":{\"kind\":\"sweep\"}}]}", &c, &origins, &arena), 400, "invalid_motion");
-    try expectReject(route(put, "{\"elements\":[{\"type\":\"pixel\",\"animate\":{\"kind\":\"wobble\"}}]}", &c, &origins, &arena), 400, "invalid_motion");
-    try expectReject(route(put, "{\"elements\":[{\"type\":\"pixel\",\"animate\":{\"kind\":\"none\"}}]}", &c, &origins, &arena), 400, "invalid_motion");
-    try expectReject(route(put, "{\"elements\":[{\"type\":\"pixel\",\"animate\":{\"kind\":\"blink\",\"ms\":0}}]}", &c, &origins, &arena), 400, "invalid_motion");
-    try expectReject(route(put, "{\"elements\":[{\"type\":\"pixel\",\"animate\":{\"kind\":\"blink\",\"phase\":101}}]}", &c, &origins, &arena), 400, "invalid_motion");
-    try expectReject(route(put, "{\"elements\":[{\"type\":\"pixel\",\"animate\":{\"kind\":\"bounce\",\"axis\":\"z\"}}]}", &c, &origins, &arena), 400, "invalid_motion");
+    try expectReject(route(put, "{\"elements\":[{\"type\":\"rect\",\"animate\":{\"kind\":\"scramble\"}}]}", &c, &origins, &arena, test_minted), 400, "invalid_motion");
+    try expectReject(route(put, "{\"elements\":[{\"type\":\"text\",\"text\":\"x\",\"animate\":{\"kind\":\"sweep\"}}]}", &c, &origins, &arena, test_minted), 400, "invalid_motion");
+    try expectReject(route(put, "{\"elements\":[{\"type\":\"pixel\",\"animate\":{\"kind\":\"wobble\"}}]}", &c, &origins, &arena, test_minted), 400, "invalid_motion");
+    try expectReject(route(put, "{\"elements\":[{\"type\":\"pixel\",\"animate\":{\"kind\":\"none\"}}]}", &c, &origins, &arena, test_minted), 400, "invalid_motion");
+    try expectReject(route(put, "{\"elements\":[{\"type\":\"pixel\",\"animate\":{\"kind\":\"blink\",\"ms\":0}}]}", &c, &origins, &arena, test_minted), 400, "invalid_motion");
+    try expectReject(route(put, "{\"elements\":[{\"type\":\"pixel\",\"animate\":{\"kind\":\"blink\",\"phase\":101}}]}", &c, &origins, &arena, test_minted), 400, "invalid_motion");
+    try expectReject(route(put, "{\"elements\":[{\"type\":\"pixel\",\"animate\":{\"kind\":\"bounce\",\"axis\":\"z\"}}]}", &c, &origins, &arena, test_minted), 400, "invalid_motion");
 }
+
+test "a command without a request id or an epoch is accepted and given a minted id" {
+    const c = testCreds();
+    var arena: Arena = undefined;
+    const origins = OriginPolicy{};
+    const minted: u64 = generated_mask | 9;
+
+    // the shape an apple shortcut or a one-line curl actually sends: no ceremony at all.
+    const n = route(testReq(.POST, "/api/v1/notify", "", control_header, "application/json", null), "{\"text\":\"bins out\"}", &c, &origins, &arena, minted);
+    try std.testing.expectEqualStrings("bins out", n.op.notify.text);
+    try std.testing.expectEqual(minted, n.op.notify.request_id);
+    try std.testing.expectEqual(@as(?u32, null), n.op.notify.epoch);
+
+    const p = route(testReq(.POST, "/api/v1/action", "", control_header, "application/json", null), "{\"action\":\"power\",\"power\":false}", &c, &origins, &arena, minted);
+    try std.testing.expectEqual(ActionKind.power, p.op.action.kind);
+    try std.testing.expectEqual(false, p.op.action.power.?);
+    try std.testing.expectEqual(minted, p.op.action.request_id);
+    try std.testing.expectEqual(@as(?u32, null), p.op.action.epoch);
+
+    const i = route(testReq(.POST, "/api/v1/input", "", control_header, "application/json", null), "{\"control\":\"middle\",\"event\":\"click\"}", &c, &origins, &arena, minted);
+    try std.testing.expectEqual(minted, i.op.input.request_id);
+    try std.testing.expectEqual(@as(?u32, null), i.op.input.epoch);
+
+    var frame: [geometry.rgb_bytes]u8 = undefined;
+    const f = route(testReq(.POST, "/api/v1/frame", "duration_s=5", control_header, "application/octet-stream", null), &frame, &c, &origins, &arena, minted);
+    try std.testing.expectEqual(minted, f.op.frame.request_id);
+    try std.testing.expectEqual(@as(?u32, null), f.op.frame.epoch);
+}
+
+test "an id or epoch that is present but malformed is still refused" {
+    const c = testCreds();
+    var arena: Arena = undefined;
+    const origins = OriginPolicy{};
+    const minted: u64 = generated_mask | 1;
+    // omitting a field asks the device to choose; sending rubbish is still a client error.
+    try expectReject(route(testReq(.POST, "/api/v1/notify", "", control_header, "application/json", null), "{\"text\":\"x\",\"request_id\":\"zz\"}", &c, &origins, &arena, minted), 400, "invalid_request_id");
+    try expectReject(route(testReq(.POST, "/api/v1/notify", "", control_header, "application/json", null), "{\"text\":\"x\",\"request_id\":\"\"}", &c, &origins, &arena, minted), 400, "invalid_request_id");
+    var frame: [geometry.rgb_bytes]u8 = undefined;
+    try expectReject(route(testReq(.POST, "/api/v1/frame", "duration_s=5&request_id=zz", control_header, "application/octet-stream", null), &frame, &c, &origins, &arena, minted), 400, "invalid_request_id");
+    try expectReject(route(testReq(.POST, "/api/v1/frame", "duration_s=5&epoch=x", control_header, "application/octet-stream", null), &frame, &c, &origins, &arena, minted), 400, "invalid_epoch");
+}
+
+test "a minted id cannot collide with the small ids a person picks by hand" {
+    // the renderer's dedup window matches on the id alone, so a minted id landing on one a client
+    // chose would hand that client somebody else's result. the reserved top bit makes it impossible
+    // for every id a human or a counter would produce.
+    try std.testing.expect(generated_mask | 1 > std.math.maxInt(u63));
+    var i: u64 = 0;
+    while (i < 4096) : (i += 1) try std.testing.expect(parseRequestId(std.fmt.bufPrint(&idbuf, "{x}", .{i}) catch unreachable).? != (generated_mask | i));
+}
+var idbuf: [16]u8 = undefined;

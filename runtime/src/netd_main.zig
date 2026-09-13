@@ -536,18 +536,18 @@ const Netd = struct {
             },
             .set_scene => |s| self.relay(c, .{ .set_base = .{ .base = @intFromEnum(s.base), .generator = if (s.generator) |g| @intFromEnum(g) else 0xff, .seed = s.seed orelse 0, .style = if (s.style) |st| messages.ClockStyle.fromPatch(st) else .{}, .transition = messages.Transition.fromSpec(s.transition) } }, s.request_id, s.epoch orelse 0, now),
             .action => |a| switch (a.kind) {
-                .brightness => self.relay(c, .{ .brightness = .{ .value = a.brightness.? } }, a.request_id, a.epoch, now),
-                .reseed => self.relay(c, .{ .reseed = .{ .seed = a.seed orelse @truncate(now ^ a.request_id) } }, a.request_id, a.epoch, now),
-                .arm_stream => self.relay(c, .arm_stream, a.request_id, a.epoch, now),
-                .power => self.relay(c, .{ .power = .{ .on = @intFromBool(a.power.?) } }, a.request_id, a.epoch, now),
+                .brightness => self.relay(c, .{ .brightness = .{ .value = a.brightness.? } }, a.request_id, a.epoch orelse 0, now),
+                .reseed => self.relay(c, .{ .reseed = .{ .seed = a.seed orelse @truncate(now ^ a.request_id) } }, a.request_id, a.epoch orelse 0, now),
+                .arm_stream => self.relay(c, .arm_stream, a.request_id, a.epoch orelse 0, now),
+                .power => self.relay(c, .{ .power = .{ .on = @intFromBool(a.power.?) } }, a.request_id, a.epoch orelse 0, now),
             },
             .screen => |s| {
                 c.screen_raw = s.raw;
                 self.ask(c, .screen_get, .screen, now);
             },
             .logs => |l| self.ask(c, .{ .log_get = .{ .after = l.after } }, .logs, now),
-            .input => |i| self.relay(c, .{ .inject_input = .{ .control = @intFromEnum(i.control), .event = @intFromEnum(i.event), .steps = i.steps } }, i.request_id, i.epoch, now),
-            .notify => |n| self.relay(c, .{ .notify = messages.Notify.init(n.text, n.colour, n.duration_s, messages.Transition.fromSpec(n.transition)) }, n.request_id, n.epoch, now),
+            .input => |i| self.relay(c, .{ .inject_input = .{ .control = @intFromEnum(i.control), .event = @intFromEnum(i.event), .steps = i.steps } }, i.request_id, i.epoch orelse 0, now),
+            .notify => |n| self.relay(c, .{ .notify = messages.Notify.init(n.text, n.colour, n.duration_s, messages.Transition.fromSpec(n.transition)) }, n.request_id, n.epoch orelse 0, now),
             .frame => |f| {
                 if (!self.frameAllowed(now)) {
                     c.client_id = f.request_id;
@@ -555,7 +555,7 @@ const Netd = struct {
                     self.flushConn(c, now);
                     return;
                 }
-                self.relay(c, .{ .frame = .{ .duration_s = f.duration_s, .transition = messages.Transition.fromSpec(f.transition), .rgb = f.rgb.* } }, f.request_id, f.epoch, now);
+                self.relay(c, .{ .frame = .{ .duration_s = f.duration_s, .transition = messages.Transition.fromSpec(f.transition), .rgb = f.rgb.* } }, f.request_id, f.epoch orelse 0, now);
             },
             .config_get => self.ask(c, .config_get, .config, now),
             // the supervisor keeps the document, so every canvas route is a round trip to it
@@ -638,7 +638,7 @@ const Netd = struct {
             return;
         };
         const origins = if (self.have_cfg) self.cfg.originPolicy() else api.OriginPolicy{};
-        switch (api.route(c.req, body, &creds, &origins, &arena)) {
+        switch (api.route(c.req, body, &creds, &origins, &arena, self.newId())) {
             .reject => |j| {
                 self.respondError(c, j.status, j.code, j.message);
                 self.flushConn(c, now);
@@ -1613,7 +1613,10 @@ const Netd = struct {
             const extra = p.payload.len -| mqtt_frame_envelope;
             const extended = extra == 4 or extra == 5;
             if (p.payload.len != mqtt_frame_envelope and !extended) return;
-            const rid = std.mem.readInt(u64, p.payload[0..8], .big);
+            // the binary topic has no way to leave a field out, so zero is how it says "you pick":
+            // an id of zero is minted here, an epoch of zero means the current one.
+            const sent_rid = std.mem.readInt(u64, p.payload[0..8], .big);
+            const rid = if (sent_rid == 0) self.newId() else sent_rid;
             const epoch = std.mem.readInt(u32, p.payload[8..12], .big);
             const duration = std.mem.readInt(u16, p.payload[12..14], .big);
             const t: messages.Transition = if (extended) .{ .has = 1, .effect = p.payload[14], .direction = p.payload[15], .duration_ms = std.mem.readInt(u16, p.payload[16..18], .big), .exit = if (extra == 5) p.payload[18] else 0 } else .{};
@@ -1636,7 +1639,7 @@ const Netd = struct {
             return;
         }
         const kind: api.BodyKind = if (std.mem.eql(u8, suffix, "scene")) .scene else if (std.mem.eql(u8, suffix, "action")) .action else if (std.mem.eql(u8, suffix, "notify")) .notify else if (std.mem.eql(u8, suffix, "config")) .config_patch else if (std.mem.eql(u8, suffix, "input")) .input else return;
-        switch (api.parseBody(kind, p.payload, &arena)) {
+        switch (api.parseBody(kind, p.payload, &arena, self.newId())) {
             .reject => |j| {
                 var o = Out{ .buf = &json_buf };
                 o.fmt("{{\"status\":\"rejected\",\"error\":\"{s}\",\"message\":\"{s}\"}}", .{ j.code, j.message });
@@ -1645,13 +1648,13 @@ const Netd = struct {
             .op => |op| switch (op) {
                 .set_scene => |s| self.mqttRelay(.{ .set_base = .{ .base = @intFromEnum(s.base), .generator = if (s.generator) |g| @intFromEnum(g) else 0xff, .seed = s.seed orelse 0, .style = if (s.style) |st| messages.ClockStyle.fromPatch(st) else .{}, .transition = messages.Transition.fromSpec(s.transition) } }, s.request_id, s.epoch orelse 0, now),
                 .action => |a| switch (a.kind) {
-                    .brightness => self.mqttRelay(.{ .brightness = .{ .value = a.brightness.? } }, a.request_id, a.epoch, now),
-                    .reseed => self.mqttRelay(.{ .reseed = .{ .seed = a.seed orelse @truncate(now ^ a.request_id) } }, a.request_id, a.epoch, now),
-                    .arm_stream => self.mqttRelay(.arm_stream, a.request_id, a.epoch, now),
-                    .power => self.mqttRelay(.{ .power = .{ .on = @intFromBool(a.power.?) } }, a.request_id, a.epoch, now),
+                    .brightness => self.mqttRelay(.{ .brightness = .{ .value = a.brightness.? } }, a.request_id, a.epoch orelse 0, now),
+                    .reseed => self.mqttRelay(.{ .reseed = .{ .seed = a.seed orelse @truncate(now ^ a.request_id) } }, a.request_id, a.epoch orelse 0, now),
+                    .arm_stream => self.mqttRelay(.arm_stream, a.request_id, a.epoch orelse 0, now),
+                    .power => self.mqttRelay(.{ .power = .{ .on = @intFromBool(a.power.?) } }, a.request_id, a.epoch orelse 0, now),
                 },
-                .input => |i| self.mqttRelay(.{ .inject_input = .{ .control = @intFromEnum(i.control), .event = @intFromEnum(i.event), .steps = i.steps } }, i.request_id, i.epoch, now),
-                .notify => |n| self.mqttRelay(.{ .notify = messages.Notify.init(n.text, n.colour, n.duration_s, messages.Transition.fromSpec(n.transition)) }, n.request_id, n.epoch, now),
+                .input => |i| self.mqttRelay(.{ .inject_input = .{ .control = @intFromEnum(i.control), .event = @intFromEnum(i.event), .steps = i.steps } }, i.request_id, i.epoch orelse 0, now),
+                .notify => |n| self.mqttRelay(.{ .notify = messages.Notify.init(n.text, n.colour, n.duration_s, messages.Transition.fromSpec(n.transition)) }, n.request_id, n.epoch orelse 0, now),
                 .config_patch => |cp| {
                     // the control subset only: transient brightness and scene parameters
                     const admin_fields = cp.timezone != null or cp.ntp_server != null or cp.ntp_interval_s != null or cp.frame_timeout_ms != null or cp.metrics_interval_s != null or cp.discovery != null or cp.discovery_prefix != null or cp.clock_font != null or cp.clock_colour_mode != null or cp.clock_colour != null or cp.clock_colour2 != null or cp.clock_gradient != null or cp.clock_spread != null or cp.ip_mode != null or cp.sound_enabled != null or cp.sound_volume != null;

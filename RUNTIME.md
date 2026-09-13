@@ -1035,12 +1035,12 @@ api is for programs, not pages. `allowed_origins` can only be set by editing
 |--------|------|-------|------|-------|
 | `GET` | `/status` | control | | the [status document](#the-status-document) |
 | `GET` | `/scenes` | control | | the static catalogue: bases, generators, notification and frame bounds |
-| `PUT` | `/scene` | control | `{"base":"clock\|art\|canvas","generator":"popsquares\|plasma\|cube"?,"seed":u32?,"clock":{"font","colour_mode","colour","colour2","gradient","spread"}?,"request_id":hex,"epoch":u32?}` | `{"status":"applied","revision":n,"epoch":n,"request_id":…}` |
-| `POST` | `/action` | control | `{"action":"brightness\|reseed\|arm_stream","brightness":1..100?,"seed":u32?,"request_id":hex,"epoch":u32}` | as above |
-| `POST` | `/notify` | control | `{"text":"…","colour":"rrggbb"?,"duration_s":1..300?,"request_id":hex,"epoch":u32}` (`duration_s` optional, defaults to 5) | as above |
-| `POST` | `/frame?duration_s=&request_id=&epoch=` | control | `application/octet-stream`, exactly 2,496 bytes | as above |
-| `POST` | `/action` (`"action":"power"`) | control | `{"action":"power","power":true\|false,"request_id":hex,"epoch":u32}` | as above; fades over 600 ms |
-| `POST` | `/input` | control | `{"control":"left\|middle\|right\|knob\|rotary","event":"press\|release\|click\|long\|cw\|ccw","steps":1..16?,"request_id":hex,"epoch":u32}` | as above. `long` is the knob only; `cw`/`ccw` are the rotary only and take `steps` |
+| `PUT` | `/scene` | control | `{"base":"clock\|art\|canvas","generator":"popsquares\|plasma\|cube"?,"seed":u32?,"clock":{"font","colour_mode","colour","colour2","gradient","spread"}?,"request_id":hex?,"epoch":u32?}` | `{"status":"applied","revision":n,"epoch":n,"request_id":…}` |
+| `POST` | `/action` | control | `{"action":"brightness\|reseed\|arm_stream","brightness":1..100?,"seed":u32?,"request_id":hex?,"epoch":u32?}` | as above |
+| `POST` | `/notify` | control | `{"text":"…","colour":"rrggbb"?,"duration_s":1..300?,"request_id":hex?,"epoch":u32?}` (`duration_s` optional, defaults to 5) | as above |
+| `POST` | `/frame?duration_s=` (`request_id`, `epoch` optional) | control | `application/octet-stream`, exactly 2,496 bytes | as above |
+| `POST` | `/action` (`"action":"power"`) | control | `{"action":"power","power":true\|false,"request_id":hex?,"epoch":u32?}` | as above; fades over 600 ms |
+| `POST` | `/input` | control | `{"control":"left\|middle\|right\|knob\|rotary","event":"press\|release\|click\|long\|cw\|ccw","steps":1..16?,"request_id":hex?,"epoch":u32?}` | as above. `long` is the knob only; `cw`/`ccw` are the rotary only and take `steps` |
 | `GET` | `/screen` | control | | `{"width":52,"height":16,"epoch","revision","brightness","power","rgb_base64":"…"}`: the frame as shown, after fades, before brightness. `?format=raw` returns the 2,496 rgb bytes as `application/octet-stream` |
 | `GET` | `/logs?after=N` | control | | `{"next":seq,"lines":[{"seq":n,"text":"…"}…]}`: up to 16 lines of the [log ring](#the-log-ring) after sequence number `after` (0 = oldest kept); pass `next` back to continue. a jump in `seq` means lines were evicted |
 | `GET` | `/events` | control | | an [event stream](#the-event-stream): `text/event-stream`, one `data:` frame per statement applied, held open until the client goes away |
@@ -1068,12 +1068,37 @@ api is for programs, not pages. `allowed_origins` can only be set by editing
 | `GET` | `/mqtt/status` | control | | `{"enabled","connected","state","reconnect_delay_s","reconnects","last_error"}` |
 | `POST` | `/streams`, `PUT` `/streams/{id}/palette`, `DELETE` `/streams/{id}` | control | | `503 not_implemented` |
 
-json bodies must be `application/json`; `request_id` is 1–16 hex digits chosen
-by the client and is what makes a retry safe. `epoch` is required for
-actions, notifications and frames (read it from `/status` first) and optional
-for `/scene`; a mismatch is `409 stale_epoch`. scene, brightness and generator
-changes made this way are transient; to make them the boot defaults, patch
-and save the settings.
+json bodies must be `application/json`. `request_id` and `epoch` are both
+optional on every command: the shortest useful request is a one-liner with
+neither, which is what makes the api usable from a shell, a home-automation
+rule or an apple shortcut without a preparatory round trip.
+
+**omitting `request_id` gives up at-most-once delivery.** the renderer keeps
+completed ids for sixty seconds and replays the stored result for a repeat, so
+a client that retries under its own id applies the command at most once however
+many times it is delivered. omit the id and the device mints a fresh one per
+request, so the window has nothing to match on and a retry is a second command
+— a repeated `/notify` shows twice, a repeated `reseed` reseeds twice. send
+your own `request_id` (1–16 hex digits) whenever a duplicate would matter, and
+reuse that same id for the retry. minted ids have the top bit set, a range
+reserved for the device, so they cannot collide with one you chose.
+
+`epoch` guards against applying a command to a renderer that has restarted
+since you read the state; supply it (from `/status`) and a mismatch is
+`409 stale_epoch`, omit it and the command applies to whichever renderer is
+current. a field that is present but malformed is still `400`, on both.
+
+so the whole of a message and a power-off, with nothing read first:
+
+```bash
+curl -sX POST http://10.0.0.111/api/v1/notify -H "authorization: Bearer $CONTROL" \
+     -H 'content-type: application/json' -d '{"text":"bins out","duration_s":10}'
+curl -sX POST http://10.0.0.111/api/v1/action -H "authorization: Bearer $CONTROL" \
+     -H 'content-type: application/json' -d '{"action":"power","power":false}'
+```
+
+scene, brightness and generator changes made this way are transient; to make
+them the boot defaults, patch and save the settings.
 
 errors are `{"error":"<code>","message":"…","request_id":"…"}` with a stable
 lowercase code:
@@ -1389,7 +1414,7 @@ never falls back to plaintext silently. the client id defaults to
 | `result` | out | `{"request_id","status","revision","epoch"}` for every command received on `cmd/*`, or `{"status":"rejected","error","message"}` for a body that did not parse |
 | `metrics` | out, every `metrics_interval_s` | the [metrics document](#the-metrics-document) |
 | `cmd/scene`, `cmd/action`, `cmd/notify` | in, qos 1 | exactly the http json bodies |
-| `cmd/frame` | in, qos 1 | binary, 2,510 bytes big-endian: `u64 request_id`, `u32 epoch`, `u16 duration_s`, 2,496 rgb bytes; or 2,514 / 2,515 bytes with `u8 effect`, `u8 direction`, `u16 duration_ms` and optionally `u8 exit` before the rgb (see [transitions](#transitions)) |
+| `cmd/frame` | in, qos 1 | binary, 2,510 bytes big-endian: `u64 request_id`, `u32 epoch`, `u16 duration_s`, 2,496 rgb bytes. a binary payload cannot leave a field out, so zero says "you pick": a zero id is minted by the device, a zero epoch means the current one; or 2,514 / 2,515 bytes with `u8 effect`, `u8 direction`, `u16 duration_ms` and optionally `u8 exit` before the rgb (see [transitions](#transitions)) |
 | `cmd/config` | in, qos 1 | the control subset only: `brightness`, `base`, `generator` (transient, like `/action` and `/scene`). any durable field is answered `admin_only`; those are administered over http |
 | `cmd/input` | in, qos 1 | the `/input` json body; answered on `result` |
 | `cmd/screen` | in, qos 1 | any payload; answered on `screen` |
