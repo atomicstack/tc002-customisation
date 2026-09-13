@@ -43,6 +43,7 @@ test {
     _ = @import("sound/wav.zig");
     _ = @import("sound/store.zig");
     _ = @import("sound/mi.zig");
+    _ = @import("sound/vendor.zig");
     _ = @import("net/api.zig");
     _ = @import("net/mqtt.zig");
     _ = @import("supervisor/config.zig");

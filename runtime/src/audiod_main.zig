@@ -13,9 +13,8 @@
 //! and blocking on a device; doing that inside the renderer's 60 fps loop would put audio jitter
 //! and frame jitter in the same thread, and the measured cost of the boundary is 8.3 microseconds.
 //!
-//! **nothing here has been run against the hardware.** the ioctl numbers are recovered and pinned
-//! by tests (`sound/mi.zig`), but the 52-byte attribute payload that sets sample rate and channel
-//! count is a size, not a decoded layout -- see `attr_layout_verified` below.
+//! playback goes through the device's own `libmi_ao.so` (`sound/vendor.zig`), so this binary is
+//! dynamically linked where the rest of the runtime is static.
 const std = @import("std");
 const linux = std.os.linux;
 const sys = @import("sys/linux.zig");
@@ -24,7 +23,7 @@ const messages = @import("ipc/messages.zig");
 const codec = @import("ipc/codec.zig");
 const store = @import("sound/store.zig");
 const wav = @import("sound/wav.zig");
-const mi = @import("sound/mi.zig");
+const vendor = @import("sound/vendor.zig");
 
 pub const panic = std.debug.simple_panic;
 pub const std_options: std.Options = .{ .enable_segfault_handler = false };
@@ -37,13 +36,52 @@ const report_interval_ns: u64 = 1 * std.time.ns_per_s;
 const feed_interval_ns: u64 = 20 * std.time.ns_per_ms;
 const idle_interval_ns: u64 = 250 * std.time.ns_per_ms;
 
-/// **the guard.** `MI_AO_SetPubAttr` takes 52 bytes that were measured as a size and never decoded
-/// as fields. pushing a guessed layout at an amplifier attached to somebody's living room is how
-/// you get a noise rather than a sound, so the device path refuses until this is set true by
-/// somebody who has checked it -- see `vendor/mi_ao/README.md`. everything above it (the store,
-/// the queue, the decode, the reporting) runs regardless, so the plumbing can be exercised on a
-/// real device in silence.
-const attr_layout_verified = false;
+/// how many samples go to the device at once. 2,048 frames is about 46 ms at 44.1 khz -- small
+/// enough that a stop is prompt, large enough that the feed loop is not the bottleneck.
+const chunk_samples = 2048;
+
+/// the device as currently configured. reopened whenever a sound needs a different rate or channel
+/// count, because the attribute is set per device rather than per frame.
+const Device = struct {
+    api: vendor.Api,
+    rate: u32 = 0,
+    channels: u32 = 0,
+    open: bool = false,
+
+    fn configure(self: *Device, rate: u32, channels: u32, vol: u8) bool {
+        if (self.open and self.rate == rate and self.channels == channels) return true;
+        self.close();
+        const attr = vendor.attrBytes(rate, channels);
+        if (self.api.set_pub_attr(0, &attr) != 0) {
+            log.err("the device refused {d} hz, {d} channel(s)", .{ rate, channels });
+            return false;
+        }
+        if (self.api.enable(0) != 0) {
+            log.err("the audio device would not enable", .{});
+            return false;
+        }
+        _ = self.api.enable_chn(0, 0);
+        _ = self.api.set_mute(0, 0, 0);
+        _ = self.api.set_volume(0, 0, vendor.volumeDb(vol), 0);
+        self.rate = rate;
+        self.channels = channels;
+        self.open = true;
+        log.info("audio out: {d} hz, {d} channel(s), volume {d}", .{ rate, channels, vol });
+        return true;
+    }
+
+    fn close(self: *Device) void {
+        if (!self.open) return;
+        _ = self.api.clear_chn_buf(0, 0);
+        _ = self.api.disable_chn(0, 0);
+        _ = self.api.disable(0);
+        self.open = false;
+    }
+};
+
+var device: ?Device = null;
+/// samples on their way out, converted to the signed 16-bit the device takes
+var out_samples: [chunk_samples * 2]i16 = undefined;
 
 var packet_buf: [codec.max_message]u8 = undefined;
 var send_buf: [codec.max_message]u8 = undefined;
@@ -152,19 +190,36 @@ fn feed() void {
         } else {
             log.info("finished {s}", .{playing.name.slice()});
             playing.stop();
+            if (device) |*d| d.close();
             state = .ready;
             return;
         }
     }
-    if (!attr_layout_verified) {
-        // silence, deliberately. the queue advances so the rest of the path can be exercised on a
-        // device without the amplifier ever being handed a guessed configuration.
-        playing.cursor = total;
+    var dev = &(device orelse return);
+    if (!dev.configure(w.rate, w.channels, playing.volume)) {
+        playing.stop();
+        state = .failed;
         return;
     }
-    // the device path lands here once the attribute layout is confirmed: mma_alloc, mmap, convert
-    // into the shared buffer, flush the cache, send_frame.
-    unreachable;
+
+    // one chunk per pass. the device tells us when it is full, and the vendor treats that as
+    // back-pressure rather than an error, so we simply come back on the next tick.
+    const want: u32 = @min(chunk_samples * @as(u32, w.channels), total - playing.cursor);
+    for (0..want) |i| out_samples[i] = w.sample(playing.cursor + @as(u32, @intCast(i)));
+    const bytes = std.mem.sliceAsBytes(out_samples[0..want]);
+    const frame = vendor.Frame.init(bytes);
+    const rc = dev.api.send_frame(0, 0, &frame.bytes, 0);
+    if (rc == vendor.err_buffer_full) {
+        underruns +%= 0; // not an underrun: the device is ahead of us, which is the healthy case
+        return;
+    }
+    if (rc != 0) {
+        log.warn("send_frame returned {x}", .{@as(u32, @bitCast(rc))});
+        playing.stop();
+        state = .failed;
+        return;
+    }
+    playing.cursor += want;
 }
 
 fn handle(msg: messages.Message, state_dir: []const u8) void {
@@ -182,6 +237,7 @@ fn handle(msg: messages.Message, state_dir: []const u8) void {
                     if (playing.active()) log.info("stopped {s}", .{playing.name.slice()});
                     playing.stop();
                     playing.name = .{};
+                    if (device) |*d| d.close();
                     state = .ready;
                 },
             }
@@ -202,10 +258,14 @@ fn run(state_dir: []const u8) !u8 {
     try sys.epollAdd(ep, timer, linux.EPOLL.IN, 2);
 
     reload(state_dir);
-    state = .ready;
-    if (!attr_layout_verified) {
-        log.warn("the audio attribute layout is unverified, so nothing will reach the speaker; see vendor/mi_ao/README.md", .{});
+    if (vendor.load()) |a| {
+        device = .{ .api = a };
+        log.info("audio library loaded", .{});
+    } else {
+        log.err("the audio library would not load; sounds will be accepted and not heard", .{});
+        state = .failed;
     }
+    if (state != .failed) state = .ready;
 
     var next_report: u64 = 0;
     var events: [4]linux.epoll_event = undefined;

@@ -48,7 +48,7 @@ pub fn build(b: *std.Build) void {
     const optimize = b.option(std.builtin.OptimizeMode, "optimize", "optimize mode for the device binaries") orelse .ReleaseSafe;
     const strip = b.option(bool, "strip", "strip the device binaries (false keeps symbols for memory audits)") orelse true;
 
-    inline for (.{ .{ "tc002d", "src/tc002d_main.zig" }, .{ "tc002-supervisor", "src/supervisor_main.zig" }, .{ "tc002-netd", "src/netd_main.zig" }, .{ "tc002-ntfy", "src/ntfy_main.zig" }, .{ "tc002-audiod", "src/audiod_main.zig" }, .{ "tc002-memdump", "src/memdump_main.zig" } }) |spec| {
+    inline for (.{ .{ "tc002d", "src/tc002d_main.zig" }, .{ "tc002-supervisor", "src/supervisor_main.zig" }, .{ "tc002-netd", "src/netd_main.zig" }, .{ "tc002-ntfy", "src/ntfy_main.zig" }, .{ "tc002-memdump", "src/memdump_main.zig" } }) |spec| {
         const exe = b.addExecutable(.{
             .name = spec[0],
             .root_module = b.createModule(.{
@@ -94,6 +94,33 @@ pub fn build(b: *std.Build) void {
         }),
         .linkage = .static,
     });
+    // the speaker. the one binary in this runtime that is **dynamically linked against the
+    // device's own glibc**, because it dlopens the vendor's `libmi_ao.so` to hand pcm to the
+    // audio-out. the control-plane ioctls were recovered and work statically, but the data plane
+    // marshals samples through a buffer the library allocates itself, and reverse-engineering that
+    // against a driver that wedges on a wrong guess is a worse trade than this dependency. see
+    // vendor/mi_ao/README.md.
+    const audio_target = b.resolveTargetQuery(.{
+        .cpu_arch = .arm,
+        .os_tag = .linux,
+        .abi = .gnueabihf,
+        .cpu_model = .{ .explicit = &std.Target.arm.cpu.cortex_a7 },
+        .glibc_version = .{ .major = 2, .minor = 30, .patch = 0 },
+    });
+    const audiod = b.addExecutable(.{
+        .name = "tc002-audiod",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/audiod_main.zig"),
+            .target = audio_target,
+            .optimize = optimize,
+            .link_libc = true,
+            .strip = strip,
+            .single_threaded = true,
+        }),
+    });
+    audiod.root_module.linkSystemLibrary("dl", .{});
+    b.installArtifact(audiod);
+
     // a diagnostic: walks the audio control plane and prints what each ioctl returned
     const soundprobe = b.addExecutable(.{
         .name = "tc002-soundprobe",
