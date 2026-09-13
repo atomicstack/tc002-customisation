@@ -341,6 +341,23 @@
   /* render a draft canvas without touching what the replica is following. the arbiter is shared,
      so this leaves it on the canvas base with the draft installed — the caller resyncs when it is
      done. installing alone renders nothing: the frame buffer only changes when the arbiter ticks. */
+  /* where each element lands, asked of the renderer. `null` for one that drew nothing — an empty
+     string, a blink in its dark half — so a caller can fall back to the element's own `at`. */
+  function canvasBounds(nowMs) {
+    const e = need();
+    const at = nowMs || Date.now();
+    const out = [];
+    for (let i = 0; i < e.canvasElementCount(); i++) {
+      // a u32 from wasm arrives signed, so the all-ones sentinel reads as -1 here
+      const packed = e.canvasElementBounds(i, at) >>> 0;
+      out.push(packed === 0xffffffff ? null : {
+        x0: packed & 0xff, y0: (packed >>> 8) & 0xff,
+        x1: (packed >>> 16) & 0xff, y1: (packed >>> 24) & 0xff,
+      });
+    }
+    return out;
+  }
+
   function renderCanvasDraft(doc, nowMs) {
     const e = need();
     const at = nowMs || Date.now();
@@ -459,7 +476,7 @@
     WIDTH, HEIGHT, PIXELS, RGB_BYTES, WHITE, black, pixelOffset,
     ready, loaded, buildLut, tzParse, TZ_UTC, Art, compose, sceneParams, renderIpLayout,
     agreement, anchorClock, deviceNow, installCanvas, clearCanvas, canvasEmpty, canvasAnimated,
-    applyStatement, setRevision, applyGeneratorParams, frame, renderCanvasDraft,
+    applyStatement, setRevision, applyGeneratorParams, frame, renderCanvasDraft, canvasBounds,
     canvasBackdated,
     get lastCanvasResult() { return lastCanvasResult; },
     get clockSkewMs() { return clockSkewMs; },

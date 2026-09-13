@@ -345,12 +345,58 @@ export fn canvasEmpty() u32 {
 /// ones — and GET /canvas does not publish either, so the console installs at a different instant
 /// and every animated element is permanently out of phase. it cannot be fixed from here; it can
 /// be said, which is better than showing a byte-match figure that reads as a rendering fault.
+/// where one element actually lands on the panel, asked of the renderer rather than worked out
+/// from the document. only the renderer knows how wide a word is in a given font, how big an icon
+/// comes out, or what a tile composites to — computing that in the console would be the same
+/// second implementation this whole preview exists to avoid.
+///
+/// renders the element on its own into a scratch frame, keeping its animation clock so a moving
+/// element is measured where it currently is, and returns the bounding box of what lit up, packed
+/// as x0 | y0<<8 | x1<<16 | y1<<24. 0xffffffff means it drew nothing — an empty string, or a blink
+/// in its dark half — and the caller should fall back to the element's own `at`.
+var probe: canvas.State = .{};
+var probe_rgb: geometry.Rgb = undefined;
+
+export fn canvasElementBounds(index: u32, now_ms: f64) u32 {
+    const src = &arb.canvas;
+    if (index >= src.doc.count) return 0xffffffff;
+    probe.doc = src.doc; // carries the text and data pools, so the element's spans still resolve
+    probe.doc.elements[0] = src.doc.elements[index];
+    probe.doc.count = 1;
+    probe.clocks = src.clocks;
+    probe.clocks.started_ns[0] = src.clocks.started_ns[index];
+    probe.render(toNs(now_ms), &probe_rgb);
+
+    var x0: u32 = geometry.width;
+    var y0: u32 = geometry.height;
+    var x1: u32 = 0;
+    var y1: u32 = 0;
+    var lit = false;
+    for (0..geometry.height) |y| {
+        for (0..geometry.width) |x| {
+            const o = (y * geometry.width + x) * 3;
+            if (probe_rgb[o] == 0 and probe_rgb[o + 1] == 0 and probe_rgb[o + 2] == 0) continue;
+            lit = true;
+            if (x < x0) x0 = @intCast(x);
+            if (y < y0) y0 = @intCast(y);
+            if (x > x1) x1 = @intCast(x);
+            if (y > y1) y1 = @intCast(y);
+        }
+    }
+    if (!lit) return 0xffffffff;
+    return x0 | (y0 << 8) | (x1 << 16) | (y1 << 24);
+}
+
 export fn canvasAnimatedCount() u32 {
     var n: u32 = 0;
     for (arb.canvas.doc.elements[0..arb.canvas.doc.count]) |*e| {
         if (e.anim.kind != .none) n += 1;
     }
     return n;
+}
+
+export fn canvasElementCount() u32 {
+    return arb.canvas.doc.count;
 }
 
 export fn canvasMaxElements() u32 {

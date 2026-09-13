@@ -1425,6 +1425,7 @@ function cvRender() {
   // the draft through the device's parser and renderer: what it draws, and what it would refuse
   const r = S.renderCanvasDraft(cvDraft, Date.now());
   cvFrame = r.rgb;
+  cvBounds = S.canvasBounds(Date.now());
   const valid = $('cvvalid');
   if (r.ok) {
     valid.classList.remove('bad');
@@ -1445,6 +1446,7 @@ let cvFrame = null;
 function cvDrawPreview() {
   if (!cvPreviewing || !cvFrame) return;
   paint(cvFrame, STATUS ? STATUS.brightness : 100);
+  cvOverlay();
   $('cap').textContent = `canvas draft · not sent · ${cvDraft.elements.length} element${cvDraft.elements.length === 1 ? '' : 's'}`;
 }
 
@@ -1588,6 +1590,146 @@ function cvForm() {
   }
 }
 
+/* ---------- direct manipulation on the preview ----------
+   drag an element to move it, drag a corner to resize it. the panel is 52x16 at 10 css pixels an
+   led, so every gesture lands on a whole led and there is nothing to snap.
+
+   what is under the cursor comes from `S.canvasBounds`, which renders each element alone and
+   returns what lit up — the renderer's answer, not a reimplementation of how wide a word is. for
+   an element that declares `at` and `size` the handle box is the declared one instead: a bar's
+   lit extent is the filled part, so handles drawn on it would move as the value changed. */
+
+const CV_PX = 10;                    // css pixels per led
+const CV_GRAB = 6;                   // css pixels of corner that count as a handle
+let cvBounds = [];                   // one entry per element, or null when it drew nothing
+let cvDragging = null;               // {index, mode, grabX, grabY, from}
+
+const cvPlaced = e => Array.isArray(e.at);            // tile/row placement has no coordinate
+const cvSizable = e => Array.isArray(e.at) && Array.isArray(e.size);
+
+// the box the handles sit on: declared where there is one, otherwise whatever lit up
+function cvBox(i) {
+  const e = cvDraft.elements[i];
+  if (!e) return null;
+  if (cvSizable(e)) return { x0: e.at[0], y0: e.at[1], x1: e.at[0] + e.size[0] - 1, y1: e.at[1] + e.size[1] - 1 };
+  const b = cvBounds[i];
+  if (b) return b;
+  return cvPlaced(e) ? { x0: e.at[0], y0: e.at[1], x1: e.at[0], y1: e.at[1] } : null;
+}
+
+function cvOverlay() {
+  const box = cvBox(cvSelected);
+  if (!box) return;
+  const x = box.x0 * CV_PX, y = box.y0 * CV_PX;
+  const w = (box.x1 - box.x0 + 1) * CV_PX, h = (box.y1 - box.y0 + 1) * CV_PX;
+  ctx.save();
+  ctx.strokeStyle = '#4c8dff';
+  ctx.lineWidth = 1;
+  ctx.setLineDash([4, 3]);
+  ctx.strokeRect(x + 0.5, y + 0.5, w - 1, h - 1);
+  ctx.setLineDash([]);
+  if (cvSizable(cvDraft.elements[cvSelected])) {
+    ctx.fillStyle = '#4c8dff';
+    for (const [hx, hy] of [[x, y], [x + w, y], [x, y + h], [x + w, y + h]]) {
+      ctx.fillRect(hx - 3, hy - 3, 6, 6);
+    }
+  }
+  ctx.restore();
+}
+
+// which element is under a point, topmost first: later elements draw over earlier ones
+function cvHit(lx, ly) {
+  for (let i = cvDraft.elements.length - 1; i >= 0; i--) {
+    const b = cvBox(i);
+    if (b && lx >= b.x0 && lx <= b.x1 && ly >= b.y0 && ly <= b.y1) return i;
+  }
+  return -1;
+}
+
+function cvCorner(px, py, i) {
+  const b = cvBox(i);
+  if (!b || !cvSizable(cvDraft.elements[i])) return null;
+  const x = b.x0 * CV_PX, y = b.y0 * CV_PX;
+  const w = (b.x1 - b.x0 + 1) * CV_PX, h = (b.y1 - b.y0 + 1) * CV_PX;
+  const near = (a, c) => Math.abs(a - c) <= CV_GRAB;
+  const left = near(px, x), right = near(px, x + w), top = near(py, y), bottom = near(py, y + h);
+  if (right && bottom) return 'se';
+  if (left && bottom) return 'sw';
+  if (right && top) return 'ne';
+  if (left && top) return 'nw';
+  return null;
+}
+
+function cvPoint(ev) {
+  const r = $('matrix').getBoundingClientRect();
+  const px = (ev.clientX - r.left) * (520 / r.width);
+  const py = (ev.clientY - r.top) * (160 / r.height);
+  return { px, py, lx: Math.floor(px / CV_PX), ly: Math.floor(py / CV_PX) };
+}
+
+function cvPointerDown(ev) {
+  if (!cvPreviewing) return;
+  const { px, py, lx, ly } = cvPoint(ev);
+  // a handle sits on the box's outer edge, which is one led outside the element itself, so the
+  // corners of the current selection are tested before anything is hit-tested. handles belong to
+  // the selection anyway — that is what makes them reachable when elements overlap
+  const onCorner = cvCorner(px, py, cvSelected);
+  if (onCorner) {
+    const sel = cvDraft.elements[cvSelected];
+    cvDragging = { index: cvSelected, mode: onCorner, px, py, at: sel.at.slice(), size: sel.size.slice() };
+    try { $('matrix').setPointerCapture(ev.pointerId); } catch {}
+    return cvRender();
+  }
+  const hit = cvHit(lx, ly);
+  if (hit < 0) return;
+  cvSelected = hit;
+  cvList(); cvForm();
+  const e = cvDraft.elements[hit];
+  const mode = cvPlaced(e) ? 'move' : null;
+  if (!mode) { cvRender(); return toast(`${e.id || e.type} is placed by tile or row, so it cannot be dragged`, true); }
+  cvDragging = { index: hit, mode, px, py, at: e.at.slice(), size: e.size ? e.size.slice() : null };
+  try { $('matrix').setPointerCapture(ev.pointerId); } catch {}   // a synthetic pointer has none
+  cvRender();
+}
+
+function cvPointerMove(ev) {
+  if (!cvPreviewing) return;
+  const { px, py, lx, ly } = cvPoint(ev);
+  if (!cvDragging) {
+    const corner = cvCorner(px, py, cvSelected);
+    const hit = corner ? cvSelected : cvHit(lx, ly);
+    $('matrix').style.cursor = corner ? (corner === 'nw' || corner === 'se' ? 'nwse-resize' : 'nesw-resize')
+                             : hit >= 0 ? 'move' : '';
+    return;
+  }
+  const d = cvDragging;
+  const e = cvDraft.elements[d.index];
+  // a drag is a distance, not the difference between two cell indices: flooring both ends counts
+  // an extra led whenever the pointer starts or finishes exactly on a boundary
+  const dx = Math.round((px - d.px) / CV_PX), dy = Math.round((py - d.py) / CV_PX);
+  const clampX = v => Math.max(-32, Math.min(S.WIDTH - 1, v));
+  const clampY = v => Math.max(-16, Math.min(S.HEIGHT - 1, v));
+  if (d.mode === 'move') {
+    e.at = [clampX(d.at[0] + dx), clampY(d.at[1] + dy)];
+  } else {
+    // a corner drag moves the two edges it touches; the opposite corner stays put
+    const west = d.mode === 'nw' || d.mode === 'sw', north = d.mode === 'nw' || d.mode === 'ne';
+    const w = Math.max(1, d.size[0] + (west ? -dx : dx));
+    const h = Math.max(1, d.size[1] + (north ? -dy : dy));
+    e.size = [w, h];
+    e.at = [clampX(west ? d.at[0] + (d.size[0] - w) : d.at[0]),
+            clampY(north ? d.at[1] + (d.size[1] - h) : d.at[1])];
+  }
+  cvList(); cvForm(); cvRender();
+}
+
+function cvPointerUp(ev) {
+  if (!cvDragging) return;
+  try { $('matrix').releasePointerCapture(ev.pointerId); } catch {}
+  cvDragging = null;
+  cvRender();
+}
+
 function cvAdd() {
   if (cvDraft.elements.length >= cvMax) return toast(`a document holds at most ${cvMax} elements`, true);
   const type = $('cvtype').value;
@@ -1637,6 +1779,10 @@ function cvInit() {
   cvList(); cvForm();
 }
 
+$('matrix').addEventListener('pointerdown', cvPointerDown);
+$('matrix').addEventListener('pointermove', cvPointerMove);
+$('matrix').addEventListener('pointerup', cvPointerUp);
+$('matrix').addEventListener('pointercancel', cvPointerUp);
 $('cvadd').addEventListener('click', cvAdd);
 $('cvload').addEventListener('click', cvLoad);
 $('cvsend').addEventListener('click', cvSend);

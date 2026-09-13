@@ -240,6 +240,78 @@ test('a client row offers rotate and revoke, and both confirm in place',
                    'arming names the client, so the wrong row cannot be hit blind');
 });
 
+test('an element can be dragged on the preview, and a corner resizes it',
+  { skip: chromeAvailable ? false : 'google chrome is not installed' }, async () => {
+  // the panel is 52x16 at ten css pixels an led. a drag is measured as a distance rather than as
+  // the difference between two floored cell indices, which counted an extra led whenever a
+  // gesture began or ended exactly on a boundary
+  const out = await cdp.eval(`
+    (() => {
+      const cv = document.getElementById('matrix');
+      const send = (type, px, py, id) => { const r = cv.getBoundingClientRect();
+        cv.dispatchEvent(new PointerEvent(type, { bubbles: true, pointerId: id || 1,
+          clientX: r.left + px * (r.width / 520), clientY: r.top + py * (r.height / 160) })); };
+      const led = (type, lx, ly, id) => send(type, lx * 10 + 5, ly * 10 + 5, id);
+      showTab('canvas');
+      const was = cvDraft;
+      cvDraft = { elements: [
+        { type: 'text', id: 't', at: [1, 0], text: 'hi', colour: 'ffffff' },
+        { type: 'rect', id: 'r', at: [10, 6], size: [8, 6], colour: 'ff0000', filled: true },
+      ] };
+      cvSelected = 0; cvList(); cvForm(); cvRender();
+      const res = {};
+
+      led('pointerdown', 2, 2); res.picked = cvSelected;
+      led('pointermove', 6, 5); led('pointerup', 6, 5);
+      res.movedTo = cvDraft.elements[0].at.slice();
+
+      led('pointerdown', 12, 8, 2); led('pointerup', 12, 8, 2);
+      res.selectedRect = cvSelected;
+      const r0 = cvDraft.elements[1];
+      const cx = (r0.at[0] + r0.size[0]) * 10, cy = (r0.at[1] + r0.size[1]) * 10;
+      send('pointerdown', cx, cy, 3); res.corner = cvDragging && cvDragging.mode;
+      send('pointermove', cx + 30, cy + 20, 3); send('pointerup', cx + 30, cy + 20, 3);
+      res.size = cvDraft.elements[1].size.slice();
+      res.at = cvDraft.elements[1].at.slice();
+
+      cvDraft = was; cvSelected = 0; cvList(); cvForm(); cvRender();
+      showTab('scene');
+      return res;
+    })()
+  `);
+  assert.equal(out.picked, 0, 'pressing on an element selects it');
+  assert.deepEqual(out.movedTo, [5, 3], 'a four-by-three drag moves it exactly four by three');
+  assert.equal(out.selectedRect, 1);
+  assert.equal(out.corner, 'se', 'the corner of the selected element is a handle');
+  assert.deepEqual(out.size, [11, 8], 'the south-east corner grew it by three by two');
+  assert.deepEqual(out.at, [10, 6], 'and the opposite corner stayed where it was');
+});
+
+test('an element placed by tile or row is not draggable, and says why',
+  { skip: chromeAvailable ? false : 'google chrome is not installed' }, async () => {
+  // tile and row placement has no coordinate to move, so a drag would have nothing to write
+  const out = await cdp.eval(`
+    (() => {
+      showTab('canvas');
+      const was = cvDraft;
+      cvDraft = { elements: [{ type: 'text', id: 'tiled', tile: 1, of: 2, text: 'hi', colour: 'ffffff' }] };
+      cvSelected = 0; cvList(); cvForm(); cvRender();
+      const cv = document.getElementById('matrix');
+      const r = cv.getBoundingClientRect();
+      const b = cvBounds[0];
+      cv.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, pointerId: 9,
+        clientX: r.left + (b.x0 * 10 + 5) * (r.width / 520),
+        clientY: r.top + (b.y0 * 10 + 5) * (r.height / 160) }));
+      const res = { dragging: cvDragging, hasAt: 'at' in cvDraft.elements[0] };
+      cvDraft = was; cvSelected = 0; cvList(); cvForm(); cvRender();
+      showTab('scene');
+      return res;
+    })()
+  `);
+  assert.equal(out.dragging, null, 'no drag is started for a tile-placed element');
+  assert.equal(out.hasAt, false, 'and nothing invented an `at` for it');
+});
+
 test('the canvas builder validates a draft with the runtime\'s own parser',
   { skip: chromeAvailable ? false : 'google chrome is not installed' }, async () => {
   // the point of the builder: the thing that says yes or no is the device's parser compiled to
