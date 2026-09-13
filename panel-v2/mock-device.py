@@ -89,16 +89,24 @@ class Reject(Exception):
 
 
 def load_or_create_tokens(path):
+    """mirrors the supervisor: `control=<64 hex>` / `admin=<64 hex>` lines, older raw form read too."""
     if os.path.exists(path):
         data = open(path, "rb").read()
-        if len(data) != 64:
-            raise ValueError("token file must hold exactly 64 raw bytes")
-    else:
-        data = secrets.token_bytes(64)
-        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-        with os.fdopen(fd, "wb") as f:
-            f.write(data)
-    return data[:32].hex(), data[32:].hex()
+        if len(data) == 64:
+            return data[:32].hex(), data[32:].hex()
+        found = {}
+        for line in data.decode().splitlines():
+            key, sep, value = line.strip().partition("=")
+            if sep == "=" and key in ("control", "admin") and len(value) == 64:
+                found[key] = value
+        if "control" not in found or "admin" not in found:
+            raise ValueError("token file must hold control= and admin= lines, or 64 raw bytes")
+        return found["control"], found["admin"]
+    control, admin = secrets.token_hex(32), secrets.token_hex(32)
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    with os.fdopen(fd, "w") as f:
+        f.write(f"control={control}\nadmin={admin}\n")
+    return control, admin
 
 
 # the timezone's reference point, as tzdata gives one to every iana zone; the mock knows one zone

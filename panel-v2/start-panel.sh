@@ -7,7 +7,7 @@
 #   host           the device address; when omitted and a device is attached over adb, the wlan0
 #                  address is read from it
 #   --port N       local port for the proxy (default 8777)
-#   --token-file   the 64-byte token file pulled from /data/tc002/state/credentials/tokens; when
+#   --token-file   the token file pulled from /data/tc002/state/credentials/tokens; when
 #                  omitted, ./tokens or ../tokens is used if present, otherwise the tokens are
 #                  pulled over adb into memory (nothing written to disk). they are durable, so a
 #                  pulled file keeps working across reboots

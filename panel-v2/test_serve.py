@@ -30,6 +30,24 @@ class PureTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 serve.parse_tokens(bytes(n))
 
+    def test_parse_tokens_reads_the_labelled_text_form(self):
+        control, admin = "ab" * 32, "cd" * 32
+        for text in (f"control={control}\nadmin={admin}\n",
+                     f"admin={admin}\ncontrol={control}",          # order is not significant
+                     f"control={control}\r\nadmin={admin}\r\n"):  # nor are line endings
+            self.assertEqual(serve.parse_tokens(text.encode()), (control, admin))
+
+    def test_parse_tokens_refuses_a_half_understood_file(self):
+        control, admin = "ab" * 32, "cd" * 32
+        for text in (f"control={control}\n",                        # no admin
+                     f"admin={admin}\n",                            # no control
+                     f"control={'ab' * 31}\nadmin={admin}\n",       # short token
+                     f"control={'zz' * 32}\nadmin={admin}\n",       # not hex
+                     f"token={control}\nadmin={admin}\n",           # unknown key
+                     f"control={control}\nadmin={admin}\njunk\n"):
+            with self.assertRaises(ValueError):
+                serve.parse_tokens(text.encode())
+
     def test_load_token_file(self):
         with tempfile.TemporaryDirectory() as d:
             p = os.path.join(d, "tokens")
@@ -922,7 +940,7 @@ class StartScriptTests(unittest.TestCase):
                     except (urllib.error.URLError, ConnectionError, OSError):
                         time.sleep(0.2)
                 self.assertEqual(tokens, {"control": True, "admin": True})
-                self.assertEqual(os.path.getsize(token_file), 64)
+                self.assertEqual(os.path.getsize(token_file), 144)  # the labelled text form
                 url = f"http://127.0.0.1:{proxy_port}/api/127.0.0.1:{mock_port}/v1/status"
                 with urllib.request.urlopen(url, timeout=5) as r:
                     self.assertEqual(json.loads(r.read())["renderer"], "running")

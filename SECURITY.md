@@ -64,7 +64,14 @@ the stock app and its unauthenticated api are not, and the picture changes:
   256-bit tokens (control and admin) are generated per runtime directory,
   compared in constant time, stored at mode 0600 under `/tmp/tc002/credentials/`,
   and never logged or returned. durable settings and the mqtt password need
-  the admin token; the password is never returned by the api.
+  the admin token; the password is never returned by the api. the file is
+  labelled text (`control=<64 hex>` / `admin=<64 hex>`) so that choosing a
+  token is deliberate: **an admin token satisfies control routes too**, so an
+  integration handed the wrong one is over-privileged and nothing says so.
+  gap: there is no rotation or revocation. changing a token means deleting the
+  file and restarting, which invalidates every client at once, and there is no
+  per-client identity to revoke or audit — every api caller is the same
+  anonymous holder of one of two secrets.
 - **browser writes are refused.** a request carrying an `Origin` header is
   answered `403` unless the origin is on an explicit allow list (empty by
   default), and no cors headers are ever emitted. the destructive stock

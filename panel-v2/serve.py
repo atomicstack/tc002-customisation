@@ -35,10 +35,27 @@ STATIC_ALLOW = {"/", "/index.html", "/sim-wasm.js", "/tc002-panel.wasm"}
 
 
 def parse_tokens(data):
-    """the token file is exactly 64 raw bytes: control then admin."""
-    if len(data) != 64:
-        raise ValueError("token file must hold exactly 64 raw bytes (control token then admin token)")
-    return data[:32].hex(), data[32:].hex()
+    """the token file is `control=<64 hex>` / `admin=<64 hex>` lines, or the older 64 raw bytes."""
+    if len(data) == 64:
+        return data[:32].hex(), data[32:].hex()
+    found = {}
+    try:
+        text = data.decode()
+    except UnicodeDecodeError:
+        raise ValueError("token file is neither 64 raw bytes nor the labelled text form")
+    for line in text.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        key, sep, value = line.partition("=")
+        if sep != "=" or key not in ("control", "admin") or key in found:
+            raise ValueError(f"token file has an unexpected line: {key[:16]!r}")
+        if len(value) != 64 or any(c not in "0123456789abcdefABCDEF" for c in value):
+            raise ValueError(f"the {key} token must be 64 hex characters")
+        found[key] = value.lower()
+    if "control" not in found or "admin" not in found:
+        raise ValueError("token file must define both control and admin")
+    return found["control"], found["admin"]
 
 
 def load_token_file(path):

@@ -28,6 +28,7 @@ const canvas = @import("scene/canvas.zig");
 const berry_store = @import("berry/store.zig");
 const sound_store = @import("sound/store.zig");
 const api = @import("net/api.zig");
+const credfile = @import("net/credfile.zig");
 
 const linux = std.os.linux;
 
@@ -537,19 +538,34 @@ const Supervisor = struct {
         const dir = self.statePathIn(&dir_buf, "credentials");
         sys.mkdir(dir, 0o700) catch {};
         const path = self.statePathIn(&path_buf, "credentials/tokens");
-        var raw: [64]u8 = undefined;
-        if (sys.readFile(path, &raw)) |bytes| {
-            if (bytes.len == 64) {
-                self.creds = .{ .control = raw[0..32].*, .admin = raw[32..64].* };
-                log.info("credentials loaded", .{});
-                return;
-            }
-        } else |_| {}
-        try sys.getrandom(&raw);
         var tmp_buf: [160]u8 = undefined;
         const tmp = self.statePathIn(&tmp_buf, "credentials/tokens.tmp");
-        try sys.saveFileAtomic(dir, tmp, path, &raw);
-        self.creds = .{ .control = raw[0..32].*, .admin = raw[32..64].* };
+        var file_buf: [256]u8 = undefined;
+        var text_buf: [credfile.encoded_len]u8 = undefined;
+        if (sys.readFile(path, &file_buf)) |bytes| {
+            if (credfile.parse(bytes)) |parsed| {
+                self.creds = parsed.creds;
+                if (!parsed.legacy) {
+                    log.info("credentials loaded", .{});
+                    return;
+                }
+                // the same tokens, written as text: every client keeps working and the file
+                // becomes something a shell can hold. a failed rewrite is not fatal -- the
+                // tokens are already in hand and the raw file is still readable next time.
+                if (sys.saveFileAtomic(dir, tmp, path, credfile.encode(parsed.creds, &text_buf))) |_| {
+                    log.info("credentials loaded and rewritten as hex text (same tokens)", .{});
+                } else |_| {
+                    log.warn("credentials loaded, but rewriting them as hex text failed", .{});
+                }
+                return;
+            }
+            log.warn("credentials file is not a form we understand; generating new tokens", .{});
+        } else |_| {}
+        var raw: [64]u8 = undefined;
+        try sys.getrandom(&raw);
+        const fresh = api.Credentials{ .control = raw[0..32].*, .admin = raw[32..64].* };
+        try sys.saveFileAtomic(dir, tmp, path, credfile.encode(fresh, &text_buf));
+        self.creds = fresh;
         log.info("credentials generated (mode 0600 in the credentials directory; never logged)", .{});
     }
 

@@ -48,8 +48,8 @@ commands:
                                       the built-in isrg root x1 (--ca-file '' removes it)
   mqtt-status                         connection state
 
-the token file holds 64 raw bytes (control token then admin token) as written by the supervisor,
-or 64 hex characters of one token. everything travels in plain http on this profile: an observer
+the token file holds `control=<64 hex>` and `admin=<64 hex>` lines as written by the supervisor;
+64 raw bytes (the older form) and 64 hex characters of one token are also accepted. everything travels in plain http on this profile: an observer
 on the network can read the token. use it only on an isolated lan.
 """
 import argparse, base64, json, os, secrets, sys, time, urllib.error, urllib.request
@@ -61,12 +61,24 @@ def load_token(args, want_admin):
     if not path:
         sys.exit("a token is required: --token HEX or --token-file FILE (or TC002_TOKEN_FILE)")
     data = open(path, "rb").read()
-    if len(data) == 64:
+    if len(data) == 64:  # the older raw form: control then admin
         return (data[32:] if want_admin else data[:32]).hex()
-    text = data.decode().strip()
-    if len(text) == 64:
+    try:
+        text = data.decode().strip()
+    except UnicodeDecodeError:
+        sys.exit("token file is neither 64 raw bytes nor the labelled text form")
+    if len(text) == 64:  # a single token on its own
         return text
-    sys.exit("token file must hold 64 raw bytes (control+admin) or 64 hex characters")
+    found = {}
+    for line in text.splitlines():
+        key, sep, value = line.strip().partition("=")
+        if sep == "=" and key in ("control", "admin") and len(value) == 64:
+            found[key] = value
+    want = "admin" if want_admin else "control"
+    if want in found:
+        return found[want]
+    sys.exit(f"token file must hold `control=<64 hex>` and `admin=<64 hex>` lines "
+             f"(or 64 raw bytes, or 64 hex characters of the {want} token)")
 
 def call(args, method, path, body=None, content_type="application/json", token=None, query=""):
     url = f"http://{args.server}/api/v1{path}{('?' + query) if query else ''}"

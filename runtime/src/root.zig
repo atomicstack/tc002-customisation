@@ -45,6 +45,7 @@ test {
     _ = @import("sound/mi.zig");
     _ = @import("sound/vendor.zig");
     _ = @import("net/api.zig");
+    _ = @import("net/credfile.zig");
     _ = @import("net/mqtt.zig");
     _ = @import("supervisor/config.zig");
     _ = @import("supervisor/mcu.zig");

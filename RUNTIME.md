@@ -1017,10 +1017,32 @@ every route, reads included, needs `Authorization: Bearer <token>` where the
 token is 64 hex characters. two tokens exist: **control** (scenes, actions,
 notifications, frames, reading settings and status) and **admin** (changing
 and saving settings, mqtt credentials). the comparison is constant-time
-against both. the tokens are in `/data/tc002/state/credentials/tokens` on the device
-(32 bytes control, then 32 bytes admin); `adb pull` it as root. anyone who can
-sniff the lan can read them in flight, which is why this profile is called
-`isolated-lan`.
+against both.
+
+the tokens are in `/data/tc002/state/credentials/tokens` on the device; `adb
+pull` it as root. the file is text, and each line is the token exactly as the
+header wants it:
+
+```
+control=<64 hex>
+admin=<64 hex>
+```
+
+so driving the api by hand is `CONTROL=$(awk -F= '/^control=/{print $2}' tokens)`
+and then `-H "authorization: Bearer $CONTROL"`.
+
+**use the control token for automations.** an admin token also satisfies every
+control route, so picking the wrong line works and says nothing — and that line
+can rewrite settings, mqtt credentials and stored scripts. control is the one
+that belongs in a shortcut, a home-assistant config or anything you paste into
+a phone.
+
+a file written before this format was 64 raw bytes, control then admin. the
+supervisor still reads that, keeps the same tokens and rewrites the file as
+text on its next start, so nothing needs re-pairing.
+
+anyone who can sniff the lan can read the tokens in flight, which is why this
+profile is called `isolated-lan`.
 
 a request with no `Origin` header (a non-browser client) is allowed. a
 request with one is refused with `403 origin_denied` unless the origin is
