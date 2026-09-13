@@ -193,6 +193,24 @@ fn iconFn(vm: ?*Bvm) callconv(.c) c_int {
     });
 }
 
+fn subscribeFn(vm: ?*Bvm) callconv(.c) c_int {
+    const v = vm.?;
+    const topic = argText(v, 1);
+    if (topic.len == 0 or topic.len > messages.BerryEvent.topic_max) return refuse(v, "a topic is 1 to 96 characters");
+    send(.{ .berry_event = messages.BerryEvent.init(.subscribe, topic, "") });
+    return be_returnnilvalue(v);
+}
+
+fn publishFn(vm: ?*Bvm) callconv(.c) c_int {
+    const v = vm.?;
+    const topic = argText(v, 1);
+    if (topic.len == 0 or topic.len > messages.BerryEvent.topic_max) return refuse(v, "a topic is 1 to 96 characters");
+    const payload = argText(v, 2);
+    if (payload.len > messages.BerryEvent.payload_max) return refuse(v, "a payload is at most 256 bytes");
+    send(.{ .berry_event = messages.BerryEvent.init(.publish, topic, payload) });
+    return be_returnnilvalue(v);
+}
+
 fn showFn(vm: ?*Bvm) callconv(.c) c_int {
     const v = vm.?;
     send(.{ .canvas = .{ .doc = doc } });
@@ -208,6 +226,8 @@ const bindings = [_]Binding{
     .{ .name = "_tc002_scene", .f = sceneFn },
     .{ .name = "_tc002_brightness", .f = brightnessFn },
     .{ .name = "_tc002_notify", .f = notifyFn },
+    .{ .name = "_tc002_subscribe", .f = subscribeFn },
+    .{ .name = "_tc002_publish", .f = publishFn },
     .{ .name = "_panel_clear", .f = clearFn },
     .{ .name = "_panel_pixel", .f = pixelFn },
     .{ .name = "_panel_rect", .f = rectFn },
@@ -232,6 +252,8 @@ pub const prelude =
     \\tc002.scene = _tc002_scene
     \\tc002.brightness = _tc002_brightness
     \\tc002.notify = _tc002_notify
+    \\tc002.subscribe = _tc002_subscribe
+    \\tc002.publish = _tc002_publish
     \\panel = module('panel')
     \\panel.clear = _panel_clear
     \\panel.pixel = _panel_pixel

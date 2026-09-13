@@ -467,3 +467,35 @@ test "a rejected connack and a connect timeout back off" {
     try std.testing.expectEqual(@as(u16, 1), d.packetId());
     try std.testing.expectEqual(@as(u16, 2), d.packetId());
 }
+
+test "topic filters match the way the broker says they do" {
+    try std.testing.expect(topicMatches("home/doorbell", "home/doorbell"));
+    try std.testing.expect(!topicMatches("home/doorbell", "home/window"));
+    // + matches exactly one level
+    try std.testing.expect(topicMatches("home/+/state", "home/kitchen/state"));
+    try std.testing.expect(!topicMatches("home/+/state", "home/kitchen/left/state"));
+    try std.testing.expect(!topicMatches("home/+/state", "home/state"));
+    // # matches the rest, including nothing
+    try std.testing.expect(topicMatches("home/#", "home/kitchen/left/state"));
+    try std.testing.expect(topicMatches("home/#", "home"));
+    try std.testing.expect(!topicMatches("home/#", "garden/shed"));
+    try std.testing.expect(topicMatches("#", "anything/at/all"));
+    // a filter is not a prefix: this is the mistake a naive startsWith would make
+    try std.testing.expect(!topicMatches("home/door", "home/doorbell"));
+}
+
+/// does `filter` (which may contain + and #) match `topic`? the broker does this too, but netd
+/// has to know which of its own subscriptions an arrival belongs to.
+pub fn topicMatches(filter: []const u8, topic: []const u8) bool {
+    var f = std.mem.splitScalar(u8, filter, '/');
+    var t = std.mem.splitScalar(u8, topic, '/');
+    while (true) {
+        const fs = f.next();
+        const ts = t.next();
+        if (fs == null) return ts == null;
+        if (std.mem.eql(u8, fs.?, "#")) return true;
+        if (ts == null) return false;
+        if (std.mem.eql(u8, fs.?, "+")) continue;
+        if (!std.mem.eql(u8, fs.?, ts.?)) return false;
+    }
+}

@@ -60,6 +60,10 @@ const Tag = enum(u64) { timer = 1, supervisor = 2, listener = 3, mqtt = 4, conn_
 const ConnState = enum { free, reading, relaying, writing };
 const Awaiting = enum { none, renderer_result, status, config, save_result, screen, logs, canvas, sprites, berry_scripts, berry_result };
 
+/// as many script topics as netd will hold. the supervisor enforces the same bound; this is the
+/// copy that does the subscribing.
+const berry_topics_max = 8;
+
 const Conn = struct {
     fd: sys.Fd = -1,
     state: ConnState = .free,
@@ -169,6 +173,9 @@ const Netd = struct {
     m_out_off: usize = 0,
     m_pending: [mqtt_pending_max]MqttPending = [_]MqttPending{.{}} ** mqtt_pending_max,
     m_connected: bool = false,
+    berry_topics: [berry_topics_max][messages.BerryEvent.topic_max]u8 = undefined,
+    berry_topic_len: [berry_topics_max]u8 = [_]u8{0} ** berry_topics_max,
+    berry_topic_count: u8 = 0,
     m_last_error: [64]u8 = undefined,
     m_last_error_len: usize = 0,
     state_dirty: bool = true,
@@ -800,6 +807,7 @@ const Netd = struct {
                 .canvas_error => |e| self.onCanvasError(p.request_id, e, now),
                 .sprite_list => |*l| self.onSpriteList(p.request_id, l, now),
                 .berry_scripts => |*l| self.onBerryScripts(p.request_id, l, now),
+                .berry_event => |e| self.onBerryEvent(e, now),
                 .berry_result => |r| self.onBerryResult(p.request_id, r, now),
                 .screen => |*sc| self.onScreen(p.request_id, sc, now),
                 .log_lines => |*l| self.onLogs(p.request_id, l, now),
@@ -1341,6 +1349,13 @@ const Netd = struct {
                 const n = mqtt.encodeSubscribe(space, self.client.packetId(), if (self.cfg.discovery) all[0..8] else all[0..7], 1) catch return;
                 self.mqttQueue(n);
                 self.m_connected = true;
+                // and every topic a script asked for. a reconnect is a new session, so these have
+                // to go again rather than being assumed to have survived.
+                for (0..self.berry_topic_count) |i| {
+                    var one = [_][]const u8{self.berry_topics[i][0..self.berry_topic_len[i]]};
+                    const sn = mqtt.encodeSubscribe(self.mqttSpace(), self.client.packetId(), one[0..1], 1) catch continue;
+                    self.mqttQueue(sn);
+                }
                 log.info("mqtt connected", .{});
                 self.setError("");
                 self.mqttFlush();
@@ -1451,6 +1466,11 @@ const Netd = struct {
         // home-assistant birth: republish discovery when it comes online
         if (self.cfg.discovery and std.mem.endsWith(u8, p.topic, "/status") and std.mem.startsWith(u8, p.topic, self.cfg.discovery_prefix.slice())) {
             if (std.mem.eql(u8, p.payload, "online")) self.discoveryStart(false, now);
+            return;
+        }
+        // a topic a script asked for is a script's business, not a command
+        if (self.berryTopicMatch(p.topic)) {
+            _ = self.sendSupervisor(.{ .berry_event = messages.BerryEvent.init(.mqtt, p.topic, p.payload) }, 0, 0);
             return;
         }
         if (p.retain) return; // retained deliveries are never commands
@@ -1684,6 +1704,46 @@ const Netd = struct {
         }
         self.disc_index += 1;
         self.disc_next_ns = now + ns_per_s;
+    }
+
+    /// topics a script asked for, handed over by the supervisor. netd does the subscribing because
+    /// it owns the broker connection; the supervisor owns the list because it outlives this process.
+    fn onBerryEvent(self: *Netd, e: messages.BerryEvent, now: u64) void {
+        switch (@as(messages.BerryEvent.Op, @enumFromInt(@min(e.kind, 3)))) {
+            .subscribe => {
+                const wanted = e.topicSlice();
+                for (0..self.berry_topic_count) |i| {
+                    if (std.mem.eql(u8, self.berry_topics[i][0..self.berry_topic_len[i]], wanted)) return;
+                }
+                if (self.berry_topic_count >= berry_topics_max) return;
+                const i = self.berry_topic_count;
+                @memcpy(self.berry_topics[i][0..wanted.len], wanted);
+                self.berry_topic_len[i] = @intCast(wanted.len);
+                self.berry_topic_count += 1;
+                // if the broker is already up, subscribe now; otherwise the connect handler will
+                if (self.m_connected) {
+                    const space = self.mqttSpace();
+                    var one = [_][]const u8{wanted};
+                    const n = mqtt.encodeSubscribe(space, self.client.packetId(), one[0..1], 1) catch return;
+                    self.mqttQueue(n);
+                    self.mqttFlush();
+                    log.info("subscribed to {s} for a script", .{wanted});
+                }
+            },
+            .publish => {
+                self.mqttPublishTopic(e.topicSlice(), e.payloadSlice(), 0, false);
+                _ = now;
+            },
+            else => {},
+        }
+    }
+
+    /// does an arriving topic belong to a script rather than to the command surface?
+    fn berryTopicMatch(self: *const Netd, arrived: []const u8) bool {
+        for (0..self.berry_topic_count) |i| {
+            if (mqtt.topicMatches(self.berry_topics[i][0..self.berry_topic_len[i]], arrived)) return true;
+        }
+        return false;
     }
 
     fn mqttPublishTopic(self: *Netd, t: []const u8, payload: []const u8, qos: u2, retain: bool) void {

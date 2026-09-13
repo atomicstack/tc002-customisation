@@ -87,6 +87,8 @@ test "every message kind round-trips through a packet" {
         .{ .berry_script = BerryScript.init(.delete, "rules", "") },
         .{ .berry_result = .{ .outcome = 1, .name = store.Name.init("broken"), .text = config.Text.init("unexpected token") } },
         .berry_list_get,
+        .{ .berry_event = BerryEvent.init(.mqtt, "home/doorbell", "pressed") },
+        .{ .berry_event = BerryEvent.init(.subscribe, "home/+/state", "") },
         .{ .menu_request = .{ .kind = @intFromEnum(MenuRequest.Kind.brightness), .value = 70 } },
         .{ .menu_request = .{ .kind = @intFromEnum(MenuRequest.Kind.reboot) } },
         .{ .set_param = .{ .base = 1, .index = 3, .value = 0xff8000 } },
@@ -295,6 +297,9 @@ pub const Kind = enum(u8) {
     berry_result = 63,
     berry_list_get = 64,
     berry_scripts = 65,
+    /// anything that happens *to* a script, and the two things a script asks of the broker. one
+    /// kind rather than six: they all carry a topic-shaped string and a payload-shaped one.
+    berry_event = 66,
 };
 
 /// what the supervisor tells a fresh berryd about itself. the settings are the supervisor's, so
@@ -346,6 +351,69 @@ pub const BerryStatus = struct {
             .alloc_failures = std.mem.readInt(u32, b[12..16], .little),
             .stops = std.mem.readInt(u32, b[16..20], .little),
         };
+    }
+};
+
+/// an event for a script, or a request from one. it travels in both directions because the shapes
+/// are the same in both: something happened on a topic, or a script wants something to.
+pub const BerryEvent = struct {
+    /// named Op rather than Kind because this file's top-level Kind is the message kind, and two
+    /// of those in scope is one too many
+    pub const Op = enum(u8) {
+        /// netd -> supervisor -> berryd: a message arrived on a subscribed topic
+        mqtt = 0,
+        /// supervisor -> berryd: an ntfy notification arrived
+        ntfy = 1,
+        /// berryd -> supervisor -> netd: subscribe to this topic from now on
+        subscribe = 2,
+        /// berryd -> supervisor -> netd: publish this
+        publish = 3,
+    };
+
+    /// as many topics as a device may subscribe to on a script's behalf. eight is not a physical
+    /// bound; it is the point past which a clock is doing something a clock should not.
+    pub const topic_max = 96;
+    pub const payload_max = 256;
+
+    kind: u8 = 0,
+    topic_len: u8 = 0,
+    topic: [topic_max]u8 = [_]u8{0} ** topic_max,
+    payload_len: u16 = 0,
+    payload: [payload_max]u8 = [_]u8{0} ** payload_max,
+
+    pub const wire_len = 1 + 1 + topic_max + 2 + payload_max;
+
+    pub fn init(op: Op, topic: []const u8, payload: []const u8) BerryEvent {
+        var e = BerryEvent{ .kind = @intFromEnum(op) };
+        e.topic_len = @intCast(@min(topic.len, topic_max));
+        @memcpy(e.topic[0..e.topic_len], topic[0..e.topic_len]);
+        e.payload_len = @intCast(@min(payload.len, payload_max));
+        @memcpy(e.payload[0..e.payload_len], payload[0..e.payload_len]);
+        return e;
+    }
+
+    pub fn topicSlice(self: *const BerryEvent) []const u8 {
+        return self.topic[0..self.topic_len];
+    }
+
+    pub fn payloadSlice(self: *const BerryEvent) []const u8 {
+        return self.payload[0..self.payload_len];
+    }
+
+    fn put(self: *const BerryEvent, out: []u8) void {
+        out[0] = self.kind;
+        out[1] = self.topic_len;
+        @memcpy(out[2..][0..topic_max], &self.topic);
+        std.mem.writeInt(u16, out[2 + topic_max ..][0..2], self.payload_len, .little);
+        @memcpy(out[4 + topic_max ..][0..payload_max], &self.payload);
+    }
+
+    fn get(b: []const u8) BerryEvent {
+        var e = BerryEvent{ .kind = b[0], .topic_len = @min(b[1], topic_max) };
+        @memcpy(&e.topic, b[2..][0..topic_max]);
+        e.payload_len = @min(std.mem.readInt(u16, b[2 + topic_max ..][0..2], .little), payload_max);
+        @memcpy(&e.payload, b[4 + topic_max ..][0..payload_max]);
+        return e;
     }
 };
 
@@ -1343,6 +1411,7 @@ pub const Message = union(Kind) {
     berry_result: BerryResult,
     berry_list_get,
     berry_scripts: BerryScripts,
+    berry_event: BerryEvent,
 };
 
 pub const Packet = struct { request_id: u64, epoch: u32, message: Message };
@@ -1450,6 +1519,10 @@ fn encodePayload(msg: Message, out: []u8) usize {
             var o: usize = 2 + store.name_max;
             putText(out, &o, r.text);
             return o;
+        },
+        .berry_event => |e| {
+            e.put(out);
+            return BerryEvent.wire_len;
         },
         .berry_scripts => |l| {
             std.mem.writeInt(u32, out[0..4], l.used, .little);
@@ -1911,6 +1984,9 @@ pub fn decodePacket(bytes: []const u8) Error!Packet {
         .berry_list_get => blk: {
             _ = try fixed(p, 0);
             break :blk .berry_list_get;
+        },
+        .berry_event => blk: {
+            break :blk .{ .berry_event = BerryEvent.get(try fixed(p, BerryEvent.wire_len)) };
         },
         .berry_scripts => blk: {
             if (p.len < 9) return error.BadPayload;

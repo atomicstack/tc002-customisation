@@ -194,6 +194,28 @@ pub fn main(init: std.process.Init.Minimal) u8 {
                         // live vm, so a heap change is the supervisor's cue to replace us
                         .berry_config => |c| log.info("settings updated: {d} ms per handler", .{c.handler_ms}),
                         .berry_script => |w| onScript(&vm, w, cfg.handler_ms),
+                        .berry_event => |e| {
+                            // an arrival. a script sees the topic and the payload as strings; the
+                            // handler name is the event source, so one script can listen to both.
+                            var topic_z: [messages.BerryEvent.topic_max + 1]u8 = undefined;
+                            var payload_z: [messages.BerryEvent.payload_max + 1]u8 = undefined;
+                            const t = e.topicSlice();
+                            const pl = e.payloadSlice();
+                            @memcpy(topic_z[0..t.len], t);
+                            topic_z[t.len] = 0;
+                            @memcpy(payload_z[0..pl.len], pl);
+                            payload_z[pl.len] = 0;
+                            const which: []const u8 = if (e.kind == @intFromEnum(messages.BerryEvent.Op.ntfy)) "ntfy" else "mqtt";
+                            if (!berry_api.callGlobal(&vm, "_tc002_dispatch", &.{
+                                .{ .text = if (std.mem.eql(u8, which, "ntfy")) "ntfy" else "mqtt" },
+                                .{ .text = @ptrCast(&topic_z) },
+                                .{ .text = @ptrCast(&payload_z) },
+                                .{ .int = 0 },
+                            }, budget_ns)) {
+                                log.warn("a {s} handler failed: {s}", .{ which, vm.errorText() });
+                                vm.clearError();
+                            }
+                        },
                         .input => |i| {
                             // the same control and event names the api uses, so a script and an
                             // http client are talking about the same button

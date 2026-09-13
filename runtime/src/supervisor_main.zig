@@ -74,6 +74,9 @@ const berry_backoff_max_ns: u64 = 60 * ns_per_s;
 /// berryd reports every second. two seconds of silence is the renderer's own threshold, and it is
 /// the only way to notice a vm wedged inside a script: the process stays alive and stops answering.
 const berry_silence_ns: u64 = 2 * ns_per_s;
+/// as many topics as a device will subscribe to on a script's behalf. not a physical bound: the
+/// point past which a clock is doing something a clock should not be doing.
+const berry_topic_max = 8;
 const ntfy_backoff_min_ns: u64 = 2 * ns_per_s;
 const ntfy_backoff_max_ns: u64 = 60 * ns_per_s;
 var config_buf: [config.file_max]u8 = undefined;
@@ -386,6 +389,12 @@ const Supervisor = struct {
     berry_path: [:0]const u8 = "/tmp/tc002/tc002-berryd",
     berry_replacing: bool = false,
     berry_seq: u64 = 0,
+    /// the topics scripts have asked for. the supervisor holds them rather than netd, because netd
+    /// is replaced on a settings change and reconnects on its own schedule; this is the copy that
+    /// survives both and is replayed when either happens.
+    berry_topics: [berry_topic_max][messages.BerryEvent.topic_max]u8 = undefined,
+    berry_topic_len: [berry_topic_max]u8 = [_]u8{0} ** berry_topic_max,
+    berry_topic_count: u8 = 0,
     /// a `PUT` waiting for berryd to say whether it compiles. one at a time: puts are rare, and a
     /// queue here would only buy the ability to have two broken scripts in flight at once.
     berry_pending: ?struct { request_id: u64, deadline_ns: u64 } = null,
@@ -793,6 +802,7 @@ const Supervisor = struct {
         self.sendNetd(.{ .credentials = self.creds }, 0);
         self.sendNetd(.{ .config = self.cfg }, 0);
         self.sendNetd(.{ .status = self.snapshot }, 0);
+        self.pushBerryTopics();
     }
 
     fn reapNetd(self: *Supervisor, now: u64) void {
@@ -993,6 +1003,8 @@ const Supervisor = struct {
                     const id: u64 = 0x8000_0000_0000_0000 | self.ntfy_seq;
                     if (!self.sendRenderer(.{ .notify = n }, id, lifecycle.epoch)) continue;
                     r.* = .{ .used = true, .id = id, .deadline_ns = now + relay_timeout_ns, .from_ntfy = true };
+                    // and to any script listening for ntfy, which is the same fan-out the buttons use
+                    self.sendBerry(.{ .berry_event = messages.BerryEvent.init(.ntfy, "", n.slice()) });
                 },
                 .ntfy_status => |st| {
                     self.snapshot.ntfy = st;
@@ -1150,6 +1162,11 @@ const Supervisor = struct {
                     self.sendNetd(.{ .status = self.snapshot }, 0);
                 },
                 .berry_result => |r| self.onBerryResult(r),
+                .berry_event => |e| switch (@as(messages.BerryEvent.Op, @enumFromInt(@min(e.kind, 3)))) {
+                    .subscribe => self.onBerrySubscribe(e),
+                    .publish => self.sendNetd(.{ .berry_event = e }, 0),
+                    else => {},
+                },
                 // what a script asked the device to do. relayed with the supervisor's own epoch and
                 // an id from the high half of the space, exactly as an ntfy notification is: a
                 // script has no idea what the renderer's epoch is and should not have to.
@@ -1295,6 +1312,33 @@ const Supervisor = struct {
         self.berryResultToNetd(pending.request_id, 3, self.berry_pending_script.name.slice(), "the interpreter did not answer");
     }
 
+    /// a script asked for a topic. remembered here and handed to netd, which does the subscribing;
+    /// the list is replayed whenever netd is spawned, so a reconnect does not lose it.
+    fn onBerrySubscribe(self: *Supervisor, e: messages.BerryEvent) void {
+        const topic = e.topicSlice();
+        for (0..self.berry_topic_count) |i| {
+            if (std.mem.eql(u8, self.berry_topics[i][0..self.berry_topic_len[i]], topic)) return;
+        }
+        if (self.berry_topic_count >= berry_topic_max) {
+            log.warn("a script asked for {s}, but {d} topics is the limit", .{ topic, berry_topic_max });
+            return;
+        }
+        const i = self.berry_topic_count;
+        @memcpy(self.berry_topics[i][0..topic.len], topic);
+        self.berry_topic_len[i] = @intCast(topic.len);
+        self.berry_topic_count += 1;
+        log.info("subscribing to {s} for a script", .{topic});
+        self.sendNetd(.{ .berry_event = e }, 0);
+    }
+
+    /// hand netd every topic a script has asked for. called when netd is spawned, because a fresh
+    /// netd knows nothing and the broker connection it makes is a new one.
+    fn pushBerryTopics(self: *Supervisor) void {
+        for (0..self.berry_topic_count) |i| {
+            self.sendNetd(.{ .berry_event = messages.BerryEvent.init(.subscribe, self.berry_topics[i][0..self.berry_topic_len[i]], "") }, 0);
+        }
+    }
+
     fn relayResult(self: *Supervisor, request_id: u64, status: messages.Status, revision: u32) void {
         self.sendNetd(.{ .result = .{ .status = status, .revision = revision } }, request_id);
     }
@@ -1423,6 +1467,8 @@ const Supervisor = struct {
                     }
                 },
                 .berry_list_get => self.sendNetd(.{ .berry_scripts = self.scriptList() }, p.request_id),
+                // an arrival on a topic a script asked for. netd matched it; this hands it on.
+                .berry_event => |e| self.sendBerry(.{ .berry_event = e }),
                 .config_patch => |w| {
                     const before = self.cfg;
                     self.cfg.patch(w.toApi()) catch |e| {
