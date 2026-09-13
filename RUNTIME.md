@@ -1,10 +1,11 @@
 # the custom runtime (`runtime/`)
 
-a replacement for the stock application on the tc002: six static arm binaries
+a replacement for the stock application on the tc002: six arm binaries
 and one tiny shared object, written in zig 0.16, that take over the panel, the
 buttons and the knob, and expose an authenticated http and mqtt api of their own.
-only `tc002-berryd`, which hosts the [script interpreter](#scripting-berry),
-links libc; the rest build with `link_libc = false`. while it runs, the stock `zkgui` app (and with it the stock
+`tc002-berryd` links libc for the [script interpreter](#scripting-berry), and
+`tc002-audiod` is dynamically linked because it uses the device's own audio
+library; the rest are static with `link_libc = false`. while it runs, the stock `zkgui` app (and with it the stock
 http api on port 80, the cloud client, the built-in apps) is not running.
 
 the **code** here is volatile: binaries, logs and the panel lock live under
@@ -25,7 +26,7 @@ does; how to build and run it is in [`runtime/README.md`](runtime/README.md).
 | `tc002-netd` | uid 1001 | 396 kb | the network daemon: an http/1.1 server for `/api/v1` and an mqtt 3.1.1 client. holds no authoritative state; every command is relayed through the supervisor to the live renderer |
 | `tc002-ntfy` | uid 1001 | 1.1 mb | the ntfy subscriber: dns, tcp, tls 1.3 with the standard library (that is the size), the json stream; sends `notify` to the supervisor. only runs while `ntfy.enabled` |
 | `tc002-berryd` | uid 1001 | 721 kb | the [script interpreter](#scripting-berry): one berry vm on a fixed heap. the only binary that links libc. no network descriptor at all. only runs while `berry.enabled` |
-| `tc002-audiod` | root | the speaker: one sound at a time from the store, decoded and pushed to `/dev/mi_ao`. root because that node and `/dev/mi_sys` are `crw-------`, the same trade the renderer makes for spidev. only runs while `sound.enabled`. **the device path is gated off until its attribute layout is verified** — see [sound](#sound) |
+| `tc002-audiod` | root | the speaker: one sound at a time from the store, decoded and handed to the audio-out. root because `/dev/mi_ao` is `crw-------`, the same trade the renderer makes for spidev. only runs while `sound.enabled` |
 | `tc002-memdump` | root, by hand | 171 kb | a maintenance tool that streams a sparse memory snapshot of one process over adb ([memory audits](#memory-audits)) |
 
 ¹ ReleaseSafe, stripped, as built on 2026-09-06. `-Doptimize=ReleaseSmall` gives
@@ -1277,21 +1278,27 @@ file atomically, so a reader sees either the old set or the new.
 pushing pcm means waking on a timer and blocking on a device. doing that inside the renderer's
 60 fps loop would put audio jitter and frame jitter in the same thread.
 
-### what is not done
+### how it reaches the speaker
 
-**nothing has been played on the hardware, and the device path is gated off.** the ioctl numbers for
-`/dev/mi_ao` and `/dev/mi_sys` were recovered from the device's own libraries and are pinned by
-tests, but `MI_AO_SetPubAttr` takes a 52-byte attribute payload that was measured as a *size* and
-never decoded as *fields* — it carries sample rate, channel count and bit depth. pushing a guessed
-layout at an amplifier is how you get a noise rather than a sound, so `attr_layout_verified` in
-`src/audiod_main.zig` is `false` and `feed` advances the queue without handing the device anything.
+`tc002-audiod` configures the audio-out per sound (sample rate and channel count are a property of
+the device, not of a frame), feeds it in ~46 ms chunks, and closes it when the sound ends, so a
+clock that is not playing holds nothing open. when the device's buffer is full it says so, and that
+is back-pressure rather than an error — the feed simply returns and comes back on the next tick.
 
-everything above that line runs: the store, the upload, the queue, looping, per-sound volume, the
-decode and the reporting, so the whole path can be exercised on a real device in silence. flipping
-the flag is one line, for whoever has checked the layout.
+playback goes through the device's own `libmi_ao.so`. the control-plane ioctls were recovered and
+work (`src/sound/mi.zig`, and `zig build soundprobe` exercises them), but `MI_AO_SendFrame` marshals
+samples through a buffer the library allocates for itself, so the samples go through the vendor's
+code rather than a reimplementation of it. that makes audiod the one dynamically linked binary here.
 
-[`runtime/vendor/mi_ao/README.md`](runtime/vendor/mi_ao/README.md) has the recovered abi, how it was
-obtained, and exactly which parts are measured and which are inferred.
+[`runtime/vendor/mi_ao/README.md`](runtime/vendor/mi_ao/README.md) has the recovered abi and how it
+was obtained, including a hazard worth reading before experimenting: a wrong `SendFrame` payload
+wedges the audio device until the box is rebooted.
+
+### measured
+
+a 1.5 s 44.1 khz mono wav, uploaded in 33 chunks in one second, stored on `/data`, surviving a
+reboot, and played at four volumes. feeding 1.495 s of audio takes about 1.35 s of wall clock — the
+device consuming at roughly real time.
 
 ## scripting (berry)
 

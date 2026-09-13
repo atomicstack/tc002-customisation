@@ -19,8 +19,8 @@ only zig 0.16.0 is required (`brew install zig`); the build refuses other versio
 
 ```bash
 cd runtime
-zig build            # all five binaries into zig-out/bin plus zig-out/lib/libtc002-bootstrap.so
-                     # (arm, static; no libc in anything but tc002-berryd)
+zig build            # all six binaries into zig-out/bin plus zig-out/lib/libtc002-bootstrap.so
+                     # (arm; static and no-libc except tc002-berryd and tc002-audiod)
 zig build test       # host unit tests of every pure module
 zig build check      # elf sanity of the bootstrap: arm et_dyn, no dt_needed, has init_array
 zig build wasm       # the scene code as wasm for the console preview -> ../panel-v2/tc002-panel.wasm
@@ -143,7 +143,7 @@ controls. the full reference is [`RUNTIME.md`](../RUNTIME.md).
   external symbols, and two of them decide the question: `setjmp`/`longjmp` is berry's entire error
   model, and `snprintf` is how it formats reals. writing those by hand means arm assembly and a
   printf family; zig's static musl supplies them correctly, and the parts actually used measure
-  19 kb. the other four binaries are unchanged and still build with `link_libc = false`.
+  19 kb. `tc002-audiod` links libc too, and is dynamic; the rest are unchanged.
   `runtime/vendor/berry/` holds upstream `6e6e621` with its `coc` output committed (builds never
   need python, exactly as `src/scene/zones.zig` never needs zoneinfo), `be_filelib.c` deleted, and
   four entry points in `port/be_port.c` that refuse rather than pretend -- `open()` raises

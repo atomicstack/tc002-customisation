@@ -167,7 +167,19 @@ the control-plane calls above are safe precisely because they were read out befo
 (the same run also meant to test whether `mmap` on the audio fds hands out a buffer. it never got
 there — the hang happened first — so **that question is still open**.)
 
-**what is still not recovered** is the last hop: how `MI_AO_SendFrame` turns that 288-byte frame into
+### the outcome
+
+the control plane is used as recovered — `sound/mi.zig` and `zig build soundprobe` drive it
+directly. the **data plane is not**: `tc002-audiod` calls the vendor's `MI_AO_SendFrame` through
+`libmi_ao.so` instead, because it marshals samples through a buffer the library allocates itself and
+the hazard below made trial-and-error a bad way to find that out. loading the library needs
+`libcam_os_wrapper.so` global first — `libmi_ao.so` does not declare its own dependency on
+`CamOsGetTimeOfDay`.
+
+what the vendor's own player gave us is still what makes it work: the 52-byte attribute payload and
+the 288-byte frame, both below, are used verbatim.
+
+**what was never recovered** is the last hop: how `MI_AO_SendFrame` turns that 288-byte frame into
 the 8-byte `{?, ?}` payload its ioctl carries. it does copy: there is a loop inside it
 reading 16-bit samples from the caller's buffer and writing them, strided, into a destination the
 function obtained earlier. the vendor's *player* never allocates that destination — `libzkmedia.so`

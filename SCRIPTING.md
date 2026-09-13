@@ -55,9 +55,7 @@ authority; this document covers only what the device adds.
 
 two things to know here specifically:
 
-- **sound is off by default.** `tc002.play` needs `sound.enabled`, and the device path is gated
-  until its audio layout is verified — the call is accepted and nothing is heard. see
-  [sound](RUNTIME.md#sound).
+- **sound is off by default.** `tc002.play` needs `sound.enabled`; see [sound](RUNTIME.md#sound).
 - **there is no filesystem and no network.** `import os`, `open()`, sockets —
   none of it. see [what a script cannot do](#what-a-script-cannot-do).
 - **`print` goes to the log ring.** berryd's stdout is read by the supervisor like
