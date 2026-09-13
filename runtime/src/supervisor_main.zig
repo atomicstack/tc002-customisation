@@ -8,6 +8,7 @@ const log = @import("sys/log.zig");
 const props = @import("sys/props.zig");
 const codec = @import("ipc/codec.zig");
 const messages = @import("ipc/messages.zig");
+const mqtt = @import("net/mqtt.zig");
 const evdev = @import("input/evdev.zig");
 const child = @import("supervisor/child.zig");
 const maintenance = @import("supervisor/maintenance.zig");
@@ -1598,6 +1599,13 @@ const Supervisor = struct {
     /// the list is replayed whenever netd is spawned, so a reconnect does not lose it.
     fn onBerrySubscribe(self: *Supervisor, e: messages.BerryEvent) void {
         const topic = e.topicSlice();
+        // netd hands a script-matched arrival straight to the script and stops, so a filter over
+        // the device's own command topics would swallow every command sent to the clock
+        const prefix = if (self.cfg.mqtt.prefix.len > 0) self.cfg.mqtt.prefix.slice() else "tc002";
+        if (mqtt.shadowsCommands(topic, prefix)) {
+            log.warn("a script asked for {s}, which covers this device's own {s}/cmd topics; refused", .{ topic, prefix });
+            return;
+        }
         for (0..self.berry_topic_count) |i| {
             if (std.mem.eql(u8, self.berry_topics[i][0..self.berry_topic_len[i]], topic)) return;
         }

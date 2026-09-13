@@ -519,6 +519,37 @@ test "topic filters match the way the broker says they do" {
     try std.testing.expect(!topicMatches("home/door", "home/doorbell"));
 }
 
+/// the topics the device answers commands on, under whatever prefix is configured.
+pub const command_suffixes = [_][]const u8{ "cmd/frame", "cmd/screen", "cmd/scene", "cmd/action", "cmd/notify", "cmd/config", "cmd/input" };
+
+/// would a script's filter take delivery of the device's own commands? netd hands a matching
+/// arrival to the script and returns, so `tc002/cmd/#` -- or a bare `#` -- would quietly swallow
+/// every command sent to the clock, with nothing logged and nothing rejected. worth refusing at
+/// the point the subscription is asked for rather than discovering it when the panel stops
+/// answering.
+pub fn shadowsCommands(filter: []const u8, prefix: []const u8) bool {
+    var buf: [128]u8 = undefined;
+    for (command_suffixes) |suffix| {
+        const full = std.fmt.bufPrint(&buf, "{s}/{s}", .{ prefix, suffix }) catch continue;
+        if (topicMatches(filter, full)) return true;
+    }
+    return false;
+}
+
+test "a filter that would swallow the command surface is recognised" {
+    try std.testing.expect(shadowsCommands("tc002/cmd/#", "tc002"));
+    try std.testing.expect(shadowsCommands("#", "tc002"));
+    try std.testing.expect(shadowsCommands("tc002/+/scene", "tc002"));
+    try std.testing.expect(shadowsCommands("tc002/cmd/frame", "tc002"));
+    try std.testing.expect(shadowsCommands("clock/cmd/notify", "clock"));
+    // the prefix is the device's own, so another device's commands are not ours to protect
+    try std.testing.expect(!shadowsCommands("other/cmd/#", "tc002"));
+    // what the device publishes is readable: a script may watch its own clock's state
+    try std.testing.expect(!shadowsCommands("tc002/state", "tc002"));
+    try std.testing.expect(!shadowsCommands("tc002/result", "tc002"));
+    try std.testing.expect(!shadowsCommands("home/+/doorbell", "tc002"));
+}
+
 /// does `filter` (which may contain + and #) match `topic`? the broker does this too, but netd
 /// has to know which of its own subscriptions an arrival belongs to.
 pub fn topicMatches(filter: []const u8, topic: []const u8) bool {

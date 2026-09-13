@@ -178,6 +178,12 @@ connection comes back, so a reconnect does not silently stop delivering.
 a filter is not a prefix. `home/+/state` matches `home/kitchen/state` but not
 `home/kitchen/light/state`; `home/#` matches everything below `home/`.
 
+**a filter may not cover the device's own command topics.** netd hands a
+script-matched arrival to the script and stops there, so `tc002/cmd/#` — or a bare
+`#` — would swallow every mqtt command sent to the clock. the supervisor refuses
+such a filter and logs why; what the device *publishes* (`state`, `metrics`,
+`result`, `screen`) is fair game, so a script may watch its own clock.
+
 **the list belongs to the vm's lifetime.** `tc002.unsubscribe(filter)` gives a slot
 back, and every one is dropped when berryd restarts — which is what happens when
 `berry.enabled`, the heap or the handler budget change — because a fresh vm has
