@@ -1,6 +1,36 @@
 const std = @import("std");
 const builtin = @import("builtin");
 
+/// the vendored berry interpreter: one source list, used by every target that embeds it.
+/// be_filelib.c is deliberately absent -- there is no filesystem, and vendor/berry/port/be_port.c
+/// refuses the four entry points the rest of the tree references unconditionally.
+const berry_sources = [_][]const u8{
+    "src/be_api.c",       "src/be_baselib.c",       "src/be_bytecode.c",  "src/be_byteslib.c",
+    "src/be_class.c",     "src/be_code.c",          "src/be_debug.c",     "src/be_debuglib.c",
+    "src/be_exec.c",      "src/be_func.c",          "src/be_gc.c",        "src/be_gclib.c",
+    "src/be_globallib.c", "src/be_introspectlib.c", "src/be_jsonlib.c",   "src/be_lexer.c",
+    "src/be_libs.c",      "src/be_list.c",          "src/be_listlib.c",   "src/be_map.c",
+    "src/be_maplib.c",    "src/be_mathlib.c",       "src/be_mem.c",       "src/be_module.c",
+    "src/be_object.c",    "src/be_oslib.c",         "src/be_parser.c",    "src/be_rangelib.c",
+    "src/be_repl.c",      "src/be_solidifylib.c",   "src/be_strictlib.c", "src/be_string.c",
+    "src/be_strlib.c",    "src/be_syslib.c",        "src/be_timelib.c",   "src/be_undefinedlib.c",
+    "src/be_var.c",       "src/be_vector.c",        "src/be_vm.c",
+    "port/be_port.c",     "port/be_modtab.c",
+};
+
+/// add berry's headers and sources to a module. the module must link libc: berry's error model is
+/// setjmp/longjmp and it formats reals with snprintf, and this runtime has neither otherwise.
+fn addBerry(b: *std.Build, m: *std.Build.Module) void {
+    m.addIncludePath(b.path("vendor/berry/src"));
+    m.addIncludePath(b.path("vendor/berry/port"));
+    m.addIncludePath(b.path("vendor/berry/generate"));
+    m.addCSourceFiles(.{
+        .root = b.path("vendor/berry"),
+        .files = &berry_sources,
+        .flags = &.{ "-std=c99", "-Os", "-Wall", "-Wextra" },
+    });
+}
+
 pub fn build(b: *std.Build) void {
     if (!std.mem.eql(u8, builtin.zig_version_string, "0.16.0")) @panic("this project pins zig 0.16.0");
 
@@ -67,6 +97,24 @@ pub fn build(b: *std.Build) void {
     const bench_step = b.step("ipcbench", "build tc002-ipcbench: round-trip latency and frame throughput over the ipc socket");
     bench_step.dependOn(&b.addInstallArtifact(ipcbench, .{}).step);
 
+    // a diagnostic rather than part of the runtime: proves the vendored interpreter links for the
+    // device, and is what its size on this target is measured from. phase 1 has no berryd yet.
+    const berry_check = b.addExecutable(.{
+        .name = "tc002-berry-check",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/berry_check_main.zig"),
+            .target = device,
+            .optimize = optimize,
+            .link_libc = true,
+            .strip = strip,
+            .single_threaded = true,
+        }),
+        .linkage = .static,
+    });
+    addBerry(b, berry_check.root_module);
+    const berry_check_step = b.step("berry-check", "build tc002-berry-check: the vendored interpreter, linked for the device");
+    berry_check_step.dependOn(&b.addInstallArtifact(berry_check, .{}).step);
+
     const bootstrap = b.addLibrary(.{
         .name = "tc002-bootstrap",
         .linkage = .dynamic,
@@ -126,6 +174,21 @@ pub fn build(b: *std.Build) void {
     }) });
     const test_step = b.step("test", "run host unit tests");
     test_step.dependOn(&b.addRunArtifact(tests).step);
+
+    // the vendored interpreter, exercised on the host: .be fixtures through the same c the device
+    // runs. kept out of `zig build test` on purpose -- the aggregator's tests are pure zig and must
+    // not start needing a c toolchain.
+    const berry_fixtures = b.addExecutable(.{ .name = "berry-fixtures", .root_module = b.createModule(.{
+        .root_source_file = b.path("src/berry_fixtures_main.zig"),
+        .target = b.graph.host,
+        .optimize = .Debug,
+        .link_libc = true,
+    }) });
+    addBerry(b, berry_fixtures.root_module);
+    const run_fixtures = b.addRunArtifact(berry_fixtures);
+    run_fixtures.addDirectoryArg(b.path("test/berry"));
+    const berry_test_step = b.step("test-berry", "run the .be fixtures through the vendored interpreter on the host");
+    berry_test_step.dependOn(&run_fixtures.step);
 
     // elf check of the device bootstrap (host tool reads the built .so)
     const elfcheck = b.addExecutable(.{ .name = "elfcheck", .root_module = b.createModule(.{
