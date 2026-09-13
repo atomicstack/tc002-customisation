@@ -41,6 +41,7 @@ test {
     _ = @import("net/http.zig");
     _ = @import("net/sse.zig");
     _ = @import("sound/wav.zig");
+    _ = @import("sound/store.zig");
     _ = @import("net/api.zig");
     _ = @import("net/mqtt.zig");
     _ = @import("supervisor/config.zig");
