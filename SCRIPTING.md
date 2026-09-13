@@ -80,8 +80,8 @@ same refusal — `tc002.brightness(0)` raises rather than quietly clamping.
 | `tc002.scene(name)` | `'clock'`, `'art'` or `'canvas'` | |
 | `tc002.brightness(n)` | 1–100 | outside the range it raises |
 | `tc002.notify(text, colour, seconds)` | colour defaults white, seconds defaults 5 | the same overlay `POST /notify` uses |
-| `tc002.subscribe(filter)` | an mqtt topic filter, `+` and `#` allowed | up to eight; see [mqtt](#mqtt) |
-| `tc002.unsubscribe(filter)` | the same filter, exactly as given to `subscribe` | frees its slot and tells the broker |
+| `tc002.subscribe(filter[, f])` | an mqtt topic filter, `+` and `#` allowed; optionally a handler | up to eight; see [mqtt](#mqtt) |
+| `tc002.unsubscribe(filter)` | the same filter, exactly as given to `subscribe` | frees its slot, tells the broker, drops its handler |
 | `tc002.publish(topic, payload)` | | through the device's own broker connection |
 | `tc002.play(name, volume, loop)` | volume 1–100 (0 = the setting), loop defaults false | plays a stored sound; see [sound](RUNTIME.md#sound) |
 | `tc002.stop_sound()` | | stops whatever is playing |
@@ -106,7 +106,7 @@ and the difference matters — see [drawing](#drawing-two-ways).
 
 ```berry
 tc002.on('button', def (control, event, steps) … end)
-tc002.on('mqtt',   def (topic, payload, n)     … end)
+tc002.on('mqtt',   def (topic, payload, filter) … end)
 tc002.on('ntfy',   def (topic, message, n)     … end)
 tc002.every(1000, def () … end)     # every second, for ever
 tc002.after(250,  def () … end)     # once, after 250 ms
@@ -115,7 +115,7 @@ tc002.after(250,  def () … end)     # once, after 250 ms
 | event | arguments |
 |---|---|
 | `button` | `control` is `left`, `middle`, `right`, `knob` or `rotary`; `event` is `press`, `release`, `click`, `long`, `cw` or `ccw`; `steps` matters for the rotary |
-| `mqtt` | the topic it arrived on, the payload, and `0` |
+| `mqtt` | the topic it arrived on, the payload, and the filter that matched |
 | `ntfy` | **the topic is always empty** — ntfy has no topic here — the message is the second argument |
 
 `tc002.on` may be called more than once for the same event; every handler runs.
@@ -193,9 +193,27 @@ power cycled. a filter the device is no longer subscribed to still reaches nothi
 even if the broker is mid-reconnect, because the supervisor's list is what a
 reconnect replays.
 
+give `subscribe` a handler and it hears **only that filter's** topics:
+
+```berry
+tc002.subscribe('home/+/doorbell', def (topic, payload)
+  if payload == 'pressed'
+    tc002.notify('doorbell', 0xff0000, 5)
+  end
+end)
+```
+
+every script shares one vm, so without this each `tc002.on('mqtt', …)` saw every
+other script's traffic and had to re-check the topic itself. the runtime says which
+filter matched — netd is the only process that matches, so the wildcard rules are
+not written a second time in berry — and the handler is dropped when its filter is.
+
+`tc002.on('mqtt', …)` still exists and still sees every arrival, for a script that
+wants the lot. its third argument used to be `0`; it is now the filter that matched.
+
 ```berry
 tc002.subscribe('home/+/doorbell')
-tc002.on('mqtt', def (topic, payload, n)
+tc002.on('mqtt', def (topic, payload, filter)
   if payload == 'pressed'
     tc002.notify('doorbell', 0xff0000, 5)
   end

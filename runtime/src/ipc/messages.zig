@@ -109,6 +109,7 @@ test "every message kind round-trips through a packet" {
         .{ .applied = Applied.init(.{ .kind = .notify, .revision = 42, .at_ns = 0, .colour = .{ 1, 2, 3 }, .duration_s = 9, .text_len = 2, .text = [_]u8{ 'h', 'i' } ++ [_]u8{0} ** 126 }, .ntfy, 7) },
         .{ .berry_event = BerryEvent.init(.mqtt, "home/doorbell", "pressed").? },
         .{ .berry_event = BerryEvent.init(.subscribe, "home/+/state", "").? },
+        .{ .berry_event = BerryEvent.init(.mqtt, "home/hall/state", "21.4").?.matching("home/+/state").? },
         .{ .stream_frame = .{ .seq = 12345, .timeout_ms = 250, .rgb = geometry.black_rgb } },
         .{ .menu_request = .{ .kind = @intFromEnum(MenuRequest.Kind.brightness), .value = 70 } },
         .{ .menu_request = .{ .kind = @intFromEnum(MenuRequest.Kind.reboot) } },
@@ -517,12 +518,17 @@ pub const BerryEvent = struct {
     topic: [topic_max]u8 = [_]u8{0} ** topic_max,
     payload_len: u16 = 0,
     payload: [payload_max]u8 = [_]u8{0} ** payload_max,
+    /// for an arrival, the filter that matched it. netd is the one that matched, so it is the one
+    /// that knows; carrying it means a script can be handed only its own topics without the
+    /// wildcard rules being written a second time in berry.
+    filter_len: u8 = 0,
+    filter: [topic_max]u8 = [_]u8{0} ** topic_max,
 
     /// the topic and the payload are written at their real lengths, so a ten-byte arrival costs a
     /// ten-byte datagram. the whole struct is what it *may* reach, not what it usually does --
     /// which is what lets the cap above be generous without making every event expensive.
-    pub const fixed_len = 1 + 1 + 2;
-    pub const wire_len = fixed_len + topic_max + payload_max;
+    pub const fixed_len = 1 + 1 + 2 + 1;
+    pub const wire_len = fixed_len + topic_max + payload_max + topic_max;
 
     comptime {
         // growing the event must not grow `Message`: `BerryScript` already sets its size, and a
@@ -542,6 +548,20 @@ pub const BerryEvent = struct {
         return e;
     }
 
+    /// the same event, tagged with the filter that matched it. null when the filter does not fit,
+    /// which cannot happen for one the device itself is holding.
+    pub fn matching(self: BerryEvent, filter: []const u8) ?BerryEvent {
+        if (filter.len > topic_max) return null;
+        var e = self;
+        e.filter_len = @intCast(filter.len);
+        @memcpy(e.filter[0..e.filter_len], filter);
+        return e;
+    }
+
+    pub fn filterSlice(self: *const BerryEvent) []const u8 {
+        return self.filter[0..self.filter_len];
+    }
+
     pub fn topicSlice(self: *const BerryEvent) []const u8 {
         return self.topic[0..self.topic_len];
     }
@@ -552,25 +572,29 @@ pub const BerryEvent = struct {
 
     /// how many bytes `put` will write for this event
     pub fn encodedLen(self: *const BerryEvent) usize {
-        return fixed_len + self.topic_len + self.payload_len;
+        return fixed_len + self.topic_len + self.payload_len + self.filter_len;
     }
 
     fn put(self: *const BerryEvent, out: []u8) void {
         out[0] = self.kind;
         out[1] = self.topic_len;
         std.mem.writeInt(u16, out[2..4], self.payload_len, .little);
+        out[4] = self.filter_len;
         @memcpy(out[fixed_len..][0..self.topic_len], self.topicSlice());
         @memcpy(out[fixed_len + self.topic_len ..][0..self.payload_len], self.payloadSlice());
+        @memcpy(out[fixed_len + self.topic_len + self.payload_len ..][0..self.filter_len], self.filterSlice());
     }
 
     fn get(b: []const u8) !BerryEvent {
         if (b.len < fixed_len) return error.BadPayload;
         var e = BerryEvent{ .kind = b[0], .topic_len = b[1] };
         e.payload_len = std.mem.readInt(u16, b[2..4], .little);
-        if (e.topic_len > topic_max or e.payload_len > payload_max) return error.BadPayload;
-        if (b.len != fixed_len + @as(usize, e.topic_len) + e.payload_len) return error.BadPayload;
+        e.filter_len = b[4];
+        if (e.topic_len > topic_max or e.payload_len > payload_max or e.filter_len > topic_max) return error.BadPayload;
+        if (b.len != fixed_len + @as(usize, e.topic_len) + e.payload_len + e.filter_len) return error.BadPayload;
         @memcpy(e.topic[0..e.topic_len], b[fixed_len..][0..e.topic_len]);
         @memcpy(e.payload[0..e.payload_len], b[fixed_len + e.topic_len ..][0..e.payload_len]);
+        @memcpy(e.filter[0..e.filter_len], b[fixed_len + e.topic_len + e.payload_len ..][0..e.filter_len]);
         return e;
     }
 };

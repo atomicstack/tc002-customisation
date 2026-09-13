@@ -1721,7 +1721,7 @@ const Netd = struct {
             return;
         }
         // a topic a script asked for is a script's business, not a command
-        if (self.berryTopicMatch(p.topic)) {
+        if (self.berryTopicMatch(p.topic)) |filter| {
             const e = messages.BerryEvent.init(.mqtt, p.topic, p.payload) orelse {
                 // not delivered rather than delivered short: half a json document parses and means
                 // something else, and a script has no way to tell that is what it got
@@ -1729,7 +1729,7 @@ const Netd = struct {
                 self.mqtt_dropped += 1;
                 return;
             };
-            _ = self.sendSupervisor(.{ .berry_event = e }, 0, 0);
+            _ = self.sendSupervisor(.{ .berry_event = e.matching(filter) orelse e }, 0, 0);
             return;
         }
         if (p.retain) return; // retained deliveries are never commands
@@ -2024,12 +2024,15 @@ const Netd = struct {
         }
     }
 
-    /// does an arriving topic belong to a script rather than to the command surface?
-    fn berryTopicMatch(self: *const Netd, arrived: []const u8) bool {
+    /// which of a script's filters an arriving topic belongs to, or null when it belongs to the
+    /// command surface instead. the filter travels with the event: netd is the only process that
+    /// does the matching, so it is the only one that has to know the wildcard rules.
+    fn berryTopicMatch(self: *const Netd, arrived: []const u8) ?[]const u8 {
         for (0..self.berry_topic_count) |i| {
-            if (mqtt.topicMatches(self.berry_topics[i][0..self.berry_topic_len[i]], arrived)) return true;
+            const filter = self.berry_topics[i][0..self.berry_topic_len[i]];
+            if (mqtt.topicMatches(filter, arrived)) return filter;
         }
-        return false;
+        return null;
     }
 
     fn mqttPublishTopic(self: *Netd, t: []const u8, payload: []const u8, qos: u2, retain: bool) void {

@@ -325,8 +325,14 @@ pub const prelude =
     \\tc002.scene = _tc002_scene
     \\tc002.brightness = _tc002_brightness
     \\tc002.notify = _tc002_notify
-    \\tc002.subscribe = _tc002_subscribe
-    \\tc002.unsubscribe = _tc002_unsubscribe
+    \\tc002.subscribe = def (filter, f)
+    \\  if f != nil tc002.on('mqtt:' + filter, f) end
+    \\  return _tc002_subscribe(filter)
+    \\end
+    \\tc002.unsubscribe = def (filter)
+    \\  if tc002._handlers.contains('mqtt:' + filter) tc002._handlers.remove('mqtt:' + filter) end
+    \\  return _tc002_unsubscribe(filter)
+    \\end
     \\tc002.publish = _tc002_publish
     \\tc002.play = _tc002_play
     \\tc002.stop_sound = _tc002_stop_sound
@@ -349,6 +355,13 @@ pub const prelude =
     \\tc002.every = def (ms, f) tc002._timers.push([ms, f, ms]) end
     \\tc002.after = def (ms, f) tc002._timers.push([0, f, ms]) end
     \\tc002._dispatch = def (event, a, b, c)
+    \\  var extra = 0
+    \\  if event == 'mqtt' && type(c) == 'string' && c != ''
+    \\    extra = tc002._fire('mqtt:' + c, a, b, c)
+    \\  end
+    \\  return extra + tc002._fire(event, a, b, c)
+    \\end
+    \\tc002._fire = def (event, a, b, c)
     \\  if !tc002._handlers.contains(event) return 0 end
     \\  var list = tc002._handlers[event]
     \\  var i = 0
