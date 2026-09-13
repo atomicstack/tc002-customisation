@@ -7,6 +7,7 @@ const std = @import("std");
 const sys = @import("sys/linux.zig");
 const log = @import("sys/log.zig");
 const http = @import("net/http.zig");
+const sse = @import("net/sse.zig");
 const api = @import("net/api.zig");
 const json = @import("net/json.zig");
 const mqtt = @import("net/mqtt.zig");
@@ -38,7 +39,11 @@ const ns_per_s = std.time.ns_per_s;
 
 const supervisor_fd: sys.Fd = 3;
 const listener_fd: sys.Fd = 5;
-const max_conns = 4;
+const max_conns = 8;
+/// how many event streams may be held at once. a stream occupies its slot indefinitely, so this
+/// matters more than the slot count does: a few forgotten browser tabs would otherwise eat the
+/// headroom however high `max_conns` went. a third subscriber is refused and polls instead.
+const sse_max_subs = 2;
 const in_buf_len = http.max_head + json.max_body;
 // the largest thing netd answers with is a canvas document read back, and that is bounded by
 // what the device itself accepts: 24 elements, a 256-byte text pool and a 1,024-byte sample pool,
@@ -48,6 +53,9 @@ const in_buf_len = http.max_head + json.max_body;
 const out_buf_len = 13312;
 const request_timeout_ns: u64 = 5 * ns_per_s;
 const idle_timeout_ns: u64 = 10 * ns_per_s;
+/// a quiet stream writes a comment this often, inside the idle window. the write is the point: it
+/// is what notices a subscriber that died without a fin.
+const sse_keepalive_ns: u64 = 4 * ns_per_s;
 const relay_timeout_ns: u64 = 2 * ns_per_s;
 const state_coalesce_ns: u64 = 500_000_000;
 const tick_ns: u64 = 250_000_000;
@@ -57,7 +65,7 @@ const mqtt_frame_envelope = 8 + 4 + 2 + geometry.rgb_bytes;
 
 const Tag = enum(u64) { timer = 1, supervisor = 2, listener = 3, mqtt = 4, conn_base = 16 };
 
-const ConnState = enum { free, reading, relaying, writing };
+const ConnState = enum { free, reading, relaying, writing, streaming };
 const Awaiting = enum { none, renderer_result, status, config, save_result, screen, logs, canvas, sprites, berry_scripts, berry_result };
 
 /// as many script topics as netd will hold. the supervisor enforces the same bound; this is the
@@ -163,8 +171,11 @@ const Netd = struct {
     status_at_ns: u64 = 0,
     next_id: u64 = 0x8000_0000_0000_0000,
     supervisor_dead: bool = false,
-    /// statements seen from the supervisor since start
+    /// statements seen from the supervisor since start, streams opened, and subscribers dropped
+    /// for falling behind
     applied_seen: u32 = 0,
+    sse_opened: u32 = 0,
+    sse_dropped: u32 = 0,
     // mqtt
     client: mqtt.Client = .{},
     mfd: ?sys.Fd = null,
@@ -217,9 +228,17 @@ const Netd = struct {
 
     /// a statement as applied on the device. counted here so the count is visible before anything
     /// subscribes to them; the event stream that fans them out is next.
-    fn onApplied(self: *Netd, a: messages.Applied) void {
+    fn onApplied(self: *Netd, a: messages.Applied, now: u64) void {
         self.applied_seen +%= 1;
-        _ = a;
+        var buf: [sse.event_max]u8 = undefined;
+        // nothing to add to the age: this runs the moment the statement arrives, and netd shares no
+        // clock with the renderer that stamped it
+        const ev = sse.event(&buf, a, 0);
+        if (ev.len == 0) return;
+        for (&conns) |*c| {
+            if (c.state != .streaming) continue;
+            self.streamWrite(c, ev, now);
+        }
     }
 
     fn closeConn(self: *Netd, c: *Conn) void {
@@ -260,7 +279,59 @@ const Netd = struct {
             };
             c.out_off += n;
         }
+        if (c.state == .streaming) {
+            // a stream is never finished. keep the slot, empty the buffer, and go back to watching
+            // for readable -- which on a stream socket only ever means the peer went away.
+            c.out_len = 0;
+            c.out_off = 0;
+            c.last_ns = now;
+            sys.epollMod(self.ep, c.fd, linux.EPOLL.IN, self.connTag(c));
+            return;
+        }
         self.closeConn(c);
+    }
+
+    /// hand this connection over to the event stream, if the device has a slot for it.
+    fn beginStream(self: *Netd, c: *Conn, now: u64) void {
+        var live: usize = 0;
+        for (&conns) |*o| {
+            if (o.state == .streaming) live += 1;
+        }
+        if (live >= sse_max_subs) {
+            self.respondError(c, 503, "too_many_subscribers", "this device holds two event streams; poll /status instead");
+            self.flushConn(c, now);
+            return;
+        }
+        const h = sse.head(&c.out);
+        c.out_len = h.len;
+        c.out_off = 0;
+        c.awaiting = .none;
+        c.state = .streaming;
+        c.last_ns = now;
+        self.sse_opened +%= 1;
+        self.flushConn(c, now);
+    }
+
+    /// append to a stream's buffer, dropping the subscriber if it has fallen too far behind to fit.
+    fn streamWrite(self: *Netd, c: *Conn, bytes: []const u8, now: u64) void {
+        // reclaim what has already gone out before measuring the room left
+        if (c.out_off > 0) {
+            const rem = c.out_len - c.out_off;
+            std.mem.copyForwards(u8, c.out[0..rem], c.out[c.out_off..c.out_len]);
+            c.out_len = rem;
+            c.out_off = 0;
+        }
+        if (c.out_len + bytes.len > c.out.len) {
+            // a subscriber that cannot keep up is dropped rather than buffered without bound. that
+            // is safe by construction here: a missed statement shows up as a revision gap, and the
+            // gap is the signal to resync from state.
+            self.sse_dropped +%= 1;
+            self.closeConn(c);
+            return;
+        }
+        @memcpy(c.out[c.out_len..][0..bytes.len], bytes);
+        c.out_len += bytes.len;
+        self.flushConn(c, now);
     }
 
     fn connTag(self: *Netd, c: *Conn) u64 {
@@ -411,6 +482,7 @@ const Netd = struct {
                 self.respond(c, 200, "application/json", o.slice());
                 self.flushConn(c, now);
             },
+            .events => self.beginStream(c, now),
             .berry_list => self.ask(c, .berry_list_get, .berry_scripts, now),
             .berry_put => |b| self.ask(c, .{ .berry_script = messages.BerryScript.init(.put, b.name, b.source) }, .berry_result, now),
             .berry_delete => |b| self.ask(c, .{ .berry_script = messages.BerryScript.init(.delete, b.name, "") }, .berry_result, now),
@@ -821,7 +893,7 @@ const Netd = struct {
                 .screen => |*sc| self.onScreen(p.request_id, sc, now),
                 .log_lines => |*l| self.onLogs(p.request_id, l, now),
                 .input => |i| self.onInput(i),
-                .applied => |a| self.onApplied(a),
+                .applied => |a| self.onApplied(a, now),
                 else => log.warn("unexpected {s} from supervisor", .{@tagName(p.message)}),
             }
         }
@@ -1780,6 +1852,10 @@ const Netd = struct {
                     self.flushConn(c, now);
                 },
                 .writing => if (now - c.last_ns >= idle_timeout_ns) self.closeConn(c),
+                // a stream is exempt from the idle timeout, but not from being noticed: the
+                // keepalive is a write, so a peer that died without a fin fails it and the slot
+                // comes back. exempting it without writing would hold the slot for ever.
+                .streaming => if (now - c.last_ns >= sse_keepalive_ns) self.streamWrite(c, sse.keepalive, now),
             }
         }
         self.mqttTick(now);
@@ -1841,6 +1917,18 @@ fn run(stats: bool) !u8 {
                     n.flushConn(c, t);
                 } else if (c.state == .reading) {
                     n.readConn(c, t);
+                } else if (c.state == .streaming) {
+                    if (ev.events & (linux.EPOLL.HUP | linux.EPOLL.ERR) != 0) {
+                        n.closeConn(c);
+                    } else {
+                        if (ev.events & linux.EPOLL.OUT != 0) n.flushConn(c, t);
+                        if (ev.events & linux.EPOLL.IN != 0) {
+                            // a subscriber has nothing to say; readable means it went away
+                            var scratch: [64]u8 = undefined;
+                            const got = sys.read(c.fd, &scratch) catch 0;
+                            if (got == 0) n.closeConn(c);
+                        }
+                    }
                 } else if (ev.events & (linux.EPOLL.HUP | linux.EPOLL.ERR) != 0) {
                     n.closeConn(c);
                 }

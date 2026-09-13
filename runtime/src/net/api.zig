@@ -74,6 +74,8 @@ pub const Op = union(enum) {
     screen: struct { raw: bool },
     /// a page of the supervisor's log ring after this sequence number
     logs: struct { after: u32 },
+    /// subscribe to every statement this device applies, as an sse stream that does not end
+    events,
     /// a remote control event: the same paths as a physical press
     input: struct { control: actions.Control, event: actions.EdgeEvent, steps: u8, request_id: u64, epoch: u32 },
     notify: struct { text: []const u8, colour: [3]u8, duration_s: u16, transition: ?transition.Spec, request_id: u64, epoch: u32 },
@@ -624,6 +626,7 @@ const endpoints = [_]Endpoint{
     .{ .method = .POST, .path = "/api/v1/streams", .authority = .control },
     .{ .method = .GET, .path = "/api/v1/screen", .authority = .control },
     .{ .method = .GET, .path = "/api/v1/logs", .authority = .control },
+    .{ .method = .GET, .path = "/api/v1/events", .authority = .control },
     .{ .method = .GET, .path = "/api/v1/berry", .authority = .control },
     .{ .method = .GET, .path = "/api/v1/berry/scripts", .authority = .control },
     .{ .method = .POST, .path = "/api/v1/input", .authority = .control },
@@ -725,6 +728,7 @@ pub fn route(req: http.Request, body: []const u8, creds: *const Credentials, ori
         if (std.mem.eql(u8, format, "json")) return .{ .op = .{ .screen = .{ .raw = false } } };
         return bad("invalid_format", "format must be json or raw");
     }
+    if (std.mem.eql(u8, ep.path, "/api/v1/events")) return .{ .op = .events };
     if (std.mem.eql(u8, ep.path, "/api/v1/logs")) {
         const after_text = queryValue(req.query, "after") orelse "0";
         const after = std.fmt.parseInt(u32, after_text, 10) catch return bad("invalid_after", "after must be a sequence number");
@@ -1142,6 +1146,19 @@ fn expectReject(r: Route, status: u16, code: []const u8) !void {
         },
         .op => return error.TestUnexpectedResult,
     }
+}
+
+test "the event stream is a control-authority get, and nothing else" {
+    const c = testCreds();
+    var arena: Arena = undefined;
+    var origins = OriginPolicy{};
+    const r = route(testReq(.GET, "/api/v1/events", "", control_header, null, null), "", &c, &origins, &arena);
+    try std.testing.expect(r == .op and r.op == .events);
+
+    // reading every statement the device applies is a control-authority thing to do, and it is a
+    // read: there is nothing to post to it
+    try expectReject(route(testReq(.GET, "/api/v1/events", "", null, null, null), "", &c, &origins, &arena), 401, "unauthorized");
+    try expectReject(route(testReq(.POST, "/api/v1/events", "", control_header, null, null), "", &c, &origins, &arena), 405, "method_not_allowed");
 }
 
 test "authentication is constant-time bearer matching of either token" {
