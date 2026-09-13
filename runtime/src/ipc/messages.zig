@@ -6,6 +6,7 @@ const geometry = @import("../panel/geometry.zig");
 const transition = @import("../panel/transition.zig");
 const config = @import("../supervisor/config.zig");
 const api = @import("../net/api.zig");
+const clients = @import("../net/clients.zig");
 const clock = @import("../scene/clock.zig");
 const clockfont = @import("../scene/clockfont.zig");
 const ip = @import("../scene/ip.zig");
@@ -357,6 +358,11 @@ pub const Kind = enum(u8) {
     sound_cmd = 73,
     sound_list_get = 74,
     sound_list = 75,
+    /// named client tokens, supervisor -> netd. they travel one at a time rather than as a set
+    /// inside `credentials`: `berry_script` alone is 8036 bytes of this union, so a packet has
+    /// about 128 bytes spare and a store would not fit at any useful capacity.
+    clients_reset = 76,
+    client_set = 77,
 };
 
 /// what the supervisor tells a fresh berryd about itself. the settings are the supervisor's, so
@@ -1102,6 +1108,39 @@ pub const Notify = struct {
 
 pub const Credentials = api.Credentials;
 
+// clients travel one at a time precisely so this holds. if it ever fails, something was added to
+// the union -- not to the clients -- and the fix is there, not here.
+comptime {
+    std.debug.assert(@sizeOf(Message) <= codec.max_payload);
+}
+
+/// one named client on the wire. `role` is `@intFromEnum(clients.Role)`, so the enum's order is
+/// part of the protocol.
+pub const ClientSet = struct {
+    pub const wire_len = 1 + 1 + clients.name_max + 1 + api.token_len;
+
+    index: u8 = 0,
+    name: clients.Name = .{},
+    role: u8 = 0,
+    token: api.Token = [_]u8{0} ** api.token_len,
+
+    pub fn put(self: ClientSet, out: []u8) void {
+        out[0] = self.index;
+        out[1] = self.name.len;
+        @memcpy(out[2..][0..clients.name_max], &self.name.bytes);
+        out[2 + clients.name_max] = self.role;
+        @memcpy(out[3 + clients.name_max ..][0..api.token_len], &self.token);
+    }
+
+    pub fn get(b: []const u8) ClientSet {
+        var c = ClientSet{ .index = b[0], .role = b[2 + clients.name_max] };
+        c.name.len = @min(b[1], clients.name_max);
+        @memcpy(&c.name.bytes, b[2..][0..clients.name_max]);
+        @memcpy(&c.token, b[3 + clients.name_max ..][0..api.token_len]);
+        return c;
+    }
+};
+
 /// a config patch on the wire: presence flags plus fixed fields.
 pub const ConfigPatch = struct {
     has: u32 = 0,
@@ -1785,6 +1824,8 @@ pub const Message = union(Kind) {
     sound_cmd: SoundCmd,
     sound_list_get,
     sound_list: SoundList,
+    clients_reset,
+    client_set: ClientSet,
 };
 
 pub const Packet = struct { request_id: u64, epoch: u32, message: Message };
@@ -1927,6 +1968,10 @@ fn encodePayload(msg: Message, out: []u8) usize {
             l.put(out);
             return SoundList.wire_len;
         },
+        .client_set => |c| {
+            c.put(out);
+            return ClientSet.wire_len;
+        },
         .stream_frame => |f| {
             std.mem.writeInt(u32, out[0..4], f.seq, .big);
             std.mem.writeInt(u16, out[4..6], f.timeout_ms, .big);
@@ -1961,7 +2006,7 @@ fn encodePayload(msg: Message, out: []u8) usize {
             out[14] = d.night_placed;
             return DeviceStatus.wire_len;
         },
-        .ready, .arm_stream, .time_corrected, .stop, .config_get, .status_get, .screen_get, .canvas_get, .canvas_clear, .sprite_list_get, .berry_list_get, .sound_list_get => return 0,
+        .ready, .arm_stream, .time_corrected, .stop, .config_get, .status_get, .screen_get, .canvas_get, .canvas_clear, .sprite_list_get, .berry_list_get, .sound_list_get, .clients_reset => return 0,
         .screen => |s| {
             std.mem.writeInt(u32, out[0..4], s.revision, .big);
             out[4] = s.brightness;
@@ -2397,6 +2442,10 @@ pub fn decodePacket(bytes: []const u8) Error!Packet {
             _ = try fixed(p, 0);
             break :blk .sound_list_get;
         },
+        .clients_reset => blk: {
+            _ = try fixed(p, 0);
+            break :blk .clients_reset;
+        },
         .berry_list_get => blk: {
             _ = try fixed(p, 0);
             break :blk .berry_list_get;
@@ -2426,6 +2475,9 @@ pub fn decodePacket(bytes: []const u8) Error!Packet {
         },
         .sound_list => blk: {
             break :blk .{ .sound_list = SoundList.get(try fixed(p, SoundList.wire_len)) };
+        },
+        .client_set => blk: {
+            break :blk .{ .client_set = ClientSet.get(try fixed(p, ClientSet.wire_len)) };
         },
         .stream_frame => blk: {
             const b = try fixed(p, StreamFrame.wire_len);
@@ -2785,4 +2837,31 @@ pub fn decodePacket(bytes: []const u8) Error!Packet {
         },
     };
     return .{ .request_id = d.header.request_id, .epoch = d.header.epoch, .message = message };
+}
+
+test "a client set survives the wire, and the union still fits a packet" {
+    var buf: [codec.max_message]u8 = undefined;
+    const msg = Message{ .client_set = .{
+        .index = 3,
+        .name = clients.Name.init("kitchen"),
+        .role = 1,
+        .token = [_]u8{0x55} ** 32,
+    } };
+    const packet = try encodePacket(msg, 7, 1, &buf);
+    const p = try decodePacket(packet);
+    try std.testing.expectEqual(@as(u8, 3), p.message.client_set.index);
+    try std.testing.expectEqualStrings("kitchen", p.message.client_set.name.slice());
+    try std.testing.expectEqual(@as(u8, 1), p.message.client_set.role);
+    try std.testing.expectEqual([_]u8{0x55} ** 32, p.message.client_set.token);
+
+    const reset = try decodePacket(try encodePacket(.clients_reset, 8, 1, &buf));
+    try std.testing.expect(reset.message == .clients_reset);
+}
+
+test "the clients deliberately do not travel as one message" {
+    // berry_script alone is 8036 of the union's size, leaving about 128 bytes of headroom in a
+    // packet. a store inside Credentials would not fit at any useful capacity, which is why the
+    // supervisor sends one client at a time.
+    try std.testing.expect(@sizeOf(Message) <= codec.max_payload);
+    try std.testing.expect(@sizeOf(ClientSet) < 128);
 }
