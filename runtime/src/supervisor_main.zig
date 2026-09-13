@@ -29,6 +29,7 @@ const berry_store = @import("berry/store.zig");
 const sound_store = @import("sound/store.zig");
 const api = @import("net/api.zig");
 const credfile = @import("net/credfile.zig");
+const clients = @import("net/clients.zig");
 
 const linux = std.os.linux;
 
@@ -370,6 +371,8 @@ const Supervisor = struct {
     // network daemon
     cfg: config.Config = .{},
     creds: api.Credentials = undefined,
+    /// named client tokens; the supervisor owns the file and is the only writer
+    clients: clients.Store = .{},
     listener: ?sys.Fd = null,
     netd_pid: ?sys.Pid = null,
     netd_fd: ?sys.Fd = null,
@@ -540,19 +543,20 @@ const Supervisor = struct {
         const path = self.statePathIn(&path_buf, "credentials/tokens");
         var tmp_buf: [160]u8 = undefined;
         const tmp = self.statePathIn(&tmp_buf, "credentials/tokens.tmp");
-        var file_buf: [256]u8 = undefined;
-        var text_buf: [credfile.encoded_len]u8 = undefined;
+        var file_buf: [credfile.encoded_max]u8 = undefined;
+        var text_buf: [credfile.encoded_max]u8 = undefined;
         if (sys.readFile(path, &file_buf)) |bytes| {
             if (credfile.parse(bytes)) |parsed| {
                 self.creds = parsed.creds;
+                self.clients = parsed.clients;
                 if (!parsed.legacy) {
-                    log.info("credentials loaded", .{});
+                    log.info("credentials loaded, {d} client token(s)", .{self.clients.len});
                     return;
                 }
                 // the same tokens, written as text: every client keeps working and the file
                 // becomes something a shell can hold. a failed rewrite is not fatal -- the
                 // tokens are already in hand and the raw file is still readable next time.
-                if (sys.saveFileAtomic(dir, tmp, path, credfile.encode(parsed.creds, &parsed.clients, &text_buf))) |_| {
+                if (sys.saveFileAtomic(dir, tmp, path, credfile.encode(parsed.creds, &self.clients, &text_buf))) |_| {
                     log.info("credentials loaded and rewritten as hex text (same tokens)", .{});
                 } else |_| {
                     log.warn("credentials loaded, but rewriting them as hex text failed", .{});
@@ -564,9 +568,41 @@ const Supervisor = struct {
         var raw: [64]u8 = undefined;
         try sys.getrandom(&raw);
         const fresh = api.Credentials{ .control = raw[0..32].*, .admin = raw[32..64].* };
-        try sys.saveFileAtomic(dir, tmp, path, credfile.encode(fresh, &.{}, &text_buf));
+        self.clients = .{};
+        try sys.saveFileAtomic(dir, tmp, path, credfile.encode(fresh, &self.clients, &text_buf));
         self.creds = fresh;
         log.info("credentials generated (mode 0600 in the credentials directory; never logged)", .{});
+    }
+
+    /// rewrite the credentials file from the store in memory. the only writer.
+    fn saveCredentials(self: *Supervisor) messages.Status {
+        var dir_buf: [160]u8 = undefined;
+        var tmp_buf: [160]u8 = undefined;
+        var path_buf: [160]u8 = undefined;
+        var text_buf: [credfile.encoded_max]u8 = undefined;
+        const dir = self.statePathIn(&dir_buf, "credentials");
+        const tmp = self.statePathIn(&tmp_buf, "credentials/tokens.tmp");
+        const path = self.statePathIn(&path_buf, "credentials/tokens");
+        sys.saveFileAtomic(dir, tmp, path, credfile.encode(self.creds, &self.clients, &text_buf)) catch {
+            log.warn("could not write the credentials file", .{});
+            return .rejected;
+        };
+        return .applied;
+    }
+
+    /// hand netd the whole set. a reset then one message each, so netd never holds a store that
+    /// is half of one generation and half of the next.
+    fn pushClients(self: *Supervisor) void {
+        self.sendNetd(.{ .clients_reset = .{ .count = @intCast(self.clients.len) } }, 0);
+        for (self.clients.entries[0..self.clients.len], 0..) |c, i| {
+            self.sendNetd(.{ .client_set = .{
+                .index = @intCast(i),
+                .name = c.name,
+                .role = @intFromEnum(c.role),
+                .token = c.token,
+                .created_s = c.created_s,
+            } }, 0);
+        }
     }
 
     fn loadConfig(self: *Supervisor) void {
@@ -830,6 +866,7 @@ const Supervisor = struct {
         sys.epollAdd(self.ep, fds[0], linux.EPOLL.IN, @intFromEnum(Tag.netd)) catch {};
         log.info("spawned netd pid {d} as uid {d}", .{ pid, netd_uid });
         self.sendNetd(.{ .credentials = self.creds }, 0);
+        self.pushClients();
         self.sendNetd(.{ .config = self.cfg }, 0);
         self.sendNetd(.{ .status = self.snapshot }, 0);
         self.pushBerryTopics();

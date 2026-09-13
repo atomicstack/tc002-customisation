@@ -174,6 +174,9 @@ const Netd = struct {
     next_id: u64 = 0x8000_0000_0000_0000,
     /// named client tokens, replaced wholesale whenever the supervisor pushes the set
     clients: clients.Store = .{},
+    /// the set being received; swapped into `clients` when the supervisor has sent all of it
+    incoming_clients: clients.Store = .{},
+    expected_clients: usize = 0,
     supervisor_dead: bool = false,
     /// statements seen from the supervisor since start, streams opened, and subscribers dropped
     /// for falling behind
@@ -926,6 +929,29 @@ const Netd = struct {
                 .credentials => |cr| {
                     self.creds = cr;
                     log.info("credentials received", .{});
+                },
+                .clients_reset => |r| {
+                    // build the incoming generation in a scratch store and swap only when it is
+                    // whole, so no request authenticates against half of one set and half of the
+                    // next. a set of none is whole immediately.
+                    self.incoming_clients = .{};
+                    self.expected_clients = r.count;
+                    if (r.count == 0) {
+                        self.clients = .{};
+                        log.info("client tokens received: 0", .{});
+                    }
+                },
+                .client_set => |c| {
+                    const role: clients.Role = if (c.role == @intFromEnum(clients.Role.control)) .control else .read;
+                    self.incoming_clients.add(c.name.slice(), role, c.token, c.created_s) catch {
+                        log.warn("client {s} refused by the store", .{c.name.slice()});
+                        return;
+                    };
+                    // the set is complete when its indices are; the supervisor sends them in order
+                    if (self.incoming_clients.len == self.expected_clients) {
+                        self.clients = self.incoming_clients;
+                        log.info("client tokens received: {d}", .{self.clients.len});
+                    }
                 },
                 .config => |cfg| self.onConfig(p.request_id, cfg, now),
                 .status => |st| self.onStatus(p.request_id, st, now),

@@ -360,7 +360,8 @@ pub const Kind = enum(u8) {
     sound_list = 75,
     /// named client tokens, supervisor -> netd. they travel one at a time rather than as a set
     /// inside `credentials`: `berry_script` alone is 8036 bytes of this union, so a packet has
-    /// about 128 bytes spare and a store would not fit at any useful capacity.
+    /// about 128 bytes spare and a store would not fit at any useful capacity. the reset carries
+    /// how many follow, so the receiver knows when it holds a whole generation.
     clients_reset = 76,
     client_set = 77,
 };
@@ -1114,15 +1115,22 @@ comptime {
     std.debug.assert(@sizeOf(Message) <= codec.max_payload);
 }
 
+/// how many `client_set` messages follow. a receiver swaps in the new set only once it holds
+/// this many, so no request authenticates against half of one generation and half of the next.
+pub const ClientsReset = struct { count: u8 = 0 };
+
 /// one named client on the wire. `role` is `@intFromEnum(clients.Role)`, so the enum's order is
 /// part of the protocol.
 pub const ClientSet = struct {
-    pub const wire_len = 1 + 1 + clients.name_max + 1 + api.token_len;
+    pub const wire_len = 1 + 1 + clients.name_max + 1 + api.token_len + 8;
 
     index: u8 = 0,
     name: clients.Name = .{},
     role: u8 = 0,
     token: api.Token = [_]u8{0} ** api.token_len,
+    /// when it was issued. netd renders the listing from its own copy, so it needs this; it does
+    /// not need last_used, which netd is the one to observe and keeps in memory.
+    created_s: i64 = 0,
 
     pub fn put(self: ClientSet, out: []u8) void {
         out[0] = self.index;
@@ -1130,6 +1138,7 @@ pub const ClientSet = struct {
         @memcpy(out[2..][0..clients.name_max], &self.name.bytes);
         out[2 + clients.name_max] = self.role;
         @memcpy(out[3 + clients.name_max ..][0..api.token_len], &self.token);
+        std.mem.writeInt(i64, out[3 + clients.name_max + api.token_len ..][0..8], self.created_s, .big);
     }
 
     pub fn get(b: []const u8) ClientSet {
@@ -1137,6 +1146,7 @@ pub const ClientSet = struct {
         c.name.len = @min(b[1], clients.name_max);
         @memcpy(&c.name.bytes, b[2..][0..clients.name_max]);
         @memcpy(&c.token, b[3 + clients.name_max ..][0..api.token_len]);
+        c.created_s = std.mem.readInt(i64, b[3 + clients.name_max + api.token_len ..][0..8], .big);
         return c;
     }
 };
@@ -1824,7 +1834,7 @@ pub const Message = union(Kind) {
     sound_cmd: SoundCmd,
     sound_list_get,
     sound_list: SoundList,
-    clients_reset,
+    clients_reset: ClientsReset,
     client_set: ClientSet,
 };
 
@@ -1972,6 +1982,10 @@ fn encodePayload(msg: Message, out: []u8) usize {
             c.put(out);
             return ClientSet.wire_len;
         },
+        .clients_reset => |r| {
+            out[0] = r.count;
+            return 1;
+        },
         .stream_frame => |f| {
             std.mem.writeInt(u32, out[0..4], f.seq, .big);
             std.mem.writeInt(u16, out[4..6], f.timeout_ms, .big);
@@ -2006,7 +2020,7 @@ fn encodePayload(msg: Message, out: []u8) usize {
             out[14] = d.night_placed;
             return DeviceStatus.wire_len;
         },
-        .ready, .arm_stream, .time_corrected, .stop, .config_get, .status_get, .screen_get, .canvas_get, .canvas_clear, .sprite_list_get, .berry_list_get, .sound_list_get, .clients_reset => return 0,
+        .ready, .arm_stream, .time_corrected, .stop, .config_get, .status_get, .screen_get, .canvas_get, .canvas_clear, .sprite_list_get, .berry_list_get, .sound_list_get => return 0,
         .screen => |s| {
             std.mem.writeInt(u32, out[0..4], s.revision, .big);
             out[4] = s.brightness;
@@ -2443,8 +2457,7 @@ pub fn decodePacket(bytes: []const u8) Error!Packet {
             break :blk .sound_list_get;
         },
         .clients_reset => blk: {
-            _ = try fixed(p, 0);
-            break :blk .clients_reset;
+            break :blk .{ .clients_reset = .{ .count = (try fixed(p, 1))[0] } };
         },
         .berry_list_get => blk: {
             _ = try fixed(p, 0);
@@ -2846,6 +2859,7 @@ test "a client set survives the wire, and the union still fits a packet" {
         .name = clients.Name.init("kitchen"),
         .role = 1,
         .token = [_]u8{0x55} ** 32,
+        .created_s = 1758000000,
     } };
     const packet = try encodePacket(msg, 7, 1, &buf);
     const p = try decodePacket(packet);
@@ -2853,9 +2867,10 @@ test "a client set survives the wire, and the union still fits a packet" {
     try std.testing.expectEqualStrings("kitchen", p.message.client_set.name.slice());
     try std.testing.expectEqual(@as(u8, 1), p.message.client_set.role);
     try std.testing.expectEqual([_]u8{0x55} ** 32, p.message.client_set.token);
+    try std.testing.expectEqual(@as(i64, 1758000000), p.message.client_set.created_s);
 
-    const reset = try decodePacket(try encodePacket(.clients_reset, 8, 1, &buf));
-    try std.testing.expect(reset.message == .clients_reset);
+    const reset = try decodePacket(try encodePacket(.{ .clients_reset = .{ .count = 2 } }, 8, 1, &buf));
+    try std.testing.expectEqual(@as(u8, 2), reset.message.clients_reset.count);
 }
 
 test "the clients deliberately do not travel as one message" {
