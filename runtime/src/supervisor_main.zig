@@ -78,9 +78,9 @@ const berry_backoff_max_ns: u64 = 60 * ns_per_s;
 /// berryd reports every second. two seconds of silence is the renderer's own threshold, and it is
 /// the only way to notice a vm wedged inside a script: the process stays alive and stops answering.
 const berry_silence_ns: u64 = 2 * ns_per_s;
-/// as many topics as a device will subscribe to on a script's behalf. not a physical bound: the
-/// point past which a clock is doing something a clock should not be doing.
-const berry_topic_max = 8;
+/// as many topics as a device will subscribe to on a script's behalf. shared with netd, which does
+/// the subscribing -- see `messages.BerryEvent.topics_max` for why it is one constant and not two.
+const berry_topic_max = messages.BerryEvent.topics_max;
 const ntfy_backoff_min_ns: u64 = 2 * ns_per_s;
 const ntfy_backoff_max_ns: u64 = 60 * ns_per_s;
 var config_buf: [config.file_max]u8 = undefined;

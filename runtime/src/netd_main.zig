@@ -71,9 +71,10 @@ const Tag = enum(u64) { timer = 1, supervisor = 2, listener = 3, mqtt = 4, conn_
 const ConnState = enum { free, reading, relaying, writing, streaming };
 const Awaiting = enum { none, renderer_result, status, config, save_result, screen, logs, canvas, sprites, berry_scripts, berry_source, berry_result, sound_list, sound_result, client_result };
 
-/// as many script topics as netd will hold. the supervisor enforces the same bound; this is the
-/// copy that does the subscribing.
-const berry_topics_max = 8;
+/// as many script topics as netd will hold. one constant, shared with the supervisor, because two
+/// that must agree eventually will not: were the supervisor's the larger it would hand netd topics
+/// netd silently drops, and the subscription would look accepted while nothing ever arrived.
+const berry_topics_max = messages.BerryEvent.topics_max;
 
 const Conn = struct {
     fd: sys.Fd = -1,

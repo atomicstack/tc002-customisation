@@ -478,7 +478,9 @@ can be put there. the read-back is wordier than the put — the device's canonic
 element's `age_ms` — so netd answers from a 12 kb buffer. it was 3,584, and at that size a client
 could create a document it was then unable to read back: a full one of 24 animated elements with
 the sample pool loaded measures **5,957 bytes**. that cost 45 kb of netd's bss (four connection
-buffers and the shared json buffer), taking it from 356 kb to 401 kb.
+buffers and the shared json buffer), taking it from 356 kb to 401 kb — the slot count was four
+when that was measured; `GET /events` raised it to eight later, and **that** raise is the
+100.5 kb one below.
 
 **who holds it.** the supervisor, because it is state a client reads back and the renderer is the
 thing that restarts: kill the renderer and the document is pushed again when it comes up, which is
@@ -1007,7 +1009,7 @@ the protocol surface is deliberately narrow so the whole daemon fits in about
 
 | limit | value |
 |-------|-------|
-| concurrent connections | 4 (a fifth gets a canned `429` and is closed) |
+| concurrent connections | 8 (a ninth gets a canned `429` and is closed); a subscriber holds one for as long as its page is open |
 | requests per connection | 1; every response says `connection: close` and `cache-control: no-store` |
 | request head / json body | 4,096 and 8,192 bytes; json nesting ≤ 8; unknown or duplicate fields rejected; invalid utf-8 rejected |
 | unsupported | chunked or encoded bodies, `expect: 100-continue`, http/2 |

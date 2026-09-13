@@ -463,8 +463,13 @@ pub const BerryEvent = struct {
         publish = 3,
     };
 
-    /// as many topics as a device may subscribe to on a script's behalf. eight is not a physical
-    /// bound; it is the point past which a clock is doing something a clock should not.
+    /// as many topics as a device will subscribe to on a script's behalf. eight is not a physical
+    /// bound; it is the point past which a clock is doing something a clock should not. it lives
+    /// here because netd does the subscribing and the supervisor owns the list, and two constants
+    /// that must agree are one constant.
+    pub const topics_max = 8;
+    /// the longest topic filter. mqtt itself allows far more; this is what the two lists above
+    /// hold, and a filter is a device-side thing rather than a general subscription.
     pub const topic_max = 96;
     pub const payload_max = 256;
 
