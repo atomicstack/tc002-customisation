@@ -399,8 +399,12 @@ as `rrggbb`, and its placement. elements draw in the order given, painter-style.
 not belong to the type given is refused** rather than dropped: `{"type":"rect","text":"hi"}` is a
 mistake worth hearing about.
 
-`data_hex` is the same samples as hex, for a document that would not otherwise fit: 52 samples cost
-208 characters as json digits and 104 as hex.
+`data` is a **list of numbers**, and a json string in its place is refused rather than read: zig's
+parser fills a byte slice from a string as readily as from an array, so `{"data":"1,2,3"}` would
+otherwise become five samples of 49,44,50,44,51 — the digits and the commas — and draw a
+plausible-looking wrong picture. `data_hex` is the supported way to carry samples as a string, and
+is the same samples as hex for a document that would not otherwise fit: 52 samples cost 208
+characters as json digits and 104 as hex.
 
 **animation is declared, not driven.** an element carries an `animate` block and the renderer ticks
 it, so an integration pushes once and walks away:
@@ -1158,11 +1162,14 @@ scene, brightness and generator changes made this way are transient; to make
 them the boot defaults, patch and save the settings.
 
 errors are `{"error":"<code>","message":"…","request_id":"…"}` with a stable
-lowercase code:
+lowercase code. a number the schema cannot hold names the field it was given
+for — `{"error":"value_out_of_range","message":"spread is outside the range this
+field allows"}` rather than a blanket "not valid json" — which matters most to
+the clients that hand-roll their json:
 
 | status | codes |
 |-------:|-------|
-| 400 | `malformed_request`, `unsupported_request`, `request_timeout`, `invalid_json`, `unknown_field`, `duplicate_field`, `missing_field`, `body_too_deep`, `invalid_*`, `missing_*`, `rejected` (the renderer refused it) |
+| 400 | `malformed_request`, `unsupported_request`, `request_timeout`, `invalid_json`, `unknown_field`, `duplicate_field`, `missing_field`, `value_out_of_range`, `value_not_whole`, `body_too_deep`, `invalid_*`, `missing_*`, `rejected` (the renderer refused it) |
 | 401 | `unauthorized` |
 | 403 | `origin_denied`, `forbidden` (admin token needed) |
 | 404 / 405 | `not_found`, `method_not_allowed` |

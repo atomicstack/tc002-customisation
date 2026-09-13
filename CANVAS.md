@@ -135,7 +135,9 @@ it:
 
 ![a bar sparkline where three spikes above the threshold are drawn in red against blue](runtime/screenshots/canvas/sparkline-threshold.png)
 
-samples can also be sent as `data_hex`, which costs two characters each instead of up to four.
+`data` is a list of numbers. samples can also be sent as `data_hex`, which costs two characters
+each instead of up to four; a json string given as `data` is refused and told to use `data_hex`,
+because reading `"1,2,3"` as bytes would draw a wrong picture without saying so.
 
 ### icon
 

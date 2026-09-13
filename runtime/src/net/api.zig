@@ -301,7 +301,7 @@ const ElementBody = struct {
     value: ?u8 = null,
     background: ?[]const u8 = null,
     vertical: ?bool = null,
-    data: ?[]const u8 = null,
+    data: ?SampleData = null,
     data_hex: ?[]const u8 = null,
     style: ?[]const u8 = null,
     min: ?u8 = null,
@@ -317,6 +317,23 @@ const ElementBody = struct {
     accent: ?[]const u8 = null,
     animate: ?AnimateBody = null,
 };
+/// how a sparkline's samples arrived. zig's json parser fills a `[]const u8` from a json *string*
+/// exactly as readily as from an array of numbers, so `{"data":"1,2,3"}` used to become five
+/// samples of 49,44,50,44,51 -- the digits and the commas -- and drew a plausible-looking wrong
+/// picture. anything hand-rolling json falls into that, and a silent wrong answer is the worst
+/// kind, so `data` keeps which form it came in as and a string is refused by name. `data_hex` is
+/// the supported way to carry samples as a string.
+const SampleData = union(enum) {
+    list: []const u8,
+    text: []const u8,
+
+    pub fn jsonParse(allocator: std.mem.Allocator, source: anytype, options: std.json.ParseOptions) !SampleData {
+        const as_text = (try source.peekNextTokenType()) == .string;
+        const bytes = try std.json.innerParse([]const u8, allocator, source, options);
+        return if (as_text) .{ .text = bytes } else .{ .list = bytes };
+    }
+};
+
 const AnimateBody = struct { kind: []const u8, ms: ?u16 = null, phase: ?u8 = null, amount: ?u8 = null, axis: ?[]const u8 = null };
 const CanvasBody = struct { elements: []const ElementBody };
 /// a patch names elements by id and carries only what changed. it is a list rather than an object
@@ -325,7 +342,7 @@ const CanvasBody = struct { elements: []const ElementBody };
 const ValueBody = struct {
     id: []const u8,
     text: ?[]const u8 = null,
-    data: ?[]const u8 = null,
+    data: ?SampleData = null,
     data_hex: ?[]const u8 = null,
     value: ?u8 = null,
     colour: ?[]const u8 = null,
@@ -348,15 +365,26 @@ fn bad(code: []const u8, message: []const u8) Route {
     return .{ .reject = .{ .status = 400, .code = code, .message = message } };
 }
 
-fn jsonError(e: json.Error) Route {
+fn jsonError(e: json.Error, where: json.Where, arena: *Arena) Route {
     return switch (e) {
         error.TooLarge => .{ .reject = .{ .status = 413, .code = "body_too_large", .message = "json bodies are limited to 8192 bytes" } },
         error.TooDeep => bad("body_too_deep", "json nesting is limited to eight levels"),
         error.UnknownField => bad("unknown_field", "the body contains a field the schema does not define"),
         error.DuplicateField => bad("duplicate_field", "the body repeats a field"),
         error.MissingField => bad("missing_field", "a required field is absent"),
+        error.OutOfRange => bad("value_out_of_range", named(arena, where.field, "is outside the range this field allows", "a number is outside the range its field allows")),
+        error.NotWhole => bad("value_not_whole", named(arena, where.field, "must be a whole number", "a number in the body must be whole")),
         error.InvalidJson => bad("invalid_json", "the body is not valid json for this schema"),
     };
+}
+
+/// "<field> <tail>", or `otherwise` when the parser could not name a field. the text is built in
+/// the request arena, which the failed parse has just finished with: a body is parsed once per
+/// request and a rejection ends that request, so nothing else in the response points into the
+/// arena at this moment. a second parse in the same request would break that.
+fn named(arena: *Arena, field: []const u8, tail: []const u8, otherwise: []const u8) []const u8 {
+    if (field.len == 0) return otherwise;
+    return std.fmt.bufPrint(arena, "{s} {s}", .{ field, tail }) catch otherwise;
 }
 
 /// ids the device mints for a client that sent none. the renderer's deduplication window matches
@@ -408,19 +436,38 @@ fn allowedField(kind: canvas.Kind, comptime name: []const u8) bool {
 
 /// samples as an array of numbers, or as hex for a document that would not otherwise fit: 52
 /// samples cost 208 characters as json digits and 104 as hex
-fn parseSamples(b: *const ElementBody, out: []u8) ?[]const u8 {
+const SampleError = error{
+    /// samples given as a json string, which is `data_hex`'s job
+    NotAList,
+    /// too many samples, or hex that is not hex
+    Malformed,
+};
+
+fn parseSamples(b: *const ElementBody, out: []u8) SampleError![]const u8 {
     if (b.data) |d| {
-        if (d.len > out.len) return null;
-        @memcpy(out[0..d.len], d);
-        return out[0..d.len];
+        const list = switch (d) {
+            .text => return error.NotAList,
+            .list => |l| l,
+        };
+        if (list.len > out.len) return error.Malformed;
+        @memcpy(out[0..list.len], list);
+        return out[0..list.len];
     }
     const hex = b.data_hex orelse return out[0..0];
-    if (hex.len % 2 != 0 or hex.len / 2 > out.len) return null;
+    if (hex.len % 2 != 0 or hex.len / 2 > out.len) return error.Malformed;
     var i: usize = 0;
     while (i < hex.len) : (i += 2) {
-        out[i / 2] = (hexDigit(hex[i]) orelse return null) * 16 + (hexDigit(hex[i + 1]) orelse return null);
+        out[i / 2] = (hexDigit(hex[i]) orelse return error.Malformed) * 16 + (hexDigit(hex[i + 1]) orelse return error.Malformed);
     }
     return out[0 .. hex.len / 2];
+}
+
+/// the same answer wherever samples are read, so the put and the patch route agree
+fn sampleReject(e: SampleError) Reject {
+    return switch (e) {
+        error.NotAList => canvasBad("invalid_data", "data is a list of numbers; for samples as a string use data_hex"),
+        error.Malformed => canvasBad("invalid_data", "data is up to 52 samples of 0..255, or data_hex of twice as many hex digits"),
+    };
 }
 
 fn hexDigit(c: u8) ?u8 {
@@ -549,7 +596,7 @@ fn parseCanvas(body: []const ElementBody, doc: *canvas.Document) CanvasRoute {
             },
             .sparkline => {
                 var samples: [canvas.samples_max]u8 = undefined;
-                const got = parseSamples(b, &samples) orelse return .{ .reject = canvasBad("invalid_data", "data is up to 52 samples of 0..255, or data_hex of twice as many hex digits") };
+                const got = parseSamples(b, &samples) catch |bad_data| return .{ .reject = sampleReject(bad_data) };
                 const span = doc.addData(got) catch return .{ .reject = canvasBad("document_full", "the document's sample data does not fit") };
                 e.body = .{ .sparkline = .{
                     .span = span,
@@ -582,7 +629,7 @@ fn parseCanvasPatch(body: []const ValueBody) CanvasPatchRoute {
             if (u.has & canvas.Field.text != 0) return .{ .reject = canvasBad("invalid_element_field", "an element takes text or data, not both") };
             var samples: [canvas.samples_max]u8 = undefined;
             const eb = ElementBody{ .type = "sparkline", .data = v.data, .data_hex = v.data_hex };
-            const got = parseSamples(&eb, &samples) orelse return .{ .reject = canvasBad("invalid_data", "data is up to 52 samples of 0..255, or data_hex of twice as many hex digits") };
+            const got = parseSamples(&eb, &samples) catch |e| return .{ .reject = sampleReject(e) };
             if (got.len > canvas.patch_bytes_max) return .{ .reject = canvasBad("invalid_data", "a patched sparkline carries at most 64 samples") };
             u.has |= canvas.Field.data;
             u.len = @intCast(got.len);
@@ -703,6 +750,8 @@ fn sufficient(have: Authority, need: Authority) bool {
 
 /// classify a complete request. `body` is exactly `content-length` bytes.
 pub fn route(req: http.Request, body: []const u8, creds: *const Credentials, store: *const clients.Store, origins: *const OriginPolicy, arena: *Arena, generated_id: u64) Route {
+    // filled in by a failed body parse, so the rejection can name the field that was wrong
+    var where = json.Where{};
     // origin first: reject disallowed origins before any work
     if (!origins.allows(req.origin)) return .{ .reject = .{ .status = 403, .code = "origin_denied", .message = "this origin is not allowed" } };
     // path and method
@@ -823,7 +872,7 @@ pub fn route(req: http.Request, body: []const u8, creds: *const Credentials, sto
     if (std.mem.eql(u8, ep.path, "/api/v1/events")) return .{ .op = .events };
     if (std.mem.eql(u8, ep.path, "/api/v1/tokens")) {
         if (req.method == .GET) return .{ .op = .client_list };
-        const b = json.parse(TokensBody, body, arena) catch |e| return jsonError(e);
+        const b = json.parse(TokensBody, body, arena, &where) catch |e| return jsonError(e, where, arena);
         if (!clients.validName(b.name)) return bad("invalid_name", "a name is 1..32 of letters, digits, -, _ or . and may not start with a dot");
         const role = std.meta.stringToEnum(clients.Role, b.role) orelse return bad("invalid_role", "role must be read or control");
         return .{ .op = .{ .client_add = .{ .name = b.name, .role = role } } };
@@ -834,7 +883,7 @@ pub fn route(req: http.Request, body: []const u8, creds: *const Credentials, sto
         if (!clients.validName(name)) return bad("invalid_name", "a name is 1..32 of letters, digits, -, _ or . and may not start with a dot");
         // an empty body rotates the secret and leaves the role alone
         if (body.len == 0) return .{ .op = .{ .client_rotate = .{ .name = name, .role = null } } };
-        const b = json.parse(RotateBody, body, arena) catch |e| return jsonError(e);
+        const b = json.parse(RotateBody, body, arena, &where) catch |e| return jsonError(e, where, arena);
         const role = if (b.role) |r| (std.meta.stringToEnum(clients.Role, r) orelse return bad("invalid_role", "role must be read or control")) else null;
         return .{ .op = .{ .client_rotate = .{ .name = name, .role = role } } };
     }
@@ -940,9 +989,11 @@ pub fn parseFrame(query: []const u8, body: []const u8, generated_id: u64) Route 
 
 /// a json body for one of the schemas; shared by http routes and mqtt command topics.
 pub fn parseBody(kind: BodyKind, body: []const u8, arena: *Arena, generated_id: u64) Route {
+    // filled in by a failed body parse, so the rejection can name the field that was wrong
+    var where = json.Where{};
     switch (kind) {
         .scene => {
-            const b = json.parse(SceneBody, body, arena) catch |e| return jsonError(e);
+            const b = json.parse(SceneBody, body, arena, &where) catch |e| return jsonError(e, where, arena);
             const base = parseBase(b.base) orelse return bad("invalid_base", base_names_message);
             const generator: ?scene.Generator = if (b.generator) |g| (parseGenerator(g) orelse return bad("invalid_generator", "unknown generator")) else null;
             const rid = if (b.request_id) |t| (parseRequestId(t) orelse return bad("invalid_request_id", "request_id must be 1..16 hex digits")) else generated_id;
@@ -960,7 +1011,7 @@ pub fn parseBody(kind: BodyKind, body: []const u8, arena: *Arena, generated_id: 
             return .{ .op = .{ .set_scene = .{ .base = base, .generator = generator, .seed = b.seed, .style = style, .transition = spec, .request_id = rid, .epoch = b.epoch } } };
         },
         .action => {
-            const b = json.parse(ActionBody, body, arena) catch |e| return jsonError(e);
+            const b = json.parse(ActionBody, body, arena, &where) catch |e| return jsonError(e, where, arena);
             const rid = if (b.request_id) |t| (parseRequestId(t) orelse return bad("invalid_request_id", "request_id must be 1..16 hex digits")) else generated_id;
             var kind_found: ?ActionKind = null;
             inline for (@typeInfo(ActionKind).@"enum".fields) |f| if (std.mem.eql(u8, b.action, f.name)) {
@@ -975,7 +1026,7 @@ pub fn parseBody(kind: BodyKind, body: []const u8, arena: *Arena, generated_id: 
             return .{ .op = .{ .action = .{ .kind = k, .brightness = b.brightness, .seed = b.seed, .power = b.power, .request_id = rid, .epoch = b.epoch } } };
         },
         .input => {
-            const b = json.parse(InputBody, body, arena) catch |e| return jsonError(e);
+            const b = json.parse(InputBody, body, arena, &where) catch |e| return jsonError(e, where, arena);
             const control = enumByName(actions.Control, b.control) orelse return bad("invalid_control", "control must be left, middle, right, knob or rotary");
             const event = enumByName(actions.EdgeEvent, b.event) orelse return bad("invalid_event", "event must be press, release, click, long, cw or ccw");
             const rotary = control == .rotary;
@@ -988,7 +1039,7 @@ pub fn parseBody(kind: BodyKind, body: []const u8, arena: *Arena, generated_id: 
             return .{ .op = .{ .input = .{ .control = control, .event = event, .steps = b.steps, .request_id = rid, .epoch = b.epoch } } };
         },
         .sound => {
-            const b = json.parse(SoundBody, body, arena) catch |e| return jsonError(e);
+            const b = json.parse(SoundBody, body, arena, &where) catch |e| return jsonError(e, where, arena);
             if (b.stop) |st| if (st) return .{ .op = .sound_stop };
             const name = b.name orelse return bad("missing_field", "name, or stop:true");
             if (!sound_store.validName(name)) return bad("invalid_name", "a sound name is 1..32 of letters, digits, -, _ or .");
@@ -996,7 +1047,7 @@ pub fn parseBody(kind: BodyKind, body: []const u8, arena: *Arena, generated_id: 
             return .{ .op = .{ .sound_play = .{ .name = name, .volume = b.volume, .loop = b.loop orelse false } } };
         },
         .notify => {
-            const b = json.parse(NotifyBody, body, arena) catch |e| return jsonError(e);
+            const b = json.parse(NotifyBody, body, arena, &where) catch |e| return jsonError(e, where, arena);
             if (b.text.len == 0 or b.text.len > 128) return bad("invalid_text", "text must be 1..128 printable ascii characters");
             for (b.text) |c| if (c < 0x20 or c > 0x7e) return bad("invalid_text", "text must be 1..128 printable ascii characters");
             if (b.duration_s < 1 or b.duration_s > 300) return bad("invalid_duration", "duration_s must be 1..300");
@@ -1009,7 +1060,7 @@ pub fn parseBody(kind: BodyKind, body: []const u8, arena: *Arena, generated_id: 
             return .{ .op = .{ .notify = .{ .text = b.text, .colour = colour, .duration_s = b.duration_s, .transition = spec, .request_id = rid, .epoch = b.epoch } } };
         },
         .config_patch => {
-            const b = json.parse(ConfigBody, body, arena) catch |e| return jsonError(e);
+            const b = json.parse(ConfigBody, body, arena, &where) catch |e| return jsonError(e, where, arena);
             if (b.brightness) |v| if (v < 1 or v > 100) return bad("invalid_brightness", "brightness must be 1..100");
             if (b.timezone) |t| if (t.len == 0 or t.len > 64) return bad("invalid_timezone", "timezone must be 1..64 characters");
             if (b.ntp_interval_s) |v| if (v != 300 and v != 600) return bad("invalid_ntp_interval", "ntp_interval_s must be 300 or 600");
@@ -1068,7 +1119,7 @@ pub fn parseBody(kind: BodyKind, body: []const u8, arena: *Arena, generated_id: 
             } } };
         },
         .canvas_put => {
-            const b = json.parse(CanvasBody, body, arena) catch |e| return jsonError(e);
+            const b = json.parse(CanvasBody, body, arena, &where) catch |e| return jsonError(e, where, arena);
             var doc = canvas.Document{};
             return switch (parseCanvas(b.elements, &doc)) {
                 .reject => |j| .{ .reject = j },
@@ -1076,18 +1127,18 @@ pub fn parseBody(kind: BodyKind, body: []const u8, arena: *Arena, generated_id: 
             };
         },
         .canvas_patch => {
-            const b = json.parse(PatchBody, body, arena) catch |e| return jsonError(e);
+            const b = json.parse(PatchBody, body, arena, &where) catch |e| return jsonError(e, where, arena);
             return switch (parseCanvasPatch(b.values)) {
                 .reject => |j| .{ .reject = j },
                 .op => |p| .{ .op = .{ .canvas_patch = p } },
             };
         },
         .config_save => {
-            const b = if (body.len == 0) SaveBody{} else json.parse(SaveBody, body, arena) catch |e| return jsonError(e);
+            const b = if (body.len == 0) SaveBody{} else json.parse(SaveBody, body, arena, &where) catch |e| return jsonError(e, where, arena);
             return .{ .op = .{ .config_save = .{ .revision = b.revision } } };
         },
         .mqtt_put => {
-            const b = json.parse(MqttBody, body, arena) catch |e| return jsonError(e);
+            const b = json.parse(MqttBody, body, arena, &where) catch |e| return jsonError(e, where, arena);
             if (b.host) |h| if (h.len == 0 or h.len > 64 or parseIpv4(h) == null) return bad("invalid_host", "host must be a dotted ipv4 address in this profile");
             if (b.port) |p| if (p == 0) return bad("invalid_port", "port must be 1..65535");
             inline for (.{ "username", "password", "client_id", "prefix" }) |name| {
@@ -1096,7 +1147,7 @@ pub fn parseBody(kind: BodyKind, body: []const u8, arena: *Arena, generated_id: 
             return .{ .op = .{ .mqtt_put = .{ .enabled = b.enabled, .host = b.host, .port = b.port, .username = b.username, .password = b.password, .client_id = b.client_id, .prefix = b.prefix, .tls = b.tls } } };
         },
         .ntfy_put => {
-            const b = json.parse(NtfyBody, body, arena) catch |e| return jsonError(e);
+            const b = json.parse(NtfyBody, body, arena, &where) catch |e| return jsonError(e, where, arena);
             if (b.url) |u| {
                 if (u.len > 64) return bad("invalid_url", "url must be at most 64 characters");
                 if (u.len > 0) _ = ntfy_url.parse(u) catch return bad("invalid_url", "url must be http://host[:port][/prefix] or https://host[:port][/prefix]");
@@ -1290,6 +1341,17 @@ fn expectReject(r: Route, status: u16, code: []const u8) !void {
     }
 }
 
+/// `expectReject`, and the message has to mention `says` -- for rejections whose whole point is
+/// naming the field the client got wrong.
+fn expectRejectSaying(r: Route, status: u16, code: []const u8, says: []const u8) !void {
+    try expectReject(r, status, code);
+    const m = r.reject.message;
+    if (std.mem.indexOf(u8, m, says) == null) {
+        std.debug.print("message \"{s}\" does not mention \"{s}\"\n", .{ m, says });
+        return error.TestUnexpectedResult;
+    }
+}
+
 test "the event stream is a control-authority get, and nothing else" {
     const c = testCreds();
     var arena: Arena = undefined;
@@ -1480,7 +1542,8 @@ test "notify and scene bodies become typed operations with validation" {
     const sp = route(testReq(.PUT, "/api/v1/scene", "", control_header, "application/json", null), "{\"base\":\"clock\",\"clock\":{\"font\":\"block\",\"spread\":120},\"request_id\":\"7\"}", &c, &no_clients, &origins, &arena, test_minted);
     try std.testing.expectEqual(clock.Font.block, sp.op.set_scene.style.?.font.?);
     try std.testing.expectEqual(@as(?u8, 120), sp.op.set_scene.style.?.spread);
-    try expectReject(route(testReq(.PUT, "/api/v1/scene", "", control_header, "application/json", null), "{\"base\":\"clock\",\"clock\":{\"spread\":300},\"request_id\":\"7\"}", &c, &no_clients, &origins, &arena, test_minted), 400, "invalid_json");
+    // 300 does not fit spread's u8; the rejection says which field, not just "not valid json"
+    try expectRejectSaying(route(testReq(.PUT, "/api/v1/scene", "", control_header, "application/json", null), "{\"base\":\"clock\",\"clock\":{\"spread\":300},\"request_id\":\"7\"}", &c, &no_clients, &origins, &arena, test_minted), 400, "value_out_of_range", "spread");
     try expectReject(route(testReq(.PUT, "/api/v1/scene", "", control_header, "application/json", null), "{\"base\":\"clock\",\"clock\":{\"font\":\"comic\"},\"request_id\":\"7\"}", &c, &no_clients, &origins, &arena, test_minted), 400, "invalid_font");
     try expectReject(route(testReq(.PUT, "/api/v1/scene", "", control_header, "application/json", null), "{\"base\":\"clock\",\"clock\":{\"gradient\":\"radial\"},\"request_id\":\"7\"}", &c, &no_clients, &origins, &arena, test_minted), 400, "invalid_gradient");
     try expectReject(route(testReq(.PUT, "/api/v1/scene", "", control_header, "application/json", null), "{\"base\":\"clock\",\"clock\":{\"colour\":\"red\"},\"request_id\":\"7\"}", &c, &no_clients, &origins, &arena, test_minted), 400, "invalid_colour");
@@ -1587,6 +1650,46 @@ test "screen, logs and input routes" {
     try expectReject(route(testReq(.POST, "/api/v1/input", "", control_header, "application/json", null), "{\"control\":\"middle\",\"event\":\"click\",\"steps\":2,\"request_id\":\"c\",\"epoch\":1}", &c, &no_clients, &origins, &arena, test_minted), 400, "invalid_steps");
     try expectReject(route(testReq(.POST, "/api/v1/input", "", control_header, "application/json", null), "{\"control\":\"rotary\",\"event\":\"cw\",\"steps\":17,\"request_id\":\"c\",\"epoch\":1}", &c, &no_clients, &origins, &arena, test_minted), 400, "invalid_steps");
     try expectReject(route(testReq(.POST, "/api/v1/input", "", control_header, "application/json", null), "{\"control\":\"pedal\",\"event\":\"click\",\"request_id\":\"c\",\"epoch\":1}", &c, &no_clients, &origins, &arena, test_minted), 400, "invalid_control");
+}
+
+test "samples given as a json string are refused, rather than read as the bytes of the digits" {
+    // zig's json parser fills a `[]const u8` from a json *string* exactly as readily as from an
+    // array of numbers, so `{"data":"1,2,3"}` used to become five samples of 49,44,50,44,51 -- the
+    // digits and the commas -- and drew a plausible-looking wrong picture. anything hand-rolling
+    // json falls into this, and a silent wrong answer is the worst kind. `data_hex` is the
+    // supported way to carry samples as a string.
+    const c = testCreds();
+    var arena: Arena = undefined;
+    const origins = OriginPolicy{};
+    const put = testReq(.PUT, "/api/v1/canvas", "", admin_header, "application/json", null);
+    try expectReject(route(put, "{\"elements\":[{\"type\":\"sparkline\",\"data\":\"1,2,3\"}]}", &c, &no_clients, &origins, &arena, test_minted), 400, "invalid_data");
+    // the same trap on the patch route, which takes samples by element id
+    const patch = testReq(.PATCH, "/api/v1/canvas", "", admin_header, "application/json", null);
+    try expectReject(route(patch, "{\"values\":[{\"id\":\"g\",\"data\":\"1,2,3\"}]}", &c, &no_clients, &origins, &arena, test_minted), 400, "invalid_data");
+    // and a list of numbers still parses
+    const good = route(put, "{\"elements\":[{\"type\":\"sparkline\",\"data\":[1,2,3]}]}", &c, &no_clients, &origins, &arena, test_minted);
+    try std.testing.expectEqualSlices(u8, &[_]u8{ 1, 2, 3 }, good.op.canvas_put.dataOf(good.op.canvas_put.elements[0].body.sparkline.span));
+}
+
+test "a number the schema cannot hold names the field it was given for" {
+    // out of range or fractional numbers used to answer `invalid_json`, "the body is not valid
+    // json for this schema" -- which names neither the field nor what was wrong with it. the
+    // parser knows where it gave up, so the field it was inside is worth saying out loud.
+    const c = testCreds();
+    var arena: Arena = undefined;
+    const origins = OriginPolicy{};
+    const put = testReq(.PUT, "/api/v1/canvas", "", admin_header, "application/json", null);
+    try expectRejectSaying(route(put, "{\"elements\":[{\"type\":\"circle\",\"r\":300}]}", &c, &no_clients, &origins, &arena, test_minted), 400, "value_out_of_range", "r");
+    try expectRejectSaying(route(put, "{\"elements\":[{\"type\":\"circle\",\"r\":-3}]}", &c, &no_clients, &origins, &arena, test_minted), 400, "value_out_of_range", "r");
+    try expectRejectSaying(route(put, "{\"elements\":[{\"type\":\"circle\",\"r\":2.5}]}", &c, &no_clients, &origins, &arena, test_minted), 400, "value_not_whole", "r");
+    // a number nested inside a list still names the field that holds the list
+    try expectRejectSaying(route(put, "{\"elements\":[{\"type\":\"sparkline\",\"data\":[1,2,300]}]}", &c, &no_clients, &origins, &arena, test_minted), 400, "value_out_of_range", "data");
+    try expectRejectSaying(route(put, "{\"elements\":[{\"type\":\"rect\",\"at\":[0,40000]}]}", &c, &no_clients, &origins, &arena, test_minted), 400, "value_out_of_range", "at");
+    // not canvas-specific: every body's numbers go through the same parser
+    const cfg = testReq(.PATCH, "/api/v1/config", "", admin_header, "application/json", null);
+    try expectRejectSaying(route(cfg, "{\"brightness\":900}", &c, &no_clients, &origins, &arena, test_minted), 400, "value_out_of_range", "brightness");
+    // a syntax error has no field to name and keeps the message it had
+    try expectReject(route(put, "{\"elements\":[{\"type\":\"circle\",", &c, &no_clients, &origins, &arena, test_minted), 400, "invalid_json");
 }
 
 test "a canvas document is parsed whole, with every field checked against its element type" {
