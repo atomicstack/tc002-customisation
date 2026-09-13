@@ -149,6 +149,24 @@ chn=0}` and `{0, &frame}` both returned success — which proves nothing on its 
 returning 0 does not mean samples were queued, and `QueryChnStat` stayed all zeros. a third variant
 (`{&frame, 0}`) segfaulted the probe process; the device itself was untouched.
 
+### a hazard worth knowing before you experiment
+
+**a wrong `SendFrame` payload can wedge the driver, and a wedged driver needs a reboot.** after the
+`{&frame, 0}` variant segfaulted the probe, the *next* run blocked forever inside
+`MI_AO_SetPubAttr` — `/proc/<pid>/wchan` read `MI_AO_IOCTL_SetPubAttr` and the process sat in
+uninterruptible sleep (state `D`), unkillable, holding `/dev/mi_ao`. every later audio attempt then
+blocks too.
+
+nothing else was affected: the renderer kept presenting, the api kept answering, memory was
+unchanged. but the audio device stays unusable until the box is rebooted, which on this device means
+coming back to the stock app and re-running `tools/tc002-up.sh`.
+
+so **do not hunt payloads by trial against this driver.** decode them from the disassembly first.
+the control-plane calls above are safe precisely because they were read out before they were run.
+
+(the same run also meant to test whether `mmap` on the audio fds hands out a buffer. it never got
+there — the hang happened first — so **that question is still open**.)
+
 **what is still not recovered** is the last hop: how `MI_AO_SendFrame` turns that 288-byte frame into
 the 8-byte `{?, ?}` payload its ioctl carries. it does copy: there is a loop inside it
 reading 16-bit samples from the caller's buffer and writing them, strided, into a destination the
