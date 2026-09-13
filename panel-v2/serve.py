@@ -36,7 +36,8 @@ DEVICE_TIMEOUT_S = 10
 STREAM_TIMEOUT_S = 30
 EVENTS_ENDPOINT = "events"
 # the only static files this server will hand back; everything else not under /api/ or /tokens is 404
-STATIC_ALLOW = {"/", "/index.html", "/sim-wasm.js", "/tc002-panel.wasm"}
+STATIC_ALLOW = {"/", "/index.html", "/sim-wasm.js", "/tc002-panel.wasm",
+                "/scripts-model.js", "/scripts-editor.js", "/scripts-editor.css"}
 
 
 def parse_tokens(data):
@@ -89,6 +90,8 @@ def adb_pull(serial=None):
 
 
 def token_for(method, endpoint):
+    if endpoint.startswith("berry/scripts/") and method in ("PUT", "DELETE", "POST"):
+        return "admin"   # storing, deleting and explicitly running a script all require admin
     if method == "PUT" and endpoint.startswith("sprites/"):
         return "admin"   # a sprite slot is a path family, so it cannot sit in the set above
     if endpoint == "tokens" or endpoint.startswith("tokens/"):

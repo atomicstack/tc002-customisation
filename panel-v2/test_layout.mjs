@@ -9,7 +9,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { createServer } from 'node:net';
-import { mkdtempSync, rmSync, existsSync } from 'node:fs';
+import { mkdtempSync, rmSync, existsSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -465,3 +465,174 @@ for (const width of [1440, 1200, 950, 700, 390]) {
     }
   });
 }
+
+test('script editor round-trips source through the real proxy and berry mock',
+  { skip: chromeAvailable ? false : 'google chrome is not installed' }, async () => {
+  await cdp.setWidth(1200);
+  await cdp.eval(`document.querySelector('[data-tab="scripts"]').click()`);
+  await waitFor(async () => {if(await cdp.eval('scriptEditor.opening')) throw new Error('loading');});
+  assert.ok(!(await cdp.eval(`document.getElementById('scriptBudget').textContent`)).includes('undefined'));
+  await cdp.eval(`document.getElementById('scriptName').value='editor_roundtrip';document.getElementById('scriptNewForm').requestSubmit()`);
+  const source = "# keep case and utf-8 exactly\nprint('MiXeD café')\n";
+  await cdp.eval(`(() => {const e=document.getElementById('scriptSource');e.value=${JSON.stringify(source)};e.dispatchEvent(new Event('input'));})()`);
+  assert.equal(await cdp.eval(`(async()=>{const r=await fetch(api('berry/scripts/editor_roundtrip'));return r.status;})()`),404,'creating and typing must not store a script');
+  await cdp.eval(`document.getElementById('scriptSave').click()`);
+  await waitFor(async () => {
+    const actual=await cdp.eval(`(async()=>{const r=await fetch(api('berry/scripts/editor_roundtrip'));return r.ok ? await r.text() : null;})()`);
+    if(actual !== source) throw new Error('source has not round-tripped');
+  });
+  await sleep(100);
+  assert.ok((await cdp.eval(`document.getElementById('scriptMessage').textContent`)).includes('not compiled'),'disabled interpreter saves must be identified');
+  await cdp.eval(`document.getElementById('scriptDelete').click();document.getElementById('scriptDelete').click()`);
+  await waitFor(async () => {if(await cdp.eval('scriptEditor.opening')) throw new Error('deleting');});
+  assert.equal(await cdp.eval(`(async()=>{const r=await fetch(api('berry/scripts/editor_roundtrip'));return r.status;})()`),404);
+  assert.equal(await cdp.eval(`document.getElementById('scriptSource').value`),source,'delete keeps a browser draft');
+  await cdp.eval(`document.getElementById('scriptDiscard').click();document.getElementById('scriptDiscard').click()`);
+  await waitFor(async () => {if(await cdp.eval('scriptEditor.opening')) throw new Error('discarding');});
+  assert.equal(await cdp.eval('scriptEditor.session'),null,'discarding a local-only script closes it');
+});
+
+const SCRIPT_FIXTURE = `(() => {
+    const original = window.fetch.bind(window);
+    window.__scriptTest = { sources: { welcome: "print('hello')" }, writes: 0, runs: 0 };
+    window.fetch = async (url, options = {}) => {
+      const path = String(url).split('/v1/')[1];
+      if (path?.startsWith('logs?')) {
+        const after = new URL('http://fixture/' + path).searchParams.get('after');
+        return new Response(JSON.stringify({next:2,lines:after === '2' ? [] : [{seq:1,text:'hello from script'},{seq:2,text:'42'}]}),{headers:{'content-type':'application/json'}});
+      }
+      if (!path || !path.startsWith('berry')) return original(url, options);
+      const t = window.__scriptTest, method = options.method || 'GET';
+      const json = (value, status = 200) => new Response(JSON.stringify(value), {status, headers: {'content-type':'application/json'}});
+      if (path === 'berry') return json({state:'running', heap_used:1024, heap_bytes:262144, stops:0});
+      if (path === 'berry/scripts') return json({used:32,budget:65536,scripts:Object.entries(t.sources).map(([name,source]) => ({name,bytes:source.length,compiled:true}))});
+      const [, , name, action] = path.split('/');
+      if (method === 'GET' && t.delayRead && name) await new Promise(resolve => t.releaseRead = resolve);
+      if (action === 'run') { t.runs++; return json({ok:true}); }
+      if (method === 'PUT') {
+        if (options.body.includes('broken!')) return json({error:'script_will_not_compile',message:'line 2: syntax error'},400);
+        t.writes++; t.sources[name] = options.body; return json({ok:true});
+      }
+      if (method === 'DELETE') { delete t.sources[name]; return json({ok:true}); }
+      return Object.hasOwn(t.sources,name) ? new Response(t.sources[name], {headers:{'content-type':'text/plain'}}) : json({error:'not_found'},404);
+    };
+  })()`;
+
+// browser interaction tests use a small http contract fixture; the runtime integration tests
+// exercise the actual mock separately. this lets failures and delayed saves be deterministic.
+test('script editor recovers local drafts and writes only on explicit changed-source saves',
+  { skip: chromeAvailable ? false : 'google chrome is not installed' }, async () => {
+  assert.equal(await cdp.eval(`!!document.querySelector('[data-tab="scripts"]')`), true);
+  const fixture = SCRIPT_FIXTURE;
+  const installed = await cdp.send('Page.addScriptToEvaluateOnNewDocument', {source:fixture});
+  await cdp.eval(fixture);
+  try {
+    await cdp.eval(`document.querySelector('[data-tab="scripts"]').click()`);
+    await waitFor(async () => {
+      if (await cdp.eval(`document.getElementById('scriptSource')?.value`) !== "print('hello')") throw new Error('source not loaded');
+    });
+    const edit = source => cdp.eval(`(() => { const e=document.getElementById('scriptSource'); e.value=${JSON.stringify(source)}; e.dispatchEvent(new Event('input',{bubbles:true})); })()`);
+    await edit("print('local draft')");
+    assert.deepEqual(await cdp.eval(`[__scriptTest.writes,__scriptTest.runs]`),[0,0]);
+    const previousOrigin = await cdp.eval('performance.timeOrigin');
+    await cdp.send('Page.reload');
+    await waitFor(async () => {
+      if (await cdp.eval('performance.timeOrigin') === previousOrigin) throw new Error('reload has not started');
+      if (await cdp.eval(`document.getElementById('scriptSource')?.value`) !== "print('local draft')") throw new Error('draft not recovered');
+    });
+    await cdp.eval(`document.getElementById('scriptRun').click()`);
+    await waitFor(async () => { if (await cdp.eval('__scriptTest.runs') !== 1) throw new Error('run not sent'); });
+    assert.equal(await cdp.eval('__scriptTest.writes'),0);
+    await cdp.eval(`document.getElementById('scriptSave').click()`);
+    await waitFor(async () => { if (await cdp.eval('__scriptTest.writes') !== 1) throw new Error('save not sent'); });
+    await sleep(150);
+    await cdp.eval(`document.getElementById('scriptSave').click()`);
+    await sleep(150);
+    assert.equal(await cdp.eval('__scriptTest.writes'),1);
+    await edit("print('hello')\nbroken!");
+    await cdp.eval(`document.getElementById('scriptSaveRun').click()`);
+    await waitFor(async () => { if (!(await cdp.eval(`document.getElementById('scriptMessage').textContent`)).includes('syntax error')) throw new Error('compile error missing'); });
+    assert.deepEqual(await cdp.eval(`[__scriptTest.writes,__scriptTest.runs]`),[1,1]);
+    assert.equal(await cdp.eval(`document.getElementById('scriptSource').value`),"print('hello')\nbroken!");
+    await sleep(2300);
+    assert.equal(await cdp.eval(`document.getElementById('scriptOutput').textContent.split('hello from script').length-1`),1);
+    assert.ok((await cdp.eval(`document.getElementById('scriptOutput').textContent`)).includes('42'),'plain print output is retained');
+    await cdp.setWidth(390);
+    if (process.env.TC002_SCRIPT_SHOTS) { const shot=await cdp.send('Page.captureScreenshot',{format:'png',captureBeyondViewport:true});writeFileSync('/tmp/tc002-script-narrow.png',Buffer.from(shot.data,'base64')); }
+    assert.equal(await cdp.eval(`document.documentElement.scrollWidth > document.documentElement.clientWidth + 1`),false);
+    assert.equal(await cdp.eval(`document.getElementById('scriptSource').getBoundingClientRect().width > 200`),true,await cdp.eval(`JSON.stringify({width:document.getElementById('scriptSource').getBoundingClientRect().width,hidden:document.getElementById('scriptsPanel').hidden,display:getComputedStyle(document.getElementById('scriptsPanel')).display})`));
+  } finally {
+    await cdp.send('Page.removeScriptToEvaluateOnNewDocument',{identifier:installed.identifier});
+  }
+});
+
+
+test('script confirmations belong to the script they name and discard excludes concurrent edits',
+  { skip: chromeAvailable ? false : 'google chrome is not installed' }, async () => {
+  await cdp.eval(SCRIPT_FIXTURE);
+  await cdp.eval(`__scriptTest.sources.other="print('other')"; scriptEditor.visible(true)`);
+  await waitFor(async () => { if (await cdp.eval('scriptEditor.opening')) throw new Error('loading'); });
+  await cdp.eval(`scriptEditor.open('welcome')`);
+  await cdp.eval(`document.getElementById('scriptDelete').click()`);
+  await cdp.eval(`scriptEditor.open('other')`);
+  await cdp.eval(`document.getElementById('scriptDelete').click()`);
+  await sleep(150);
+  assert.equal(await cdp.eval(`Object.hasOwn(__scriptTest.sources,'other')`),true,'switching scripts must disarm delete');
+  await cdp.eval(`(() => {const e=document.getElementById('scriptSource'); e.value="print('draft')";e.dispatchEvent(new Event('input'));__scriptTest.delayRead=true;document.getElementById('scriptDiscard').click();document.getElementById('scriptDiscard').click();})()`);
+  assert.equal(await cdp.eval(`document.getElementById('scriptSource').disabled`),true,'discard must protect edits while reading remote source');
+  assert.equal(await cdp.eval(`document.getElementById('scriptSave').disabled`),true);
+  await cdp.eval(`__scriptTest.delayRead=false;__scriptTest.releaseRead()`);
+});
+
+test('script draft unload protection includes inactive scripts after storage failure',
+  { skip: chromeAvailable ? false : 'google chrome is not installed' }, async () => {
+  await cdp.eval(SCRIPT_FIXTURE);
+  const protectedDraft = await cdp.eval(`(async () => {
+    const previous=scriptEditor.drafts;
+    try {
+      scriptEditor.drafts=new TC002ScriptsModel.Drafts({length:0,key(){return null;},getItem(){return null;},setItem(){throw new Error('quota exceeded');},removeItem(){}});
+      await scriptEditor.open('welcome'); scriptEditor.session.edit('print(42)');
+      __scriptTest.sources.other='print(1)'; scriptEditor.device='other-device'; await scriptEditor.open('other');
+      const event=new Event('beforeunload',{cancelable:true}); window.dispatchEvent(event);
+      return {unsafe:scriptEditor.drafts.hasUnsafeDrafts(),protected:event.defaultPrevented};
+    } finally { scriptEditor.drafts=previous; }
+  })()`);
+  assert.equal(protectedDraft.unsafe,true);
+  assert.equal(protectedDraft.protected,true);
+});
+
+
+test('script editor indents selected lines without deleting source',
+  { skip: chromeAvailable ? false : 'google chrome is not installed' }, async () => {
+  await cdp.eval(SCRIPT_FIXTURE);
+  await cdp.eval(`scriptEditor.device=host();scriptEditor.visible(true)`);
+  await waitFor(async () => {if(await cdp.eval('scriptEditor.opening')) throw new Error('loading');});
+  await cdp.eval(`scriptEditor.open('welcome')`);
+  const source="print(1)\nprint(2)";
+  await cdp.eval(`(() => {const e=document.getElementById('scriptSource');e.value=${JSON.stringify(source)};e.dispatchEvent(new Event('input'));e.setSelectionRange(0,e.value.length);e.dispatchEvent(new KeyboardEvent('keydown',{key:'Tab',bubbles:true,cancelable:true}));})()`);
+  assert.equal(await cdp.eval(`document.getElementById('scriptSource').value`),'  print(1)\n  print(2)');
+  await cdp.eval(`document.getElementById('scriptSource').dispatchEvent(new KeyboardEvent('keydown',{key:'Tab',shiftKey:true,bubbles:true,cancelable:true}))`);
+  assert.equal(await cdp.eval(`document.getElementById('scriptSource').value`),source);
+});
+
+test('script editor clears old highlights when switching to an empty device',
+  { skip: chromeAvailable ? false : 'google chrome is not installed' }, async () => {
+  await cdp.eval(SCRIPT_FIXTURE);
+  await cdp.eval(`scriptEditor.device=host();scriptEditor.visible(true)`);
+  await waitFor(async () => {if(await cdp.eval('scriptEditor.opening')) throw new Error('loading');});
+  await cdp.eval(`scriptEditor.open('welcome')`);
+  const result=await cdp.eval(`(async()=>{const old=scriptEditor.connection;try{__scriptTest.sources={};scriptEditor.connection=()=>({device:'empty-device',admin:true,control:true});await scriptEditor.activate();return {source:document.getElementById('scriptSource').value,highlight:document.getElementById('scriptHighlight').textContent.trim()};}finally{scriptEditor.connection=old;}})()`);
+  assert.equal(result.source,'');
+  assert.equal(result.highlight,'');
+});
+
+test('script save shortcut enforces the utf-8 byte limit before sending',
+  { skip: chromeAvailable ? false : 'google chrome is not installed' }, async () => {
+  await cdp.eval(SCRIPT_FIXTURE);
+  await cdp.eval(`scriptEditor.device=host();scriptEditor.visible(true)`);
+  await waitFor(async () => {if(await cdp.eval('scriptEditor.opening')) throw new Error('loading');});
+  await cdp.eval(`scriptEditor.open('welcome')`);
+  await cdp.eval(`(() => {const e=document.getElementById('scriptSource');e.value='é'.repeat(4001);e.dispatchEvent(new Event('input'));e.dispatchEvent(new KeyboardEvent('keydown',{key:'s',ctrlKey:true,bubbles:true,cancelable:true}));})()`);
+  await sleep(100);
+  assert.equal(await cdp.eval('__scriptTest.writes'),0);
+});

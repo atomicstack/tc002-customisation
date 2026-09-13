@@ -272,6 +272,54 @@ berryd takes its heap once and cannot resize it under a live vm, so **any berry
 settings change replaces the process** rather than reconfiguring it. scripts are
 reloaded from the store and `autoexec` runs again.
 
+## the browser editor
+
+`panel-v2/start-panel.sh [--mock] [--open]` opens the runtime console. its
+**scripts** tab lists device scripts and local drafts, reads source from the
+device, and provides syntax highlighting, line numbers, block indentation,
+compile-error navigation and a shared device-log view. the source stays exactly
+as typed, including case. the editor counts the 8,000-byte limit in utf-8 bytes.
+
+- **create local draft** only creates browser state. opening or editing a script
+  does not write to the device.
+- **save** (also command/ctrl+s) reads the latest device source before writing.
+  identical source skips the put, including after a lost save response. a source
+  changed by another client is shown for comparison and requires an explicit
+  overwrite or discard. a refused save retains the draft and its error.
+- **run saved** posts to the named-run route without a body. it never saves local
+  edits, enables scripting or writes settings. **save & run** saves only changed
+  source and runs only after save succeeds. there are no debugger controls.
+- **delete from device** confirms for the selected script and retains a local
+  recovery draft. **discard local draft** confirms separately, reads the device
+  version again and removes the browser draft. **download draft** exports source
+  without a device write.
+
+localstorage holds drafts immediately on input, with the device address, script
+name and the source version they were based on. it also remembers the selected
+script per device. reloads and script/device switches recover that work without
+uploading it. storage is scoped to this browser and console origin: changing the
+proxy port uses a different store; clearing browser storage removes drafts.
+credentials are never placed in webstorage.
+
+storage denial, quota exhaustion or a conflicting browser tab leaves the current
+text in memory, displays a warning and protects page unload while any such draft
+remains, even after switching scripts or devices. download that draft before
+closing. a stale tab cannot silently replace the other tab's stored draft; it
+keeps its own text in memory. a browser crash cannot preserve memory-only work.
+
+source comparison is a preflight read, not an atomic conditional write: the api
+has no compare-and-swap, so another client can still race between read, save and
+run. running executes whatever source is stored when the device handles it.
+when scripting is disabled the editor identifies uncompiled saves and leaves
+enabling it to an explicit settings change. output is the shared log because
+plain `print()` lines have no source metadata; filtering for the word berry would
+hide valid script output.
+
+editor tests: `node --test test_scripts.mjs`, `node --test test_layout.mjs`, and
+`/usr/bin/python3 -m unittest test_serve test_scripts_proxy`, from `panel-v2/`.
+the browser suite checks real source round trips through the proxy/mock and uses
+a deterministic execution fixture for run failures and flash-write counts.
+
 ## testing scripts
 
 `zig build test-berry` runs `.be` fixtures in `runtime/test/berry/` through the
