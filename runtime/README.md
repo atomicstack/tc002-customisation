@@ -23,6 +23,8 @@ zig build            # zig-out/bin/tc002d, zig-out/bin/tc002-supervisor, zig-out
 zig build test       # host unit tests of every pure module
 zig build check      # elf sanity of the bootstrap: arm et_dyn, no dt_needed, has init_array
 zig build wasm       # the scene code as wasm for the console preview -> ../panel-v2/tc002-panel.wasm
+zig build test-berry # the .be fixtures in test/berry/ through the vendored interpreter, on the host
+zig build berry-check # links the vendored interpreter for the device; not installed by default
 ```
 
 `-Dsupervisor_path=/res/bin/tc002-supervisor` selects the production exec path; the default is the
@@ -121,6 +123,21 @@ controls. the full reference is [`RUNTIME.md`](../RUNTIME.md).
   looked up by a linear scan when settings change. no tzdata on the device, no historical rules.
 - **input events are not retained** on mqtt, on purpose: a consumer that was offline must not replay
   a stale press. events raised while the broker is unreachable are lost.
+- **berry is vendored, and its binary is the only one that links libc.** the interpreter needs 56
+  external symbols, and two of them decide the question: `setjmp`/`longjmp` is berry's entire error
+  model, and `snprintf` is how it formats reals. writing those by hand means arm assembly and a
+  printf family; zig's static musl supplies them correctly, and the parts actually used measure
+  19 kb. the other four binaries are unchanged and still build with `link_libc = false`.
+  `runtime/vendor/berry/` holds upstream `6e6e621` with its `coc` output committed (builds never
+  need python, exactly as `src/scene/zones.zig` never needs zoneinfo), `be_filelib.c` deleted, and
+  four entry points in `port/be_port.c` that refuse rather than pretend -- `open()` raises
+  `io_error`. the trimmed interpreter is **205 kb** of armv7 image at `-Os`.
+  `zig build berry-check` links it for the device and `zig build test-berry` runs `.be` fixtures
+  through the same c on the host; neither is part of `zig build` or `zig build test`, which stay
+  pure zig. note that `tc002-berry-check` measures 731 kb allocated rather than 205: it is a
+  ReleaseSafe zig program linking static musl, and 262,144 bytes of that is zig's
+  `Thread.maybeAttachSignalStack` signal stack in `.bss`, demand-zero and not resident. the numbers
+  that matter are the ones the berry daemon produces when it exists.
 
 ## running it on the device (volatile)
 
