@@ -173,6 +173,44 @@ test('every select is named by the row it sits in', { skip: chromeAvailable ? fa
 
 // the now card draws a bar for the figures that are a fraction of something: brightness and cpu are
 // percentages already, memory and flash are a used figure over the total the device reports with it
+test('the client token name rule matches the device\'s, so a mistake costs no round trip',
+  { skip: chromeAvailable ? false : 'google chrome is not installed' }, async () => {
+  // 1-32 of [a-zA-Z0-9._-], not starting with a dot, no commas. checked in the page rather than
+  // by a round trip, so it has to agree with the runtime exactly
+  const check = async name => cdp.eval(`tokenNameProblem(${JSON.stringify(name)}) === null`);
+  for (const good of ['kitchen', 'home.assistant', 'a_b-c', 'A1', 'x'.repeat(32)]) {
+    assert.equal(await check(good), true, `${good} should be accepted`);
+  }
+  for (const bad of ['', '.hidden', 'has,comma', 'has space', 'x'.repeat(33), 'sla/sh', 'sem;colon']) {
+    assert.equal(await check(bad), false, `${JSON.stringify(bad)} should be refused`);
+  }
+});
+
+test('a token that has not been used since a restart says so, rather than never',
+  { skip: chromeAvailable ? false : 'google chrome is not installed' }, async () => {
+  // last_used_s is netd's memory and resets with the runtime, so 0 is not "never"
+  const [zero, set] = await cdp.eval(`[tokenUsed(0), tokenUsed(1757803312)]`);
+  assert.equal(zero, 'not used since restart');
+  assert.notEqual(set, 'not used since restart');
+  assert.ok(set.length > 0);
+});
+
+test('the client token card is locked without an admin token',
+  { skip: chromeAvailable ? false : 'google chrome is not installed' }, async () => {
+  const state = await cdp.eval(`
+    (() => {
+      const card = document.getElementById('tokenCard');
+      return { present: !!card, locked: card.classList.contains('locked'),
+               createDisabled: document.getElementById('tokadd').disabled,
+               secretHidden: document.getElementById('toknew').hidden,
+               secretEmpty: document.getElementById('toksecret').value === '' };
+    })()
+  `);
+  assert.equal(state.present, true);
+  assert.equal(state.secretHidden, true, 'no secret panel until one is issued');
+  assert.equal(state.secretEmpty, true, 'and nothing sitting in the field');
+});
+
 test('the now card fills each metric bar to the fraction the device reports', { skip: chromeAvailable ? false : 'google chrome is not installed' }, async () => {
   await cdp.setWidth(1200);
   const st = await cdp.eval(`fetch('/api/127.0.0.1:${mockPort}/v1/status', { cache: 'no-store' }).then(r => r.json())`);

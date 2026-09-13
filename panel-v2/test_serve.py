@@ -1,6 +1,6 @@
 #!/usr/bin/python3
 """tests for the panel-v2 proxy. run: /usr/bin/python3 -m unittest test_serve -v"""
-import contextlib, http.server, importlib.util, json, os, secrets, socket, socketserver, subprocess, sys, tempfile, threading, unittest, urllib.error, urllib.request
+import contextlib, http.server, re, importlib.util, json, os, secrets, socket, socketserver, subprocess, sys, tempfile, threading, unittest, urllib.error, urllib.request
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
@@ -846,6 +846,52 @@ class EventStreamTests(unittest.TestCase):
             self.assertEqual(r.readline(), b"\n")
             type(self).written.set()          # let the origin write the second
             self.assertIn(b'"revision":8', r.readline())
+
+
+class ConsoleScriptTests(unittest.TestCase):
+    """index.html is one long script in one scope, so a second `function foo` silently replaces the
+    first and the caller that wanted the original stops working with no error anywhere. that has
+    happened twice: a duplicate `revision` key in the loader's api object, and a `loadTokens` that
+    shadowed the one deciding which cards to unlock."""
+
+    def test_no_top_level_name_is_declared_twice(self):
+        import collections
+        with open(os.path.join(HERE, "index.html"), encoding="utf-8") as f:
+            html = f.read()
+        script = html[html.index("<script>", html.index("sim-wasm.js")):]
+        names = collections.Counter(
+            re.findall(r"^(?:async )?function ([A-Za-z_$][\w$]*)\s*\(", script, re.M)
+            + re.findall(r"^(?:const|let|var) ([A-Za-z_$][\w$]*)\s*=", script, re.M))
+        dupes = sorted(n for n, c in names.items() if c > 1)
+        self.assertEqual(dupes, [], f"declared more than once in index.html: {dupes}")
+
+
+class TokenRouteTests(unittest.TestCase):
+    """every client-token route is admin, and a token name may contain a dot.
+
+    `home.assistant` is a likely name and the proxy's path pattern refused dots, so
+    `DELETE /tokens/home.assistant` could never have reached the device."""
+
+    def test_the_token_routes_use_the_admin_token(self):
+        for method, endpoint in (("GET", "tokens"), ("POST", "tokens"),
+                                 ("DELETE", "tokens/kitchen"), ("DELETE", "tokens/home.assistant")):
+            self.assertEqual(serve.token_for(method, endpoint), "admin", f"{method} {endpoint}")
+        # and nothing else was swept up by the prefix
+        self.assertEqual(serve.token_for("GET", "status"), "control")
+        self.assertEqual(serve.token_for("GET", "tokensomething"), "control")
+
+    def test_a_dotted_token_name_survives_the_path(self):
+        for name in ("kitchen", "home.assistant", "a_b-c", "dots.every.where"):
+            m = serve.PATH_RE.match(f"/api/10.0.0.111/v1/tokens/{name}")
+            self.assertIsNotNone(m, name)
+            self.assertEqual(m.group(2), f"tokens/{name}")
+
+    def test_allowing_dots_did_not_allow_traversal(self):
+        # letting a segment contain a dot is one character away from letting it be `..`; the first
+        # attempt at this did exactly that and PureTests.test_rewrite caught it. a segment may
+        # contain dots but never begin with one, which is also the runtime's own name rule
+        for bad in ("../etc", "tokens/../etc", "tokens/.hidden", ".", "..", "tokens/.."):
+            self.assertIsNone(serve.PATH_RE.match(f"/api/10.0.0.5/v1/{bad}"), bad)
 
 
 class StaticCacheTests(unittest.TestCase):

@@ -25,7 +25,12 @@ ADMIN_ROUTES = {("PATCH", "config"), ("POST", "config/save"), ("GET", "mqtt"), (
                 # replacing a canvas or a sprite is admin; reading, patching values and clearing are control
                 ("PUT", "canvas")}
 # host may carry a port (host:1234) so the mock or a device behind a forward works
-PATH_RE = re.compile(r"^/api/([0-9a-zA-Z.\-]+(?::\d+)?)/v1/([A-Za-z0-9_\-]+(?:/[A-Za-z0-9_\-]+)*)(?:\?(.*))?$")
+# the endpoint segments allow dots because a client token name may contain one
+# (`home.assistant` is a likely name), and DELETE /tokens/<name> carries it in the path
+# a segment may contain dots but never start with one, so `home.assistant` is a legal token
+# name while `..` and `.hidden` are not paths at all. the runtime's own name rule forbids a
+# leading dot for the same reason, so this is the same constraint in the same place
+PATH_RE = re.compile(r"^/api/([0-9a-zA-Z.\-]+(?::\d+)?)/v1/([A-Za-z0-9_\-][A-Za-z0-9._\-]*(?:/[A-Za-z0-9_\-][A-Za-z0-9._\-]*)*)(?:\?(.*))?$")
 DEVICE_TIMEOUT_S = 10
 # longer than the device's sse keepalive, so a quiet stream is not read as a dead one
 STREAM_TIMEOUT_S = 30
@@ -86,6 +91,8 @@ def adb_pull(serial=None):
 def token_for(method, endpoint):
     if method == "PUT" and endpoint.startswith("sprites/"):
         return "admin"   # a sprite slot is a path family, so it cannot sit in the set above
+    if endpoint == "tokens" or endpoint.startswith("tokens/"):
+        return "admin"   # every client-token route is admin, listing included
     return "admin" if (method, endpoint) in ADMIN_ROUTES else "control"
 
 

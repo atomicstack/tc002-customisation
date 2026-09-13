@@ -136,6 +136,11 @@ input.sw:checked::after{left:19px;background:var(--accent-ink)}
 .lockmsg{display:none;font-size:12px;color:var(--warn);margin:-4px 0 10px}
 .card.locked .lockmsg{display:block}
 input[type=color]{width:44px;height:28px;padding:2px;border:1px solid var(--line-2);border-radius:var(--radius-s);background:var(--surface-2);cursor:pointer}
+/* the secret is 64 characters and gets pasted into a phone: give it the whole row and a
+   monospace face so it can be read back, with the copy button as the real affordance */
+#toksecret{flex:1 1 100%;order:3;max-width:none;min-width:0;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px;letter-spacing:.02em}
+#toknew .field{flex-wrap:wrap;row-gap:8px}
+#toklist .field .lab{word-break:break-all}
 input[type=file]{font:12px var(--body);color:var(--muted);max-width:220px}
 .counter{font-family:var(--data);font-size:11px;color:var(--muted);margin-left:6px}
 .inline{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
@@ -404,6 +409,21 @@ input[type=file]{font:12px var(--body);color:var(--muted);max-width:220px}
       </div>
       <div class="actions"><span class="note">changes bump the settings revision and are written to flash at once. messages show as <i>title: message</i>, coloured by priority.</span></div>
     </section>
+<section class="card s12 wide" id="tokenCard">
+      <h2>Client tokens <span id="tokstate" class="pill">unknown</span></h2>
+      <div class="lockmsg">the proxy has no admin token: client tokens are unavailable</div>
+      <div class="rows">
+        <div class="field"><label for="tokname">Name<span class="key">1–32 of a–z A–Z 0–9 . _ - · no commas, not starting with a dot</span></label><input type="text" id="tokname" placeholder="kitchen" autocomplete="off" spellcheck="false" maxlength="32"></div>
+        <div class="field"><label for="tokrole">Role<span class="key">read shows the panel · control can also change it · a client is never admin</span></label><select id="tokrole"><option value="control">control</option><option value="read">read</option></select></div>
+        <div class="field"><span class="lab">Issue<span class="key">POST /tokens · the secret is shown once and cannot be fetched again</span></span><button class="btn" id="tokadd">Create</button></div>
+      </div>
+      <div class="rows" id="toknew" hidden>
+        <div class="field"><span class="lab">New token<span class="key" id="toknewfor"></span></span><input type="text" id="toksecret" readonly spellcheck="false"><button class="btn" id="tokcopy">Copy</button><button class="btn ghost" id="tokdone">Done</button></div>
+        <div class="actions"><span class="note" id="toknewnote">copy it now — it is not stored here and there is no route that returns it again. if it is lost, revoke and issue another.</span></div>
+      </div>
+      <div class="rows" id="toklist"></div>
+      <div class="actions"><span class="note" id="toknote">a client token is the access that already existed, with a name on it and the ability to take it away. revoking one is immediate. tokens travel in plain http and plain mqtt on this profile, so anyone on the network path can read one in flight — naming them helps against a token shared or screenshotted, not against a sniffer.</span></div>
+    </section>
   </div>
   <div class="tabpanel" data-panel="logs" hidden>
 <section class="card s12" id="logsCard">
@@ -455,7 +475,7 @@ async function call(method, path, body, contentType) {
   let doc = null;
   try { doc = txt ? JSON.parse(txt) : null; } catch { doc = { raw: txt }; }
   if (!r.ok) {
-    if (r.status === 403 && doc && doc.error === 'forbidden') { lock('settingsCard', true); lock('mqttCard', true); lock('ntfyCard', true); }
+    if (r.status === 403 && doc && doc.error === 'forbidden') { lock('settingsCard', true); lock('mqttCard', true); lock('ntfyCard', true); lock('tokenCard', true); }
     const e = new Error(doc && doc.message ? `${doc.message} (${doc.error})` : `HTTP ${r.status}`);
     e.status = r.status; e.code = doc && doc.error; throw e;
   }
@@ -1318,6 +1338,116 @@ $('mapply').addEventListener('click', async () => {
 });
 $('mcheck').addEventListener('click', mqttStatus);
 
+/* ---------- client tokens (admin) ----------
+   a named, revocable token for one integration. the secret is returned once by POST /tokens and
+   by nothing else, so it is shown once and then dropped: never logged, never stored, never in a
+   url. everything else about a client is public — the listing carries no secrets at all. */
+
+// the device's own rule, checked here so the common mistake costs no round trip: 1-32 of
+// [a-zA-Z0-9._-], not starting with a dot. commas are excluded because the storage format
+// separates fields with one
+const TOKEN_NAME_RE = /^[A-Za-z0-9._-]{1,32}$/;
+function tokenNameProblem(name) {
+  if (!name) return 'a name is required';
+  if (name.length > 32) return 'at most 32 characters';
+  if (name.startsWith('.')) return 'cannot start with a dot';
+  if (name.includes(',')) return 'cannot contain a comma';
+  if (!TOKEN_NAME_RE.test(name)) return 'letters, digits, dot, underscore and hyphen only';
+  return null;
+}
+
+const tokenWhen = s => !s ? '' : new Date(s * 1000).toLocaleString();
+// last_used_s lives in netd's memory and resets with the runtime, so 0 does not mean never
+const tokenUsed = s => s ? tokenWhen(s) : 'not used since restart';
+
+let CLIENTS = null;
+function showClientTokens(doc) {
+  CLIENTS = doc;
+  const list = doc && Array.isArray(doc.clients) ? doc.clients : [];
+  const state = $('tokstate');
+  state.textContent = doc && doc.max ? `${list.length} of ${doc.max}` : String(list.length);
+  state.className = 'pill' + (doc && doc.max && list.length >= doc.max ? ' warn' : '');
+  const box = $('toklist');
+  box.innerHTML = '';
+  if (!list.length) {
+    const row = document.createElement('div');
+    row.className = 'actions';
+    row.innerHTML = '<span class="note">no client tokens. the built-in control and admin tokens are not clients and are not listed here.</span>';
+    box.append(row);
+    return;
+  }
+  for (const c of list) {
+    const row = document.createElement('div');
+    row.className = 'field';
+    const lab = document.createElement('span');
+    lab.className = 'lab';
+    lab.textContent = c.name;
+    const key = document.createElement('span');
+    key.className = 'key';
+    key.textContent = `${c.role} · created ${tokenWhen(c.created_s)} · ${tokenUsed(c.last_used_s)}`;
+    lab.append(key);
+    const revoke = document.createElement('button');
+    revoke.className = 'btn ghost';
+    revoke.textContent = 'Revoke';
+    // two steps rather than confirm(): a modal dialog blocks the page and whatever is driving it,
+    // and revoking is silent from the client's side — it simply stops working
+    revoke.addEventListener('click', () => {
+      if (revoke.dataset.armed !== '1') {
+        revoke.dataset.armed = '1';
+        revoke.textContent = `Revoke ${c.name}?`;
+        revoke.classList.add('danger');
+        setTimeout(() => {
+          if (revoke.dataset.armed === '1') {
+            revoke.dataset.armed = ''; revoke.textContent = 'Revoke'; revoke.classList.remove('danger');
+          }
+        }, 4000);
+        return;
+      }
+      revokeClientToken(c.name);
+    });
+    row.append(lab, revoke);
+    box.append(row);
+  }
+}
+
+async function loadClientTokens() {
+  if (!TOKENS.admin) return;
+  try { showClientTokens(await call('GET', 'tokens')); }
+  catch (e) { if (e.status !== 404) toast(e.message, true); }
+}
+
+async function createClientToken() {
+  const name = $('tokname').value.trim();
+  const problem = tokenNameProblem(name);
+  if (problem) return toast(`name: ${problem}`, true);
+  try {
+    const made = await call('POST', 'tokens', { name, role: $('tokrole').value });
+    // shown once. it is not kept anywhere else in this page
+    $('toknewfor').textContent = `${made.name} · ${made.role} · shown once`;
+    $('toksecret').value = made.token || '';
+    $('toknew').hidden = false;
+    $('tokname').value = '';
+    await loadClientTokens();
+  } catch (e) { toast(e.message, true); }
+}
+
+async function revokeClientToken(name) {
+  try {
+    showClientTokens(await call('DELETE', `tokens/${encodeURIComponent(name)}`));
+    toast(`revoked ${name}; it stops working immediately`);
+  } catch (e) { toast(e.message, true); await loadClientTokens(); }
+}
+
+$('tokadd').addEventListener('click', createClientToken);
+$('tokname').addEventListener('keydown', e => { if (e.key === 'Enter') createClientToken(); });
+$('tokdone').addEventListener('click', () => { $('toksecret').value = ''; $('toknew').hidden = true; });
+$('tokcopy').addEventListener('click', async () => {
+  const v = $('toksecret').value;
+  if (!v) return;
+  try { await navigator.clipboard.writeText(v); toast('token copied'); }
+  catch { $('toksecret').select(); toast('press \u2318C to copy', true); }
+});
+
 /* ---------- ntfy (admin) ---------- */
 let NTFY = null, ntfyCaShown = '';
 function showNtfyStatus(s) {
@@ -1408,6 +1538,7 @@ async function loadTokens() {
   lock('sceneCard', noControl); lock('notificationCard', noControl); lock('frameCard', noControl);
   lock('controlsCard', noControl); lock('logsCard', noControl);
   lock('settingsCard', noControl || !TOKENS.admin); lock('mqttCard', noControl || !TOKENS.admin); lock('ntfyCard', noControl || !TOKENS.admin);
+  lock('tokenCard', noControl || !TOKENS.admin);
 }
 async function loadAll() {
   if (!host()) { setConn('off', 'no device'); return; }
@@ -1433,6 +1564,7 @@ async function loadAll() {
     await loadConfig();
     if (TOKENS.admin) { try { showMqtt(await call('GET', 'mqtt')); } catch (e) { toast(e.message, true); } }
     if (TOKENS.admin) { try { showNtfy(await call('GET', 'ntfy')); } catch (e) { toast(e.message, true); } }
+    if (TOKENS.admin) loadClientTokens();   // not awaited: the panel does not need it to be usable
     await mqttStatus();
     setConn('on', 'connected');
     pollScreen();
