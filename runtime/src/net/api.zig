@@ -34,7 +34,9 @@ pub const token_len = 32;
 pub const Token = [token_len]u8;
 pub const Credentials = struct { control: Token, admin: Token };
 
-pub const Authority = enum { none, control, admin };
+/// none < read < control < admin. internal to this file -- never serialised, never stored -- so
+/// a new rung costs nothing in compatibility.
+pub const Authority = enum { none, read, control, admin };
 
 pub fn authenticate(creds: *const Credentials, authorization: ?[]const u8) Authority {
     const header = authorization orelse return .none;
@@ -624,33 +626,34 @@ fn queryValue(query: []const u8, key: []const u8) ?[]const u8 {
 
 const Endpoint = struct { method: http.Method, path: []const u8, authority: Authority };
 
-/// authority per route: control tokens also permit control routes with an admin token.
+/// authority per route. the hierarchy means a stronger token always satisfies a weaker route, so
+/// `read` classifies what a token may see rather than taking anything from control or admin.
 const endpoints = [_]Endpoint{
-    .{ .method = .GET, .path = "/api/v1/status", .authority = .control },
-    .{ .method = .GET, .path = "/api/v1/scenes", .authority = .control },
+    .{ .method = .GET, .path = "/api/v1/status", .authority = .read },
+    .{ .method = .GET, .path = "/api/v1/scenes", .authority = .read },
     .{ .method = .PUT, .path = "/api/v1/scene", .authority = .control },
     .{ .method = .POST, .path = "/api/v1/action", .authority = .control },
-    .{ .method = .GET, .path = "/api/v1/config", .authority = .control },
+    .{ .method = .GET, .path = "/api/v1/config", .authority = .read },
     .{ .method = .PATCH, .path = "/api/v1/config", .authority = .admin },
     .{ .method = .POST, .path = "/api/v1/config/save", .authority = .admin },
     .{ .method = .POST, .path = "/api/v1/notify", .authority = .control },
     .{ .method = .POST, .path = "/api/v1/frame", .authority = .control },
-    .{ .method = .GET, .path = "/api/v1/icons", .authority = .control },
-    .{ .method = .GET, .path = "/api/v1/sprites", .authority = .control },
-    .{ .method = .GET, .path = "/api/v1/canvas", .authority = .control },
+    .{ .method = .GET, .path = "/api/v1/icons", .authority = .read },
+    .{ .method = .GET, .path = "/api/v1/sprites", .authority = .read },
+    .{ .method = .GET, .path = "/api/v1/canvas", .authority = .read },
     .{ .method = .PUT, .path = "/api/v1/canvas", .authority = .admin },
     .{ .method = .PATCH, .path = "/api/v1/canvas", .authority = .control },
     .{ .method = .DELETE, .path = "/api/v1/canvas", .authority = .control },
     .{ .method = .GET, .path = "/api/v1/mqtt", .authority = .admin },
     .{ .method = .PUT, .path = "/api/v1/mqtt", .authority = .admin },
-    .{ .method = .GET, .path = "/api/v1/mqtt/status", .authority = .control },
+    .{ .method = .GET, .path = "/api/v1/mqtt/status", .authority = .read },
     .{ .method = .GET, .path = "/api/v1/ntfy", .authority = .admin },
     .{ .method = .PUT, .path = "/api/v1/ntfy", .authority = .admin },
     .{ .method = .POST, .path = "/api/v1/streams", .authority = .control },
-    .{ .method = .GET, .path = "/api/v1/screen", .authority = .control },
+    .{ .method = .GET, .path = "/api/v1/screen", .authority = .read },
     .{ .method = .GET, .path = "/api/v1/logs", .authority = .control },
-    .{ .method = .GET, .path = "/api/v1/events", .authority = .control },
-    .{ .method = .GET, .path = "/api/v1/sounds", .authority = .control },
+    .{ .method = .GET, .path = "/api/v1/events", .authority = .read },
+    .{ .method = .GET, .path = "/api/v1/sounds", .authority = .read },
     .{ .method = .POST, .path = "/api/v1/sound", .authority = .control },
     .{ .method = .GET, .path = "/api/v1/berry", .authority = .control },
     .{ .method = .GET, .path = "/api/v1/berry/scripts", .authority = .control },
@@ -666,6 +669,7 @@ fn isText(content_type: ?[]const u8) bool {
 fn sufficient(have: Authority, need: Authority) bool {
     return switch (need) {
         .none => true,
+        .read => have == .read or have == .control or have == .admin,
         .control => have == .control or have == .admin,
         .admin => have == .admin,
     };
@@ -727,7 +731,7 @@ pub fn route(req: http.Request, body: []const u8, creds: *const Credentials, ori
     // authentication applies to reads as well as writes
     const authority = authenticate(creds, req.authorization);
     if (authority == .none) return .{ .reject = .{ .status = 401, .code = "unauthorized", .message = "a valid bearer token is required" } };
-    if (!sufficient(authority, ep.authority)) return .{ .reject = .{ .status = 403, .code = "forbidden", .message = "this route requires the admin token" } };
+    if (!sufficient(authority, ep.authority)) return .{ .reject = .{ .status = 403, .code = "forbidden", .message = "this route requires a higher authority" } };
 
     if (std.mem.eql(u8, ep.path, "/api/v1/status")) return .{ .op = .status };
     if (std.mem.eql(u8, ep.path, "/api/v1/scenes")) return .{ .op = .scenes };
@@ -1681,3 +1685,34 @@ test "a minted id cannot collide with the small ids a person picks by hand" {
     while (i < 4096) : (i += 1) try std.testing.expect(parseRequestId(std.fmt.bufPrint(&idbuf, "{x}", .{i}) catch unreachable).? != (generated_mask | i));
 }
 var idbuf: [16]u8 = undefined;
+
+/// the endpoint table entry for a method and path, for tests that assert how a route is classified
+fn endpointFor(method: http.Method, path: []const u8) ?Endpoint {
+    for (endpoints) |ep| if (ep.method == method and std.mem.eql(u8, ep.path, path)) return ep;
+    return null;
+}
+
+test "read sits below control, and lowering a route grants nobody anything new" {
+    try std.testing.expect(sufficient(.read, .read));
+    try std.testing.expect(sufficient(.control, .read)); // a control token still reaches it
+    try std.testing.expect(sufficient(.admin, .read));
+    try std.testing.expect(!sufficient(.read, .control));
+    try std.testing.expect(!sufficient(.read, .admin));
+    try std.testing.expect(!sufficient(.none, .read));
+}
+
+test "read covers observation, and deliberately not the log ring or stored scripts" {
+    // an explicit list, not "every get": the two exclusions below are the whole point of one.
+    for ([_][]const u8{
+        "/api/v1/status",     "/api/v1/scenes",  "/api/v1/config",  "/api/v1/screen",
+        "/api/v1/events",     "/api/v1/canvas",  "/api/v1/icons",   "/api/v1/sprites",
+        "/api/v1/sounds",     "/api/v1/mqtt/status",
+    }) |p| {
+        try std.testing.expectEqual(Authority.read, endpointFor(.GET, p).?.authority);
+    }
+    // the log ring is a history of every command including other clients'; the script list is the
+    // user's own code. neither is observing a clock.
+    try std.testing.expectEqual(Authority.control, endpointFor(.GET, "/api/v1/logs").?.authority);
+    try std.testing.expectEqual(Authority.control, endpointFor(.GET, "/api/v1/berry/scripts").?.authority);
+    try std.testing.expectEqual(Authority.control, endpointFor(.GET, "/api/v1/berry").?.authority);
+}

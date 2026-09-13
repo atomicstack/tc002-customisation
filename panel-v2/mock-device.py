@@ -872,7 +872,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if have is None:
             return self._error(401, "unauthorized", "a valid bearer token is required")
         if need == "admin" and have != "admin":
-            return self._error(403, "forbidden", "this route requires the admin token")
+            return self._error(403, "forbidden", "this route requires a higher authority")
         if endpoint == "streams" or endpoint.startswith("streams/"):
             return self._error(503, "not_implemented", "stream sessions are not available in this release")
         try:
