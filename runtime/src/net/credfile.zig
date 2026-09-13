@@ -12,24 +12,31 @@
 //! because an admin token satisfies a control route.
 const std = @import("std");
 const api = @import("api.zig");
+const clients = @import("clients.zig");
 
 pub const Credentials = api.Credentials;
 const hex_len = api.token_len * 2;
 
 const control_key = "control=";
 const admin_key = "admin=";
+const client_key = "client=";
 pub const legacy_len = api.token_len * 2; // 64 raw bytes: control then admin
 pub const encoded_len = control_key.len + hex_len + 1 + admin_key.len + hex_len + 1;
+/// one client line is `client=<name>,<role>,<64 hex>\n`; "control" is the longer role name
+const client_line_max = client_key.len + clients.name_max + 1 + "control".len + 1 + hex_len + 1;
+/// the whole file at capacity, which is what the supervisor's read and write buffers must hold
+pub const encoded_max = encoded_len + clients.max_clients * client_line_max;
 
 pub const Parsed = struct {
     creds: Credentials,
+    clients: clients.Store,
     /// true when read from the raw 64-byte form, so the caller can rewrite it as text
     legacy: bool,
 };
 
-/// write the text form. `out` must hold `encoded_len` bytes.
-pub fn encode(creds: Credentials, out: []u8) []const u8 {
-    std.debug.assert(out.len >= encoded_len);
+/// write the text form. `out` must hold `encoded_max` bytes.
+pub fn encode(creds: Credentials, store: *const clients.Store, out: []u8) []const u8 {
+    std.debug.assert(out.len >= encoded_len + store.len * client_line_max);
     var w: usize = 0;
     for ([_]struct { key: []const u8, tok: api.Token }{
         .{ .key = control_key, .tok = creds.control },
@@ -40,6 +47,11 @@ pub fn encode(creds: Credentials, out: []u8) []const u8 {
         w += (std.fmt.bufPrint(out[w..], "{x}", .{&e.tok}) catch unreachable).len;
         out[w] = '\n';
         w += 1;
+    }
+    for (store.entries[0..store.len]) |c| {
+        @memcpy(out[w..][0..client_key.len], client_key);
+        w += client_key.len;
+        w += (std.fmt.bufPrint(out[w..], "{s},{s},{x}\n", .{ c.name.slice(), @tagName(c.role), &c.token }) catch unreachable).len;
     }
     return out[0..w];
 }
@@ -56,10 +68,12 @@ fn hexToken(text: []const u8) ?api.Token {
 pub fn parse(bytes: []const u8) ?Parsed {
     if (bytes.len == legacy_len) return .{
         .creds = .{ .control = bytes[0..api.token_len].*, .admin = bytes[api.token_len..][0..api.token_len].* },
+        .clients = .{},
         .legacy = true,
     };
     var control: ?api.Token = null;
     var admin: ?api.Token = null;
+    var store = clients.Store{};
     var lines = std.mem.splitScalar(u8, bytes, '\n');
     while (lines.next()) |raw_line| {
         const line = std.mem.trim(u8, raw_line, " \t\r");
@@ -70,17 +84,32 @@ pub fn parse(bytes: []const u8) ?Parsed {
         } else if (std.mem.startsWith(u8, line, admin_key)) {
             if (admin != null) return null;
             admin = hexToken(line[admin_key.len..]) orelse return null;
+        } else if (std.mem.startsWith(u8, line, client_key)) {
+            // `<name>,<role>,<64 hex>`. a client line that is not wholly understood refuses the
+            // whole file, like every other line here.
+            var field = std.mem.splitScalar(u8, line[client_key.len..], ',');
+            const name = field.next() orelse return null;
+            const role_text = field.next() orelse return null;
+            const token_text = field.next() orelse return null;
+            if (field.next() != null) return null;
+            const role = std.meta.stringToEnum(clients.Role, role_text) orelse return null;
+            store.add(name, role, hexToken(token_text) orelse return null, 0) catch return null;
         } else return null; // an unknown line means a format we do not understand
     }
-    return .{ .creds = .{ .control = control orelse return null, .admin = admin orelse return null }, .legacy = false };
+    return .{
+        .creds = .{ .control = control orelse return null, .admin = admin orelse return null },
+        .clients = store,
+        .legacy = false,
+    };
 }
 
 const testing = std.testing;
 const sample = Credentials{ .control = [_]u8{0xab} ** 32, .admin = [_]u8{0xcd} ** 32 };
+const empty_store = clients.Store{};
 
 test "the text form round-trips and is exactly what a shell would expect to read" {
     var buf: [encoded_len]u8 = undefined;
-    const text = encode(sample, &buf);
+    const text = encode(sample, &empty_store, &buf);
     try testing.expectEqualStrings("control=" ++ "ab" ** 32 ++ "\nadmin=" ++ "cd" ** 32 ++ "\n", text);
     const p = parse(text).?;
     try testing.expectEqual(sample, p.creds);
@@ -120,5 +149,44 @@ test "the two forms cannot be confused for one another" {
     // the raw form is 64 bytes and the text form is 144; nothing is both.
     try testing.expect(legacy_len != encoded_len);
     var buf: [encoded_len]u8 = undefined;
-    try testing.expectEqual(@as(usize, encoded_len), encode(sample, &buf).len);
+    try testing.expectEqual(@as(usize, encoded_len), encode(sample, &empty_store, &buf).len);
+}
+
+test "client lines round-trip alongside the built-in tokens" {
+    var store = clients.Store{};
+    try store.add("kitchen", .control, [_]u8{0x11} ** 32, 1000);
+    try store.add("wall", .read, [_]u8{0x22} ** 32, 1001);
+    var buf: [encoded_max]u8 = undefined;
+    const text = encode(sample, &store, &buf);
+    try testing.expect(std.mem.indexOf(u8, text, "client=kitchen,control," ++ "11" ** 32 ++ "\n") != null);
+    try testing.expect(std.mem.indexOf(u8, text, "client=wall,read," ++ "22" ** 32 ++ "\n") != null);
+    const p = parse(text).?;
+    try testing.expectEqual(sample, p.creds);
+    try testing.expectEqual(@as(usize, 2), p.clients.len);
+    try testing.expectEqual(clients.Role.read, p.clients.find("wall").?.role);
+    try testing.expectEqual(clients.Role.control, p.clients.find("kitchen").?.role);
+}
+
+test "a file with no client lines is still valid, and yields an empty store" {
+    const p = parse("control=" ++ "ab" ** 32 ++ "\nadmin=" ++ "cd" ** 32 ++ "\n").?;
+    try testing.expectEqual(@as(usize, 0), p.clients.len);
+}
+
+test "the raw legacy form yields an empty store rather than failing" {
+    var raw: [legacy_len]u8 = undefined;
+    @memcpy(raw[0..32], &sample.control);
+    @memcpy(raw[32..64], &sample.admin);
+    const p = parse(&raw).?;
+    try testing.expect(p.legacy);
+    try testing.expectEqual(@as(usize, 0), p.clients.len);
+}
+
+test "a malformed client line refuses the whole file" {
+    const base = "control=" ++ "ab" ** 32 ++ "\nadmin=" ++ "cd" ** 32 ++ "\n";
+    try testing.expect(parse(base ++ "client=kitchen,control\n") == null); // no token
+    try testing.expect(parse(base ++ "client=kitchen,wizard," ++ "11" ** 32 ++ "\n") == null); // unknown role
+    try testing.expect(parse(base ++ "client=,control," ++ "11" ** 32 ++ "\n") == null); // empty name
+    try testing.expect(parse(base ++ "client=has space,control," ++ "11" ** 32 ++ "\n") == null);
+    try testing.expect(parse(base ++ "client=a,control," ++ "11" ** 31 ++ "\n") == null); // short token
+    try testing.expect(parse(base ++ "client=dup,read," ++ "11" ** 32 ++ "\nclient=dup,read," ++ "22" ** 32 ++ "\n") == null);
 }

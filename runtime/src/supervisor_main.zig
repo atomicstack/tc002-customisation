@@ -552,7 +552,7 @@ const Supervisor = struct {
                 // the same tokens, written as text: every client keeps working and the file
                 // becomes something a shell can hold. a failed rewrite is not fatal -- the
                 // tokens are already in hand and the raw file is still readable next time.
-                if (sys.saveFileAtomic(dir, tmp, path, credfile.encode(parsed.creds, &text_buf))) |_| {
+                if (sys.saveFileAtomic(dir, tmp, path, credfile.encode(parsed.creds, &parsed.clients, &text_buf))) |_| {
                     log.info("credentials loaded and rewritten as hex text (same tokens)", .{});
                 } else |_| {
                     log.warn("credentials loaded, but rewriting them as hex text failed", .{});
@@ -564,7 +564,7 @@ const Supervisor = struct {
         var raw: [64]u8 = undefined;
         try sys.getrandom(&raw);
         const fresh = api.Credentials{ .control = raw[0..32].*, .admin = raw[32..64].* };
-        try sys.saveFileAtomic(dir, tmp, path, credfile.encode(fresh, &text_buf));
+        try sys.saveFileAtomic(dir, tmp, path, credfile.encode(fresh, &.{}, &text_buf));
         self.creds = fresh;
         log.info("credentials generated (mode 0600 in the credentials directory; never logged)", .{});
     }
