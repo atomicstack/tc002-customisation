@@ -190,6 +190,13 @@ the broker is the device's own connection, configured in `/api/v1/mqtt`. if mqtt
 is disabled, `subscribe` and `publish` do nothing useful — they do not raise, and
 nothing arrives.
 
+**a topic is at most 96 characters and a payload 3,991 bytes** — what an arriving
+publish can carry, given the packet buffer netd reads into. an arrival past that
+is **not delivered**, and netd logs the topic and the size: half a json document
+parses and means something else, so a short delivery would be a wrong answer a
+script could not detect. `publish` refuses the same bounds rather than sending a
+prefix.
+
 ## the script store
 
 `config/scripts.bin` on `/data`, written with the same `saveFileAtomic` as

@@ -214,8 +214,15 @@ pub fn main(init: std.process.Init.Minimal) u8 {
                         .berry_event => |e| {
                             // an arrival. a script sees the topic and the payload as strings; the
                             // handler name is the event source, so one script can listen to both.
-                            var topic_z: [messages.BerryEvent.topic_max + 1]u8 = undefined;
-                            var payload_z: [messages.BerryEvent.payload_max + 1]u8 = undefined;
+                            // static rather than stack: the payload cap is derived from the mqtt
+                            // packet buffer now, so these are kilobytes and berryd handles one
+                            // event at a time
+                            const z = struct {
+                                var topic: [messages.BerryEvent.topic_max + 1]u8 = undefined;
+                                var payload: [messages.BerryEvent.payload_max + 1]u8 = undefined;
+                            };
+                            const topic_z = &z.topic;
+                            const payload_z = &z.payload;
                             const t = e.topicSlice();
                             const pl = e.payloadSlice();
                             @memcpy(topic_z[0..t.len], t);

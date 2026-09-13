@@ -7,6 +7,7 @@ const transition = @import("../panel/transition.zig");
 const config = @import("../supervisor/config.zig");
 const api = @import("../net/api.zig");
 const clients = @import("../net/clients.zig");
+const mqtt = @import("../net/mqtt.zig");
 const clock = @import("../scene/clock.zig");
 const clockfont = @import("../scene/clockfont.zig");
 const ip = @import("../scene/ip.zig");
@@ -106,8 +107,8 @@ test "every message kind round-trips through a packet" {
             break :blk l;
         } },
         .{ .applied = Applied.init(.{ .kind = .notify, .revision = 42, .at_ns = 0, .colour = .{ 1, 2, 3 }, .duration_s = 9, .text_len = 2, .text = [_]u8{ 'h', 'i' } ++ [_]u8{0} ** 126 }, .ntfy, 7) },
-        .{ .berry_event = BerryEvent.init(.mqtt, "home/doorbell", "pressed") },
-        .{ .berry_event = BerryEvent.init(.subscribe, "home/+/state", "") },
+        .{ .berry_event = BerryEvent.init(.mqtt, "home/doorbell", "pressed").? },
+        .{ .berry_event = BerryEvent.init(.subscribe, "home/+/state", "").? },
         .{ .stream_frame = .{ .seq = 12345, .timeout_ms = 250, .rgb = geometry.black_rgb } },
         .{ .menu_request = .{ .kind = @intFromEnum(MenuRequest.Kind.brightness), .value = 70 } },
         .{ .menu_request = .{ .kind = @intFromEnum(MenuRequest.Kind.reboot) } },
@@ -447,6 +448,30 @@ pub const StreamFrame = struct {
     pub const wire_len = 4 + 2 + geometry.rgb_bytes;
 };
 
+test "an arriving payload too large for the event is refused, not truncated" {
+    // a home-assistant state json runs to hundreds of bytes. `init` used to `@min` both the topic
+    // and the payload into their arrays, so a script got a valid-looking prefix of a json document
+    // and no indication at all -- the same silent wrong answer the canvas `data` field used to
+    // give. it refuses now, and the caller says so out loud.
+    var big: [BerryEvent.payload_max + 1]u8 = undefined;
+    @memset(&big, 'x');
+    try std.testing.expect(BerryEvent.init(.mqtt, "home/state", &big) == null);
+    var long_topic: [BerryEvent.topic_max + 1]u8 = undefined;
+    @memset(&long_topic, 'a');
+    try std.testing.expect(BerryEvent.init(.mqtt, &long_topic, "hi") == null);
+    // and what fits still arrives whole
+    const e = BerryEvent.init(.mqtt, "home/state", big[0..BerryEvent.payload_max]).?;
+    try std.testing.expectEqual(@as(usize, BerryEvent.payload_max), e.payloadSlice().len);
+}
+
+test "the event carries what an arriving mqtt publish can actually hold" {
+    // the cap is derived from the packet buffer netd reads into, so it cannot quietly become the
+    // narrowest part of the path again.
+    try std.testing.expect(BerryEvent.payload_max > 1024);
+    // and growing it must not grow `Message`, which `BerryScript` already sets the size of
+    try std.testing.expect(@sizeOf(BerryEvent) <= @sizeOf(BerryScript));
+}
+
 /// an event for a script, or a request from one. it travels in both directions because the shapes
 /// are the same in both: something happened on a topic, or a script wants something to.
 pub const BerryEvent = struct {
@@ -471,7 +496,16 @@ pub const BerryEvent = struct {
     /// the longest topic filter. mqtt itself allows far more; this is what the two lists above
     /// hold, and a filter is a device-side thing rather than a general subscription.
     pub const topic_max = 96;
-    pub const payload_max = 256;
+    /// the framing an mqtt publish spends before its payload: the first byte, a remaining-length
+    /// varint at its longest, the topic's own length prefix and a packet id for qos 1.
+    const publish_framing = 1 + 4 + 2 + 2;
+    /// as much payload as an arriving publish can actually carry. netd reads into a
+    /// `mqtt.max_packet` buffer, so anything larger cannot reach the device in the first place --
+    /// which makes that, not a number picked here, the thing that bounds a script's view of the
+    /// broker. derived, so the day the packet buffer grows this stops being the narrowest part of
+    /// the path on its own. it was 256, which silently truncated any home-assistant state
+    /// document.
+    pub const payload_max = mqtt.max_packet - publish_framing - topic_max;
 
     kind: u8 = 0,
     topic_len: u8 = 0,
@@ -479,14 +513,27 @@ pub const BerryEvent = struct {
     payload_len: u16 = 0,
     payload: [payload_max]u8 = [_]u8{0} ** payload_max,
 
-    pub const wire_len = 1 + 1 + topic_max + 2 + payload_max;
+    /// the topic and the payload are written at their real lengths, so a ten-byte arrival costs a
+    /// ten-byte datagram. the whole struct is what it *may* reach, not what it usually does --
+    /// which is what lets the cap above be generous without making every event expensive.
+    pub const fixed_len = 1 + 1 + 2;
+    pub const wire_len = fixed_len + topic_max + payload_max;
 
-    pub fn init(op: Op, topic: []const u8, payload: []const u8) BerryEvent {
+    comptime {
+        // growing the event must not grow `Message`: `BerryScript` already sets its size, and a
+        // byte past that costs every process holding a message buffer.
+        std.debug.assert(@sizeOf(BerryEvent) <= @sizeOf(BerryScript));
+    }
+
+    /// null when it does not fit. truncating a topic or a payload hands a script a prefix of a
+    /// json document that parses and means something else, which is worse than not delivering it.
+    pub fn init(op: Op, topic: []const u8, payload: []const u8) ?BerryEvent {
+        if (topic.len > topic_max or payload.len > payload_max) return null;
         var e = BerryEvent{ .kind = @intFromEnum(op) };
-        e.topic_len = @intCast(@min(topic.len, topic_max));
-        @memcpy(e.topic[0..e.topic_len], topic[0..e.topic_len]);
-        e.payload_len = @intCast(@min(payload.len, payload_max));
-        @memcpy(e.payload[0..e.payload_len], payload[0..e.payload_len]);
+        e.topic_len = @intCast(topic.len);
+        @memcpy(e.topic[0..e.topic_len], topic);
+        e.payload_len = @intCast(payload.len);
+        @memcpy(e.payload[0..e.payload_len], payload);
         return e;
     }
 
@@ -498,19 +545,27 @@ pub const BerryEvent = struct {
         return self.payload[0..self.payload_len];
     }
 
+    /// how many bytes `put` will write for this event
+    pub fn encodedLen(self: *const BerryEvent) usize {
+        return fixed_len + self.topic_len + self.payload_len;
+    }
+
     fn put(self: *const BerryEvent, out: []u8) void {
         out[0] = self.kind;
         out[1] = self.topic_len;
-        @memcpy(out[2..][0..topic_max], &self.topic);
-        std.mem.writeInt(u16, out[2 + topic_max ..][0..2], self.payload_len, .little);
-        @memcpy(out[4 + topic_max ..][0..payload_max], &self.payload);
+        std.mem.writeInt(u16, out[2..4], self.payload_len, .little);
+        @memcpy(out[fixed_len..][0..self.topic_len], self.topicSlice());
+        @memcpy(out[fixed_len + self.topic_len ..][0..self.payload_len], self.payloadSlice());
     }
 
-    fn get(b: []const u8) BerryEvent {
-        var e = BerryEvent{ .kind = b[0], .topic_len = @min(b[1], topic_max) };
-        @memcpy(&e.topic, b[2..][0..topic_max]);
-        e.payload_len = @min(std.mem.readInt(u16, b[2 + topic_max ..][0..2], .little), payload_max);
-        @memcpy(&e.payload, b[4 + topic_max ..][0..payload_max]);
+    fn get(b: []const u8) !BerryEvent {
+        if (b.len < fixed_len) return error.BadPayload;
+        var e = BerryEvent{ .kind = b[0], .topic_len = b[1] };
+        e.payload_len = std.mem.readInt(u16, b[2..4], .little);
+        if (e.topic_len > topic_max or e.payload_len > payload_max) return error.BadPayload;
+        if (b.len != fixed_len + @as(usize, e.topic_len) + e.payload_len) return error.BadPayload;
+        @memcpy(e.topic[0..e.topic_len], b[fixed_len..][0..e.topic_len]);
+        @memcpy(e.payload[0..e.payload_len], b[fixed_len + e.topic_len ..][0..e.payload_len]);
         return e;
     }
 };
@@ -2069,7 +2124,7 @@ fn encodePayload(msg: Message, out: []u8) usize {
         },
         .berry_event => |e| {
             e.put(out);
-            return BerryEvent.wire_len;
+            return e.encodedLen();
         },
         .applied => |a| {
             a.put(out);
@@ -2625,7 +2680,8 @@ pub fn decodePacket(bytes: []const u8) Error!Packet {
             break :blk .berry_list_get;
         },
         .berry_event => blk: {
-            break :blk .{ .berry_event = BerryEvent.get(try fixed(p, BerryEvent.wire_len)) };
+            // variable: the topic and the payload arrive at their real lengths
+            break :blk .{ .berry_event = try BerryEvent.get(p) };
         },
         .applied => blk: {
             break :blk .{ .applied = Applied.get(try fixed(p, Applied.wire_len)) };

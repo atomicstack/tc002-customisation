@@ -1722,7 +1722,14 @@ const Netd = struct {
         }
         // a topic a script asked for is a script's business, not a command
         if (self.berryTopicMatch(p.topic)) {
-            _ = self.sendSupervisor(.{ .berry_event = messages.BerryEvent.init(.mqtt, p.topic, p.payload) }, 0, 0);
+            const e = messages.BerryEvent.init(.mqtt, p.topic, p.payload) orelse {
+                // not delivered rather than delivered short: half a json document parses and means
+                // something else, and a script has no way to tell that is what it got
+                log.warn("{s}: {d} bytes is past the {d} a script event carries; not delivered", .{ p.topic, p.payload.len, messages.BerryEvent.payload_max });
+                self.mqtt_dropped += 1;
+                return;
+            };
+            _ = self.sendSupervisor(.{ .berry_event = e }, 0, 0);
             return;
         }
         if (p.retain) return; // retained deliveries are never commands

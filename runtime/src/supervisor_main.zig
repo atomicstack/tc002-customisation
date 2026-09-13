@@ -1079,7 +1079,9 @@ const Supervisor = struct {
                     if (!self.sendRenderer(.{ .notify = n }, id, lifecycle.epoch)) continue;
                     r.* = .{ .used = true, .id = id, .deadline_ns = now + relay_timeout_ns, .from_ntfy = true };
                     // and to any script listening for ntfy, which is the same fan-out the buttons use
-                    self.sendBerry(.{ .berry_event = messages.BerryEvent.init(.ntfy, "", n.slice()) });
+                    // an ntfy note is at most `ntfy.message.max_text`, well inside what an event
+                    // carries, so this cannot refuse -- but it is not the place to assert that
+                    if (messages.BerryEvent.init(.ntfy, "", n.slice())) |e| self.sendBerry(.{ .berry_event = e });
                 },
                 .ntfy_status => |st| {
                     self.snapshot.ntfy = st;
@@ -1613,7 +1615,8 @@ const Supervisor = struct {
     /// netd knows nothing and the broker connection it makes is a new one.
     fn pushBerryTopics(self: *Supervisor) void {
         for (0..self.berry_topic_count) |i| {
-            self.sendNetd(.{ .berry_event = messages.BerryEvent.init(.subscribe, self.berry_topics[i][0..self.berry_topic_len[i]], "") }, 0);
+            const e = messages.BerryEvent.init(.subscribe, self.berry_topics[i][0..self.berry_topic_len[i]], "") orelse continue;
+            self.sendNetd(.{ .berry_event = e }, 0);
         }
     }
 

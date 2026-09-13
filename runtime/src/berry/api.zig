@@ -199,7 +199,9 @@ fn subscribeFn(vm: ?*Bvm) callconv(.c) c_int {
     const v = vm.?;
     const topic = argText(v, 1);
     if (topic.len == 0 or topic.len > messages.BerryEvent.topic_max) return refuse(v, "a topic is 1 to 96 characters");
-    send(.{ .berry_event = messages.BerryEvent.init(.subscribe, topic, "") });
+    const e = messages.BerryEvent.init(.subscribe, topic, "") orelse return refuse(v, "a topic is 1 to 96 characters");
+
+    send(.{ .berry_event = e });
     return be_returnnilvalue(v);
 }
 
@@ -208,8 +210,9 @@ fn publishFn(vm: ?*Bvm) callconv(.c) c_int {
     const topic = argText(v, 1);
     if (topic.len == 0 or topic.len > messages.BerryEvent.topic_max) return refuse(v, "a topic is 1 to 96 characters");
     const payload = argText(v, 2);
-    if (payload.len > messages.BerryEvent.payload_max) return refuse(v, "a payload is at most 256 bytes");
-    send(.{ .berry_event = messages.BerryEvent.init(.publish, topic, payload) });
+    if (payload.len > messages.BerryEvent.payload_max) return refuse(v, "the payload is larger than one event carries");
+    const e = messages.BerryEvent.init(.publish, topic, payload) orelse return refuse(v, "that topic and payload do not fit one event");
+    send(.{ .berry_event = e });
     return be_returnnilvalue(v);
 }
 
