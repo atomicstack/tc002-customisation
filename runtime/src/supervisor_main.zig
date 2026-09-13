@@ -44,7 +44,7 @@ fn unixNow() i64 {
     return @intCast(sys.realtimeNs() / ns_per_s);
 }
 
-const Tag = enum(u64) { timer = 1, signals = 2, ipc = 3, keys = 4, netd = 5, mcu = 6, logs = 7, sntp = 8, ntfy = 9, berry = 10 };
+const Tag = enum(u64) { timer = 1, signals = 2, ipc = 3, keys = 4, netd = 5, mcu = 6, logs = 7, sntp = 8, ntfy = 9, berry = 10, audio = 11 };
 
 const tick_ns: u64 = 100_000_000;
 /// how often the night schedule is consulted: a ramp of tens of minutes over a hundred steps moves
@@ -389,6 +389,13 @@ const Supervisor = struct {
     berry_pid: ?sys.Pid = null,
     berry_fd: ?sys.Fd = null,
     berry_restart_at: u64 = 0,
+    audio_pid: ?sys.Pid = null,
+    audio_fd: ?sys.Fd = null,
+    audio_restart_at: u64 = 0,
+    audio_backoff_ns: u64 = berry_backoff_min_ns,
+    audio_heard_ns: u64 = 0,
+    audio_replacing: bool = false,
+    audio_path: [:0]const u8 = "/tmp/tc002/tc002-audiod",
     berry_backoff_ns: u64 = berry_backoff_min_ns,
     berry_spawned_ns: u64 = 0,
     berry_heard_ns: u64 = 0,
@@ -757,6 +764,7 @@ const Supervisor = struct {
         // berryd takes its heap once at startup and cannot resize it under a live vm, so any berry
         // settings change replaces the process rather than trying to reconfigure it in place
         if (!std.meta.eql(before.berry, c.berry)) self.restartBerry(sys.monotonicNs());
+        if (!std.meta.eql(before.sound, c.sound)) self.restartAudio(sys.monotonicNs());
         self.snapshot.config_revision = c.revision;
         self.snapshot.saved_revision = c.saved_revision;
     }
@@ -1113,6 +1121,98 @@ const Supervisor = struct {
         self.sendNetd(.{ .status = self.snapshot }, 0);
     }
 
+    fn sendAudio(self: *Supervisor, msg: messages.Message) void {
+        const fd = self.audio_fd orelse return;
+        const packet = messages.encodePacket(msg, 0, lifecycle.epoch, &berry_send_buf) catch return;
+        sys.sendPacket(fd, packet) catch |e| {
+            if (e != error.WouldBlock) log.warn("ipc send to audiod failed: {s}", .{sys.errText(e)});
+        };
+    }
+
+    fn spawnAudio(self: *Supervisor, now: u64) void {
+        const fds = sys.socketpairSeqpacket() catch |e| {
+            log.err("socketpair for audiod failed: {s}", .{sys.errText(e)});
+            self.audio_restart_at = now + berry_backoff_max_ns;
+            return;
+        };
+        const pid = sys.fork() catch |e| {
+            log.err("fork for audiod failed: {s}", .{sys.errText(e)});
+            sys.close(fds[0]);
+            sys.close(fds[1]);
+            self.audio_restart_at = now + berry_backoff_max_ns;
+            return;
+        };
+        if (pid == 0) {
+            sys.unblockAllSignals();
+            sys.setSignalDisposition(.TERM, linux.SIG.DFL);
+            sys.setSignalDisposition(.INT, linux.SIG.DFL);
+            sys.setSignalDisposition(.PIPE, linux.SIG.DFL);
+            if (self.log_pipe) |lp| {
+                sys.dup2(lp[1], 1) catch sys.exit(126);
+                sys.dup2(lp[1], 2) catch sys.exit(126);
+            }
+            sys.dup2(fds[1], 60) catch sys.exit(126);
+            sys.dup2(60, 3) catch sys.exit(126);
+            var fd: i32 = 4;
+            while (fd < 64) : (fd += 1) sys.close(fd);
+            sys.prctlPdeathsig(.TERM) catch sys.exit(126);
+            if (sys.getppid() != self.self_pid) sys.exit(125);
+            // deliberately *not* dropping privileges: /dev/mi_ao and /dev/mi_sys are root-only,
+            // the same trade the renderer makes for spidev
+            var state_z: [160]u8 = undefined;
+            const sd = std.fmt.bufPrintZ(&state_z, "{s}", .{self.state_dir_text}) catch sys.exit(126);
+            const argv = [_:null]?[*:0]const u8{ self.audio_path.ptr, "--state", sd.ptr };
+            const envp = [_:null]?[*:0]const u8{};
+            sys.execve(self.audio_path.ptr, &argv, &envp) catch {};
+            sys.exit(127);
+        }
+        sys.close(fds[1]);
+        self.audio_fd = fds[0];
+        self.audio_pid = pid;
+        self.audio_heard_ns = now;
+        sys.epollAdd(self.ep, fds[0], linux.EPOLL.IN, @intFromEnum(Tag.audio)) catch {};
+        log.info("spawned audiod pid {d} as root", .{pid});
+        self.sendAudio(.{ .sound_config = .{ .enabled = @intFromBool(self.cfg.sound.enabled), .volume = self.cfg.sound.volume } });
+    }
+
+    fn reapAudio(self: *Supervisor, now: u64) void {
+        const pid = self.audio_pid orelse return;
+        const status = sys.waitNoHang(pid) catch return orelse return;
+        if (self.shutting_down or !self.cfg.sound.enabled or self.audio_replacing) {
+            log.info("audiod pid {d} stopped", .{pid});
+        } else {
+            log.warn("audiod pid {d} exited with code {d}", .{ pid, (status >> 8) & 0xff });
+        }
+        if (self.audio_fd) |fd| sys.close(fd);
+        self.audio_fd = null;
+        self.audio_pid = null;
+        if (self.audio_replacing) {
+            self.audio_replacing = false;
+            self.audio_backoff_ns = berry_backoff_min_ns;
+            self.audio_restart_at = now;
+        } else {
+            self.audio_restart_at = now + self.audio_backoff_ns;
+            self.audio_backoff_ns = @min(self.audio_backoff_ns * 2, berry_backoff_max_ns);
+        }
+    }
+
+    fn pollAudio(self: *Supervisor, now: u64) void {
+        if (self.shutting_down) return;
+        if (self.cfg.sound.enabled) {
+            if (self.audio_pid == null and now >= self.audio_restart_at) self.spawnAudio(now);
+        } else if (self.audio_pid) |pid| sys.kill(pid, .TERM);
+    }
+
+    /// audiod takes its settings once, so a change replaces the process rather than reconfiguring
+    fn restartAudio(self: *Supervisor, now: u64) void {
+        self.audio_backoff_ns = berry_backoff_min_ns;
+        self.audio_restart_at = now;
+        if (self.audio_pid) |pid| {
+            self.audio_replacing = true;
+            sys.kill(pid, .TERM);
+        }
+    }
+
     fn pollBerry(self: *Supervisor, now: u64) void {
         if (self.shutting_down) return;
         if (self.cfg.berry.enabled) {
@@ -1145,6 +1245,26 @@ const Supervisor = struct {
             self.snapshot.berry_state = 0;
             self.snapshot.berry = .{};
             self.sendNetd(.{ .status = self.snapshot }, 0);
+        }
+    }
+
+    fn drainAudio(self: *Supervisor, now: u64) void {
+        const fd = self.audio_fd orelse return;
+        var count: u32 = 0;
+        while (count < ipc_packets_per_iteration) : (count += 1) {
+            const packet = sys.recvPacket(fd, &berry_packet_buf) catch |e| {
+                if (e != error.Closed) log.warn("audiod receive failed: {s}", .{sys.errText(e)});
+                return;
+            } orelse return;
+            const p = messages.decodePacket(packet) catch |e| {
+                log.warn("bad packet from audiod: {s}", .{@errorName(e)});
+                continue;
+            };
+            switch (p.message) {
+                // the report is also the liveness ping, exactly as berryd's is
+                .sound_status => self.audio_heard_ns = now,
+                else => log.warn("unexpected {s} from audiod", .{@tagName(p.message)}),
+            }
         }
     }
 
@@ -1526,10 +1646,14 @@ const Supervisor = struct {
                 },
                 .sound_put => |*sp| self.onSoundPut(&p, sp),
                 .sound_list_get => self.onSoundListGet(p.request_id),
-                .sound_cmd => {
-                    // audiod is not spawned yet, so there is nothing to relay to and nothing to
-                    // pretend about: the command is refused rather than silently accepted.
-                    self.sendNetd(.{ .sound_result = .{ .status = .unavailable, .used = @intCast(sounds.used()) } }, p.request_id);
+                .sound_cmd => |c| {
+                    if (self.audio_fd == null) {
+                        // nothing to relay to: refused rather than silently accepted
+                        self.sendNetd(.{ .sound_result = .{ .status = .unavailable, .used = @intCast(sounds.used()) } }, p.request_id);
+                    } else {
+                        self.sendAudio(.{ .sound_cmd = c });
+                        self.sendNetd(.{ .sound_result = .{ .status = .applied, .used = @intCast(sounds.used()) } }, p.request_id);
+                    }
                 },
                 .berry_script => |w| {
                     const op: messages.BerryScript.Op = @enumFromInt(@min(w.op, 3));
@@ -1918,6 +2042,7 @@ const Supervisor = struct {
                     self.reapNetd(now);
                     self.reapNtfy(now);
                     self.reapBerry(now);
+                    self.reapAudio(now);
                 },
                 else => {
                     if (!self.shutting_down) log.info("signal {d}: shutting down", .{info.signo});
@@ -2420,7 +2545,9 @@ fn run(cfg_in: cli.Config, environ: anytype, args: []const [:0]const u8) !u8 {
         s.drainNtfy(now);
         s.pollNtfy(now);
         s.drainBerry(now);
+        s.drainAudio(now);
         s.pollBerry(now);
+        s.pollAudio(now);
         s.pollBerryPending(now);
         s.mcu_link.poll(&s, now);
         s.sntp_link.poll(now); // sntp
