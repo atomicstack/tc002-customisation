@@ -136,7 +136,18 @@ test.before(async () => {
   cdp = await Cdp.attach(cdpPort);
   await cdp.send('Page.enable');
   await cdp.send('Page.navigate', { url: `http://127.0.0.1:${proxyPort}/?host=127.0.0.1:${mockPort}` });
-  await sleep(3000);   // connect, fetch /scenes, fill every select
+  // wait for the page to actually be ready rather than guessing how long it takes. a fixed sleep
+  // raced the slowest of connect / fetch /scenes / draw the readings, and failed intermittently
+  // in a way that looked like whatever had just been edited
+  await waitFor(async () => {
+    const ready = await cdp.eval(`(() => {
+      const bars = document.querySelectorAll('#now .bar').length;
+      const selects = [...document.querySelectorAll('.card select')].filter(s => s.options.length).length;
+      return bars >= 4 && selects > 0 && document.getElementById('conn').textContent === 'connected';
+    })()`);
+    if (!ready) throw new Error('the console has not finished connecting');
+    return true;
+  }, 20000);
 });
 
 test.after(async () => {
@@ -209,6 +220,24 @@ test('the client token card is locked without an admin token',
   assert.equal(state.present, true);
   assert.equal(state.secretHidden, true, 'no secret panel until one is issued');
   assert.equal(state.secretEmpty, true, 'and nothing sitting in the field');
+});
+
+test('a client row offers rotate and revoke, and both confirm in place',
+  { skip: chromeAvailable ? false : 'google chrome is not installed' }, async () => {
+  // neither uses confirm(): a modal blocks the page and whatever is driving it. both are
+  // destructive — rotate kills the current secret just as surely as revoke does
+  const armed = await cdp.eval(`
+    (() => {
+      showClientTokens({ clients: [{ name: 'kitchen', role: 'control', created_s: 1757800000, last_used_s: 0 }], max: 120 });
+      const labels = [...document.querySelectorAll('#toklist button')].map(b => b.textContent);
+      const out = { labels, prompts: [] };
+      for (const b of document.querySelectorAll('#toklist button')) { b.click(); out.prompts.push(b.textContent); }
+      return out;
+    })()
+  `);
+  assert.deepEqual(armed.labels, ['Rotate', 'Revoke']);
+  assert.deepEqual(armed.prompts, ['Rotate kitchen?', 'Revoke kitchen?'],
+                   'arming names the client, so the wrong row cannot be hit blind');
 });
 
 test('the now card fills each metric bar to the fraction the device reports', { skip: chromeAvailable ? false : 'google chrome is not installed' }, async () => {

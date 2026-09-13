@@ -422,7 +422,7 @@ input[type=file]{font:12px var(--body);color:var(--muted);max-width:220px}
         <div class="actions"><span class="note" id="toknewnote">copy it now — it is not stored here and there is no route that returns it again. if it is lost, revoke and issue another.</span></div>
       </div>
       <div class="rows" id="toklist"></div>
-      <div class="actions"><span class="note" id="toknote">a client token is the access that already existed, with a name on it and the ability to take it away. revoking one is immediate. tokens travel in plain http and plain mqtt on this profile, so anyone on the network path can read one in flight — naming them helps against a token shared or screenshotted, not against a sniffer.</span></div>
+      <div class="actions"><span class="note" id="toknote">a client token is the access that already existed, with a name on it and the ability to take it away. revoking one is immediate, and rotating one replaces its secret in place — same name, same slot, and the old secret stops working at once. tokens travel in plain http and plain mqtt on this profile, so anyone on the network path can read one in flight — naming them helps against a token shared or screenshotted, not against a sniffer.</span></div>
     </section>
   </div>
   <div class="tabpanel" data-panel="logs" hidden>
@@ -1360,6 +1360,34 @@ const tokenWhen = s => !s ? '' : new Date(s * 1000).toLocaleString();
 // last_used_s lives in netd's memory and resets with the runtime, so 0 does not mean never
 const tokenUsed = s => s ? tokenWhen(s) : 'not used since restart';
 
+// a destructive button confirms in place. not confirm(): a modal blocks the page and whatever is
+// driving it, and both of these are silent from the client's side — whatever was using the old
+// secret simply stops working
+function twoStep(btn, prompt, run) {
+  const disarm = () => {
+    clearTimeout(btn._disarm);
+    if (btn.dataset.armed !== '1') return;
+    btn.dataset.armed = ''; btn.textContent = btn.dataset.idle; btn.classList.remove('danger');
+  };
+  btn.dataset.idle = btn.textContent;
+  btn.addEventListener('click', () => {
+    if (btn.dataset.armed !== '1') {
+      btn.dataset.armed = '1'; btn.textContent = prompt; btn.classList.add('danger');
+      clearTimeout(btn._disarm); btn._disarm = setTimeout(disarm, 4000);
+      return;
+    }
+    disarm(); run();
+  });
+}
+
+// the one place a secret is ever put on screen. `verb` says how it got here, because rotating and
+// creating look identical afterwards and only one of them broke something that was working
+function showClientSecret(made, verb) {
+  $('toknewfor').textContent = `${made.name} · ${made.role} · ${verb}, shown once`;
+  $('toksecret').value = made.token || '';
+  $('toknew').hidden = false;
+}
+
 let CLIENTS = null;
 function showClientTokens(doc) {
   CLIENTS = doc;
@@ -1386,26 +1414,15 @@ function showClientTokens(doc) {
     key.className = 'key';
     key.textContent = `${c.role} · created ${tokenWhen(c.created_s)} · ${tokenUsed(c.last_used_s)}`;
     lab.append(key);
+    const rotate = document.createElement('button');
+    rotate.className = 'btn ghost';
+    rotate.textContent = 'Rotate';
+    twoStep(rotate, `Rotate ${c.name}?`, () => rotateClientToken(c.name));
     const revoke = document.createElement('button');
     revoke.className = 'btn ghost';
     revoke.textContent = 'Revoke';
-    // two steps rather than confirm(): a modal dialog blocks the page and whatever is driving it,
-    // and revoking is silent from the client's side — it simply stops working
-    revoke.addEventListener('click', () => {
-      if (revoke.dataset.armed !== '1') {
-        revoke.dataset.armed = '1';
-        revoke.textContent = `Revoke ${c.name}?`;
-        revoke.classList.add('danger');
-        setTimeout(() => {
-          if (revoke.dataset.armed === '1') {
-            revoke.dataset.armed = ''; revoke.textContent = 'Revoke'; revoke.classList.remove('danger');
-          }
-        }, 4000);
-        return;
-      }
-      revokeClientToken(c.name);
-    });
-    row.append(lab, revoke);
+    twoStep(revoke, `Revoke ${c.name}?`, () => revokeClientToken(c.name));
+    row.append(lab, rotate, revoke);
     box.append(row);
   }
 }
@@ -1422,13 +1439,21 @@ async function createClientToken() {
   if (problem) return toast(`name: ${problem}`, true);
   try {
     const made = await call('POST', 'tokens', { name, role: $('tokrole').value });
-    // shown once. it is not kept anywhere else in this page
-    $('toknewfor').textContent = `${made.name} · ${made.role} · shown once`;
-    $('toksecret').value = made.token || '';
-    $('toknew').hidden = false;
+    showClientSecret(made, 'created');   // not kept anywhere else in this page
     $('tokname').value = '';
     await loadClientTokens();
   } catch (e) { toast(e.message, true); }
+}
+
+// replaces the secret in place, keeping the name, the slot and the role. the old secret stops
+// working at once, so whatever was using it is broken until the new one is pasted in
+async function rotateClientToken(name) {
+  try {
+    const made = await call('POST', `tokens/${encodeURIComponent(name)}/rotate`);
+    showClientSecret(made, 'rotated');
+    await loadClientTokens();
+    toast(`${name} rotated \u2014 its old secret stopped working`);
+  } catch (e) { toast(e.message, true); await loadClientTokens(); }
 }
 
 async function revokeClientToken(name) {
