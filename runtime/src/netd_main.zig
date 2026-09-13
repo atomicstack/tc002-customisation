@@ -163,6 +163,8 @@ const Netd = struct {
     status_at_ns: u64 = 0,
     next_id: u64 = 0x8000_0000_0000_0000,
     supervisor_dead: bool = false,
+    /// statements seen from the supervisor since start
+    applied_seen: u32 = 0,
     // mqtt
     client: mqtt.Client = .{},
     mfd: ?sys.Fd = null,
@@ -212,6 +214,13 @@ const Netd = struct {
     }
 
     // http connections
+
+    /// a statement as applied on the device. counted here so the count is visible before anything
+    /// subscribes to them; the event stream that fans them out is next.
+    fn onApplied(self: *Netd, a: messages.Applied) void {
+        self.applied_seen +%= 1;
+        _ = a;
+    }
 
     fn closeConn(self: *Netd, c: *Conn) void {
         _ = self;
@@ -812,6 +821,7 @@ const Netd = struct {
                 .screen => |*sc| self.onScreen(p.request_id, sc, now),
                 .log_lines => |*l| self.onLogs(p.request_id, l, now),
                 .input => |i| self.onInput(i),
+                .applied => |a| self.onApplied(a),
                 else => log.warn("unexpected {s} from supervisor", .{@tagName(p.message)}),
             }
         }

@@ -1898,6 +1898,22 @@ const Supervisor = struct {
                         break;
                     };
                 },
+                .applied => |a| {
+                    // the renderer knows whether a statement came from a button; it cannot know
+                    // whether the command behind it arrived from the api or from ntfy. the relay
+                    // slot does -- it is still live, because `.applied` is sent before `.result`.
+                    var out = a;
+                    if (a.source == @intFromEnum(messages.Applied.Source.local)) {
+                        for (&self.relays) |*rel| if (rel.used and rel.id == p.request_id) {
+                            out.source = @intFromEnum(if (rel.from_ntfy)
+                                messages.Applied.Source.ntfy
+                            else
+                                messages.Applied.Source.api);
+                            break;
+                        };
+                    }
+                    self.sendNetd(.{ .applied = out }, 0);
+                },
                 .input => |i| {
                     self.sendNetd(.{ .input = i }, 0);
                     // and to berryd, which is the second consumer of the same edges. this is the

@@ -11,6 +11,7 @@ const clockfont = @import("../scene/clockfont.zig");
 const ip = @import("../scene/ip.zig");
 const canvas = @import("../scene/canvas.zig");
 const store = @import("../berry/store.zig");
+const arbiter = @import("../scene/arbiter.zig");
 
 test "every message kind round-trips through a packet" {
     var frame = Frame{ .duration_s = 9, .rgb = geometry.black_rgb };
@@ -87,6 +88,8 @@ test "every message kind round-trips through a packet" {
         .{ .berry_script = BerryScript.init(.delete, "rules", "") },
         .{ .berry_result = .{ .outcome = 1, .name = store.Name.init("broken"), .text = config.Text.init("unexpected token") } },
         .berry_list_get,
+        .{ .applied = Applied.init(.{ .kind = .set_base, .revision = 41, .at_ns = 0, .base = .clock }, .input, 120) },
+        .{ .applied = Applied.init(.{ .kind = .notify, .revision = 42, .at_ns = 0, .colour = .{ 1, 2, 3 }, .duration_s = 9, .text_len = 2, .text = [_]u8{ 'h', 'i' } ++ [_]u8{0} ** 126 }, .ntfy, 7) },
         .{ .berry_event = BerryEvent.init(.mqtt, "home/doorbell", "pressed") },
         .{ .berry_event = BerryEvent.init(.subscribe, "home/+/state", "") },
         .{ .stream_frame = .{ .seq = 12345, .timeout_ms = 250, .rgb = geometry.black_rgb } },
@@ -307,6 +310,10 @@ pub const Kind = enum(u8) {
     /// wins and a lost one is simply a lost frame -- so there is nothing for dedup to protect, and
     /// it is carried outside it.
     stream_frame = 67,
+    /// a statement as applied, renderer -> supervisor -> netd. the counterpart to `input`: that
+    /// one carries the edges that are not statements, this one carries the statements, and between
+    /// them a mirror sees everything that happens to this device.
+    applied = 68,
 };
 
 /// what the supervisor tells a fresh berryd about itself. the settings are the supervisor's, so
@@ -621,6 +628,117 @@ pub const ClockStyle = struct {
         return .{ .has = b[0], .font = b[1], .mode = b[2], .colour = b[3..6].*, .colour2 = b[6..9].*, .gradient = b[9], .spread = b[10], .digit = b[11] };
     }
 };
+/// a statement as applied, on its way from the renderer to anything mirroring this device.
+///
+/// carries `arbiter.Statement` plus the two things the arbiter cannot know: where the command came
+/// from, and how long ago it happened. `age_ms` rather than a timestamp because the three processes
+/// share no clock -- the renderer sets it at send, each hop adds its own delay, exactly as
+/// `sample_age_ms` already does for `/status`.
+pub const Applied = struct {
+    /// where a statement came from. `api` covers both http and mqtt: netd serves both and does not
+    /// mark which, and the console's actual need -- "was this mine?" -- is answered by the revision
+    /// it got back from its own request, not by this field.
+    pub const Source = enum(u8) {
+        /// the device itself: a menu selection, night brightness, an overlay reaching its deadline
+        local = 0,
+        /// relayed by netd, from http or mqtt
+        api = 1,
+        /// an ntfy notification
+        ntfy = 2,
+        /// a button or the knob
+        input = 3,
+    };
+
+    kind: u8 = 0,
+    source: u8 = 0,
+    revision: u32 = 0,
+    age_ms: u32 = 0,
+    base: u8 = 0,
+    generator: u8 = 0,
+    seed: u32 = 0,
+    brightness: u8 = 0,
+    power: u8 = 0,
+    ip_mode: u8 = 0,
+    style: ClockStyle = .{},
+    duration_s: u16 = 0,
+    colour: [3]u8 = .{ 0, 0, 0 },
+    text_len: u8 = 0,
+    text: [arbiter.Statement.text_max]u8 = [_]u8{0} ** arbiter.Statement.text_max,
+
+    pub const wire_len = 1 + 1 + 4 + 4 + 1 + 1 + 4 + 1 + 1 + 1 + ClockStyle.wire_len + 2 + 3 + 1 + arbiter.Statement.text_max;
+
+    pub fn init(st: arbiter.Statement, source: Source, age_ms: u32) Applied {
+        return .{
+            .kind = @intFromEnum(st.kind),
+            .source = @intFromEnum(source),
+            .revision = st.revision,
+            .age_ms = age_ms,
+            .base = @intFromEnum(st.base),
+            .generator = @intFromEnum(st.generator),
+            .seed = st.seed,
+            .brightness = st.brightness,
+            .power = @intFromBool(st.power),
+            .ip_mode = @intFromEnum(st.ip_mode),
+            .style = ClockStyle.full(st.style),
+            .duration_s = st.duration_s,
+            .colour = st.colour,
+            .text_len = @min(st.text_len, arbiter.Statement.text_max),
+            .text = st.text,
+        };
+    }
+
+    pub fn textSlice(self: *const Applied) []const u8 {
+        return self.text[0..@min(self.text_len, arbiter.Statement.text_max)];
+    }
+
+    fn put(self: *const Applied, out: []u8) void {
+        out[0] = self.kind;
+        out[1] = self.source;
+        std.mem.writeInt(u32, out[2..6], self.revision, .big);
+        std.mem.writeInt(u32, out[6..10], self.age_ms, .big);
+        out[10] = self.base;
+        out[11] = self.generator;
+        std.mem.writeInt(u32, out[12..16], self.seed, .big);
+        out[16] = self.brightness;
+        out[17] = self.power;
+        out[18] = self.ip_mode;
+        self.style.put(out[19 .. 19 + ClockStyle.wire_len]);
+        var o: usize = 19 + ClockStyle.wire_len;
+        std.mem.writeInt(u16, out[o..][0..2], self.duration_s, .big);
+        o += 2;
+        out[o..][0..3].* = self.colour;
+        o += 3;
+        out[o] = self.text_len;
+        o += 1;
+        @memcpy(out[o..][0..arbiter.Statement.text_max], &self.text);
+    }
+
+    fn get(b: []const u8) Applied {
+        var a = Applied{
+            .kind = b[0],
+            .source = b[1],
+            .revision = std.mem.readInt(u32, b[2..6], .big),
+            .age_ms = std.mem.readInt(u32, b[6..10], .big),
+            .base = b[10],
+            .generator = b[11],
+            .seed = std.mem.readInt(u32, b[12..16], .big),
+            .brightness = b[16],
+            .power = b[17],
+            .ip_mode = b[18],
+            .style = ClockStyle.get(b[19 .. 19 + ClockStyle.wire_len]),
+        };
+        var o: usize = 19 + ClockStyle.wire_len;
+        a.duration_s = std.mem.readInt(u16, b[o..][0..2], .big);
+        o += 2;
+        a.colour = b[o..][0..3].*;
+        o += 3;
+        a.text_len = @min(b[o], arbiter.Statement.text_max);
+        o += 1;
+        @memcpy(&a.text, b[o..][0..arbiter.Statement.text_max]);
+        return a;
+    }
+};
+
 pub const Result = struct { status: Status, revision: u32 };
 
 /// the renderer's output as shown (after fades, before brightness and the level curve).
@@ -1433,6 +1551,7 @@ pub const Message = union(Kind) {
     berry_scripts: BerryScripts,
     berry_event: BerryEvent,
     stream_frame: StreamFrame,
+    applied: Applied,
 };
 
 pub const Packet = struct { request_id: u64, epoch: u32, message: Message };
@@ -1544,6 +1663,10 @@ fn encodePayload(msg: Message, out: []u8) usize {
         .berry_event => |e| {
             e.put(out);
             return BerryEvent.wire_len;
+        },
+        .applied => |a| {
+            a.put(out);
+            return Applied.wire_len;
         },
         .stream_frame => |f| {
             std.mem.writeInt(u32, out[0..4], f.seq, .big);
@@ -2014,6 +2137,9 @@ pub fn decodePacket(bytes: []const u8) Error!Packet {
         },
         .berry_event => blk: {
             break :blk .{ .berry_event = BerryEvent.get(try fixed(p, BerryEvent.wire_len)) };
+        },
+        .applied => blk: {
+            break :blk .{ .applied = Applied.get(try fixed(p, Applied.wire_len)) };
         },
         .stream_frame => blk: {
             const b = try fixed(p, StreamFrame.wire_len);

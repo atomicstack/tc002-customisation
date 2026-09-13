@@ -102,6 +102,16 @@ const Renderer = struct {
         };
     }
 
+    /// forward the statement the arbiter just applied, if there is one. `request_id` is the
+    /// command that caused it, so the supervisor can tell an api statement from an ntfy one out of
+    /// the relay table it already keeps; zero for statements nobody asked for, like an overlay
+    /// reaching its deadline.
+    fn sendApplied(self: *Renderer, now: u64, request_id: u64, source: messages.Applied.Source) void {
+        const st = arb.takeApplied() orelse return;
+        const age_ms: u32 = @intCast(@min((now -| st.at_ns) / std.time.ns_per_ms, std.math.maxInt(u32)));
+        self.send(.{ .applied = messages.Applied.init(st, source, age_ms) }, request_id);
+    }
+
     fn reply(self: *Renderer, request_id: u64, status: messages.Status, revision: u32) void {
         self.send(.{ .result = .{ .status = status, .revision = revision } }, request_id);
     }
@@ -385,6 +395,9 @@ const Renderer = struct {
             .applied => .applied,
             .rejected => .rejected,
         };
+        // before the reply: `.result` retires the supervisor's relay slot, and that slot is how it
+        // knows whether this statement came from the api or from ntfy
+        self.sendApplied(now, p.request_id, if (p.message == .input) .input else .local);
         _ = cache.insert(p.request_id, status, arb.revision, now);
         self.reply(p.request_id, status, arb.revision);
     }
@@ -584,6 +597,9 @@ fn run(cfg: cli.Config) !u8 {
         if (pres.dueAt()) |due| {
             if (now >= due) r.transfer(now);
         }
+        // an overlay expiring is applied from inside `tick`, so it is drained here rather than
+        // after a command
+        r.sendApplied(now, 0, .local);
         if (now >= r.next_heartbeat) {
             r.heartbeat(now);
             r.next_heartbeat = now + heartbeat_period_ns;
