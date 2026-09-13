@@ -1104,6 +1104,7 @@ api is for programs, not pages. `allowed_origins` can only be set by editing
 | `GET` | `/berry/scripts/{name}` | control | | the source as `text/plain`, byte for byte as stored and exactly what `PUT` takes back; 404 if there is no script of that name |
 | `PUT` | `/berry/scripts/{name}` | admin | `text/plain`, at most 8,000 bytes | `{"status":"ok","name":"…"}`. the script is **compiled before it is stored**: one that will not parse answers 400 `script_will_not_compile` carrying berry's own message, and never reaches flash |
 | `DELETE` | `/berry/scripts/{name}` | admin | | `{"status":"ok","name":"…"}`, or 404 |
+| `POST` | `/berry/scripts/{name}/run` | admin | **none** | runs the stored script: `{"status":"ok","name":"…"}` plus `"note"` when it evaluated to something. a body is `400 unexpected_body`; berry off is `409`; the vm not up yet is `503`; a script that raises is `400 script_failed` carrying berry's own message |
 | `GET` | `/config` | control | | the [settings document](#settings) |
 | `PATCH` | `/config` | admin | any subset of the settings fields plus `expected_revision`? | the settings document after the patch |
 | `POST` | `/config/save` | admin | `{"revision":u32}` or an empty body, `application/json` either way | `{"status":"saved","saved_revision":n}` |

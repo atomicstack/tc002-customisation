@@ -472,6 +472,21 @@ class Device:
             raise Reject(404, "not_found", "no script of that name")
         return self.scripts[name]
 
+    def berry_run(self, name, body):
+        """runs the stored source. a run carries no body -- one that did would be an eval route."""
+        if not valid_script_name(name):
+            raise Reject(400, "invalid_script_name", "a script name is 1..32 of letters, digits, -, _ or .")
+        if body:
+            raise Reject(400, "unexpected_body", "a run takes no body; the stored script is what runs")
+        if not self.berry_enabled:
+            raise Reject(409, "rejected", "berry is not enabled; enable it in the settings first")
+        if name not in self.scripts:
+            raise Reject(404, "not_found", "no script of that name")
+        self.log(f"script run on request: {name}")
+        # the device answers {"status":"ok","name":…} and adds "note" only when the script
+        # evaluated to something that is not nil; the mock cannot run berry, so it never does
+        return {"status": "ok", "name": name}
+
     def berry_put(self, name, source):
         if not valid_script_name(name):
             raise Reject(400, "invalid_script_name", "a script name is 1..32 of letters, digits, -, _ or .")
@@ -895,6 +910,8 @@ def route_lookup(method, endpoint):
         if "/" not in rest and rest:
             # reading a script is control like the listing; writing and deleting are admin
             return {"GET": "control", "PUT": "admin", "DELETE": "admin"}.get(method), True
+        if rest.endswith("/run") and rest.count("/") == 1:
+            return ("admin" if method == "POST" else None), True
         return None, True
     if endpoint.startswith("tokens/"):
         rest = endpoint[len("tokens/"):]
@@ -1023,6 +1040,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
                     if method == "GET":
                         # text/plain, exactly as stored and exactly what PUT takes back
                         return self._send_text(200, d.berry_get(name))
+                    if name.endswith("/run") and method == "POST":
+                        n = int(self.headers.get("Content-Length") or 0)
+                        return self._send(200, d.berry_run(name[:-len("/run")], self.rfile.read(n)))
                     if method == "DELETE":
                         return self._send(200, d.berry_delete(name))
                     n = int(self.headers.get("Content-Length") or 0)

@@ -110,7 +110,19 @@ fn onScript(vm: *berry.Vm, w: messages.BerryScript, handler_ms: u16) void {
         .delete => _ = scripts.remove(name),
         .eval => {
             const st = vm.runFor("eval", w.slice(), @as(u64, handler_ms) * std.time.ns_per_ms);
-            const text = vm.errorText();
+            // a raise and a syntax error leave different shapes behind; the caller wants the
+            // message either way, because "nil" is not something anyone can act on
+            var except_buf: [config.text_max]u8 = undefined;
+            const text = switch (st) {
+                // the value the snippet evaluated to. berry's own repl prints a result only when
+                // it is not nil, and "nil" is not something a caller wants shown as output.
+                .ok => blk: {
+                    const v = vm.errorText();
+                    break :blk if (std.mem.eql(u8, v, "nil")) "" else v;
+                },
+                .exception => vm.exceptText(&except_buf),
+                else => vm.errorText(),
+            };
             send(.{ .berry_result = .{
                 .outcome = if (st == .ok) 0 else 2,
                 .name = w.name,

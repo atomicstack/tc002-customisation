@@ -219,6 +219,17 @@ been handed the whole set. that is what makes a script survive a power cycle.
 | `GET` | `/api/v1/berry/scripts/{name}` | control | — the source as `text/plain`, or 404 |
 | `PUT` | `/api/v1/berry/scripts/{name}` | **admin** | `text/plain`, at most 8,000 bytes |
 | `DELETE` | `/api/v1/berry/scripts/{name}` | **admin** | — |
+| `POST` | `/api/v1/berry/scripts/{name}/run` | **admin** | **no body** — runs the stored script |
+
+running a stored script is **admin**, like writing one: asking a script to drive
+the panel now is the same kind of act as storing one that will. it takes **no
+body** — a run route that accepted source would be the `eval` route this api
+deliberately does not have, so one is `400 unexpected_body`. it runs the stored
+source and writes nothing back. with berry disabled it says so (`409`) rather
+than enabling it as a side effect; with berry enabled but the vm not yet up it
+is `503`. a script that raises comes back `400 script_failed` carrying berry's
+own message, so `divzero_error: division by zero` reaches the caller rather
+than a bare failure.
 
 reading a script back is **control**, the same as listing them: a split where a
 token could enumerate names but not read them protects little, and an editor

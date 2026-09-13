@@ -56,4 +56,5 @@ test {
     // pure zig: the arena is testable without the vendored c, and must stay that way
     _ = @import("berry/arena.zig");
     _ = @import("berry/store.zig");
+    _ = @import("berry/requests.zig");
 }

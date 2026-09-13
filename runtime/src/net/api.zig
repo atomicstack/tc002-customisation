@@ -134,6 +134,7 @@ pub const Op = union(enum) {
     berry_put: struct { name: []const u8, source: []const u8 },
     berry_delete: struct { name: []const u8 },
     berry_get: struct { name: []const u8 },
+    berry_run: struct { name: []const u8 },
     sprite_put: canvas.Sprite,
     sprite_delete: canvas.Id,
 };
@@ -749,6 +750,9 @@ pub fn route(req: http.Request, body: []const u8, creds: *const Credentials, sto
             if (req.method == .GET) matched = .{ .method = .GET, .path = "/api/v1/berry/scripts/{name}", .authority = .control };
             if (req.method == .PUT) matched = .{ .method = .PUT, .path = "/api/v1/berry/scripts/{name}", .authority = .admin };
             if (req.method == .DELETE) matched = .{ .method = .DELETE, .path = "/api/v1/berry/scripts/{name}", .authority = .admin };
+        } else if (std.mem.endsWith(u8, rest, "/run") and std.mem.count(u8, rest, "/") == 1) {
+            // admin, like writing one: running a stored script is asking it to drive the panel now
+            if (req.method == .POST) matched = .{ .method = .POST, .path = "/api/v1/berry/scripts/{name}/run", .authority = .admin };
         }
     }
     const streams_prefix = "/api/v1/streams/";
@@ -787,6 +791,15 @@ pub fn route(req: http.Request, body: []const u8, creds: *const Credentials, sto
     }
     if (std.mem.eql(u8, ep.path, "/api/v1/berry")) return .{ .op = .berry_status };
     if (std.mem.eql(u8, ep.path, "/api/v1/berry/scripts")) return .{ .op = .berry_list };
+    if (std.mem.eql(u8, ep.path, "/api/v1/berry/scripts/{name}/run")) {
+        const rest = req.path[scripts_prefix.len..];
+        const name = rest[0 .. rest.len - "/run".len];
+        if (!berry_store.validName(name)) return bad("invalid_script_name", "a script name is 1..32 of letters, digits, -, _ or .");
+        // a run carries no source. accepting one would make this an eval route, and there
+        // deliberately is not one -- see SECURITY.md.
+        if (body.len != 0) return bad("unexpected_body", "a run takes no body; the stored script is what runs");
+        return .{ .op = .{ .berry_run = .{ .name = name } } };
+    }
     if (std.mem.eql(u8, ep.path, "/api/v1/berry/scripts/{name}")) {
         const name = req.path["/api/v1/berry/scripts/".len..];
         if (!berry_store.validName(name)) return bad("invalid_script_name", "a name is 1 to 32 characters of letters, digits, dash, underscore and dot");
@@ -1924,4 +1937,24 @@ test "a stored script can be read back, at the same authority as the listing" {
     try store.add("wall", .read, [_]u8{0x77} ** 32, 1);
     try expectReject(route(testReq(.GET, "/api/v1/berry/scripts/autoexec", "", "Bearer " ++ "77" ** 32, null, null), "", &c, &store, &origins, &arena, test_minted), 403, "forbidden");
     try expectReject(R.go(&c, &origins, &arena, .GET, "/api/v1/berry/scripts/has space", control_header), 400, "invalid_script_name");
+}
+
+test "running a stored script is admin, and never carries source" {
+    const c = testCreds();
+    var arena: Arena = undefined;
+    const origins = OriginPolicy{};
+    const R = struct {
+        fn go(cc: *const Credentials, o: *const OriginPolicy, a: *Arena, m: http.Method, path: []const u8, hdr: []const u8, body: []const u8) Route {
+            return route(testReq(m, path, "", hdr, if (body.len > 0) "text/plain" else null, null), body, cc, &no_clients, o, a, test_minted);
+        }
+    };
+    const run = R.go(&c, &origins, &arena, .POST, "/api/v1/berry/scripts/greet/run", admin_header, "");
+    try std.testing.expectEqualStrings("greet", run.op.berry_run.name);
+    // a run route that took a body would be the eval route SECURITY.md says does not exist
+    try expectReject(R.go(&c, &origins, &arena, .POST, "/api/v1/berry/scripts/greet/run", admin_header, "print('injected')"), 400, "unexpected_body");
+    try expectReject(R.go(&c, &origins, &arena, .POST, "/api/v1/berry/scripts/greet/run", control_header, ""), 403, "forbidden");
+    try expectReject(R.go(&c, &origins, &arena, .POST, "/api/v1/berry/scripts/has space/run", admin_header, ""), 400, "invalid_script_name");
+    try expectReject(R.go(&c, &origins, &arena, .GET, "/api/v1/berry/scripts/greet/run", admin_header, ""), 405, "method_not_allowed");
+    // and reading is still control, unchanged
+    try std.testing.expect(R.go(&c, &origins, &arena, .GET, "/api/v1/berry/scripts/greet", control_header, "") == .op);
 }

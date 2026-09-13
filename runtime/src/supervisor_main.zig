@@ -26,6 +26,7 @@ const metrics = @import("supervisor/metrics.zig");
 const night = @import("supervisor/night.zig");
 const canvas = @import("scene/canvas.zig");
 const berry_store = @import("berry/store.zig");
+const requests = @import("berry/requests.zig");
 const sound_store = @import("sound/store.zig");
 const api = @import("net/api.zig");
 const credfile = @import("net/credfile.zig");
@@ -1557,8 +1558,14 @@ const Supervisor = struct {
             if (r.outcome != 0) log.warn("berry: {s}: {s}", .{ r.name.slice(), r.text.slice() });
             return;
         };
-        self.berry_pending = null;
         const name = self.berry_pending_script.name.slice();
+        if (!std.mem.eql(u8, r.name.slice(), name)) {
+            // not the script we asked about: a run-time failure from some other script arriving
+            // while we wait. attributing it to this request would answer the wrong question.
+            if (r.outcome != 0) log.warn("berry: {s}: {s}", .{ r.name.slice(), r.text.slice() });
+            return;
+        }
+        self.berry_pending = null;
         if (r.outcome != 0) {
             log.warn("berry refused {s}: {s}", .{ name, r.text.slice() });
             return self.berryResultToNetd(pending.request_id, r.outcome, name, r.text.slice());
@@ -1808,6 +1815,31 @@ const Supervisor = struct {
                     self.pushClients();
                     log.info("client token issued: {s} ({s})", .{ a.name.slice(), @tagName(role) });
                     self.sendNetd(.{ .client_result = .{ .status = .applied, .name = a.name, .role = a.role, .token = token } }, p.request_id);
+                },
+                .berry_run => |g| {
+                    const w = requests.prepareRun(
+                        &script_store,
+                        g.name.slice(),
+                        "",
+                        self.cfg.berry.enabled,
+                        self.berry_pid != null,
+                        self.berry_pending != null,
+                    ) catch |e| {
+                        const outcome: u8, const text: []const u8 = switch (e) {
+                            error.NotFound => .{ 4, "no script of that name" },
+                            error.Disabled => .{ 3, "berry is not enabled; enable it in the settings first" },
+                            error.Unavailable => .{ 5, "the berry interpreter is not running yet" },
+                            error.Busy => .{ 3, "another script is already being compiled or run" },
+                            // the route refuses these before they reach here
+                            error.InvalidName, error.UnexpectedBody => .{ 3, "rejected" },
+                        };
+                        self.berryResultToNetd(p.request_id, outcome, g.name.slice(), text);
+                        continue;
+                    };
+                    self.berry_pending = .{ .request_id = p.request_id, .deadline_ns = now + relay_timeout_ns };
+                    self.berry_pending_script = w;
+                    self.sendBerry(.{ .berry_script = w });
+                    log.info("running script {s} on request", .{g.name.slice()});
                 },
                 .berry_script_get => |g| {
                     // reply with the script, or with an empty name meaning there is none

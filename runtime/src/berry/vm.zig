@@ -166,6 +166,17 @@ pub const Vm = struct {
         return std.mem.span(be_tostring(self.handle, -1));
     }
 
+    /// the message from a failed `be_pcall`, which is not shaped like a compile failure: berry
+    /// leaves the exception **value** at -2 and its **argument** at -1, and its own `be_dumpexcept`
+    /// prints them as `value: argument`. reading -1 alone is how `raise 'nope'` came back as "nil",
+    /// because a one-operand raise puts the message in the value and leaves the argument nil.
+    pub fn exceptText(self: *Vm, buf: []u8) []const u8 {
+        const value = std.mem.span(be_tostring(self.handle, -2));
+        const arg = std.mem.span(be_tostring(self.handle, -1));
+        if (arg.len == 0 or std.mem.eql(u8, arg, "nil")) return value[0..@min(value.len, buf.len)];
+        return std.fmt.bufPrint(buf, "{s}: {s}", .{ value, arg }) catch value[0..@min(value.len, buf.len)];
+    }
+
     /// drop what a failed call left behind, so the vm can be used again
     pub fn clearError(self: *Vm) void {
         be_pop(self.handle, 2);

@@ -554,6 +554,7 @@ const Netd = struct {
             .sound_stop => self.ask(c, .{ .sound_cmd = messages.SoundCmd.init(.stop, "", 0, false) }, .sound_result, now),
             .berry_list => self.ask(c, .berry_list_get, .berry_scripts, now),
             .berry_get => |b| self.ask(c, .{ .berry_script_get = .{ .name = berry_store.Name.init(b.name) } }, .berry_source, now),
+            .berry_run => |b| self.ask(c, .{ .berry_run = .{ .name = berry_store.Name.init(b.name) } }, .berry_result, now),
             .berry_put => |b| self.ask(c, .{ .berry_script = messages.BerryScript.init(.put, b.name, b.source) }, .berry_result, now),
             .berry_delete => |b| self.ask(c, .{ .berry_script = messages.BerryScript.init(.delete, b.name, "") }, .berry_result, now),
             .scenes => {
@@ -886,11 +887,13 @@ const Netd = struct {
                 1 => "script_will_not_compile",
                 2 => "script_failed",
                 4 => "not_found",
+                5 => "unavailable",
                 else => "rejected",
             };
             const status: u16 = switch (r.outcome) {
                 1, 2 => 400,
                 4 => 404,
+                5 => 503,
                 else => 409,
             };
             self.respondError(c, status, code, r.text.slice());

@@ -374,6 +374,9 @@ pub const Kind = enum(u8) {
     /// echoed name means there is no script of that name, which stays unambiguous even for a
     /// script whose source is zero bytes.
     berry_script_get = 82,
+    /// netd -> supervisor: run a stored script by name. the source is never carried -- a run that
+    /// accepted one would be an eval route wearing a disguise.
+    berry_run = 83,
     /// supervisor -> netd: the outcome, carrying the new secret on an issue. this is the only
     /// message a token ever travels back in, and netd returns it to the caller exactly once.
     client_result = 80,
@@ -1949,6 +1952,7 @@ pub const Message = union(Kind) {
     client_remove: ClientRemove,
     client_rotate: ClientRotate,
     berry_script_get: BerryName,
+    berry_run: BerryName,
     client_result: ClientResult,
 };
 
@@ -2112,7 +2116,7 @@ fn encodePayload(msg: Message, out: []u8) usize {
             r.put(out);
             return ClientRotate.wire_len;
         },
-        .berry_script_get => |n| {
+        .berry_script_get, .berry_run => |n| {
             n.put(out);
             return BerryName.wire_len;
         },
@@ -2604,6 +2608,9 @@ pub fn decodePacket(bytes: []const u8) Error!Packet {
         },
         .berry_script_get => blk: {
             break :blk .{ .berry_script_get = BerryName.get(try fixed(p, BerryName.wire_len)) };
+        },
+        .berry_run => blk: {
+            break :blk .{ .berry_run = BerryName.get(try fixed(p, BerryName.wire_len)) };
         },
         .client_result => blk: {
             break :blk .{ .client_result = try ClientResult.get(try fixed(p, ClientResult.wire_len)) };
