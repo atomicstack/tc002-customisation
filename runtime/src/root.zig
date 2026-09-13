@@ -46,4 +46,6 @@ test {
     _ = @import("supervisor/logring.zig");
     _ = @import("supervisor/sntp.zig");
     _ = @import("supervisor/night.zig");
+    // pure zig: the arena is testable without the vendored c, and must stay that way
+    _ = @import("berry/arena.zig");
 }

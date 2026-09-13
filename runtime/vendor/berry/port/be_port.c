@@ -42,3 +42,27 @@ int be_nfunc_open(bvm *vm)
     be_raise(vm, "io_error", "this device has no filesystem");
     return 0;
 }
+
+/* -- the watchdog --------------------------------------------------------------------------
+ *
+ * berry calls this hook every 2^BE_VM_OBSERVABILITY_SAMPLING instructions. the decision about
+ * whether a script has outstayed its welcome belongs to the host, but the *raise* has to happen
+ * here: be_raise longjmps back to the enclosing be_pcall, and a longjmp must not cross a zig
+ * frame. so the zig side answers a yes/no question and this file does the jumping.
+ *
+ * the hook is variadic because berry passes an argument for some events; zig cannot define a
+ * variadic function, which is the other reason this shim exists.
+ */
+extern int tc002_berry_should_stop(void);
+
+static void tc002_obs_hook(bvm *vm, int event, ...)
+{
+    if (event == BE_OBS_VM_HEARTBEAT && tc002_berry_should_stop()) {
+        be_raise(vm, "timeout", "the script ran longer than it is allowed to");
+    }
+}
+
+void tc002_berry_install_hook(bvm *vm)
+{
+    be_set_obs_hook(vm, tc002_obs_hook);
+}

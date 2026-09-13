@@ -29,6 +29,23 @@ fn captured() []const u8 {
     return capture_buf[0..capture_len];
 }
 
+/// a deterministic clock: every reading is one millisecond after the last.
+///
+/// the watchdog is only ever asked the time from inside berry's observability hook, which fires
+/// every 65,536 instructions, so "a millisecond per reading" makes the budget below mean "stop
+/// after about fifty hook visits". that is worth more than a wall clock here: the test cannot
+/// flake on a loaded machine, and it cannot pass by accident on a fast one. a fixture that never
+/// reaches the hook never advances this clock at all, so it can never be stopped by it.
+/// berryd uses the real monotonic clock; what is under test is the deadline, not the clock.
+var fake_now_ns: u64 = 0;
+
+fn steppingClock() u64 {
+    fake_now_ns += std.time.ns_per_ms;
+    return fake_now_ns;
+}
+
+const fixture_budget_ns: u64 = 50 * std.time.ns_per_ms;
+
 pub fn main(init: std.process.Init) !void {
     const io = init.io;
 
@@ -44,6 +61,8 @@ pub fn main(init: std.process.Init) !void {
     };
 
     berry.sink = collect;
+    berry.clock = steppingClock;
+    berry.heapInit(256);
 
     var dir = try std.Io.Dir.cwd().openDir(io, dir_path, .{ .iterate = true });
     defer dir.close(io);
@@ -74,7 +93,7 @@ pub fn main(init: std.process.Init) !void {
             failed += 1;
             continue;
         };
-        const status = vm.run(name, source);
+        const status = vm.runFor(name, source, fixture_budget_ns);
         const message = if (status != .ok) vm.errorText() else "";
 
         if (must_fail) {
@@ -107,7 +126,13 @@ pub fn main(init: std.process.Init) !void {
         vm.deinit();
     }
 
-    std.debug.print("{d} fixture(s), {d} failure(s)\n", .{ names.items.len, failed });
+    std.debug.print("{d} fixture(s), {d} failure(s); arena high water {d} of {d} bytes, {d} script(s) stopped for running too long\n", .{
+        names.items.len,
+        failed,
+        berry.arena.high_water,
+        berry.arena.buf.len,
+        berry.stops,
+    });
     if (failed != 0) std.process.exit(1);
 }
 
