@@ -604,6 +604,13 @@ test "ip and time updates redraw without changing the revision" {
     try std.testing.expect(!a.takeDirty());
     try std.testing.expectEqual(Result{ .applied = 0 }, a.apply(.time_corrected, 0));
     try std.testing.expect(a.takeDirty());
+
+    // and neither emits a statement -- not because they are filtered out, but because they never
+    // moved the revision in the first place. so a mirror following the event stream sees no event
+    // *and no gap*: a dhcp renewal or an sntp correction costs it nothing at all. a replica that
+    // wants the new address reads it from `/status`, which is where the address lives.
+    try std.testing.expectEqual(@as(u32, 0), a.revision);
+    try std.testing.expect(a.takeApplied() == null);
 }
 
 test "a transition away from the canvas carries the frame it last showed, not the document as it stands" {

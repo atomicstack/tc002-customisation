@@ -1469,11 +1469,14 @@ can be forgotten; every earlier accuracy bug in this preview was exactly that. s
 is still what bootstraps it and what recovers it: a statement that does not land on the device's
 revision means one was missed, and the console resyncs from `/status`, `/config` and `/canvas`.
 
-two things the stream does not carry, and so still come from state: `ip_changed` and
-`time_corrected` are arbiter commands with no `Statement.Kind`, so they move the revision without
-an event and show up as a gap that resyncs. a `raw` frame's pixels are deliberately not on the
-wire — 2,496 bytes per frame have no business there — so the replica refuses it and resyncs
-rather than inventing them.
+two things the stream does not carry, and so still come from state. `ip_changed` and
+`time_corrected` are arbiter commands with no `Statement.Kind` — they mark the panel dirty and
+return the *current* revision rather than bumping it (`applyInner` returns
+`.{ .applied = self.revision }` for both), because a redraw is not a state change. so they produce
+no event **and no gap**: a new ip address simply never reaches the replica over the stream, which
+is why the address keeps coming from `/status`. a `raw` frame is different — it does bump, so its
+event arrives, but its pixels are deliberately not on the wire (2,496 bytes per frame have no
+business there), so the replica refuses it and resyncs rather than inventing them.
 
 the mirror runs **750 ms behind on purpose**. every event says how long ago it was applied, so it
 is queued and played when the mirror's clock reaches that instant. running behind is what makes
