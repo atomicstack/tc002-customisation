@@ -574,6 +574,13 @@ const Supervisor = struct {
         log.info("credentials generated (mode 0600 in the credentials directory; never logged)", .{});
     }
 
+    /// hands config.reportChanges somewhere to write. one line per field that actually moved.
+    const LogSink = struct {
+        pub fn line(_: LogSink, comptime fmt: []const u8, args: anytype) void {
+            log.info(fmt, args);
+        }
+    };
+
     /// rewrite the credentials file from the store in memory. the only writer.
     fn saveCredentials(self: *Supervisor) messages.Status {
         var dir_buf: [160]u8 = undefined;
@@ -1750,26 +1757,31 @@ const Supervisor = struct {
                         self.sendNetd(.{ .save_result = .{ .status = if (e == error.RevisionConflict) .conflict else .rejected, .saved_revision = self.cfg.saved_revision } }, p.request_id);
                         continue;
                     };
+                    config.reportChanges(&before, &self.cfg, LogSink{});
                     self.applyConfigLive(before);
                     self.persistSettings();
                     self.sendNetd(.{ .config = self.cfg }, p.request_id);
                 },
                 .mqtt_put => |w| {
+                    const before_mqtt = self.cfg;
                     self.cfg.patchMqtt(w.toApi()) catch {
                         self.sendNetd(.{ .save_result = .{ .status = .rejected, .saved_revision = self.cfg.saved_revision } }, p.request_id);
                         continue;
                     };
+                    config.reportChanges(&before_mqtt, &self.cfg, LogSink{});
                     self.snapshot.config_revision = self.cfg.revision;
                     self.persistSettings();
                     self.sendNetd(.{ .config = self.cfg }, p.request_id);
                 },
                 .ntfy_put => |w| {
+                    const before_ntfy = self.cfg;
                     const next = self.cfg.patchNtfy(w.toApi()) catch {
                         self.sendNetd(.{ .save_result = .{ .status = .rejected, .saved_revision = self.cfg.saved_revision } }, p.request_id);
                         continue;
                     };
                     if (w.has & messages.NtfyPut.F.ca != 0) self.storeNtfyCa(w.ca[0..w.ca_len]);
                     self.cfg.setNtfy(next);
+                    config.reportChanges(&before_ntfy, &self.cfg, LogSink{});
                     self.snapshot.config_revision = self.cfg.revision;
                     self.restartNtfy(now);
                     self.persistSettings();

@@ -935,3 +935,129 @@ test "a generator's parameters round-trip, and unset ones take the declared defa
     try std.testing.expectError(error.Invalid, c.patch(.{ .generator_params = &.{.{ .owner = 9, .slot = 0, .value = 1 }} }));
     try std.testing.expectError(error.Invalid, c.patch(.{ .generator_params = &.{.{ .owner = 2, .slot = 99, .value = 1 }} }));
 }
+
+// --- what changed, for the log ring ---------------------------------------------------------
+
+/// field names whose values must never reach the log ring. `GET /api/v1/logs` is readable by any
+/// control token, so a settings line that printed a password would hand it to every client that
+/// can read the log. these are reported as changed, never as values.
+/// exact names, not substrings: a substring rule would quietly redact an unrelated field one day
+/// and nobody would notice the log had gone silent.
+const secret_names = [_][]const u8{ "password", "token", "psk", "secret" };
+
+fn isSecret(comptime name: []const u8) bool {
+    inline for (secret_names) |s| if (std.mem.eql(u8, name, s)) return true;
+    return false;
+}
+
+/// report every field that actually changed, one line each, oldest value first. driven by
+/// reflection rather than a hand-written list: a setting added to `Config` is logged from the day
+/// it exists, where a list would silently stop covering the newest thing anyone changed.
+///
+/// `sink` is anything with `fn line(self, comptime fmt: []const u8, args: anytype) void`, so the
+/// supervisor can pass the log and a test can pass a collector.
+pub fn reportChanges(before: *const Config, after: *const Config, sink: anytype) void {
+    @setEvalBranchQuota(20000);
+    reportStruct(Config, before, after, "", sink);
+}
+
+fn reportStruct(comptime T: type, before: *const T, after: *const T, comptime prefix: []const u8, sink: anytype) void {
+    inline for (@typeInfo(T).@"struct".fields) |f| {
+        const name = prefix ++ f.name;
+        // the revision moves on every patch by definition; saying so every time is noise
+        if (comptime std.mem.eql(u8, name, "revision") or std.mem.eql(u8, name, "saved_revision")) continue;
+        const a = &@field(before, f.name);
+        const b = &@field(after, f.name);
+        if (comptime isSecret(f.name)) {
+            if (!std.meta.eql(a.*, b.*)) sink.line("setting {s} changed", .{name});
+        } else if (f.type == Text) {
+            if (!std.meta.eql(a.*, b.*)) sink.line("setting {s} \"{s}\" -> \"{s}\"", .{ name, a.slice(), b.slice() });
+        } else switch (@typeInfo(f.type)) {
+            .@"struct" => reportStruct(f.type, a, b, name ++ ".", sink),
+            .int, .bool => {
+                if (a.* != b.*) sink.line("setting {s} {any} -> {any}", .{ name, a.*, b.* });
+            },
+            .optional => {
+                if (!std.meta.eql(a.*, b.*)) sink.line("setting {s} {any} -> {any}", .{ name, a.*, b.* });
+            },
+            // arrays and everything else: that it changed is the useful part, and a colour or a
+            // parameter table does not read well as a log line
+            else => {
+                if (!std.meta.eql(a.*, b.*)) sink.line("setting {s} changed", .{name});
+            },
+        }
+    }
+}
+
+const TestSink = struct {
+    buf: [16][160]u8 = undefined,
+    lens: [16]usize = [_]usize{0} ** 16,
+    n: usize = 0,
+
+    fn line(self: *TestSink, comptime fmt: []const u8, args: anytype) void {
+        if (self.n == self.buf.len) return;
+        const w = std.fmt.bufPrint(&self.buf[self.n], fmt, args) catch return;
+        self.lens[self.n] = w.len;
+        self.n += 1;
+    }
+    fn at(self: *const TestSink, i: usize) []const u8 {
+        return self.buf[i][0..self.lens[i]];
+    }
+    fn has(self: *const TestSink, needle: []const u8) bool {
+        for (0..self.n) |i| if (std.mem.indexOf(u8, self.at(i), needle) != null) return true;
+        return false;
+    }
+};
+
+test "a changed setting is reported with both values" {
+    var a = Config{};
+    var b = a;
+    b.brightness = 50;
+    b.night = true;
+    var sink = TestSink{};
+    reportChanges(&a, &b, &sink);
+    try std.testing.expectEqual(@as(usize, 2), sink.n);
+    try std.testing.expect(sink.has("setting brightness 100 -> 50"));
+    try std.testing.expect(sink.has("setting night false -> true"));
+}
+
+test "nothing changed reports nothing, and the revision is never the news" {
+    var a = Config{};
+    var b = a;
+    b.revision = a.revision + 1;
+    b.saved_revision = a.saved_revision + 1;
+    var sink = TestSink{};
+    reportChanges(&a, &b, &sink);
+    try std.testing.expectEqual(@as(usize, 0), sink.n);
+}
+
+test "text settings are quoted, and nested ones carry their path" {
+    var a = Config{};
+    var b = a;
+    b.timezone = Text.init("Australia/Sydney");
+    b.mqtt.host = Text.init("10.0.0.136");
+    b.mqtt.port = 8883;
+    var sink = TestSink{};
+    reportChanges(&a, &b, &sink);
+    try std.testing.expect(sink.has("setting timezone \"UTC0\" -> \"Australia/Sydney\""));
+    try std.testing.expect(sink.has("setting mqtt.host \"\" -> \"10.0.0.136\""));
+    try std.testing.expect(sink.has("setting mqtt.port 1883 -> 8883"));
+}
+
+test "a secret is reported as changed and never as a value" {
+    var a = Config{};
+    var b = a;
+    b.mqtt.password = Text.init("hunter2");
+    b.ntfy.token = Text.init("tk_secret");
+    b.ntfy.password = Text.init("hunter3");
+    var sink = TestSink{};
+    reportChanges(&a, &b, &sink);
+    try std.testing.expectEqual(@as(usize, 3), sink.n);
+    try std.testing.expect(sink.has("setting mqtt.password changed"));
+    try std.testing.expect(sink.has("setting ntfy.token changed"));
+    for (0..sink.n) |i| {
+        try std.testing.expect(std.mem.indexOf(u8, sink.at(i), "hunter2") == null);
+        try std.testing.expect(std.mem.indexOf(u8, sink.at(i), "hunter3") == null);
+        try std.testing.expect(std.mem.indexOf(u8, sink.at(i), "tk_secret") == null);
+    }
+}
