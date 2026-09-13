@@ -90,6 +90,51 @@ point counts, then an i2s config block) fits 52 bytes, but that is a hypothesis
 to check against the device, not a measurement. **it is the thing to verify first
 and the thing most likely to turn a silent test into a loud one.**
 
+### the attribute payload, decoded
+
+the 52 bytes are no longer a guess. `libzkmedia.so` — the vendor's own media layer, which is **arm
+rather than thumb-2**, unlike `libmi_ao.so` — has `media::SoundDevice::init(channels, rate)`, and it
+builds the payload in the open:
+
+```
+memset(attr, 0, 52)
+attr[+0]  = rate            (44100 etc., the plain integer)
+attr[+12] = 1 if channels == 2 else 0      (sound mode: stereo/mono)
+attr[+16] = 4
+attr[+20] = 1024
+attr[+28] = 1
+everything else zero
+MI_AO_SetPubAttr(0, attr)
+```
+
+the argument order is confirmed by the log line immediately above it, whose varargs are `r3` and
+`[sp]`: `"sound channels: %d, rate: %d"`. so the first parameter is the channel count and the second
+is the rate, and the rate is what lands at offset 0.
+
+this is the vendor's own configuration, copied rather than interpreted. the field *names* still are
+not known — `+16 = 4` and `+20 = 1024` are frame and point counts in the published mstar layout, in
+some order — but the bytes are what the device is known to accept, which is the part that matters.
+
+### the frame, and how pcm is handed over
+
+`media::SoundDevice::output(buf, len)` is equally plain:
+
+```
+memset(frame, 0, 288)
+frame[+8]  = the pcm pointer
+frame[+84] = the byte count
+do { r = MI_AO_SendFrame(dev=0, chn=0, &frame, timeout=-1) } while (r == 0xA005200D)
+```
+
+so `MI_AUDIO_Frame_t` is **288 bytes** with the buffer at +8 and the length at +84, and
+**`0xA005200D` means the device's buffer is full** — the vendor spins on it rather than treating it
+as an error.
+
+**what is still not recovered** is the last hop: how `MI_AO_SendFrame` turns that 288-byte frame into
+the 8-byte `{?, ?}` payload its ioctl carries. it makes no `memcpy` and no `MI_SYS_Mmap` call of its
+own, so one of those two words is presumably a pointer the driver follows, but tracing it through a
+216-byte stack frame has not been done. **that is the one thing between this runtime and a sound.**
+
 **`MI_SYS_*` payloads** follow the same envelope. the calls the audio path needs:
 
 | call | nr | request | inner |
@@ -116,12 +161,11 @@ magic `'i'`; the six above are the ones playback uses.
 
 ## what is not recovered yet
 
-**`MI_AO_SendFrame`'s two words.** its 8-byte payload is built at `r7+0x60` from a value computed
-earlier in a 216-byte stack frame; the second word is copied from `r7+0xa8`. that it is `{dev, chn}`
-is an inference from the size and from the `MI_SYS_Mmap` dependency, not something traced through.
+**`MI_AO_SendFrame`'s two words**, as described above — the one remaining blocker.
 
-**the field layouts inside `MI_AUDIO_Attr_t` and the `MI_SYS` payloads.** sizes are exact,
-fields are not.
+**the `MI_SYS` payload layouts.** sizes are exact, fields are not. they may not be needed at all:
+the vendor hands `SendFrame` an ordinary pointer to its own stack, so the shared-buffer path may
+belong to a different caller entirely.
 
 ## about the codecs
 
