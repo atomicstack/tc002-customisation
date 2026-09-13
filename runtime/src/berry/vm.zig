@@ -140,6 +140,19 @@ pub const Vm = struct {
         return @enumFromInt(be_pcall(self.handle, 0));
     }
 
+    /// compile without running. this is what `PUT /berry/scripts/{name}` is checked with: a script
+    /// that will not compile never reaches flash, and the client hears the parser's own words.
+    pub fn compile(self: *Vm, name: []const u8, source: []const u8) Status {
+        var name_buf: [64]u8 = undefined;
+        const n = @min(name.len, name_buf.len - 1);
+        @memcpy(name_buf[0..n], name[0..n]);
+        name_buf[n] = 0;
+        const st: Status = @enumFromInt(be_loadbuffer(self.handle, @ptrCast(&name_buf), source.ptr, source.len));
+        // a successful compile leaves the closure on the stack; nothing here wants it
+        if (st == .ok) be_pop(self.handle, 1);
+        return st;
+    }
+
     /// run with a deadline: the watchdog raises inside the script once `budget_ns` has passed.
     /// needs `clock` installed, and silently behaves like `run` without one.
     pub fn runFor(self: *Vm, name: []const u8, source: []const u8, budget_ns: u64) Status {

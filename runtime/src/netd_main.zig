@@ -58,7 +58,7 @@ const mqtt_frame_envelope = 8 + 4 + 2 + geometry.rgb_bytes;
 const Tag = enum(u64) { timer = 1, supervisor = 2, listener = 3, mqtt = 4, conn_base = 16 };
 
 const ConnState = enum { free, reading, relaying, writing };
-const Awaiting = enum { none, renderer_result, status, config, save_result, screen, logs, canvas, sprites };
+const Awaiting = enum { none, renderer_result, status, config, save_result, screen, logs, canvas, sprites, berry_scripts, berry_result };
 
 const Conn = struct {
     fd: sys.Fd = -1,
@@ -389,6 +389,15 @@ const Netd = struct {
     fn execute(self: *Netd, c: *Conn, op: api.Op, now: u64) void {
         switch (op) {
             .status => self.ask(c, .status_get, .status, now),
+            .berry_status => {
+                var o = Out{ .buf = &json_buf };
+                berryStatusJson(&o, &self.status);
+                self.respond(c, 200, "application/json", o.slice());
+                self.flushConn(c, now);
+            },
+            .berry_list => self.ask(c, .berry_list_get, .berry_scripts, now),
+            .berry_put => |b| self.ask(c, .{ .berry_script = messages.BerryScript.init(.put, b.name, b.source) }, .berry_result, now),
+            .berry_delete => |b| self.ask(c, .{ .berry_script = messages.BerryScript.init(.delete, b.name, "") }, .berry_result, now),
             .scenes => {
                 self.respond(c, 200, "application/json", api.scenes_body);
                 self.flushConn(c, now);
@@ -675,6 +684,53 @@ const Netd = struct {
         self.flushConn(c, now);
     }
 
+    fn onBerryScripts(self: *Netd, request_id: u64, l: *const messages.BerryScripts, now: u64) void {
+        const c = self.findConn(true, request_id) orelse return;
+        var o = Out{ .buf = &json_buf };
+        o.fmt("{{\"used\":{d},\"budget\":{d},\"scripts\":[", .{ l.used, l.budget });
+        for (l.items[0..l.count], 0..) |it, i| {
+            if (i > 0) o.add(",");
+            o.add("{\"name\":");
+            o.str(it.name.slice());
+            o.fmt(",\"bytes\":{d},\"compiled\":{}}}", .{ it.bytes, it.compiled != 0 });
+        }
+        o.add("]}");
+        self.respond(c, 200, "application/json", o.slice());
+        self.flushConn(c, now);
+    }
+
+    /// a script put or delete came back. a refusal carries berry's own words -- the parser knows
+    /// what is wrong with a script far better than anything here could guess.
+    fn onBerryResult(self: *Netd, request_id: u64, r: messages.BerryResult, now: u64) void {
+        const c = self.findConn(true, request_id) orelse return;
+        if (r.outcome != 0) {
+            const code: []const u8 = switch (r.outcome) {
+                1 => "script_will_not_compile",
+                2 => "script_failed",
+                4 => "not_found",
+                else => "rejected",
+            };
+            const status: u16 = switch (r.outcome) {
+                1, 2 => 400,
+                4 => 404,
+                else => 409,
+            };
+            self.respondError(c, status, code, r.text.slice());
+            self.flushConn(c, now);
+            return;
+        }
+        var o = Out{ .buf = &json_buf };
+        o.add("{\"status\":\"ok\",\"name\":");
+        o.str(r.name.slice());
+        if (r.text.len > 0) {
+            o.add(",\"note\":");
+            o.str(r.text.slice());
+        }
+        o.add("}");
+        self.respond(c, 200, "application/json", o.slice());
+        self.flushConn(c, now);
+    }
+
     fn onSpriteList(self: *Netd, request_id: u64, l: *const messages.SpriteList, now: u64) void {
         const c = self.findConn(true, request_id) orelse return;
         var o = Out{ .buf = &json_buf };
@@ -743,6 +799,8 @@ const Netd = struct {
                 .canvas => |*d| self.onCanvas(p.request_id, d, now),
                 .canvas_error => |e| self.onCanvasError(p.request_id, e, now),
                 .sprite_list => |*l| self.onSpriteList(p.request_id, l, now),
+                .berry_scripts => |*l| self.onBerryScripts(p.request_id, l, now),
+                .berry_result => |r| self.onBerryResult(p.request_id, r, now),
                 .screen => |*sc| self.onScreen(p.request_id, sc, now),
                 .log_lines => |*l| self.onLogs(p.request_id, l, now),
                 .input => |i| self.onInput(i),

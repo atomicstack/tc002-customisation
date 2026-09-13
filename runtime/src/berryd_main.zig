@@ -19,6 +19,8 @@ const log = @import("sys/log.zig");
 const messages = @import("ipc/messages.zig");
 const codec = @import("ipc/codec.zig");
 const berry = @import("berry/vm.zig");
+const store = @import("berry/store.zig");
+const config = @import("supervisor/config.zig");
 
 pub const panic = std.debug.simple_panic;
 pub const std_options: std.Options = .{ .enable_segfault_handler = false };
@@ -32,6 +34,9 @@ const config_wait_ns: u64 = 10 * std.time.ns_per_s;
 
 var packet_buf: [codec.max_message]u8 = undefined;
 var out_buf: [codec.max_message]u8 = undefined;
+/// our copy of what the supervisor holds. the supervisor owns it; this is what a fresh vm is
+/// handed so that a saved script survives a power cycle.
+var scripts: store.Store = .{};
 
 const Tag = enum(u64) { ipc, timer };
 
@@ -69,6 +74,54 @@ fn waitConfig() ?messages.BerryConfig {
         sys.nanosleep(5 * std.time.ns_per_ms);
     }
     return null;
+}
+
+/// what the supervisor asked for: compile a script, forget one, evaluate a snippet, or start over.
+fn onScript(vm: *berry.Vm, w: messages.BerryScript, handler_ms: u16) void {
+    const op: messages.BerryScript.Op = @enumFromInt(@min(w.op, 3));
+    const name = w.name.slice();
+    switch (op) {
+        .put => {
+            const st = vm.compile(name, w.slice());
+            if (st != .ok) {
+                const text = vm.errorText();
+                log.warn("{s} will not compile: {s}", .{ name, text });
+                send(.{ .berry_result = .{ .outcome = 1, .name = w.name, .text = config.Text.init(text[0..@min(text.len, config.text_max)]) } });
+                vm.clearError();
+                return;
+            }
+            scripts.put(name, w.slice()) catch |e| {
+                send(.{ .berry_result = .{ .outcome = 3, .name = w.name, .text = config.Text.init(@errorName(e)) } });
+                return;
+            };
+            send(.{ .berry_result = .{ .outcome = 0, .name = w.name } });
+        },
+        .delete => _ = scripts.remove(name),
+        .eval => {
+            const st = vm.runFor("eval", w.slice(), @as(u64, handler_ms) * std.time.ns_per_ms);
+            const text = vm.errorText();
+            send(.{ .berry_result = .{
+                .outcome = if (st == .ok) 0 else 2,
+                .name = w.name,
+                .text = config.Text.init(text[0..@min(text.len, config.text_max)]),
+            } });
+            if (st != .ok) vm.clearError();
+        },
+        .reload => runAutoexec(vm, handler_ms),
+    }
+}
+
+/// the script named `autoexec`, run once the supervisor has handed over the whole set. this is
+/// what makes a device that was power-cycled come back doing what it was told to do.
+fn runAutoexec(vm: *berry.Vm, handler_ms: u16) void {
+    const source = scripts.get("autoexec") orelse return;
+    const st = vm.runFor("autoexec", source, @as(u64, handler_ms) * std.time.ns_per_ms);
+    if (st == .ok) {
+        log.info("autoexec ran, {d} bytes", .{source.len});
+    } else {
+        log.warn("autoexec failed: {s}", .{vm.errorText()});
+        vm.clearError();
+    }
 }
 
 pub fn main(init: std.process.Init.Minimal) u8 {
@@ -124,6 +177,7 @@ pub fn main(init: std.process.Init.Minimal) u8 {
                         // settings can change while we run; the heap cannot be resized under a
                         // live vm, so a heap change is the supervisor's cue to replace us
                         .berry_config => |c| log.info("settings updated: {d} ms per handler", .{c.handler_ms}),
+                        .berry_script => |w| onScript(&vm, w, cfg.handler_ms),
                         .stop => {
                             log.info("stopping", .{});
                             return 0;

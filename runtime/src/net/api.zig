@@ -18,6 +18,7 @@ const cube = @import("../scene/cube.zig");
 const popsquares = @import("../scene/popsquares.zig");
 const plasma = @import("../scene/plasma.zig");
 const ntfy_url = @import("../ntfy/url.zig");
+const berry_store = @import("../berry/store.zig");
 
 /// a generator parameter once its scene and name have been looked up in the declared tables
 pub const ResolvedParam = struct { owner: u8, slot: u8, value: u32 };
@@ -95,6 +96,13 @@ pub const Op = union(enum) {
     canvas_clear,
     icons,
     sprite_list,
+    /// the interpreter's own status, from the snapshot netd already holds
+    berry_status,
+    /// what is in the store: names, sizes, and how much room is left
+    berry_list,
+    /// a script's source, compiled before it is stored
+    berry_put: struct { name: []const u8, source: []const u8 },
+    berry_delete: struct { name: []const u8 },
     sprite_put: canvas.Sprite,
     sprite_delete: canvas.Id,
 };
@@ -616,8 +624,16 @@ const endpoints = [_]Endpoint{
     .{ .method = .POST, .path = "/api/v1/streams", .authority = .control },
     .{ .method = .GET, .path = "/api/v1/screen", .authority = .control },
     .{ .method = .GET, .path = "/api/v1/logs", .authority = .control },
+    .{ .method = .GET, .path = "/api/v1/berry", .authority = .control },
+    .{ .method = .GET, .path = "/api/v1/berry/scripts", .authority = .control },
     .{ .method = .POST, .path = "/api/v1/input", .authority = .control },
 };
+
+/// `text/plain`, with or without a charset parameter
+fn isText(content_type: ?[]const u8) bool {
+    const ct = content_type orelse return false;
+    return std.ascii.startsWithIgnoreCase(std.mem.trim(u8, ct, " "), "text/plain");
+}
 
 fn sufficient(have: Authority, need: Authority) bool {
     return switch (need) {
@@ -641,6 +657,17 @@ pub fn route(req: http.Request, body: []const u8, creds: *const Credentials, ori
         if (std.mem.indexOfScalar(u8, rest, '/') == null and rest.len > 0) {
             if (req.method == .PUT) matched = .{ .method = .PUT, .path = "/api/v1/sprites/{id}", .authority = .admin };
             if (req.method == .DELETE) matched = .{ .method = .DELETE, .path = "/api/v1/sprites/{id}", .authority = .control };
+        }
+    }
+    const scripts_prefix = "/api/v1/berry/scripts/";
+    if (std.mem.startsWith(u8, req.path, scripts_prefix)) {
+        path_known = true;
+        const rest = req.path[scripts_prefix.len..];
+        if (std.mem.indexOfScalar(u8, rest, '/') == null and rest.len > 0) {
+            // both are admin: a script can drive the panel and publish to the broker, which is a
+            // different thing to hand out than the ability to read what is on the screen
+            if (req.method == .PUT) matched = .{ .method = .PUT, .path = "/api/v1/berry/scripts/{name}", .authority = .admin };
+            if (req.method == .DELETE) matched = .{ .method = .DELETE, .path = "/api/v1/berry/scripts/{name}", .authority = .admin };
         }
     }
     const streams_prefix = "/api/v1/streams/";
@@ -676,6 +703,16 @@ pub fn route(req: http.Request, body: []const u8, creds: *const Credentials, ori
         };
         if (req.method == .DELETE) return .{ .op = .{ .sprite_delete = canvas.Id.init(id) } };
         return parseSprite(id, req.content_type, body);
+    }
+    if (std.mem.eql(u8, ep.path, "/api/v1/berry")) return .{ .op = .berry_status };
+    if (std.mem.eql(u8, ep.path, "/api/v1/berry/scripts")) return .{ .op = .berry_list };
+    if (std.mem.eql(u8, ep.path, "/api/v1/berry/scripts/{name}")) {
+        const name = req.path["/api/v1/berry/scripts/".len..];
+        if (!berry_store.validName(name)) return bad("invalid_script_name", "a name is 1 to 32 characters of letters, digits, dash, underscore and dot");
+        if (req.method == .DELETE) return .{ .op = .{ .berry_delete = .{ .name = name } } };
+        if (!isText(req.content_type)) return .{ .reject = .{ .status = 415, .code = "unsupported_media_type", .message = "a script is text/plain" } };
+        if (body.len > berry_store.script_max) return .{ .reject = .{ .status = 413, .code = "body_too_large", .message = "a script is at most 8000 bytes" } };
+        return .{ .op = .{ .berry_put = .{ .name = name, .source = body } } };
     }
     if (std.mem.eql(u8, ep.path, "/api/v1/canvas") and req.method == .GET) return .{ .op = .canvas_get };
     if (std.mem.eql(u8, ep.path, "/api/v1/canvas") and req.method == .DELETE) return .{ .op = .canvas_clear };

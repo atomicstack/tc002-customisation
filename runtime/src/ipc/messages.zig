@@ -10,6 +10,7 @@ const clock = @import("../scene/clock.zig");
 const clockfont = @import("../scene/clockfont.zig");
 const ip = @import("../scene/ip.zig");
 const canvas = @import("../scene/canvas.zig");
+const store = @import("../berry/store.zig");
 
 test "every message kind round-trips through a packet" {
     var frame = Frame{ .duration_s = 9, .rgb = geometry.black_rgb };
@@ -82,6 +83,10 @@ test "every message kind round-trips through a packet" {
         .{ .ntfy_status = .{ .state = 2, .messages = 9, .err = config.Text.init("dns failed") } },
         .{ .berry_config = .{ .heap_kb = 64, .handler_ms = 250 } },
         .{ .berry_status = .{ .heap_bytes = 65536, .heap_used = 8488, .heap_high_water = 9000, .alloc_failures = 2, .stops = 1 } },
+        .{ .berry_script = BerryScript.init(.put, "autoexec", "print('boot')") },
+        .{ .berry_script = BerryScript.init(.delete, "rules", "") },
+        .{ .berry_result = .{ .outcome = 1, .name = store.Name.init("broken"), .text = config.Text.init("unexpected token") } },
+        .berry_list_get,
         .{ .menu_request = .{ .kind = @intFromEnum(MenuRequest.Kind.brightness), .value = 70 } },
         .{ .menu_request = .{ .kind = @intFromEnum(MenuRequest.Kind.reboot) } },
         .{ .set_param = .{ .base = 1, .index = 3, .value = 0xff8000 } },
@@ -284,6 +289,12 @@ pub const Kind = enum(u8) {
     // doing and whether it has had to stop anything
     berry_config = 60,
     berry_status = 61,
+    // scripts: netd puts and deletes, the supervisor keeps the store and hands each one to berryd,
+    // which compiles it and says whether it took
+    berry_script = 62,
+    berry_result = 63,
+    berry_list_get = 64,
+    berry_scripts = 65,
 };
 
 /// what the supervisor tells a fresh berryd about itself. the settings are the supervisor's, so
@@ -336,6 +347,55 @@ pub const BerryStatus = struct {
             .stops = std.mem.readInt(u32, b[16..20], .little),
         };
     }
+};
+
+/// one script travelling: to the supervisor from netd, and on to berryd. the source is inline
+/// because it has to arrive whole -- there is no chunking here, for the same reason canvas
+/// documents have none: half a script is worse than a refused one.
+pub const BerryScript = struct {
+    pub const Op = enum(u8) { put = 0, delete = 1, eval = 2, reload = 3 };
+
+    op: u8 = 0,
+    name: store.Name = .{},
+    len: u16 = 0,
+    source: [store.script_max]u8 = undefined,
+
+    pub const fixed_len = 1 + 1 + store.name_max + 2;
+    pub const wire_len = fixed_len + store.script_max;
+
+    pub fn init(op: Op, name: []const u8, source: []const u8) BerryScript {
+        var b = BerryScript{ .op = @intFromEnum(op), .name = store.Name.init(name) };
+        b.len = @intCast(@min(source.len, store.script_max));
+        @memcpy(b.source[0..b.len], source[0..b.len]);
+        return b;
+    }
+
+    pub fn slice(self: *const BerryScript) []const u8 {
+        return self.source[0..self.len];
+    }
+};
+
+/// whether a script took, and what berry said when it did not
+pub const BerryResult = struct {
+    /// 0 ok, 1 would not compile, 2 raised while running, 3 refused (no space, bad name)
+    outcome: u8 = 0,
+    name: store.Name = .{},
+    text: config.Text = .{},
+
+    pub const wire_len = 1 + 1 + store.name_max + 1 + config.text_max;
+};
+
+/// the listing `GET /berry/scripts` answers from, plus what the store has room for
+pub const BerryScripts = struct {
+    pub const Entry = struct { name: store.Name = .{}, bytes: u16 = 0, compiled: u8 = 0 };
+    pub const max = 32;
+
+    used: u32 = 0,
+    budget: u32 = 0,
+    count: u8 = 0,
+    items: [max]Entry = [_]Entry{.{}} ** max,
+
+    pub const wire_len = 4 + 4 + 1 + max * (1 + store.name_max + 2 + 1);
 };
 
 /// what the device is holding, for `GET /sprites`: ids and sizes, not the pixels
@@ -1279,6 +1339,10 @@ pub const Message = union(Kind) {
     sprite_list: SpriteList,
     berry_config: BerryConfig,
     berry_status: BerryStatus,
+    berry_script: BerryScript,
+    berry_result: BerryResult,
+    berry_list_get,
+    berry_scripts: BerryScripts,
 };
 
 pub const Packet = struct { request_id: u64, epoch: u32, message: Message };
@@ -1371,6 +1435,36 @@ fn encodePayload(msg: Message, out: []u8) usize {
             b.put(out);
             return BerryStatus.wire_len;
         },
+        .berry_script => |b| {
+            out[0] = b.op;
+            out[1] = b.name.len;
+            @memcpy(out[2..][0..store.name_max], &b.name.bytes);
+            std.mem.writeInt(u16, out[2 + store.name_max ..][0..2], b.len, .little);
+            @memcpy(out[BerryScript.fixed_len..][0..b.len], b.source[0..b.len]);
+            return BerryScript.fixed_len + b.len;
+        },
+        .berry_result => |r| {
+            out[0] = r.outcome;
+            out[1] = r.name.len;
+            @memcpy(out[2..][0..store.name_max], &r.name.bytes);
+            var o: usize = 2 + store.name_max;
+            putText(out, &o, r.text);
+            return o;
+        },
+        .berry_scripts => |l| {
+            std.mem.writeInt(u32, out[0..4], l.used, .little);
+            std.mem.writeInt(u32, out[4..8], l.budget, .little);
+            out[8] = l.count;
+            var o: usize = 9;
+            for (l.items[0..l.count]) |it| {
+                out[o] = it.name.len;
+                @memcpy(out[o + 1 ..][0..store.name_max], &it.name.bytes);
+                std.mem.writeInt(u16, out[o + 1 + store.name_max ..][0..2], it.bytes, .little);
+                out[o + 3 + store.name_max] = it.compiled;
+                o += 4 + store.name_max;
+            }
+            return o;
+        },
         .device_status => |d| {
             out[0] = d.battery_pct;
             out[1] = d.usb;
@@ -1385,7 +1479,7 @@ fn encodePayload(msg: Message, out: []u8) usize {
             out[14] = d.night_placed;
             return DeviceStatus.wire_len;
         },
-        .ready, .arm_stream, .time_corrected, .stop, .config_get, .status_get, .screen_get, .canvas_get, .canvas_clear, .sprite_list_get => return 0,
+        .ready, .arm_stream, .time_corrected, .stop, .config_get, .status_get, .screen_get, .canvas_get, .canvas_clear, .sprite_list_get, .berry_list_get => return 0,
         .screen => |s| {
             std.mem.writeInt(u32, out[0..4], s.revision, .big);
             out[4] = s.brightness;
@@ -1794,6 +1888,47 @@ pub fn decodePacket(bytes: []const u8) Error!Packet {
         },
         .berry_status => blk: {
             break :blk .{ .berry_status = BerryStatus.get(try fixed(p, BerryStatus.wire_len)) };
+        },
+        .berry_script => blk: {
+            if (p.len < BerryScript.fixed_len or p.len > BerryScript.wire_len) return error.BadPayload;
+            var b = BerryScript{ .op = p[0] };
+            b.name.len = @min(p[1], store.name_max);
+            @memcpy(&b.name.bytes, p[2..][0..store.name_max]);
+            b.len = std.mem.readInt(u16, p[2 + store.name_max ..][0..2], .little);
+            if (b.len > store.script_max or BerryScript.fixed_len + b.len != p.len) return error.BadPayload;
+            @memcpy(b.source[0..b.len], p[BerryScript.fixed_len..][0..b.len]);
+            break :blk .{ .berry_script = b };
+        },
+        .berry_result => blk: {
+            const b = try fixed(p, BerryResult.wire_len);
+            var r = BerryResult{ .outcome = b[0] };
+            r.name.len = @min(b[1], store.name_max);
+            @memcpy(&r.name.bytes, b[2..][0..store.name_max]);
+            var o: usize = 2 + store.name_max;
+            r.text = try getText(b, &o);
+            break :blk .{ .berry_result = r };
+        },
+        .berry_list_get => blk: {
+            _ = try fixed(p, 0);
+            break :blk .berry_list_get;
+        },
+        .berry_scripts => blk: {
+            if (p.len < 9) return error.BadPayload;
+            var l = BerryScripts{
+                .used = std.mem.readInt(u32, p[0..4], .little),
+                .budget = std.mem.readInt(u32, p[4..8], .little),
+                .count = @min(p[8], BerryScripts.max),
+            };
+            const entry_len = 4 + store.name_max;
+            if (p.len != 9 + @as(usize, l.count) * entry_len) return error.BadPayload;
+            for (0..l.count) |i| {
+                const o = 9 + i * entry_len;
+                l.items[i].name.len = @min(p[o], store.name_max);
+                @memcpy(&l.items[i].name.bytes, p[o + 1 ..][0..store.name_max]);
+                l.items[i].bytes = std.mem.readInt(u16, p[o + 1 + store.name_max ..][0..2], .little);
+                l.items[i].compiled = p[o + 3 + store.name_max];
+            }
+            break :blk .{ .berry_scripts = l };
         },
         .device_status => blk: {
             const b = try fixed(p, DeviceStatus.wire_len);

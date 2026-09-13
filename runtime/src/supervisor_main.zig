@@ -25,6 +25,7 @@ const sntp = @import("supervisor/sntp.zig");
 const metrics = @import("supervisor/metrics.zig");
 const night = @import("supervisor/night.zig");
 const canvas = @import("scene/canvas.zig");
+const berry_store = @import("berry/store.zig");
 const api = @import("net/api.zig");
 
 const linux = std.os.linux;
@@ -77,6 +78,9 @@ const ntfy_backoff_min_ns: u64 = 2 * ns_per_s;
 const ntfy_backoff_max_ns: u64 = 60 * ns_per_s;
 var config_buf: [config.file_max]u8 = undefined;
 var canvas_file_buf: [canvas.file_max]u8 = undefined;
+/// the scripts, and the buffer their file is written from
+var script_store: berry_store.Store = .{};
+var script_file_buf: [berry_store.budget + 64]u8 = undefined;
 /// the largest file the durable-state migration copies is the ntfy ca
 var migrate_buf: [api.max_ca]u8 = undefined;
 var config_arena: [4096]u8 = undefined;
@@ -381,6 +385,10 @@ const Supervisor = struct {
     berry_heard_ns: u64 = 0,
     berry_path: [:0]const u8 = "/tmp/tc002/tc002-berryd",
     berry_replacing: bool = false,
+    /// a `PUT` waiting for berryd to say whether it compiles. one at a time: puts are rare, and a
+    /// queue here would only buy the ability to have two broken scripts in flight at once.
+    berry_pending: ?struct { request_id: u64, deadline_ns: u64 } = null,
+    berry_pending_script: messages.BerryScript = .{},
     /// the running subscriber is being replaced after a settings change: its exit is expected
     ntfy_replacing: bool = false,
     relays: [relay_max]Relay = [_]Relay{.{}} ** relay_max,
@@ -1051,6 +1059,7 @@ const Supervisor = struct {
         sys.epollAdd(self.ep, fds[0], linux.EPOLL.IN, @intFromEnum(Tag.berry)) catch {};
         log.info("spawned berryd pid {d} as uid {d}", .{ pid, netd_uid });
         self.sendBerry(self.berryConfigMessage());
+        self.pushScripts();
         self.snapshot.berry_state = 1;
     }
 
@@ -1139,9 +1148,127 @@ const Supervisor = struct {
                     self.snapshot.berry_state = 2;
                     self.sendNetd(.{ .status = self.snapshot }, 0);
                 },
+                .berry_result => |r| self.onBerryResult(r),
                 else => log.warn("unexpected {s} from berryd", .{@tagName(p.message)}),
             }
         }
+    }
+
+    // the script store
+
+    fn loadScripts(self: *Supervisor) void {
+        var path_buf: [160]u8 = undefined;
+        const path = self.statePathIn(&path_buf, "config/scripts.bin");
+        const bytes = sys.readFile(path, &script_file_buf) catch return;
+        script_store.load(bytes) catch {
+            log.warn("the saved scripts are invalid; starting with none and keeping the file", .{});
+            script_store.clear();
+            return;
+        };
+        log.info("scripts loaded: {d} of them, {d} of {d} bytes", .{ script_store.count(), script_store.used(), berry_store.budget });
+    }
+
+    fn saveScripts(self: *Supervisor) void {
+        var dir_buf: [160]u8 = undefined;
+        var tmp_buf: [160]u8 = undefined;
+        var path_buf: [160]u8 = undefined;
+        const dir = self.statePathIn(&dir_buf, "config");
+        const tmp = self.statePathIn(&tmp_buf, "config/scripts.bin.tmp");
+        const path = self.statePathIn(&path_buf, "config/scripts.bin");
+        const bytes = script_store.save(&script_file_buf);
+        sys.saveFileAtomic(dir, tmp, path, bytes) catch |e| {
+            log.err("scripts could not be saved: {s}", .{sys.errText(e)});
+            return;
+        };
+        log.info("scripts saved: {d} of them, {d} bytes", .{ script_store.count(), bytes.len });
+    }
+
+    fn scriptList(self: *const Supervisor) messages.BerryScripts {
+        _ = self;
+        var l = messages.BerryScripts{ .used = @intCast(script_store.used()), .budget = berry_store.budget };
+        var it = script_store.iterate();
+        while (it.next()) |e| {
+            if (l.count >= messages.BerryScripts.max) break;
+            l.items[l.count] = .{ .name = berry_store.Name.init(e.name), .bytes = @intCast(e.source.len), .compiled = 1 };
+            l.count += 1;
+        }
+        return l;
+    }
+
+    /// hand berryd every script we hold, then tell it the set is complete so it can run the
+    /// autoexec. a fresh vm knows nothing; this is what makes a saved script survive a power cycle.
+    fn pushScripts(self: *Supervisor) void {
+        var it = script_store.iterate();
+        while (it.next()) |e| self.sendBerry(.{ .berry_script = messages.BerryScript.init(.put, e.name, e.source) });
+        self.sendBerry(.{ .berry_script = messages.BerryScript.init(.reload, "", "") });
+    }
+
+    fn berryResultToNetd(self: *Supervisor, request_id: u64, outcome: u8, name: []const u8, text: []const u8) void {
+        self.sendNetd(.{ .berry_result = .{
+            .outcome = outcome,
+            .name = berry_store.Name.init(name),
+            .text = config.Text.init(text[0..@min(text.len, config.text_max)]),
+        } }, request_id);
+    }
+
+    /// a script from netd. it is compiled before it is stored, so a script that cannot compile
+    /// never reaches flash and the client hears why rather than discovering it at the next boot.
+    fn onScriptPut(self: *Supervisor, w: messages.BerryScript, request_id: u64, now: u64) void {
+        const name = w.name.slice();
+        if (!berry_store.validName(name)) return self.berryResultToNetd(request_id, 3, name, "a name may hold letters, digits, dash, underscore and dot");
+        if (w.len > berry_store.script_max) return self.berryResultToNetd(request_id, 3, name, "the script is longer than one ipc datagram carries");
+        // would it fit? checked before anything is compiled, so a full store fails fast and says so
+        const existing = if (script_store.get(name)) |src| src.len else 0;
+        const need = 1 + name.len + 2 + @as(usize, w.len);
+        const have = script_store.used() - (if (existing > 0) 1 + name.len + 2 + existing else 0);
+        if (have + need > berry_store.budget) {
+            var msg: [96]u8 = undefined;
+            const text = std.fmt.bufPrint(&msg, "{d} of {d} bytes used", .{ script_store.used(), berry_store.budget }) catch "the store is full";
+            return self.berryResultToNetd(request_id, 3, name, text);
+        }
+        // with no interpreter running there is nothing to compile it, so it is stored as it stands
+        if (self.berry_pid == null) {
+            script_store.put(name, w.slice()) catch |e| return self.berryResultToNetd(request_id, 3, name, @errorName(e));
+            self.saveScripts();
+            return self.berryResultToNetd(request_id, 0, name, "stored; berry is not running, so it has not been compiled");
+        }
+        if (self.berry_pending != null) return self.berryResultToNetd(request_id, 3, name, "another script is already being compiled");
+        self.berry_pending = .{ .request_id = request_id, .deadline_ns = now + relay_timeout_ns };
+        self.berry_pending_script = w;
+        self.sendBerry(.{ .berry_script = w });
+    }
+
+    /// berryd answered about the script it was asked to compile
+    fn onBerryResult(self: *Supervisor, r: messages.BerryResult) void {
+        const pending = self.berry_pending orelse {
+            // an unsolicited result: a script that failed at run time rather than at compile time
+            if (r.outcome != 0) log.warn("berry: {s}: {s}", .{ r.name.slice(), r.text.slice() });
+            return;
+        };
+        self.berry_pending = null;
+        const name = self.berry_pending_script.name.slice();
+        if (r.outcome != 0) {
+            log.warn("berry refused {s}: {s}", .{ name, r.text.slice() });
+            return self.berryResultToNetd(pending.request_id, r.outcome, name, r.text.slice());
+        }
+        // an eval is a snippet someone typed, not a script: it is answered, never stored
+        if (self.berry_pending_script.op == @intFromEnum(messages.BerryScript.Op.eval)) {
+            return self.berryResultToNetd(pending.request_id, 0, name, r.text.slice());
+        }
+        script_store.put(name, self.berry_pending_script.slice()) catch |e| {
+            return self.berryResultToNetd(pending.request_id, 3, name, @errorName(e));
+        };
+        self.saveScripts();
+        log.info("script {s} stored, {d} bytes", .{ name, self.berry_pending_script.len });
+        self.berryResultToNetd(pending.request_id, 0, name, "");
+    }
+
+    fn pollBerryPending(self: *Supervisor, now: u64) void {
+        const pending = self.berry_pending orelse return;
+        if (now < pending.deadline_ns) return;
+        self.berry_pending = null;
+        log.warn("berry did not answer about {s} in time", .{self.berry_pending_script.name.slice()});
+        self.berryResultToNetd(pending.request_id, 3, self.berry_pending_script.name.slice(), "the interpreter did not answer");
     }
 
     fn relayResult(self: *Supervisor, request_id: u64, status: messages.Status, revision: u32) void {
@@ -1238,6 +1365,40 @@ const Supervisor = struct {
                     self.saveCanvas();
                     self.sendNetd(.{ .canvas = self.canvasView() }, p.request_id);
                 },
+                .berry_script => |w| {
+                    const op: messages.BerryScript.Op = @enumFromInt(@min(w.op, 3));
+                    switch (op) {
+                        .put => self.onScriptPut(w, p.request_id, now),
+                        .delete => {
+                            const name = w.name.slice();
+                            if (!script_store.remove(name)) {
+                                self.berryResultToNetd(p.request_id, 4, name, "no script by that name");
+                            } else {
+                                self.saveScripts();
+                                self.sendBerry(.{ .berry_script = w });
+                                log.info("script {s} deleted", .{name});
+                                self.berryResultToNetd(p.request_id, 0, name, "");
+                            }
+                        },
+                        .eval, .reload => {
+                            if (self.berry_pid == null) {
+                                self.berryResultToNetd(p.request_id, 3, w.name.slice(), "berry is not running");
+                            } else if (op == .reload) {
+                                // a fresh vm needs the whole set again
+                                self.sendBerry(.{ .berry_script = w });
+                                self.pushScripts();
+                                self.berryResultToNetd(p.request_id, 0, "", "");
+                            } else if (self.berry_pending != null) {
+                                self.berryResultToNetd(p.request_id, 3, "", "the interpreter is busy");
+                            } else {
+                                self.berry_pending = .{ .request_id = p.request_id, .deadline_ns = now + relay_timeout_ns };
+                                self.berry_pending_script = w;
+                                self.sendBerry(.{ .berry_script = w });
+                            }
+                        },
+                    }
+                },
+                .berry_list_get => self.sendNetd(.{ .berry_scripts = self.scriptList() }, p.request_id),
                 .config_patch => |w| {
                     const before = self.cfg;
                     self.cfg.patch(w.toApi()) catch |e| {
@@ -2030,6 +2191,7 @@ fn run(cfg_in: cli.Config, environ: anytype, args: []const [:0]const u8) !u8 {
     // 7. the network daemon's privileged resources: credentials, configuration, the listener
     s.loadCredentials() catch |e| log.err("credentials unavailable: {s}; netd will refuse every request", .{sys.errText(e)});
     s.loadConfig();
+    s.loadScripts();
     s.loadCanvas();
     s.snapshot.config_revision = s.cfg.revision;
     s.snapshot.saved_revision = s.cfg.saved_revision;
@@ -2069,6 +2231,7 @@ fn run(cfg_in: cli.Config, environ: anytype, args: []const [:0]const u8) !u8 {
         s.pollNtfy(now);
         s.drainBerry(now);
         s.pollBerry(now);
+        s.pollBerryPending(now);
         s.mcu_link.poll(&s, now);
         s.sntp_link.poll(now); // sntp
         s.expireRelays(now);
