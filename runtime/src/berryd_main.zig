@@ -22,6 +22,7 @@ const berry = @import("berry/vm.zig");
 const store = @import("berry/store.zig");
 const berry_api = @import("berry/api.zig");
 const config = @import("supervisor/config.zig");
+const actions = @import("input/actions.zig");
 
 pub const panic = std.debug.simple_panic;
 pub const std_options: std.Options = .{ .enable_segfault_handler = false };
@@ -30,6 +31,10 @@ const supervisor_fd: sys.Fd = 3;
 /// often enough that two missed reports are still inside the supervisor's patience, and cheap:
 /// the message is twenty bytes
 const report_interval_ns: u64 = 1 * std.time.ns_per_s;
+/// how often script timers are looked at. a hundred milliseconds is finer than anything a clock
+/// script needs and coarse enough that an idle device is not woken sixty times a second for
+/// nothing -- the renderer already owns that job.
+const tick_interval_ns: u64 = 100 * std.time.ns_per_ms;
 /// the settings should arrive immediately after the spawn; without them there is nothing to be
 const config_wait_ns: u64 = 10 * std.time.ns_per_s;
 
@@ -165,8 +170,10 @@ pub fn main(init: std.process.Init.Minimal) u8 {
     sys.epollAdd(ep, supervisor_fd, linux.EPOLL.IN, @intFromEnum(Tag.ipc)) catch return 1;
     sys.epollAdd(ep, timer, linux.EPOLL.IN, @intFromEnum(Tag.timer)) catch return 1;
 
-    var next_report = sys.monotonicNs() + report_interval_ns;
-    sys.timerfdArmAt(timer, next_report) catch {};
+    var last_tick = sys.monotonicNs();
+    var next_report = last_tick + report_interval_ns;
+    sys.timerfdArmAt(timer, last_tick + tick_interval_ns) catch {};
+    const budget_ns = @as(u64, cfg.handler_ms) * std.time.ns_per_ms;
 
     var events: [4]sys.Event = undefined;
     while (true) {
@@ -187,6 +194,23 @@ pub fn main(init: std.process.Init.Minimal) u8 {
                         // live vm, so a heap change is the supervisor's cue to replace us
                         .berry_config => |c| log.info("settings updated: {d} ms per handler", .{c.handler_ms}),
                         .berry_script => |w| onScript(&vm, w, cfg.handler_ms),
+                        .input => |i| {
+                            // the same control and event names the api uses, so a script and an
+                            // http client are talking about the same button
+                            const control = messages.enumFromInt(actions.Control, i.control) orelse continue;
+                            const event = messages.enumFromInt(actions.EdgeEvent, i.event) orelse continue;
+                            // the first argument is the event *name* the script registered under;
+                            // the control and the edge follow it
+                            if (!berry_api.callGlobal(&vm, "_tc002_dispatch", &.{
+                                .{ .text = "button" },
+                                .{ .text = @tagName(control) },
+                                .{ .text = @tagName(event) },
+                                .{ .int = i.steps },
+                            }, budget_ns)) {
+                                log.warn("a button handler failed: {s}", .{vm.errorText()});
+                                vm.clearError();
+                            }
+                        },
                         .stop => {
                             log.info("stopping", .{});
                             return 0;
@@ -196,9 +220,18 @@ pub fn main(init: std.process.Init.Minimal) u8 {
                 },
                 .timer => {
                     sys.timerfdDrain(timer);
-                    report();
-                    next_report = sys.monotonicNs() + report_interval_ns;
-                    sys.timerfdArmAt(timer, next_report) catch {};
+                    const now = sys.monotonicNs();
+                    const elapsed_ms = (now -| last_tick) / std.time.ns_per_ms;
+                    last_tick = now;
+                    if (elapsed_ms > 0 and !berry_api.callGlobal(&vm, "_tc002_tick", &.{.{ .int = @intCast(elapsed_ms) }}, budget_ns)) {
+                        log.warn("a timer failed: {s}", .{vm.errorText()});
+                        vm.clearError();
+                    }
+                    if (now >= next_report) {
+                        report();
+                        next_report = now + report_interval_ns;
+                    }
+                    sys.timerfdArmAt(timer, now + tick_interval_ns) catch {};
                 },
             }
         }

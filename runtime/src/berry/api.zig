@@ -216,8 +216,17 @@ const bindings = [_]Binding{
     .{ .name = "_panel_show", .f = showFn },
 };
 
-/// gathers the underscored natives into two modules. running this is cheaper than building module
-/// tables in c, and it is the only place the script-facing names are written down.
+/// gathers the underscored natives into two modules, and keeps the event bookkeeping here rather
+/// than in zig.
+///
+/// handlers and timers are berry values; holding them from zig would mean a registry and a set of
+/// reference rules, while holding them in a berry list costs nothing and cannot leak past the vm.
+/// the zig side only ever calls `_tc002_dispatch` and `_tc002_tick`, which are plain globals.
+///
+/// a handler that raises is caught here, named in the log, and left registered -- one bad event is
+/// not a reason to stop listening. ten failures in a row and it is dropped, because a handler
+/// failing on every event will otherwise fill a 64-line log ring at event rate and destroy the
+/// evidence of everything else that happened.
 pub const prelude =
     \\tc002 = module('tc002')
     \\tc002.scene = _tc002_scene
@@ -230,9 +239,95 @@ pub const prelude =
     \\panel.text = _panel_text
     \\panel.icon = _panel_icon
     \\panel.show = _panel_show
+    \\tc002._handlers = {}
+    \\tc002._timers = []
+    \\tc002.on = def (event, f)
+    \\  if !tc002._handlers.contains(event) tc002._handlers[event] = [] end
+    \\  tc002._handlers[event].push([f, 0])
+    \\  return size(tc002._handlers[event])
+    \\end
+    \\tc002.every = def (ms, f) tc002._timers.push([ms, f, ms]) end
+    \\tc002.after = def (ms, f) tc002._timers.push([0, f, ms]) end
+    \\tc002._dispatch = def (event, a, b, c)
+    \\  if !tc002._handlers.contains(event) return 0 end
+    \\  var list = tc002._handlers[event]
+    \\  var i = 0
+    \\  var ran = 0
+    \\  while i < size(list)
+    \\    var entry = list[i]
+    \\    try
+    \\      entry[0](a, b, c)
+    \\      entry[1] = 0
+    \\      ran += 1
+    \\    except .. as ex, msg
+    \\      entry[1] += 1
+    \\      print('handler for ' + event + ' failed: ' + str(ex) + ' ' + str(msg))
+    \\      if entry[1] >= 10
+    \\        print('handler for ' + event + ' failed ten times in a row and has been dropped')
+    \\        list.remove(i)
+    \\        continue
+    \\      end
+    \\    end
+    \\    i += 1
+    \\  end
+    \\  return ran
+    \\end
+    \\tc002._tick = def (elapsed_ms)
+    \\  var i = 0
+    \\  var ran = 0
+    \\  while i < size(tc002._timers)
+    \\    var t = tc002._timers[i]
+    \\    t[2] -= elapsed_ms
+    \\    if t[2] <= 0
+    \\      try
+    \\        t[1]()
+    \\        ran += 1
+    \\      except .. as ex, msg
+    \\        print('timer failed: ' + str(ex) + ' ' + str(msg))
+    \\      end
+    \\      if t[0] > 0
+    \\        t[2] += t[0]
+    \\      else
+    \\        tc002._timers.remove(i)
+    \\        continue
+    \\      end
+    \\    end
+    \\    i += 1
+    \\  end
+    \\  return ran
+    \\end
+    \\_tc002_dispatch = tc002._dispatch
+    \\_tc002_tick = tc002._tick
+    \\_tc002_timers = def () return size(tc002._timers) end
 ;
 
 /// register every native. the caller then runs `prelude` to make the modules.
 pub fn register(vm: *vm_mod.Vm) void {
     for (bindings) |b| be_regfunc(vm.handle, b.name, b.f);
+}
+
+extern fn be_getglobal(vm: *Bvm, name: [*:0]const u8) bool;
+extern fn be_pushstring(vm: *Bvm, str: [*:0]const u8) void;
+extern fn be_pcall(vm: *Bvm, argc: c_int) c_int;
+extern fn be_pop(vm: *Bvm, n: c_int) void;
+
+/// one argument to a handler: berry is dynamically typed, and these are the only shapes anything
+/// here needs to pass it
+pub const Arg = union(enum) { none, int: i64, text: [*:0]const u8 };
+
+/// call a global berry function with up to three arguments, under the watchdog's deadline.
+/// returns false when the call raised, having left the message where `errorText` can find it.
+pub fn callGlobal(vm: *vm_mod.Vm, name: [*:0]const u8, args: []const Arg, budget_ns: u64) bool {
+    if (!be_getglobal(vm.handle, name)) return false;
+    for (args) |a| switch (a) {
+        .none => be_pushnil(vm.handle),
+        .int => |v| be_pushint(vm.handle, v),
+        .text => |t| be_pushstring(vm.handle, t),
+    };
+    if (vm_mod.clock) |f| vm_mod.deadline_ns = f() + budget_ns;
+    defer vm_mod.deadline_ns = 0;
+    const st: vm_mod.Status = @enumFromInt(be_pcall(vm.handle, @intCast(args.len)));
+    if (st != .ok) return false;
+    be_pop(vm.handle, 1); // the return value; nothing here wants it
+    return true;
 }

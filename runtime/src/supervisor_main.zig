@@ -1843,7 +1843,12 @@ const Supervisor = struct {
                         break;
                     };
                 },
-                .input => |i| self.sendNetd(.{ .input = i }, 0),
+                .input => |i| {
+                    self.sendNetd(.{ .input = i }, 0);
+                    // and to berryd, which is the second consumer of the same edges. this is the
+                    // fan-out the console's event stream will subscribe to as well.
+                    self.sendBerry(.{ .input = i });
+                },
                 .menu_request => |m| self.onMenuRequest(m, now),
                 .set_param => |sp| self.onSetParam(sp),
                 else => log.warn("unexpected {s} from renderer", .{@tagName(p.message)}),
