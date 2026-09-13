@@ -55,6 +55,9 @@ authority; this document covers only what the device adds.
 
 two things to know here specifically:
 
+- **sound is off by default.** `tc002.play` needs `sound.enabled`, and the device path is gated
+  until its audio layout is verified — the call is accepted and nothing is heard. see
+  [sound](RUNTIME.md#sound).
 - **there is no filesystem and no network.** `import os`, `open()`, sockets —
   none of it. see [what a script cannot do](#what-a-script-cannot-do).
 - **`print` goes to the log ring.** berryd's stdout is read by the supervisor like
@@ -81,6 +84,8 @@ same refusal — `tc002.brightness(0)` raises rather than quietly clamping.
 | `tc002.notify(text, colour, seconds)` | colour defaults white, seconds defaults 5 | the same overlay `POST /notify` uses |
 | `tc002.subscribe(filter)` | an mqtt topic filter, `+` and `#` allowed | up to eight; see [mqtt](#mqtt) |
 | `tc002.publish(topic, payload)` | | through the device's own broker connection |
+| `tc002.play(name, volume, loop)` | volume 1–100 (0 = the setting), loop defaults false | plays a stored sound; see [sound](RUNTIME.md#sound) |
+| `tc002.stop_sound()` | | stops whatever is playing |
 
 ### `panel` — drawing
 

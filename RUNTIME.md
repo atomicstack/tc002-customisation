@@ -1,6 +1,6 @@
 # the custom runtime (`runtime/`)
 
-a replacement for the stock application on the tc002: five static arm binaries
+a replacement for the stock application on the tc002: six static arm binaries
 and one tiny shared object, written in zig 0.16, that take over the panel, the
 buttons and the knob, and expose an authenticated http and mqtt api of their own.
 only `tc002-berryd`, which hosts the [script interpreter](#scripting-berry),
@@ -25,6 +25,7 @@ does; how to build and run it is in [`runtime/README.md`](runtime/README.md).
 | `tc002-netd` | uid 1001 | 396 kb | the network daemon: an http/1.1 server for `/api/v1` and an mqtt 3.1.1 client. holds no authoritative state; every command is relayed through the supervisor to the live renderer |
 | `tc002-ntfy` | uid 1001 | 1.1 mb | the ntfy subscriber: dns, tcp, tls 1.3 with the standard library (that is the size), the json stream; sends `notify` to the supervisor. only runs while `ntfy.enabled` |
 | `tc002-berryd` | uid 1001 | 721 kb | the [script interpreter](#scripting-berry): one berry vm on a fixed heap. the only binary that links libc. no network descriptor at all. only runs while `berry.enabled` |
+| `tc002-audiod` | root | the speaker: one sound at a time from the store, decoded and pushed to `/dev/mi_ao`. root because that node and `/dev/mi_sys` are `crw-------`, the same trade the renderer makes for spidev. only runs while `sound.enabled`. **the device path is gated off until its attribute layout is verified** — see [sound](#sound) |
 | `tc002-memdump` | root, by hand | 171 kb | a maintenance tool that streams a sparse memory snapshot of one process over adb ([memory audits](#memory-audits)) |
 
 ¹ ReleaseSafe, stripped, as built on 2026-09-06. `-Doptimize=ReleaseSmall` gives
@@ -979,6 +980,8 @@ whole frame to another process costs 0.05% of a frame.
 | supervisor → renderer | `set_base`, `notify`, `frame`, `brightness`, `reseed`, `arm_stream`, `time_corrected`, `ip_changed`, `stop`, `set_timezone` |
 | supervisor → netd | `credentials`, `config`, `status`, `result`, `save_result`, `input`, `applied` (fanned out to any [event stream](#the-event-stream) subscriber) |
 | netd → supervisor | `status_get`, `config_get`, `config_patch`, `config_save`, `mqtt_put`, and the renderer commands above for relay |
+| supervisor → audiod | `sound_config` (once after spawn), `sound_cmd` (play, stop) |
+| audiod → supervisor | `sound_status` (every second; also the liveness ping) |
 | supervisor → berryd | `berry_config` (once after spawn), `berry_script` (each stored script, then `reload`), `input` (button and knob edges), `berry_event` (mqtt and ntfy arrivals) |
 | berryd → supervisor | `berry_status` (every second; also the liveness ping), `berry_result` (did a script compile), `berry_event` (subscribe, publish), `stream_frame`, and the renderer commands above for relay |
 
@@ -1040,6 +1043,10 @@ api is for programs, not pages. `allowed_origins` can only be set by editing
 | `GET` | `/screen` | control | | `{"width":52,"height":16,"epoch","revision","brightness","power","rgb_base64":"…"}`: the frame as shown, after fades, before brightness. `?format=raw` returns the 2,496 rgb bytes as `application/octet-stream` |
 | `GET` | `/logs?after=N` | control | | `{"next":seq,"lines":[{"seq":n,"text":"…"}…]}`: up to 16 lines of the [log ring](#the-log-ring) after sequence number `after` (0 = oldest kept); pass `next` back to continue. a jump in `seq` means lines were evicted |
 | `GET` | `/events` | control | | an [event stream](#the-event-stream): `text/event-stream`, one `data:` frame per statement applied, held open until the client goes away |
+| `GET` | `/sounds` | control | | `{"used","budget","sounds":[{"name","bytes"}…]}` |
+| `PUT` | `/sounds/{name}?offset=N&final=1` | admin | `application/octet-stream`, at most 4,096 bytes | one chunk of a sound. `offset` must be exactly what has already landed; `final=1` commits. see [sound](#sound) |
+| `DELETE` | `/sounds/{name}` | admin | | `{"status":"ok",…}` |
+| `POST` | `/sound` | control | `{"name":"chime","volume":1..100?,"loop":bool?}` or `{"stop":true}` | plays a stored sound, or stops what is playing |
 | `GET` | `/berry` | control | | `{"state":"off\|starting\|running\|failed","heap_bytes","heap_used","heap_high_water","alloc_failures","stops"}` |
 | `GET` | `/berry/scripts` | control | | `{"used":n,"budget":65536,"scripts":[{"name","bytes","compiled"}…]}` |
 | `PUT` | `/berry/scripts/{name}` | admin | `text/plain`, at most 8,000 bytes | `{"status":"ok","name":"…"}`. the script is **compiled before it is stored**: one that will not parse answers 400 `script_will_not_compile` carrying berry's own message, and never reaches flash |
@@ -1197,6 +1204,7 @@ shows up as a revision gap, and the gap is the signal to resync.
 | `latitude`, `longitude` | −90–90 and −180–180 degrees, both together or neither | pins where the device is, overriding the timezone's reference point; `location_auto: true` (patch only) drops the pin again. `/config` reports the pinned pair, and the point they resolve to under `location` with its `source` |
 | `frame_timeout_ms` | 100–2000 | how long one pushed [stream frame](#the-frame-stream) stands before the panel clears itself; carried with every frame |
 | `berry.enabled`, `berry.heap_kb`, `berry.handler_ms` (patch as `berry_enabled`, `berry_heap_kb`, `berry_handler_ms`) | bool, default false; 16–256 kb; 10–1000 ms | the [script interpreter](#scripting-berry). berryd is spawned only while enabled, and **replaced** on any change: a heap cannot be resized under a live vm |
+| `sound.enabled`, `sound.volume` (patch as `sound_enabled`, `sound_volume`) | bool, default false; 1–100, default 60 | the [speaker](#sound). audiod is spawned only while enabled, and **replaced** on any change |
 | `metrics_interval_s` | 0 (off) or 10–3600 | mqtt `metrics` cadence |
 | `discovery.enabled`, `discovery.prefix` (patch as `discovery`, `discovery_prefix`) | bool; ≤ 64 characters | home-assistant discovery on the next mqtt connection |
 | `allowed_origins` | up to four exact origins | read from the file only |
@@ -1221,6 +1229,69 @@ the file itself is the same document in a slightly different shape, with
 an invalid or unknown file is ignored with a warning (defaults are used and
 the file is left alone). the mqtt password is in that file in clear, mode
 0600, root only; it is never returned by the api.
+
+## sound
+
+the device has a speaker, and the runtime can store short sounds on `/data` and play one at a
+time: on its own, alongside a notification or a canvas, or from a berry script with
+`tc002.play('chime')`.
+
+**off by default**, like scripting: `tc002-audiod` is not spawned until `sound.enabled`.
+
+### what plays
+
+**wav only, pcm, 8- or 16-bit, mono or stereo, 8–48 khz.** anything else — adpcm, a-law, 24-bit,
+float, wave-extensible — is refused by name rather than played as noise, because "it made a
+horrible sound" is a much worse bug report than "this device does not play adpcm".
+
+**there is no mp3, and there is no hardware decoder to lean on.** the stock firmware decodes mp3 in
+software: `libzkmedia.so` carries an `Mp3AudioParser` calling `mad_frame_decode`, and
+`/lib/libmad.so.0.2.1` ships on the device to provide it. `mi_ao` takes pcm and only pcm — its own
+debug dump format is `.pcm`, no codec name appears in `libmi_ao.so`, and the `mi_adec` kernel
+module is not loaded. `MI_AO_EnableAdec` exists as an entry point but the vendor does not use it for
+mp3, which is the strongest evidence available that it would not help. adding mp3 means vendoring a
+software decoder, and that is a dependency decision nobody has taken.
+
+### the store
+
+`config/sounds.bin` on `/data`, written with the same `saveFileAtomic` as the scripts and the
+canvas. 192 kb a sound (six seconds of 16-bit 16 khz mono, twenty-four of 8-bit 8 khz), 256 kb for
+the whole store. the count is whatever fits.
+
+**a sound arrives in chunks.** netd caps a request body at 8 kb and raising that would cost the cap
+times eight connection slots in static buffers, so `PUT /api/v1/sounds/{name}?offset=N` takes at
+most 4,096 bytes and `&final=1` commits what has been assembled. `offset` must be exactly what has
+already landed: a retried or reordered chunk is refused (`409 conflict`) rather than written,
+because an uploader can recover from an error and a device cannot recover from corrupted samples.
+
+### why a process of its own, and why it is root
+
+`/dev/mi_ao` and `/dev/mi_sys` are `crw-------`, so audiod runs as root — the same trade the
+renderer makes for `/dev/spidev0.0`. it parses nothing from the network; every command reaches it as
+a typed ipc message the supervisor has already validated.
+
+being root is also what keeps the design simple. a sound is far too big for an 8 kb ipc datagram, so
+audiod reads the store file itself rather than having it streamed to it; the supervisor writes that
+file atomically, so a reader sees either the old set or the new.
+
+pushing pcm means waking on a timer and blocking on a device. doing that inside the renderer's
+60 fps loop would put audio jitter and frame jitter in the same thread.
+
+### what is not done
+
+**nothing has been played on the hardware, and the device path is gated off.** the ioctl numbers for
+`/dev/mi_ao` and `/dev/mi_sys` were recovered from the device's own libraries and are pinned by
+tests, but `MI_AO_SetPubAttr` takes a 52-byte attribute payload that was measured as a *size* and
+never decoded as *fields* — it carries sample rate, channel count and bit depth. pushing a guessed
+layout at an amplifier is how you get a noise rather than a sound, so `attr_layout_verified` in
+`src/audiod_main.zig` is `false` and `feed` advances the queue without handing the device anything.
+
+everything above that line runs: the store, the upload, the queue, looping, per-sound volume, the
+decode and the reporting, so the whole path can be exercised on a real device in silence. flipping
+the flag is one line, for whoever has checked the layout.
+
+[`runtime/vendor/mi_ao/README.md`](runtime/vendor/mi_ao/README.md) has the recovered abi, how it was
+obtained, and exactly which parts are measured and which are inferred.
 
 ## scripting (berry)
 
