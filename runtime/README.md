@@ -87,8 +87,16 @@ controls. the full reference is [`RUNTIME.md`](../RUNTIME.md).
 ## tradeoffs made for this device (reported, not hidden)
 
 - **own http/1.1 parser and mqtt codec** instead of `std.http.Server` or a library: fixed buffers,
-  four connections, one request each, no chunked bodies, no dns. cost: a narrower protocol surface;
-  gain: bounded memory (about 60 kb of static buffers for the whole daemon) and no allocator.
+  eight connections, one request each (plus the event stream, which is one response that never
+  ends), no chunked bodies, no dns. cost: a narrower protocol surface; gain: bounded memory and no
+  allocator. `std.http` was re-examined when the event stream was added and rejected on the loop,
+  not the size: it needs **no libc** (it compiles for `arm-linux-musleabihf` without it) and costs
+  only +16.8 kb of `.text`, but `receiveHead` is written to block — it loops on `fillMore` until the
+  head is complete and resets its parser state on every call, so on a non-blocking fd eagain arrives
+  as `error.ReadFailed` and the parse position is gone. it happens to be re-enterable, because
+  nothing is tossed from the buffer until the head completes, but that is an implementation detail
+  rather than a contract, and it is quadratic in the number of partial reads. the streaming response
+  we actually needed is one extra header builder in `net/sse.zig`.
 - **no tls**: zig 0.16's std has a tls client but no server, and no tls library is vendored. only the
   plaintext profile ships; status reports `transport: plaintext`; an mqtt `tls: true` setting stays
   disconnected instead of falling back. tokens are exposed to anyone on the lan path.
@@ -99,7 +107,14 @@ controls. the full reference is [`RUNTIME.md`](../RUNTIME.md).
 - **ReleaseSafe by default** (bounds checks on) at 255–411 kb per binary versus 66–170 kb for
   ReleaseSmall; on the volatile path that is about 0.7 mb of tmpfs ram. `-Doptimize=ReleaseSmall`
   is available; a simple panic handler and no segfault handler already keep the dwarf unwinder out.
-- **procfs rss on this kernel reads 4 kb for every static process** and is reported as-is.
+- **procfs rss on this kernel is unreliable for some processes and is reported as-is.** measured
+  together on one device, at one moment: `tc002-supervisor` reports `VmRSS` 1,112 kb and
+  `tc002-netd` 972 kb, with `statm` agreeing and `RssShmem` accounting for the binary's own pages
+  (tmpfs pages are shmem), while **`tc002d` reports 4 kb** — `VmRSS`, `VmHWM` and `RssAnon` all 4 kb
+  — while actively presenting frames. so it is not "4 kb for every static process", and it is not
+  trustworthy either; no cause has been established, and none is asserted here. where a real figure
+  is needed, `VmData` against `RssAnon` still shows demand-zero working: netd reserves 520 kb of
+  data and has 188 kb of it resident.
 - **the ntfy subscriber is a 1.1 mb binary**: the standard library's tls 1.3 client, certificate
   verification (rsa and ecdsa), dns resolution and the threaded io layer come along with it. it is a
   process of its own, spawned only while a subscription is enabled, so the rest of the runtime does

@@ -936,7 +936,7 @@ what the kernel will actually carry: on this device `SO_SNDBUF` is 196,608 and
 datagrams round-trip up to 131,072 bytes, so the limit has a sixteenfold
 margin. the cost of the raise is 68 kb of reserved bss across the four
 binaries — the renderer and ntfy hold two packet buffers each, the supervisor
-five, and netd two plus a request buffer for each of its four connection slots
+five, and netd two plus a request buffer for each of its eight connection slots
 plus the json parse arena:
 
 | offset | size | field |
@@ -974,9 +974,9 @@ whole frame to another process costs 0.05% of a frame.
 | supervisor → ntfy subscriber | `ntfy_config` (the settings and the ca, once after spawn) |
 | ntfy subscriber → supervisor | `notify` (each message), `ntfy_status` |
 | netd → supervisor | `ntfy_put` (the settings patch, the ca inline) |
-| renderer → supervisor | `heartbeat` (presented count, revision, state, base, generator, overlay, brightness), `ready`, `result` |
+| renderer → supervisor | `heartbeat` (presented count, revision, state, base, generator, overlay, brightness), `ready`, `result`, `input` (the edges), `applied` (the statements those edges and every command turn into) |
 | supervisor → renderer | `set_base`, `notify`, `frame`, `brightness`, `reseed`, `arm_stream`, `time_corrected`, `ip_changed`, `stop`, `set_timezone` |
-| supervisor → netd | `credentials`, `config`, `status`, `result`, `save_result` |
+| supervisor → netd | `credentials`, `config`, `status`, `result`, `save_result`, `input`, `applied` (fanned out to any [event stream](#the-event-stream) subscriber) |
 | netd → supervisor | `status_get`, `config_get`, `config_patch`, `config_save`, `mqtt_put`, and the renderer commands above for relay |
 | supervisor → berryd | `berry_config` (once after spawn), `berry_script` (each stored script, then `reload`), `input` (button and knob edges), `berry_event` (mqtt and ntfy arrivals) |
 | berryd → supervisor | `berry_status` (every second; also the liveness ping), `berry_result` (did a script compile), `berry_event` (subscribe, publish), `stream_frame`, and the renderer commands above for relay |
@@ -1038,6 +1038,7 @@ api is for programs, not pages. `allowed_origins` can only be set by editing
 | `POST` | `/input` | control | `{"control":"left\|middle\|right\|knob\|rotary","event":"press\|release\|click\|long\|cw\|ccw","steps":1..16?,"request_id":hex,"epoch":u32}` | as above. `long` is the knob only; `cw`/`ccw` are the rotary only and take `steps` |
 | `GET` | `/screen` | control | | `{"width":52,"height":16,"epoch","revision","brightness","power","rgb_base64":"…"}`: the frame as shown, after fades, before brightness. `?format=raw` returns the 2,496 rgb bytes as `application/octet-stream` |
 | `GET` | `/logs?after=N` | control | | `{"next":seq,"lines":[{"seq":n,"text":"…"}…]}`: up to 16 lines of the [log ring](#the-log-ring) after sequence number `after` (0 = oldest kept); pass `next` back to continue. a jump in `seq` means lines were evicted |
+| `GET` | `/events` | control | | an [event stream](#the-event-stream): `text/event-stream`, one `data:` frame per statement applied, held open until the client goes away |
 | `GET` | `/berry` | control | | `{"state":"off\|starting\|running\|failed","heap_bytes","heap_used","heap_high_water","alloc_failures","stops"}` |
 | `GET` | `/berry/scripts` | control | | `{"used":n,"budget":65536,"scripts":[{"name","bytes","compiled"}…]}` |
 | `PUT` | `/berry/scripts/{name}` | admin | `text/plain`, at most 8,000 bytes | `{"status":"ok","name":"…"}`. the script is **compiled before it is stored**: one that will not parse answers 400 `script_will_not_compile` carrying berry's own message, and never reaches flash |
@@ -1077,7 +1078,7 @@ lowercase code:
 | 409 | `stale_epoch`, `revision_conflict`, `expired`, `conflict` |
 | 413 / 415 | `head_too_large`, `body_too_large`, `request_too_large`, `unsupported_media_type` |
 | 429 | `overload` (connections or the renderer's dedup window), `frame_rate` |
-| 503 | `not_ready` (netd has no credentials or settings yet), `supervisor_unavailable`, `renderer_unavailable`, `save_failed`, `not_implemented` |
+| 503 | `not_ready` (netd has no credentials or settings yet), `supervisor_unavailable`, `renderer_unavailable`, `save_failed`, `not_implemented`, `too_many_subscribers` (two event streams are already held) |
 | 504 | `timeout` |
 
 ### the status document
@@ -1122,6 +1123,61 @@ is not running; `held` says a hand-set brightness is standing in its way; and
 location or before the clock has been set. the mqtt metrics carry the phase as
 `night` (`off` when it is not running), and home assistant gets it as a
 sensor.
+
+### the event stream
+
+`GET /api/v1/events` publishes every statement the device applies, as
+server-sent events. it exists because a console mirroring this device can send
+statements itself but cannot see the three buttons, the knob, ntfy or mqtt —
+which on a clock are the primary interface, not an edge case — so a mirror that
+polls `/status` and diffs has to guess at what it missed, and has guessed wrong.
+
+```
+$ curl -N -H "authorization: Bearer $TOKEN" http://10.0.0.111/api/v1/events
+data: {"revision":7,"age_ms":0,"cmd":"set_base","source":"input","base":"clock"}
+
+data: {"revision":8,"age_ms":0,"cmd":"set_clock_style","source":"input","clock":{"font":"hires",…}}
+
+data: {"revision":9,"age_ms":0,"cmd":"brightness","source":"api","brightness":50}
+
+: ping
+```
+
+every frame carries `revision`, `age_ms`, `cmd` and `source`, plus whatever that
+`cmd` resolved to. the fields are the api's own vocabulary: `base`, `generator`,
+`seed`, `brightness`, `power`, `ip_mode`, `clock`, and `text`/`colour`/
+`duration_s` for a notification.
+
+| field | meaning |
+|---|---|
+| `revision` | the revision this statement produced. a mirror applies the same statement and expects to land on the same number; a **gap means it missed one** and should resync from `/status` |
+| `age_ms` | how long ago it was applied. set by the renderer and added to at each hop, exactly as `sample_age_ms` is for `/status`, so a mirror running deliberately behind real time can place it at the right instant |
+| `cmd` | `set_base`, `select_generator`, `notify`, `raw`, `brightness`, `reseed`, `arm_stream`, `power`, `set_clock_style`, `set_ip_mode`, `overlay_expired` |
+| `source` | `api` (http or mqtt), `ntfy`, `input` (a button or the knob), `local` (the device itself: a menu selection, night brightness, an overlay reaching its deadline) |
+
+**the parameters are resolved, not requested.** the knob asks for "the next
+generator" and the statement names the one it landed on; a seedless reseed
+publishes the seed actually taken. that is what lets a replica replay a statement
+with no special cases of its own.
+
+**what is not published.** a `raw` or `stream` frame says how long the overlay
+holds, never which pixels: 2,496 bytes per statement would not fit the ipc, and a
+mirror that wants them can read `/screen`. a stream frame does not appear at all,
+because it deliberately does not move the revision — which is also what stops
+sixty frames a second from flooding the stream. `api` does not distinguish http
+from mqtt: netd serves both and marks neither, and the question a console
+actually asks — "was this mine?" — is answered by the revision its own request
+returned.
+
+**bounds.** at most **two** subscribers; a third gets `503 too_many_subscribers`
+and should poll. a subscriber holds one of netd's eight connection slots for as
+long as it stays, which is why the cap matters more than the slot count. a quiet
+stream is sent a `: ping` comment every four seconds — that is a *write*, so a
+subscriber that died without a fin fails it and its slot comes back; exempting
+the route from the idle timeout without writing would have held the slot for
+ever. a subscriber that falls behind further than its buffer is dropped rather
+than buffered without bound, which is safe by construction: the missed statement
+shows up as a revision gap, and the gap is the signal to resync.
 
 ### settings
 
