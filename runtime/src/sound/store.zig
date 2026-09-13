@@ -154,11 +154,12 @@ pub const Store = struct {
         self.len = o + data.len;
     }
 
-    pub fn save(self: *const Store, out: []u8) usize {
+    /// returns the bytes to write, so a caller hands the result straight to `saveFileAtomic`
+    pub fn save(self: *const Store, out: []u8) []const u8 {
         @memcpy(out[0..4], magic);
         out[4] = version;
         @memcpy(out[5..][0..self.len], self.buf[0..self.len]);
-        return 5 + self.len;
+        return out[0 .. 5 + self.len];
     }
 
     /// an unreadable file is an empty store with a warning, never a refusal to start: a device
@@ -305,14 +306,14 @@ test "a store round-trips through the file it is saved as" {
     s.* = .{};
     try s.put("a", "hello");
     try s.put("b", "world!");
-    var file = testing.allocator.alloc(u8, budget + 64) catch unreachable;
+    const file = testing.allocator.alloc(u8, budget + 64) catch unreachable;
     defer testing.allocator.free(file);
-    const n = s.save(file);
+    const written = s.save(file);
 
     var back = testing.allocator.create(Store) catch unreachable;
     defer testing.allocator.destroy(back);
     back.* = .{};
-    try testing.expect(back.load(file[0..n]));
+    try testing.expect(back.load(written));
     try testing.expectEqual(@as(usize, 2), back.count());
     try testing.expectEqualStrings("hello", back.get("a").?);
     try testing.expectEqualStrings("world!", back.get("b").?);
@@ -329,13 +330,13 @@ test "a file that is not a store, or is cut short, loads as empty rather than as
     // a power cut mid-write: the header is good, the last record is not. the records that did land
     // are kept and the torn tail is dropped.
     try s.put("good", "12345");
-    var file = testing.allocator.alloc(u8, budget + 64) catch unreachable;
+    const file = testing.allocator.alloc(u8, budget + 64) catch unreachable;
     defer testing.allocator.free(file);
-    const n = s.save(file);
+    const written = s.save(file);
     var back = testing.allocator.create(Store) catch unreachable;
     defer testing.allocator.destroy(back);
     back.* = .{};
-    try testing.expect(back.load(file[0 .. n - 2]));
+    try testing.expect(back.load(written[0 .. written.len - 2]));
     try testing.expectEqual(@as(usize, 0), back.count()); // that one record was the torn one
 }
 

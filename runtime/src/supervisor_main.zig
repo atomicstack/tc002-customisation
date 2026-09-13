@@ -26,6 +26,7 @@ const metrics = @import("supervisor/metrics.zig");
 const night = @import("supervisor/night.zig");
 const canvas = @import("scene/canvas.zig");
 const berry_store = @import("berry/store.zig");
+const sound_store = @import("sound/store.zig");
 const api = @import("net/api.zig");
 
 const linux = std.os.linux;
@@ -84,6 +85,11 @@ var canvas_file_buf: [canvas.file_max]u8 = undefined;
 /// the scripts, and the buffer their file is written from
 var script_store: berry_store.Store = .{};
 var script_file_buf: [berry_store.budget + 64]u8 = undefined;
+/// the sounds, and the one upload that may be in flight. 256 kb + 192 kb of bss, held by the
+/// supervisor because it is the process that owns durable state; audiod reads the file it writes.
+var sounds: sound_store.Store = .{};
+var sound_file_buf: [sound_store.budget + 64]u8 = undefined;
+var sound_upload: sound_store.Upload = .{};
 /// the largest file the durable-state migration copies is the ntfy ca
 var migrate_buf: [api.max_ca]u8 = undefined;
 var config_arena: [4096]u8 = undefined;
@@ -1218,6 +1224,82 @@ const Supervisor = struct {
         log.info("scripts loaded: {d} of them, {d} of {d} bytes", .{ script_store.count(), script_store.used(), berry_store.budget });
     }
 
+    fn loadSounds(self: *Supervisor) void {
+        var path_buf: [160]u8 = undefined;
+        const path = self.statePathIn(&path_buf, "config/sounds.bin");
+        const bytes = sys.readFile(path, &sound_file_buf) catch return;
+        if (!sounds.load(bytes)) {
+            log.warn("the saved sounds are invalid; starting with none and keeping the file", .{});
+            return;
+        }
+        log.info("sounds loaded: {d} of them, {d} of {d} bytes", .{ sounds.count(), sounds.used(), sound_store.budget });
+    }
+
+    fn saveSounds(self: *Supervisor) void {
+        var dir_buf: [160]u8 = undefined;
+        var tmp_buf: [160]u8 = undefined;
+        var path_buf: [160]u8 = undefined;
+        const dir = self.statePathIn(&dir_buf, "config");
+        const tmp = self.statePathIn(&tmp_buf, "config/sounds.bin.tmp");
+        const path = self.statePathIn(&path_buf, "config/sounds.bin");
+        const bytes = sounds.save(&sound_file_buf);
+        sys.saveFileAtomic(dir, tmp, path, bytes) catch |e| {
+            log.err("sounds could not be saved: {s}", .{sys.errText(e)});
+            return;
+        };
+        log.info("sounds saved: {d} of them, {d} bytes", .{ sounds.count(), bytes.len });
+    }
+
+    /// one chunk of an upload, a commit, or a delete. the reply carries the store status so a
+    /// client learns how full it is from the same answer that says whether the write took.
+    fn onSoundPut(self: *Supervisor, p: *const messages.Packet, sp: *const messages.SoundPut) void {
+        const op = messages.enumFromInt(messages.SoundPut.Op, sp.kind) orelse {
+            self.sendNetd(.{ .sound_result = .{ .status = .rejected } }, p.request_id);
+            return;
+        };
+        const name = sp.name.slice();
+        const status: messages.Status = switch (op) {
+            .delete => blk: {
+                if (!sounds.remove(name)) break :blk .rejected;
+                self.saveSounds();
+                break :blk .applied;
+            },
+            .begin, .chunk, .commit => blk: {
+                if (op == .begin or !sound_upload.active or !std.mem.eql(u8, sound_upload.name.slice(), name)) {
+                    if (sp.offset != 0) break :blk .expired; // a chunk with no upload behind it
+                    sound_upload.begin(name) catch break :blk .rejected;
+                }
+                sound_upload.chunk(sp.offset, sp.slice()) catch |e| break :blk switch (e) {
+                    error.BadOffset => .conflict,
+                    error.TooLarge => .overload,
+                    else => .rejected,
+                };
+                if (op != .commit) break :blk .applied;
+                sounds.put(name, sound_upload.slice()) catch |e| {
+                    sound_upload.cancel();
+                    break :blk switch (e) {
+                        error.NoRoom, error.TooLarge => .overload,
+                        else => .rejected,
+                    };
+                };
+                sound_upload.cancel();
+                self.saveSounds();
+                log.info("sound {s} stored, {d} bytes", .{ name, sounds.get(name).?.len });
+                break :blk .applied;
+            },
+        };
+        self.sendNetd(.{ .sound_result = .{ .status = status, .used = @intCast(sounds.used()) } }, p.request_id);
+    }
+
+    fn onSoundListGet(self: *Supervisor, request_id: u64) void {
+        var l = messages.SoundList{ .used = @intCast(sounds.used()) };
+        var it = sounds.iterate();
+        while (it.next()) |e| {
+            if (!l.add(e.name, @intCast(e.data.len))) break;
+        }
+        self.sendNetd(.{ .sound_list = l }, request_id);
+    }
+
     fn saveScripts(self: *Supervisor) void {
         var dir_buf: [160]u8 = undefined;
         var tmp_buf: [160]u8 = undefined;
@@ -1441,6 +1523,13 @@ const Supervisor = struct {
                     self.sendCanvas();
                     self.saveCanvas();
                     self.sendNetd(.{ .canvas = self.canvasView() }, p.request_id);
+                },
+                .sound_put => |*sp| self.onSoundPut(&p, sp),
+                .sound_list_get => self.onSoundListGet(p.request_id),
+                .sound_cmd => {
+                    // audiod is not spawned yet, so there is nothing to relay to and nothing to
+                    // pretend about: the command is refused rather than silently accepted.
+                    self.sendNetd(.{ .sound_result = .{ .status = .unavailable, .used = @intCast(sounds.used()) } }, p.request_id);
                 },
                 .berry_script => |w| {
                     const op: messages.BerryScript.Op = @enumFromInt(@min(w.op, 3));
@@ -2292,6 +2381,7 @@ fn run(cfg_in: cli.Config, environ: anytype, args: []const [:0]const u8) !u8 {
     s.loadCredentials() catch |e| log.err("credentials unavailable: {s}; netd will refuse every request", .{sys.errText(e)});
     s.loadConfig();
     s.loadScripts();
+    s.loadSounds();
     s.loadCanvas();
     s.snapshot.config_revision = s.cfg.revision;
     s.snapshot.saved_revision = s.cfg.saved_revision;
