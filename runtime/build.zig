@@ -97,8 +97,25 @@ pub fn build(b: *std.Build) void {
     const bench_step = b.step("ipcbench", "build tc002-ipcbench: round-trip latency and frame throughput over the ipc socket");
     bench_step.dependOn(&b.addInstallArtifact(ipcbench, .{}).step);
 
+    // the script interpreter, in a process of its own. the only binary here that links libc:
+    // berry's error model is setjmp/longjmp and it formats reals with snprintf.
+    const berryd = b.addExecutable(.{
+        .name = "tc002-berryd",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/berryd_main.zig"),
+            .target = device,
+            .optimize = optimize,
+            .link_libc = true,
+            .strip = strip,
+            .single_threaded = true,
+        }),
+        .linkage = .static,
+    });
+    addBerry(b, berryd.root_module);
+    b.installArtifact(berryd);
+
     // a diagnostic rather than part of the runtime: proves the vendored interpreter links for the
-    // device, and is what its size on this target is measured from. phase 1 has no berryd yet.
+    // device, and is what its size on this target is measured from.
     const berry_check = b.addExecutable(.{
         .name = "tc002-berry-check",
         .root_module = b.createModule(.{

@@ -937,6 +937,8 @@ const Netd = struct {
         self.nightStatusJson(o, &st);
         o.add(",\"ntfy\":");
         self.ntfyStatusJson(o);
+        o.add(",\"berry\":");
+        berryStatusJson(o, &st);
         o.fmt(",\"config_revision\":{d},\"saved_revision\":{d},\"transport\":\"plaintext\",\"mqtt\":", .{ st.config_revision, st.saved_revision });
         self.mqttStatusJson(o, now);
         o.fmt(",\"boot_id\":\"{x:0>8}\",\"sample_age_ms\":{d},", .{ st.boot_id, st.sample_age_ms + @as(u32, @intCast(@min((now -| self.status_at_ns) / 1_000_000, 0xffffffff))) });
@@ -1005,12 +1007,35 @@ const Netd = struct {
             o.fmt(",\"source\":\"{s}\"}}", .{if (c.locationAuto()) "timezone" else "set"});
         } else o.add("null");
         self.generatorParamsJson(o, c);
+        o.fmt(",\"berry\":{{\"enabled\":{},\"heap_kb\":{d},\"handler_ms\":{d}}}", .{ c.berry.enabled, c.berry.heap_kb, c.berry.handler_ms });
         o.add(",\"allowed_origins\":[");
         for (c.origins[0..c.origin_count], 0..) |*org, i| {
             if (i > 0) o.add(",");
             o.str(org.slice());
         }
         o.add("]}");
+    }
+
+    fn berryStateName(state: u8) []const u8 {
+        return switch (state) {
+            1 => "starting",
+            2 => "running",
+            3 => "failed",
+            else => "off",
+        };
+    }
+
+    /// what the script interpreter is doing. `state` separates "not enabled" from "enabled and not
+    /// answering", which a heap figure alone cannot: it would be zero either way.
+    fn berryStatusJson(o: *Out, st: *const messages.StatusSnapshot) void {
+        o.fmt("{{\"state\":\"{s}\",\"heap_bytes\":{d},\"heap_used\":{d},\"heap_high_water\":{d},\"alloc_failures\":{d},\"stops\":{d}}}", .{
+            berryStateName(st.berry_state),
+            st.berry.heap_bytes,
+            st.berry.heap_used,
+            st.berry.heap_high_water,
+            st.berry.alloc_failures,
+            st.berry.stops,
+        });
     }
 
     fn ntfyStateName(state: u8) []const u8 {

@@ -42,7 +42,7 @@ fn unixNow() i64 {
     return @intCast(sys.realtimeNs() / ns_per_s);
 }
 
-const Tag = enum(u64) { timer = 1, signals = 2, ipc = 3, keys = 4, netd = 5, mcu = 6, logs = 7, sntp = 8, ntfy = 9 };
+const Tag = enum(u64) { timer = 1, signals = 2, ipc = 3, keys = 4, netd = 5, mcu = 6, logs = 7, sntp = 8, ntfy = 9, berry = 10 };
 
 const tick_ns: u64 = 100_000_000;
 /// how often the night schedule is consulted: a ramp of tens of minutes over a hundred steps moves
@@ -66,6 +66,13 @@ var evbuf: [32 * evdev.event_size]u8 = undefined;
 var netd_packet_buf: [codec.max_message]u8 = undefined;
 var ntfy_packet_buf: [codec.max_message]u8 = undefined;
 var ntfy_send_buf: [codec.max_message]u8 = undefined;
+var berry_packet_buf: [codec.max_message]u8 = undefined;
+var berry_send_buf: [codec.max_message]u8 = undefined;
+const berry_backoff_min_ns: u64 = 2 * ns_per_s;
+const berry_backoff_max_ns: u64 = 60 * ns_per_s;
+/// berryd reports every second. two seconds of silence is the renderer's own threshold, and it is
+/// the only way to notice a vm wedged inside a script: the process stays alive and stops answering.
+const berry_silence_ns: u64 = 2 * ns_per_s;
 const ntfy_backoff_min_ns: u64 = 2 * ns_per_s;
 const ntfy_backoff_max_ns: u64 = 60 * ns_per_s;
 var config_buf: [config.file_max]u8 = undefined;
@@ -365,6 +372,15 @@ const Supervisor = struct {
     ntfy_ca: [api.max_ca]u8 = undefined,
     ntfy_ca_len: u16 = 0,
     ntfy_seq: u64 = 0,
+    // the script interpreter: a child like the others, spawned only while it is enabled
+    berry_pid: ?sys.Pid = null,
+    berry_fd: ?sys.Fd = null,
+    berry_restart_at: u64 = 0,
+    berry_backoff_ns: u64 = berry_backoff_min_ns,
+    berry_spawned_ns: u64 = 0,
+    berry_heard_ns: u64 = 0,
+    berry_path: [:0]const u8 = "/tmp/tc002/tc002-berryd",
+    berry_replacing: bool = false,
     /// the running subscriber is being replaced after a settings change: its exit is expected
     ntfy_replacing: bool = false,
     relays: [relay_max]Relay = [_]Relay{.{}} ** relay_max,
@@ -714,6 +730,9 @@ const Supervisor = struct {
             self.snapshot.night_phase = 0;
             if (self.snapshot.brightness != c.brightness) self.send(.{ .brightness = .{ .value = c.brightness } });
         }
+        // berryd takes its heap once at startup and cannot resize it under a live vm, so any berry
+        // settings change replaces the process rather than trying to reconfigure it in place
+        if (!std.meta.eql(before.berry, c.berry)) self.restartBerry(sys.monotonicNs());
         self.snapshot.config_revision = c.revision;
         self.snapshot.saved_revision = c.saved_revision;
     }
@@ -972,6 +991,155 @@ const Supervisor = struct {
                     self.sendNetd(.{ .status = self.snapshot }, 0);
                 },
                 else => log.warn("unexpected {s} from the ntfy subscriber", .{@tagName(p.message)}),
+            }
+        }
+    }
+
+    // the script interpreter
+
+    fn sendBerry(self: *Supervisor, msg: messages.Message) void {
+        const fd = self.berry_fd orelse return;
+        const packet = messages.encodePacket(msg, 0, lifecycle.epoch, &berry_send_buf) catch return;
+        sys.sendPacket(fd, packet) catch |e| {
+            if (e != error.WouldBlock) log.warn("ipc send to berryd failed: {s}", .{sys.errText(e)});
+        };
+    }
+
+    fn berryConfigMessage(self: *const Supervisor) messages.Message {
+        return .{ .berry_config = .{ .heap_kb = self.cfg.berry.heap_kb, .handler_ms = self.cfg.berry.handler_ms } };
+    }
+
+    fn spawnBerry(self: *Supervisor, now: u64) void {
+        const fds = sys.socketpairSeqpacket() catch |e| {
+            log.err("socketpair for berryd failed: {s}", .{sys.errText(e)});
+            self.berry_restart_at = now + berry_backoff_max_ns;
+            return;
+        };
+        const pid = sys.fork() catch |e| {
+            log.err("fork for berryd failed: {s}", .{sys.errText(e)});
+            sys.close(fds[0]);
+            sys.close(fds[1]);
+            self.berry_restart_at = now + berry_backoff_max_ns;
+            return;
+        };
+        if (pid == 0) {
+            sys.unblockAllSignals();
+            sys.setSignalDisposition(.TERM, linux.SIG.DFL);
+            sys.setSignalDisposition(.INT, linux.SIG.DFL);
+            sys.setSignalDisposition(.PIPE, linux.SIG.DFL);
+            if (self.log_pipe) |lp| {
+                sys.dup2(lp[1], 1) catch sys.exit(126);
+                sys.dup2(lp[1], 2) catch sys.exit(126);
+            }
+            sys.dup2(fds[1], 60) catch sys.exit(126);
+            sys.dup2(60, 3) catch sys.exit(126);
+            var fd: i32 = 4;
+            while (fd < 64) : (fd += 1) sys.close(fd);
+            sys.prctlPdeathsig(.TERM) catch sys.exit(126);
+            if (sys.getppid() != self.self_pid) sys.exit(125);
+            sys.dropPrivileges(netd_uid, netd_gid) catch sys.exit(124);
+            const argv = [_:null]?[*:0]const u8{self.berry_path.ptr};
+            const envp = [_:null]?[*:0]const u8{};
+            sys.execve(self.berry_path.ptr, &argv, &envp) catch {};
+            sys.exit(127);
+        }
+        sys.close(fds[1]);
+        self.berry_fd = fds[0];
+        self.berry_pid = pid;
+        self.berry_spawned_ns = now;
+        self.berry_heard_ns = now;
+        sys.epollAdd(self.ep, fds[0], linux.EPOLL.IN, @intFromEnum(Tag.berry)) catch {};
+        log.info("spawned berryd pid {d} as uid {d}", .{ pid, netd_uid });
+        self.sendBerry(self.berryConfigMessage());
+        self.snapshot.berry_state = 1;
+    }
+
+    fn reapBerry(self: *Supervisor, now: u64) void {
+        const pid = self.berry_pid orelse return;
+        const status = sys.waitNoHang(pid) catch |e| switch (e) {
+            error.NoChild => @as(?u32, 0),
+            else => return,
+        } orelse return;
+        if (self.shutting_down or !self.cfg.berry.enabled or self.berry_replacing) {
+            log.info("berryd pid {d} stopped", .{pid});
+        } else if ((status & 0x7f) == 0) {
+            log.warn("berryd pid {d} exited with code {d}", .{ pid, (status >> 8) & 0xff });
+        } else {
+            log.warn("berryd pid {d} killed by signal {d}", .{ pid, status & 0x7f });
+        }
+        if (self.berry_fd) |fd| sys.close(fd);
+        self.berry_fd = null;
+        self.berry_pid = null;
+        self.snapshot.berry = .{};
+        if (self.berry_replacing) {
+            self.berry_replacing = false;
+            self.berry_backoff_ns = berry_backoff_min_ns;
+            self.berry_restart_at = now;
+            self.snapshot.berry_state = if (self.cfg.berry.enabled) 1 else 0;
+        } else {
+            // a child that ran a while before dying starts the backoff over
+            self.berry_backoff_ns = if (now - self.berry_spawned_ns > 60 * ns_per_s) berry_backoff_min_ns else @min(self.berry_backoff_ns * 2, berry_backoff_max_ns);
+            self.berry_restart_at = now + self.berry_backoff_ns;
+            self.snapshot.berry_state = if (self.cfg.berry.enabled and !self.shutting_down) 3 else 0;
+        }
+        self.sendNetd(.{ .status = self.snapshot }, 0);
+    }
+
+    fn pollBerry(self: *Supervisor, now: u64) void {
+        if (self.shutting_down) return;
+        if (self.cfg.berry.enabled) {
+            if (self.berry_pid == null and now >= self.berry_restart_at) {
+                self.spawnBerry(now);
+                return;
+            }
+            // the wedged case: alive, and no longer reporting. a script looping forever inside the
+            // vm cannot answer, and the interpreter's own watchdog is the thing that failed if we
+            // are here at all, so the process goes.
+            if (self.berry_pid) |pid| {
+                if (self.berry_heard_ns != 0 and now -| self.berry_heard_ns > berry_silence_ns) {
+                    log.warn("berryd has not reported for {d} ms; killing pid {d}", .{ (now -| self.berry_heard_ns) / 1_000_000, pid });
+                    self.berry_heard_ns = now; // do not kill it again before it is reaped
+                    sys.kill(pid, .KILL);
+                }
+            }
+        } else if (self.berry_pid) |pid| sys.kill(pid, .TERM);
+    }
+
+    /// the settings changed: berryd takes them once and cannot resize a live heap, so it is replaced
+    fn restartBerry(self: *Supervisor, now: u64) void {
+        self.berry_backoff_ns = berry_backoff_min_ns;
+        self.berry_restart_at = now;
+        if (self.berry_pid) |pid| {
+            self.berry_replacing = true;
+            sys.kill(pid, .TERM);
+        }
+        if (!self.cfg.berry.enabled) {
+            self.snapshot.berry_state = 0;
+            self.snapshot.berry = .{};
+            self.sendNetd(.{ .status = self.snapshot }, 0);
+        }
+    }
+
+    fn drainBerry(self: *Supervisor, now: u64) void {
+        const fd = self.berry_fd orelse return;
+        var count: u32 = 0;
+        while (count < ipc_packets_per_iteration) : (count += 1) {
+            const packet = sys.recvPacket(fd, &berry_packet_buf) catch |e| {
+                if (e != error.Closed) log.warn("berryd receive failed: {s}", .{sys.errText(e)});
+                return;
+            } orelse return;
+            const p = messages.decodePacket(packet) catch |e| {
+                log.warn("bad packet from berryd: {s}", .{@errorName(e)});
+                continue;
+            };
+            switch (p.message) {
+                .berry_status => |st| {
+                    self.berry_heard_ns = now;
+                    self.snapshot.berry = st;
+                    self.snapshot.berry_state = 2;
+                    self.sendNetd(.{ .status = self.snapshot }, 0);
+                },
+                else => log.warn("unexpected {s} from berryd", .{@tagName(p.message)}),
             }
         }
     }
@@ -1420,6 +1588,7 @@ const Supervisor = struct {
                     self.reap(now);
                     self.reapNetd(now);
                     self.reapNtfy(now);
+                    self.reapBerry(now);
                 },
                 else => {
                     if (!self.shutting_down) log.info("signal {d}: shutting down", .{info.signo});
@@ -1898,6 +2067,8 @@ fn run(cfg_in: cli.Config, environ: anytype, args: []const [:0]const u8) !u8 {
         s.pollNetd(now);
         s.drainNtfy(now);
         s.pollNtfy(now);
+        s.drainBerry(now);
+        s.pollBerry(now);
         s.mcu_link.poll(&s, now);
         s.sntp_link.poll(now); // sntp
         s.expireRelays(now);
@@ -1911,7 +2082,10 @@ fn run(cfg_in: cli.Config, environ: anytype, args: []const [:0]const u8) !u8 {
         if (s.shutting_down and s.ntfy_pid != null) {
             if (s.ntfy_pid) |pid| sys.kill(pid, .TERM);
         }
-        if (s.shutting_down and s.child_pid == null and s.netd_pid == null and s.ntfy_pid == null) break;
+        if (s.shutting_down and s.berry_pid != null) {
+            if (s.berry_pid) |pid| sys.kill(pid, .TERM);
+        }
+        if (s.shutting_down and s.child_pid == null and s.netd_pid == null and s.ntfy_pid == null and s.berry_pid == null) break;
         try sys.timerfdArmAt(timer, now + tick_ns);
         const n = try sys.epollWait(ep, &events, -1);
         for (events[0..n]) |ev| {

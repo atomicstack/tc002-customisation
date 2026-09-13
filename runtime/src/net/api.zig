@@ -104,6 +104,14 @@ pub const Location = struct { lat_c: i16, lon_c: i16 };
 
 /// two hours of lead is already longer than any twilight the night schedule adds it to
 pub const max_night_lead_min = 120;
+/// the heap a berry vm may be given. the floor is what the interpreter needs to boot (about 4 kb)
+/// with room to do something; the ceiling is what src/berry/vm.zig reserves statically.
+pub const berry_heap_kb_min: u16 = 16;
+pub const berry_heap_kb_max: u16 = 256;
+/// how long one handler may run. the ceiling stays well under the two seconds of silence that make
+/// the supervisor treat berryd as wedged, so the two watchdogs cannot fight each other.
+pub const berry_handler_ms_min: u16 = 10;
+pub const berry_handler_ms_max: u16 = 1000;
 
 pub const ConfigPatch = struct {
     brightness: ?u8 = null,
@@ -133,6 +141,9 @@ pub const ConfigPatch = struct {
     location: ?Location = null,
     /// true drops a pinned location and goes back to the timezone's own reference point
     location_auto: ?bool = null,
+    berry_enabled: ?bool = null,
+    berry_heap_kb: ?u16 = null,
+    berry_handler_ms: ?u16 = null,
 };
 
 /// a pem certificate for a self-hosted ntfy: at most this many bytes (a root ca is 1.3-2 kb)
@@ -209,6 +220,9 @@ const ConfigBody = struct {
     latitude: ?f64 = null,
     longitude: ?f64 = null,
     location_auto: ?bool = null,
+    berry_enabled: ?bool = null,
+    berry_heap_kb: ?u16 = null,
+    berry_handler_ms: ?u16 = null,
 };
 /// one element of a pushed document. the strict parser cannot do a tagged union, so every field
 /// any element type takes lives here and `allowedField` refuses the ones that do not belong to the
@@ -833,6 +847,8 @@ pub fn parseBody(kind: BodyKind, body: []const u8, arena: *Arena) Route {
             const ip_mode: ?ip.Mode = if (b.ip_mode) |t| (enumByName(ip.Mode, t) orelse return bad("invalid_ip_mode", "ip_mode must be lines, mini, scroll or big")) else null;
             if (b.night_brightness) |v| if (v < 1 or v > 100) return bad("invalid_night_brightness", "night_brightness must be 1..100");
             if (b.night_lead_min) |v| if (v > max_night_lead_min) return bad("invalid_night_lead", "night_lead_min must be 0..120");
+            if (b.berry_heap_kb) |v| if (v < berry_heap_kb_min or v > berry_heap_kb_max) return bad("invalid_berry_heap", "berry_heap_kb must be 16..256");
+            if (b.berry_handler_ms) |v| if (v < berry_handler_ms_min or v > berry_handler_ms_max) return bad("invalid_berry_handler", "berry_handler_ms must be 10..1000");
             const location = switch (parseLocation(b.latitude, b.longitude)) {
                 .reject => |j| return .{ .reject = j },
                 .op => |v| v,
@@ -867,6 +883,9 @@ pub fn parseBody(kind: BodyKind, body: []const u8, arena: *Arena) Route {
                 .night_lead_min = b.night_lead_min,
                 .location = location,
                 .location_auto = b.location_auto,
+                .berry_enabled = b.berry_enabled,
+                .berry_heap_kb = b.berry_heap_kb,
+                .berry_handler_ms = b.berry_handler_ms,
             } } };
         },
         .canvas_put => {

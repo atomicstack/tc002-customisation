@@ -80,6 +80,7 @@ pub const Config = struct {
     origin_count: u8 = 0,
     mqtt: Mqtt = .{},
     ntfy: Ntfy = .{},
+    berry: Berry = .{},
     clock_font: u8 = 0,
     clock_colour_mode: u8 = 0,
     clock_colour: [3]u8 = .{ 255, 255, 255 },
@@ -200,6 +201,15 @@ pub const Config = struct {
             next.latitude = l.lat_c;
             next.longitude = l.lon_c;
         }
+        if (p.berry_enabled) |v| next.berry.enabled = v;
+        if (p.berry_heap_kb) |v| {
+            if (v < api.berry_heap_kb_min or v > api.berry_heap_kb_max) return error.Invalid;
+            next.berry.heap_kb = v;
+        }
+        if (p.berry_handler_ms) |v| {
+            if (v < api.berry_handler_ms_min or v > api.berry_handler_ms_max) return error.Invalid;
+            next.berry.handler_ms = v;
+        }
         next.revision = self.revision + 1;
         self.* = next;
     }
@@ -256,6 +266,18 @@ fn enumOr(comptime E: type, value: u8, default: E) E {
 
 // ipc encoding: explicit little-endian fields, fixed layout, schema byte first.
 
+/// the script interpreter's settings. off by default: a device that has never been told to run
+/// scripts should not be running one, and the binary is not even spawned while this is false.
+pub const Berry = struct {
+    enabled: bool = false,
+    /// the vm's whole heap. four times the script store, so a completely full store still leaves
+    /// room for the scripts to work in; see the spec's arena note.
+    heap_kb: u16 = 256,
+    /// how long one event handler may run before the watchdog stops it. ordered well below the
+    /// two seconds of silence that make the supervisor consider berryd wedged.
+    handler_ms: u16 = 100,
+};
+
 pub const schema_version: u8 = 1;
 
 fn putText(out: []u8, off: *usize, t: Text) void {
@@ -276,7 +298,7 @@ fn getText(in: []const u8, off: *usize) error{BadPayload}!Text {
 const text_wire = 1 + text_max;
 /// schema, revisions, brightness/base/generator, timezone, ntp, intervals, discovery, origins,
 /// mqtt, the clock style, the night schedule
-pub const encoded_len = 1 + 4 + 4 + 3 + text_wire + 5 + 4 + 2 + 4 + 1 + text_wire + 1 + api.max_origins * text_wire + 1 + text_wire + 2 + 4 * text_wire + 1 + 12 + 8 + 1 + 5 * text_wire + 2 + 1 + param.owner_count * param.max_per_owner * 4;
+pub const encoded_len = 1 + 4 + 4 + 3 + text_wire + 5 + 4 + 2 + 4 + 1 + text_wire + 1 + api.max_origins * text_wire + 1 + text_wire + 2 + 4 * text_wire + 1 + 12 + 8 + 1 + 5 * text_wire + 2 + 1 + param.owner_count * param.max_per_owner * 4 + (1 + 2 + 2);
 
 pub fn encode(c: *const Config, out: *[encoded_len]u8) void {
     var o: usize = 0;
@@ -350,6 +372,12 @@ pub fn encode(c: *const Config, out: *[encoded_len]u8) void {
             o += 4;
         }
     }
+    out[o] = @intFromBool(c.berry.enabled);
+    o += 1;
+    std.mem.writeInt(u16, out[o..][0..2], c.berry.heap_kb, .little);
+    o += 2;
+    std.mem.writeInt(u16, out[o..][0..2], c.berry.handler_ms, .little);
+    o += 2;
     std.debug.assert(o == encoded_len);
 }
 
@@ -427,6 +455,12 @@ pub fn decode(in: []const u8) error{BadPayload}!Config {
         }
         if (scene.slotsUnset(slots.*)) slots.* = scene.generator_defaults[gi];
     }
+    c.berry.enabled = in[o] != 0;
+    o += 1;
+    c.berry.heap_kb = std.mem.readInt(u16, in[o..][0..2], .little);
+    o += 2;
+    c.berry.handler_ms = std.mem.readInt(u16, in[o..][0..2], .little);
+    o += 2;
     return c;
 }
 
@@ -479,6 +513,11 @@ const FileForm = struct {
         password: []const u8 = "",
         duration_s: u16 = 10,
         insecure: bool = false,
+    } = .{},
+    berry: struct {
+        enabled: bool = false,
+        heap_kb: u16 = 256,
+        handler_ms: u16 = 100,
     } = .{},
 };
 
@@ -551,6 +590,11 @@ pub fn toJson(c: *const Config, out: []u8) error{Overflow}![]u8 {
             .duration_s = c.ntfy.duration_s,
             .insecure = c.ntfy.insecure,
         },
+        .berry = .{
+            .enabled = c.berry.enabled,
+            .heap_kb = c.berry.heap_kb,
+            .handler_ms = c.berry.handler_ms,
+        },
     };
     std.json.Stringify.value(form, .{}, &w) catch return error.Overflow;
     return w.buffered();
@@ -617,8 +661,32 @@ pub fn fromJson(bytes: []const u8, arena: []u8) error{ Invalid, TooLong }!Config
         slots.* = scene.generator_defaults[i];
     };
     c.ip_mode = @intFromEnum(api.enumByName(ip.Mode, f.ip_mode) orelse return error.Invalid);
+    c.berry.enabled = f.berry.enabled;
+    if (f.berry.heap_kb < api.berry_heap_kb_min or f.berry.heap_kb > api.berry_heap_kb_max) return error.Invalid;
+    c.berry.heap_kb = f.berry.heap_kb;
+    if (f.berry.handler_ms < api.berry_handler_ms_min or f.berry.handler_ms > api.berry_handler_ms_max) return error.Invalid;
+    c.berry.handler_ms = f.berry.handler_ms;
     if (tz.resolve(f.timezone) == null) return error.Invalid;
     return c;
+}
+
+test "berry settings are bounded, because a heap that does not fit is not a heap" {
+    var c = Config{};
+    try std.testing.expect(!c.berry.enabled);
+    try std.testing.expectEqual(@as(u16, 256), c.berry.heap_kb);
+
+    try std.testing.expectError(error.Invalid, c.patch(.{ .berry_heap_kb = api.berry_heap_kb_max + 1 }));
+    try std.testing.expectError(error.Invalid, c.patch(.{ .berry_heap_kb = api.berry_heap_kb_min - 1 }));
+    try std.testing.expectError(error.Invalid, c.patch(.{ .berry_handler_ms = api.berry_handler_ms_max + 1 }));
+    try std.testing.expectError(error.Invalid, c.patch(.{ .berry_handler_ms = api.berry_handler_ms_min - 1 }));
+    // a refused patch changes nothing at all, revision included
+    try std.testing.expectEqual(@as(u32, 0), c.revision);
+
+    try c.patch(.{ .berry_enabled = true, .berry_heap_kb = 64, .berry_handler_ms = 20 });
+    try std.testing.expect(c.berry.enabled);
+    try std.testing.expectEqual(@as(u16, 64), c.berry.heap_kb);
+    try std.testing.expectEqual(@as(u16, 20), c.berry.handler_ms);
+    try std.testing.expectEqual(@as(u32, 1), c.revision);
 }
 
 test "ntfy patches validate the url, the topic and the duration" {
@@ -701,7 +769,7 @@ test "the night schedule's settings, and where the device thinks it is" {
 
 test "ipc encoding round-trips every field" {
     var c = Config{};
-    try c.patch(.{ .brightness = 7, .base = .clock, .generator = .plasma, .timezone = "EST5EDT,M3.2.0,M11.1.0", .ntp_server = .{ 1, 2, 3, 4 }, .ntp_interval_s = 600, .frame_timeout_ms = 250, .metrics_interval_s = 0, .discovery = true, .discovery_prefix = "ha", .clock_font = .segment, .clock_colour_mode = .gradient, .clock_colour = .{ 1, 2, 3 }, .clock_colour2 = .{ 4, 5, 6 }, .clock_gradient = .diagonal, .clock_spread = 12, .ip_mode = .scroll, .night = true, .night_brightness = 12, .night_lead_min = 35, .location = .{ .lat_c = -3387, .lon_c = 15122 } });
+    try c.patch(.{ .brightness = 7, .base = .clock, .generator = .plasma, .timezone = "EST5EDT,M3.2.0,M11.1.0", .ntp_server = .{ 1, 2, 3, 4 }, .ntp_interval_s = 600, .frame_timeout_ms = 250, .metrics_interval_s = 0, .discovery = true, .discovery_prefix = "ha", .clock_font = .segment, .clock_colour_mode = .gradient, .clock_colour = .{ 1, 2, 3 }, .clock_colour2 = .{ 4, 5, 6 }, .clock_gradient = .diagonal, .clock_spread = 12, .ip_mode = .scroll, .night = true, .night_brightness = 12, .night_lead_min = 35, .location = .{ .lat_c = -3387, .lon_c = 15122 }, .berry_enabled = true, .berry_heap_kb = 64, .berry_handler_ms = 250 });
     try c.patchMqtt(.{ .enabled = true, .host = "10.0.0.2", .port = 8883, .username = "u", .password = "p", .client_id = "cid", .prefix = "tc002/x", .tls = true });
     c.origins[0] = Text.init("http://panel.local");
     c.origin_count = 1;
@@ -719,7 +787,7 @@ test "ipc encoding round-trips every field" {
 
 test "json persistence round-trips and rejects junk" {
     var c = Config{};
-    try c.patch(.{ .brightness = 33, .base = .canvas, .timezone = "AEST-10AEDT,M10.1.0,M4.1.0/3", .ntp_server = .{ 10, 0, 0, 5 }, .clock_font = .big, .clock_colour = .{ 0xff, 0x80, 0x00 }, .clock_colour_mode = .gradient, .ip_mode = .big, .night = true, .night_brightness = 8, .night_lead_min = 0, .location = .{ .lat_c = 5151, .lon_c = -13 } });
+    try c.patch(.{ .brightness = 33, .base = .canvas, .timezone = "AEST-10AEDT,M10.1.0,M4.1.0/3", .ntp_server = .{ 10, 0, 0, 5 }, .clock_font = .big, .clock_colour = .{ 0xff, 0x80, 0x00 }, .clock_colour_mode = .gradient, .ip_mode = .big, .night = true, .night_brightness = 8, .night_lead_min = 0, .location = .{ .lat_c = 5151, .lon_c = -13 }, .berry_enabled = true, .berry_heap_kb = 128, .berry_handler_ms = 500 });
     try c.patchMqtt(.{ .enabled = true, .host = "10.0.0.2", .username = "tc002", .password = "Pw1", .prefix = "tc002/dev" });
     c.origins[0] = Text.init("http://panel");
     c.origin_count = 1;
@@ -739,6 +807,9 @@ test "json persistence round-trips and rejects junk" {
     try std.testing.expectEqual(clock.Font.big, back.clockStyle().font);
     try std.testing.expect(back.night);
     try std.testing.expectEqual(@as(u8, 8), back.night_brightness);
+    try std.testing.expect(back.berry.enabled);
+    try std.testing.expectEqual(@as(u16, 128), back.berry.heap_kb);
+    try std.testing.expectEqual(@as(u16, 500), back.berry.handler_ms);
     try std.testing.expectEqual(@as(u8, 0), back.night_lead_min);
     try std.testing.expectEqual(@as(i16, 5151), back.latitude.?);
     try std.testing.expectEqual(@as(i16, -13), back.longitude.?);

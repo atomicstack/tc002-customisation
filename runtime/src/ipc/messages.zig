@@ -80,12 +80,14 @@ test "every message kind round-trips through a packet" {
             break :blk nc;
         } },
         .{ .ntfy_status = .{ .state = 2, .messages = 9, .err = config.Text.init("dns failed") } },
+        .{ .berry_config = .{ .heap_kb = 64, .handler_ms = 250 } },
+        .{ .berry_status = .{ .heap_bytes = 65536, .heap_used = 8488, .heap_high_water = 9000, .alloc_failures = 2, .stops = 1 } },
         .{ .menu_request = .{ .kind = @intFromEnum(MenuRequest.Kind.brightness), .value = 70 } },
         .{ .menu_request = .{ .kind = @intFromEnum(MenuRequest.Kind.reboot) } },
         .{ .set_param = .{ .base = 1, .index = 3, .value = 0xff8000 } },
         .{ .device_status = .{ .battery_pct = 80, .usb = 1, .wifi_quality = 49, .wifi_dbm = -61, .time_synced = 1, .mqtt_on = 1, .uptime_s = 90061 } },
         .status_get,
-        .{ .status = .{ .renderer_state = 2, .epoch = 3, .revision = 4, .presented = 5, .base = 1, .brightness = 77, .uptime_s = 8, .mem_available_kb = 14000, .cpu_pct = 12, .fps_x10 = 599, .ip_present = 1, .ip = .{ 10, 0, 0, 111 }, .config_revision = 2, .saved_revision = 1, .boot_id = 0xabcd, .sample_age_ms = 40, .mac = .{ 1, 2, 3, 4, 5, 6 }, .mac_present = 1, .load_1m_x100 = 123, .mem_free_kb = 4000, .wifi_level_dbm = -61, .wifi_quality = 49, .cpu_renderer_pct_x10 = 87, .tmpfs_used_kb = 1300, .battery_mv = 3987, .battery_pct = 80, .usb_present = 1, .clock = ClockStyle.full(.{ .font = .segment }), .mem_total_kb = 36240, .tmpfs_total_kb = 16504, .flash_total_kb = 8192, .flash_used_kb = 368, .night_phase = 2, .night_override = 1, .seed = 0xc0ffee, .menu = 1, .menu_item = 6, .menu_state = 1, .net_rx_bytes = 525283638, .net_tx_bytes = 48021332, .net_rx_packets = 2277879, .net_tx_packets = 295533, .net_rx_errors = 0, .net_rx_dropped = 1339872, .net_tx_errors = 0, .net_tx_dropped = 0, .net_rx_bps = 2033, .net_tx_bps = 236, .mem_cached_kb = 11772, .mem_dirty_kb = 0, .mem_writeback_kb = 0, .mem_slab_kb = 8528, .saves = 91, .save_failures = 0, .save_bytes = 40131, .save_last_ms = 12 } },
+        .{ .status = .{ .renderer_state = 2, .epoch = 3, .revision = 4, .presented = 5, .base = 1, .brightness = 77, .uptime_s = 8, .mem_available_kb = 14000, .cpu_pct = 12, .fps_x10 = 599, .ip_present = 1, .ip = .{ 10, 0, 0, 111 }, .config_revision = 2, .saved_revision = 1, .boot_id = 0xabcd, .sample_age_ms = 40, .mac = .{ 1, 2, 3, 4, 5, 6 }, .mac_present = 1, .load_1m_x100 = 123, .mem_free_kb = 4000, .wifi_level_dbm = -61, .wifi_quality = 49, .cpu_renderer_pct_x10 = 87, .tmpfs_used_kb = 1300, .battery_mv = 3987, .battery_pct = 80, .usb_present = 1, .clock = ClockStyle.full(.{ .font = .segment }), .mem_total_kb = 36240, .tmpfs_total_kb = 16504, .flash_total_kb = 8192, .flash_used_kb = 368, .night_phase = 2, .night_override = 1, .seed = 0xc0ffee, .menu = 1, .menu_item = 6, .menu_state = 1, .net_rx_bytes = 525283638, .net_tx_bytes = 48021332, .net_rx_packets = 2277879, .net_tx_packets = 295533, .net_rx_errors = 0, .net_rx_dropped = 1339872, .net_tx_errors = 0, .net_tx_dropped = 0, .net_rx_bps = 2033, .net_tx_bps = 236, .mem_cached_kb = 11772, .mem_dirty_kb = 0, .mem_writeback_kb = 0, .mem_slab_kb = 8528, .saves = 91, .save_failures = 0, .save_bytes = 40131, .save_last_ms = 12, .berry_state = 2, .berry = .{ .heap_bytes = 65536, .heap_used = 8488, .heap_high_water = 9001, .alloc_failures = 0, .stops = 3 } } },
     };
     var buf: [codec.max_message]u8 = undefined;
     for (all) |m| {
@@ -112,6 +114,27 @@ test "fixed hex vectors" {
     const fr = try encodePacket(.{ .frame = .{ .duration_s = 1, .rgb = geometry.black_rgb } }, 0, 0, &buf);
     try std.testing.expectEqual(@as(usize, codec.header_len + 2 + Transition.wire_len + geometry.rgb_bytes), fr.len);
     try std.testing.expectEqual(@as(u8, @intFromEnum(Kind.frame)), fr[5]);
+}
+
+test "berry settings survive the ipc patch, which has its own field list and drops what it does not know" {
+    const w = try ConfigPatch.fromApi(.{ .berry_enabled = true, .berry_heap_kb = 64, .berry_handler_ms = 120 });
+    const a = w.toApi();
+    try std.testing.expectEqual(@as(?bool, true), a.berry_enabled);
+    try std.testing.expectEqual(@as(?u16, 64), a.berry_heap_kb);
+    try std.testing.expectEqual(@as(?u16, 120), a.berry_handler_ms);
+    // and over the wire, which is the half that silently dropped them
+    var buf: [codec.max_message]u8 = undefined;
+    const packet = try encodePacket(.{ .config_patch = w }, 7, 0, &buf);
+    const back = try decodePacket(packet);
+    const b = back.message.config_patch.toApi();
+    try std.testing.expectEqual(@as(?bool, true), b.berry_enabled);
+    try std.testing.expectEqual(@as(?u16, 64), b.berry_heap_kb);
+    try std.testing.expectEqual(@as(?u16, 120), b.berry_handler_ms);
+    // a patch that says nothing about berry must not assert defaults over what is configured
+    const quiet = (try ConfigPatch.fromApi(.{ .brightness = 5 })).toApi();
+    try std.testing.expect(quiet.berry_enabled == null);
+    try std.testing.expect(quiet.berry_heap_kb == null);
+    try std.testing.expect(quiet.berry_handler_ms == null);
 }
 
 test "patch wire forms map back to the api view" {
@@ -257,6 +280,62 @@ pub const Kind = enum(u8) {
     sprite_delete = 57,
     sprite_list_get = 58,
     sprite_list = 59,
+    // the script interpreter: the supervisor hands it its settings, it reports what its heap is
+    // doing and whether it has had to stop anything
+    berry_config = 60,
+    berry_status = 61,
+};
+
+/// what the supervisor tells a fresh berryd about itself. the settings are the supervisor's, so
+/// berryd never reads a file and never has to agree with anyone about defaults.
+pub const BerryConfig = struct {
+    heap_kb: u16 = 256,
+    handler_ms: u16 = 100,
+
+    pub const wire_len = 2 + 2;
+
+    fn put(self: *const BerryConfig, out: []u8) void {
+        std.mem.writeInt(u16, out[0..2], self.heap_kb, .little);
+        std.mem.writeInt(u16, out[2..4], self.handler_ms, .little);
+    }
+
+    fn get(b: []const u8) BerryConfig {
+        return .{
+            .heap_kb = std.mem.readInt(u16, b[0..2], .little),
+            .handler_ms = std.mem.readInt(u16, b[2..4], .little),
+        };
+    }
+};
+
+/// what berryd reports, which is also what `/status` carries. it doubles as the liveness ping:
+/// a script spinning forever leaves the process alive and silent, so silence is the signal.
+pub const BerryStatus = struct {
+    heap_bytes: u32 = 0,
+    heap_used: u32 = 0,
+    heap_high_water: u32 = 0,
+    alloc_failures: u32 = 0,
+    /// scripts stopped for outstaying the handler deadline
+    stops: u32 = 0,
+
+    pub const wire_len = 5 * 4;
+
+    fn put(self: *const BerryStatus, out: []u8) void {
+        std.mem.writeInt(u32, out[0..4], self.heap_bytes, .little);
+        std.mem.writeInt(u32, out[4..8], self.heap_used, .little);
+        std.mem.writeInt(u32, out[8..12], self.heap_high_water, .little);
+        std.mem.writeInt(u32, out[12..16], self.alloc_failures, .little);
+        std.mem.writeInt(u32, out[16..20], self.stops, .little);
+    }
+
+    fn get(b: []const u8) BerryStatus {
+        return .{
+            .heap_bytes = std.mem.readInt(u32, b[0..4], .little),
+            .heap_used = std.mem.readInt(u32, b[4..8], .little),
+            .heap_high_water = std.mem.readInt(u32, b[8..12], .little),
+            .alloc_failures = std.mem.readInt(u32, b[12..16], .little),
+            .stops = std.mem.readInt(u32, b[16..20], .little),
+        };
+    }
 };
 
 /// what the device is holding, for `GET /sprites`: ids and sizes, not the pixels
@@ -576,6 +655,9 @@ pub const ConfigPatch = struct {
     night_lead_min: u8 = 0,
     latitude: i16 = 0,
     longitude: i16 = 0,
+    berry_enabled: u8 = 0,
+    berry_heap_kb: u16 = 0,
+    berry_handler_ms: u16 = 0,
 
     pub const F = struct {
         pub const brightness: u32 = 1 << 0;
@@ -602,9 +684,12 @@ pub const ConfigPatch = struct {
         pub const night_lead_min: u32 = 1 << 21;
         pub const location: u32 = 1 << 22;
         pub const location_auto: u32 = 1 << 23;
+        pub const berry_enabled: u32 = 1 << 24;
+        pub const berry_heap_kb: u32 = 1 << 25;
+        pub const berry_handler_ms: u32 = 1 << 26;
     };
 
-    pub const fixed_len = 4 + 3 + 65 + 4 + 4 + 2 + 4 + 1 + 65 + 4 + 12 + 7 + 1;
+    pub const fixed_len = 4 + 3 + 65 + 4 + 4 + 2 + 4 + 1 + 65 + 4 + 12 + 7 + (1 + 2 + 2) + 1;
     pub const wire_len = fixed_len + api.max_params_per_patch * 6;
 
     pub fn fromApi(p: api.ConfigPatch) error{TooLong}!ConfigPatch {
@@ -695,6 +780,18 @@ pub const ConfigPatch = struct {
             w.has |= F.night_brightness;
             w.night_brightness = v;
         }
+        if (p.berry_enabled) |v| {
+            w.has |= F.berry_enabled;
+            w.berry_enabled = @intFromBool(v);
+        }
+        if (p.berry_heap_kb) |v| {
+            w.has |= F.berry_heap_kb;
+            w.berry_heap_kb = v;
+        }
+        if (p.berry_handler_ms) |v| {
+            w.has |= F.berry_handler_ms;
+            w.berry_handler_ms = v;
+        }
         if (p.night_lead_min) |v| {
             w.has |= F.night_lead_min;
             w.night_lead_min = v;
@@ -739,6 +836,9 @@ pub const ConfigPatch = struct {
             .night_lead_min = if (h & F.night_lead_min != 0) self.night_lead_min else null,
             .location = if (h & F.location != 0) .{ .lat_c = self.latitude, .lon_c = self.longitude } else null,
             .location_auto = if (h & F.location_auto != 0) true else null,
+            .berry_enabled = if (h & F.berry_enabled != 0) self.berry_enabled != 0 else null,
+            .berry_heap_kb = if (h & F.berry_heap_kb != 0) self.berry_heap_kb else null,
+            .berry_handler_ms = if (h & F.berry_handler_ms != 0) self.berry_handler_ms else null,
         };
     }
 };
@@ -1121,8 +1221,13 @@ pub const StatusSnapshot = struct {
     save_failures: u32 = 0,
     save_bytes: u32 = 0,
     save_last_ms: u16 = 0xffff,
+    // v10: the script interpreter. `berry_state` is 0 off, 1 starting, 2 running, 3 failed, so a
+    // client can tell "not enabled" from "enabled and not answering" without inferring it from a
+    // heap figure that would be zero either way.
+    berry_state: u8 = 0,
+    berry: BerryStatus = .{},
 
-    pub const wire_len = 4 + 3 + 2 + 1 + 4 + 4 + 8 + 4 + 4 + 4 + 1 + 4 + 4 + 4 + 4 + 2 + 1 + 4 + 1 + 4 + 4 + 4 + 4 + 4 + (6 + 1 + 2 + 4 + 2 + 1 + 2 + 2 + 2 + 4 + 2 + 1 + 1) + 1 + ClockStyle.wire_len + 1 + NtfyStatus.wire_len + 4 * 4 + (10 * 4) + (4 * 4) + (4 + 4 + 4 + 2);
+    pub const wire_len = 4 + 3 + 2 + 1 + 4 + 4 + 8 + 4 + 4 + 4 + 1 + 4 + 4 + 4 + 4 + 2 + 1 + 4 + 1 + 4 + 4 + 4 + 4 + 4 + (6 + 1 + 2 + 4 + 2 + 1 + 2 + 2 + 2 + 4 + 2 + 1 + 1) + 1 + ClockStyle.wire_len + 1 + NtfyStatus.wire_len + 4 * 4 + (10 * 4) + (4 * 4) + (4 + 4 + 4 + 2) + (1 + BerryStatus.wire_len);
 };
 
 pub const Message = union(Kind) {
@@ -1172,6 +1277,8 @@ pub const Message = union(Kind) {
     sprite_delete: canvas.Id,
     sprite_list_get,
     sprite_list: SpriteList,
+    berry_config: BerryConfig,
+    berry_status: BerryStatus,
 };
 
 pub const Packet = struct { request_id: u64, epoch: u32, message: Message };
@@ -1255,6 +1362,14 @@ fn encodePayload(msg: Message, out: []u8) usize {
                 out[o + 10] = it.h;
             }
             return 1 + @as(usize, l.count) * 11;
+        },
+        .berry_config => |c| {
+            c.put(out);
+            return BerryConfig.wire_len;
+        },
+        .berry_status => |b| {
+            b.put(out);
+            return BerryStatus.wire_len;
         },
         .device_status => |d| {
             out[0] = d.battery_pct;
@@ -1351,6 +1466,10 @@ fn encodePayload(msg: Message, out: []u8) usize {
             std.mem.writeInt(i16, out[o + 3 ..][0..2], p.latitude, .little);
             std.mem.writeInt(i16, out[o + 5 ..][0..2], p.longitude, .little);
             o += 7;
+            out[o] = p.berry_enabled;
+            std.mem.writeInt(u16, out[o + 1 ..][0..2], p.berry_heap_kb, .little);
+            std.mem.writeInt(u16, out[o + 3 ..][0..2], p.berry_handler_ms, .little);
+            o += 5;
             out[o] = p.param_count;
             o += 1;
             for (p.params[0..p.param_count]) |rp| {
@@ -1498,6 +1617,10 @@ fn encodePayload(msg: Message, out: []u8) usize {
             }
             std.mem.writeInt(u16, out[o..][0..2], st.save_last_ms, .big);
             o += 2;
+            out[o] = st.berry_state;
+            o += 1;
+            st.berry.put(out[o..]);
+            o += BerryStatus.wire_len;
             return o;
         },
         .result => |r| {
@@ -1666,6 +1789,12 @@ pub fn decodePacket(bytes: []const u8) Error!Packet {
             }
             break :blk .{ .sprite_list = l };
         },
+        .berry_config => blk: {
+            break :blk .{ .berry_config = BerryConfig.get(try fixed(p, BerryConfig.wire_len)) };
+        },
+        .berry_status => blk: {
+            break :blk .{ .berry_status = BerryStatus.get(try fixed(p, BerryStatus.wire_len)) };
+        },
         .device_status => blk: {
             const b = try fixed(p, DeviceStatus.wire_len);
             break :blk .{ .device_status = .{
@@ -1783,6 +1912,10 @@ pub fn decodePacket(bytes: []const u8) Error!Packet {
             w.latitude = std.mem.readInt(i16, b[o + 3 ..][0..2], .little);
             w.longitude = std.mem.readInt(i16, b[o + 5 ..][0..2], .little);
             o += 7;
+            w.berry_enabled = b[o];
+            w.berry_heap_kb = std.mem.readInt(u16, b[o + 1 ..][0..2], .little);
+            w.berry_handler_ms = std.mem.readInt(u16, b[o + 3 ..][0..2], .little);
+            o += 5;
             if (b.len < o + 1) return error.BadPayload;
             w.param_count = @min(b[o], w.params.len);
             o += 1;
@@ -1935,7 +2068,11 @@ pub fn decodePacket(bytes: []const u8) Error!Packet {
                 o += 4;
             }
             st.save_last_ms = std.mem.readInt(u16, b[o..][0..2], .big);
-            o += 3;
+            o += 2;
+            st.berry_state = b[o];
+            o += 1;
+            st.berry = BerryStatus.get(b[o..][0..BerryStatus.wire_len]);
+            o += BerryStatus.wire_len;
             break :blk .{ .status = st };
         },
         .ready => blk: {
