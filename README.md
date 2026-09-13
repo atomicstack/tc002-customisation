@@ -36,7 +36,7 @@ tools:
 | [`tc002-ntp-patch.py`](tc002-ntp-patch.py) | make the clock sync every n minutes instead of every 2 h, and/or from your own ntp server — patches the app library in tmpfs, nothing in flash |
 | [`led/`](led/) | popsquares generative art running on the device at 60 fps, straight to the panel over spi — static armv7 binary built with zig, plus an adb start/stop wrapper |
 | [`led-zig/`](led-zig/) | full-parity idiomatic zig renderer with typed modules, colocated tests, native dry-run, static armv7 build, and adb wrapper |
-| [`runtime/`](runtime/) | the custom runtime: a supervisor, a renderer (popsquares, plasma, clock, ip, notifications, raw frames, buttons and knob), an unprivileged network daemon with a bearer-authenticated `/api/v1` and an mqtt client with home-assistant discovery, and a sandboxed berry script interpreter ([`SCRIPTING.md`](SCRIPTING.md)), plus the bootstrap the vendor loader runs and a memory-audit tool. zig 0.16, static armv7, volatile under `/tmp`, and no libc in anything but the script interpreter. reference in [`RUNTIME.md`](RUNTIME.md) |
+| [`runtime/`](runtime/) | the custom runtime: a supervisor, a renderer (three bases — clock, art and canvas — with popsquares, plasma and cube as the art generators, plus notifications, raw frames, transitions, the on-panel menu, the buttons and the knob), an unprivileged network daemon with a bearer-authenticated `/api/v1` and an mqtt client with home-assistant discovery, and a sandboxed berry script interpreter ([`SCRIPTING.md`](SCRIPTING.md)), plus the bootstrap the vendor loader runs and a memory-audit tool. zig 0.16, static armv7, volatile under `/tmp`, and no libc in anything but the script interpreter. reference in [`RUNTIME.md`](RUNTIME.md) |
 | [`panel-v2/`](panel-v2/) | the same idea for the custom runtime in [`RUNTIME.md`](RUNTIME.md): a local proxy that holds the api tokens and a page that drives scenes, clock fonts and colours, notifications, frames, settings, mqtt, remote presses, display power and the log ring, with a live 52×16 preview that runs the runtime's own scene code, cross-compiled to webassembly by `zig build wasm` (so the preview cannot drift from the device) |
 
 related: [pixdeck](https://github.com/cailurus/PixDeck) is a working stock-firmware
@@ -121,14 +121,19 @@ runtime does not broadcast on udp/55555. `serve.py` serves the page and
 proxies `/api/<device-ip>/v1/<endpoint>` to the device's `/api/v1/<endpoint>`,
 adding the bearer token the route needs, so the browser never holds a token
 and only talks to its own origin. `--adb-pull` takes `--serial <adb-serial>`
-to pick the device when several are attached. the preview is the live frame
-from `/screen` when the runtime offers that route (exact, as shown after
-fades, before brightness); against `mock-device.py` and older builds without
-it, the page falls back to a simulation of the runtime's status (its own
-font, clock fonts, gradients, layout and generators ported to javascript),
-so the clock and ip are exact, notifications and frames are exact only when this page sent them
-(otherwise they are shown as unknown), and the art shows the same algorithm
-with a local seed. the controls card drives the physical buttons, knob and
+to pick the device when several are attached. the preview is a **replica, not a
+simulation**: `zig build wasm` cross-compiles the runtime's own scene code to
+webassembly, so the page and the device run the same renderer and cannot drift.
+it follows the device's *triggers* rather than its state — `GET /events` streams
+every statement the device applies, whoever issued it (the api, a button, the
+knob, mqtt), and the page applies the same statement to its own arbiter and
+checks it landed on the same revision. the mirror deliberately runs 750 ms
+behind, so a statement is played at the instant it actually happened rather than
+when it was heard about. `/status`, `/config` and `/canvas` bootstrap it and
+recover it: a statement that does not land on the device's revision means one was
+missed, and the page resyncs. `/screen` is no longer the steady-state path — it
+is a "check against the panel" button. the javascript port this replaced was
+deleted in `451f32e`. the controls card drives the physical buttons, knob and
 rotary remotely through `/input`; the scene card's power switch fades the
 display through `/action`. the page is a fixed hero, the preview with the
 readings and the controls that act on the device now, above four tabs: scene,
@@ -297,7 +302,8 @@ everything else (`/tmp`, `/dev`, `/mnt`, `/misc`) is tmpfs, 16 mib max each.
 | | |
 |---|---|
 | knob | rotary encoder on **gpio 10 / 11** (edge interrupts `knob_a` / `knob_b`, driver `zkswe,ssd-knob`, input device `knob_key`) |
-| buttons | **four polled gpio keys** (20 ms poll, active-low): gpio 31 (`up`), 32 (`down`), 33 (`left`), 34 (`right`), reported as arrow keys. the app maps them to left / middle / right and the knob press. the soc's matrix-keypad block is disabled |
+| buttons | **four polled gpio keys** (`gpio-keys-polled`, 20 ms poll, active-low, 5 ms debounce). there are three buttons across the top and the knob's own push — there is no up/down/left/right pad, despite what the device tree calls them. **the device tree's names are not positions**, so the mapping below is the one that matters; it is read from the device tree on the unit and matches what the runtime measured from key presses |
+| ↳ which is which | gpio 31 `gpio-keys-up` → `KEY_UP` (103) → **the knob's push**; gpio 32 `gpio-keys-down` → `KEY_DOWN` (108) → **the left button**; gpio 33 `gpio-keys-left` → `KEY_LEFT` (105) → **the middle button**; gpio 34 `gpio-keys-right` → `KEY_RIGHT` (106) → **the right button**. the custom runtime's default keymap is exactly these four codes (`runtime/src/input/evdev.zig`), overridable with `--keymap`. the soc's matrix-keypad block is disabled |
 | microphone | present; the app reads a **level** from the mcu (`queryMicValue` / `setAutoMicReport`) for the sound-reactive app. the soc's own mic input is configured in the device tree but is not what the app polls |
 | adc | the soc's sar adc is enabled; what it measures was not established |
 
