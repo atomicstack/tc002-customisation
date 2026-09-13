@@ -287,6 +287,51 @@ test('an element can be dragged on the preview, and a corner resizes it',
   assert.deepEqual(out.at, [10, 6], 'and the opposite corner stayed where it was');
 });
 
+test('what is under an element can be selected without reordering the document',
+  { skip: chromeAvailable ? false : 'google chrome is not installed' }, async () => {
+  // the renderer draws elements[0] first, so the last element is the front-most. the list showed
+  // the array in order, which put the back-most at the top and made its "up" button send things
+  // further back — so reaching text inside a filled rect meant moving the text *down*. the list
+  // now reads front to back, and pressing the same led again steps down through the stack, so
+  // selecting something never means changing what the panel draws
+  const out = await cdp.eval(`
+    (() => {
+      const cv = document.getElementById('matrix');
+      const led = (type, lx, ly, id) => { const r = cv.getBoundingClientRect();
+        cv.dispatchEvent(new PointerEvent(type, { bubbles: true, pointerId: id,
+          clientX: r.left + (lx * 10 + 5) * (r.width / 520),
+          clientY: r.top + (ly * 10 + 5) * (r.height / 160) })); };
+      showTab('canvas');
+      const was = cvDraft;
+      cvDraft = { elements: [
+        { type: 'text', id: 'under', at: [12, 4], text: 'hi', colour: 'ffffff' },
+        { type: 'rect', id: 'over', at: [10, 2], size: [20, 10], colour: 'ff0000', filled: true },
+      ] };
+      cvSelected = 0; cvList(); cvForm(); cvRender();
+      const res = { rows: [...document.querySelectorAll('#cvelements .cvrow .cvname')].map(n => n.textContent) };
+      const press = id => { led('pointerdown', 14, 5, id); led('pointerup', 14, 5, id); return cvSelected; };
+      res.picks = [press(21), press(22), press(23)];
+      res.elsewhere = (led('pointerdown', 45, 14, 24), led('pointerup', 45, 14, 24), press(25));
+      res.order = cvDraft.elements.map(e => e.id);
+      res.at = cvDraft.elements.map(e => e.at.slice());
+      // a document that changed under the cycle restarts it, rather than resuming a count of a
+      // stack that no longer exists
+      cvDraft.elements.push({ type: 'rect', id: 'third', at: [13, 4], size: [3, 3], colour: '00ff00', filled: true });
+      cvList(); cvRender();
+      res.afterChange = press(26);
+      cvDraft = was; cvSelected = 0; cvList(); cvForm(); cvRender();
+      showTab('scene');
+      return res;
+    })()
+  `);
+  assert.deepEqual(out.picks, [1, 0, 1], 'the first press takes the front-most, the next reaches under it, then it wraps');
+  assert.deepEqual(out.rows, ['over', 'under'], 'the front-most element is the first row, as in any layer list');
+  assert.equal(out.elsewhere, 1, 'a press somewhere else resets the cycle, so the next one starts at the front again');
+  assert.deepEqual(out.order, ['under', 'over'], 'and none of that reordered the document');
+  assert.deepEqual(out.at, [[12, 4], [10, 2]], 'nor moved anything: a press and release in one place is not a drag');
+  assert.equal(out.afterChange, 2, 'adding an element restarts the cycle at the new front-most, not part-way down');
+});
+
 test('an element placed by tile or row is not draggable, and says why',
   { skip: chromeAvailable ? false : 'google chrome is not installed' }, async () => {
   // tile and row placement has no coordinate to move, so a drag would have nothing to write

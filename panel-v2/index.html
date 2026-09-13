@@ -360,7 +360,7 @@ input[type=file]{font:12px var(--body);color:var(--muted);max-width:220px}
           <div class="rows" id="cvform"></div>
         </div>
       </div>
-      <div class="actions"><span class="note">the preview above draws this draft with the runtime's own canvas renderer, and refuses what the device would refuse — nothing here is sent until you press send. animations start when the device installs the document, so a draft animates from the moment you edit it.</span></div>
+      <div class="actions"><span class="note">the preview above draws this draft with the runtime's own canvas renderer, and refuses what the device would refuse — nothing here is sent until you press send. press an element to select it, press the same spot again to reach what is under it, drag to move, drag a corner to resize. the list is front to back, as a layer list is. animations start when the device installs the document, so a draft animates from the moment you edit it.</span></div>
     </section>
   </div>
 
@@ -1450,10 +1450,24 @@ function cvDrawPreview() {
   $('cap').textContent = `canvas draft · not sent · ${cvDraft.elements.length} element${cvDraft.elements.length === 1 ? '' : 's'}`;
 }
 
+// the renderer draws elements[0] first, so the last element is the front-most one. every design
+// tool puts the front-most at the *top* of its layer list, so the list is shown reversed: the
+// array stays in document order and only the presentation is flipped. showing it in array order
+// meant the top of the list was the back of the picture, and the one reorder button sent things
+// backwards while looking like it should bring them forward.
+function cvMove(i, delta) {                       // delta +1 brings forward, -1 sends back
+  const to = i + delta;
+  if (to < 0 || to >= cvDraft.elements.length) return;
+  const [m] = cvDraft.elements.splice(i, 1);
+  cvDraft.elements.splice(to, 0, m);
+  cvSelected = to; cvList(); cvForm(); cvRender();
+}
+
 function cvList() {
   const box = $('cvelements');
   box.innerHTML = '';
-  cvDraft.elements.forEach((e, i) => {
+  for (let i = cvDraft.elements.length - 1; i >= 0; i--) {
+    const e = cvDraft.elements[i];
     const row = document.createElement('div');
     row.className = 'cvrow' + (i === cvSelected ? ' sel' : '');
     const name = document.createElement('span');
@@ -1462,23 +1476,28 @@ function cvList() {
     const kind = document.createElement('span');
     kind.className = 'cvkind';
     kind.textContent = e.type;
-    const up = document.createElement('button'); up.className = 'btn ghost'; up.textContent = '↑';
+    const fwd = document.createElement('button'); fwd.className = 'btn ghost'; fwd.textContent = '↑';
+    fwd.title = 'bring forward'; fwd.setAttribute('aria-label', `bring ${cvLabel(e)} forward`);
+    fwd.disabled = i === cvDraft.elements.length - 1;
+    const back = document.createElement('button'); back.className = 'btn ghost'; back.textContent = '↓';
+    back.title = 'send back'; back.setAttribute('aria-label', `send ${cvLabel(e)} back`);
+    back.disabled = i === 0;
     const del = document.createElement('button'); del.className = 'btn ghost'; del.textContent = '✕';
-    row.addEventListener('click', ev => { if (ev.target === up || ev.target === del) return; cvSelected = i; cvList(); cvForm(); });
-    up.addEventListener('click', () => {
-      if (i === 0) return;
-      const [m] = cvDraft.elements.splice(i, 1);
-      cvDraft.elements.splice(i - 1, 0, m);
-      cvSelected = i - 1; cvList(); cvForm(); cvRender();
+    del.title = 'delete'; del.setAttribute('aria-label', `delete ${cvLabel(e)}`);
+    row.addEventListener('click', ev => {
+      if (ev.target === fwd || ev.target === back || ev.target === del) return;
+      cvSelected = i; cvList(); cvForm(); cvRender();
     });
+    fwd.addEventListener('click', () => cvMove(i, +1));
+    back.addEventListener('click', () => cvMove(i, -1));
     del.addEventListener('click', () => {
       cvDraft.elements.splice(i, 1);
       cvSelected = Math.max(0, Math.min(cvSelected, cvDraft.elements.length - 1));
       cvList(); cvForm(); cvRender();
     });
-    row.append(name, kind, up, del);
+    row.append(name, kind, fwd, back, del);
     box.append(row);
-  });
+  }
   if (!cvDraft.elements.length) {
     const row = document.createElement('div');
     row.className = 'actions';
@@ -1637,13 +1656,33 @@ function cvOverlay() {
   ctx.restore();
 }
 
-// which element is under a point, topmost first: later elements draw over earlier ones
-function cvHit(lx, ly) {
+// everything under a point, front-most first: later elements draw over earlier ones
+function cvHitStack(lx, ly) {
+  const out = [];
   for (let i = cvDraft.elements.length - 1; i >= 0; i--) {
     const b = cvBox(i);
-    if (b && lx >= b.x0 && lx <= b.x1 && ly >= b.y0 && ly <= b.y1) return i;
+    if (b && lx >= b.x0 && lx <= b.x1 && ly >= b.y0 && ly <= b.y1) out.push(i);
   }
-  return -1;
+  return out;
+}
+
+// what the cursor is over, for the pointer shape: no side effects, so hovering changes nothing
+const cvHit = (lx, ly) => { const s = cvHitStack(lx, ly); return s.length ? s[0] : -1; };
+
+// what a press selects. pressing the same led again reaches the next element down, so text inside
+// a filled rect can be picked without reordering the document to get at it — reordering changes
+// what the panel draws, and wanting to select something is not wanting to change it
+let cvCycle = { lx: -1, ly: -1, n: 0, of: '' }, cvCycleHinted = false;
+function cvPick(lx, ly) {
+  const stack = cvHitStack(lx, ly);
+  if (!stack.length) { cvCycle = { lx: -1, ly: -1, n: 0, of: '' }; return -1; }
+  // the cycle counts through one particular stack. if the document changed under it — an element
+  // added, deleted, or a whole document loaded — that count means nothing, so start again at the
+  // front rather than resume in the middle of a stack that no longer exists
+  const of = stack.join(',');
+  const same = lx === cvCycle.lx && ly === cvCycle.ly && of === cvCycle.of;
+  cvCycle = { lx, ly, of, n: same ? (cvCycle.n + 1) % stack.length : 0 };
+  return stack[cvCycle.n];
 }
 
 function cvCorner(px, py, i) {
@@ -1680,8 +1719,14 @@ function cvPointerDown(ev) {
     try { $('matrix').setPointerCapture(ev.pointerId); } catch {}
     return cvRender();
   }
-  const hit = cvHit(lx, ly);
+  const hit = cvPick(lx, ly);
   if (hit < 0) return;
+  // said once, the first time a press lands on a stack: every press after that would be nagging,
+  // and the card says it permanently anyway. a drag begins with a press, so this fires often
+  if (!cvCycleHinted && cvHitStack(lx, ly).length > 1) {
+    cvCycleHinted = true;
+    toast('press the same spot again to select what is under it');
+  }
   cvSelected = hit;
   cvList(); cvForm();
   const e = cvDraft.elements[hit];
