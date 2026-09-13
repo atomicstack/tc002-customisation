@@ -23,6 +23,7 @@ does; how to build and run it is in [`runtime/README.md`](runtime/README.md).
 | `tc002d` | root | 255 kb | the renderer. the only process that opens `/dev/spidev0.0` and the latch gpio. scenes, overlays, physical input, paced presentation, heartbeats |
 | `tc002-netd` | uid 1001 | 396 kb | the network daemon: an http/1.1 server for `/api/v1` and an mqtt 3.1.1 client. holds no authoritative state; every command is relayed through the supervisor to the live renderer |
 | `tc002-ntfy` | uid 1001 | 1.1 mb | the ntfy subscriber: dns, tcp, tls 1.3 with the standard library (that is the size), the json stream; sends `notify` to the supervisor. only runs while `ntfy.enabled` |
+| `tc002-berryd` | uid 1001 | 721 kb | the [script interpreter](#scripting-berry): one berry vm on a fixed heap. the only binary that links libc. no network descriptor at all. only runs while `berry.enabled` |
 | `tc002-memdump` | root, by hand | 171 kb | a maintenance tool that streams a sparse memory snapshot of one process over adb ([memory audits](#memory-audits)) |
 
 ¹ ReleaseSafe, stripped, as built on 2026-09-06. `-Doptimize=ReleaseSmall` gives
@@ -977,6 +978,8 @@ whole frame to another process costs 0.05% of a frame.
 | supervisor → renderer | `set_base`, `notify`, `frame`, `brightness`, `reseed`, `arm_stream`, `time_corrected`, `ip_changed`, `stop`, `set_timezone` |
 | supervisor → netd | `credentials`, `config`, `status`, `result`, `save_result` |
 | netd → supervisor | `status_get`, `config_get`, `config_patch`, `config_save`, `mqtt_put`, and the renderer commands above for relay |
+| supervisor → berryd | `berry_config` (once after spawn), `berry_script` (each stored script, then `reload`), `input` (button and knob edges), `berry_event` (mqtt and ntfy arrivals) |
+| berryd → supervisor | `berry_status` (every second; also the liveness ping), `berry_result` (did a script compile), `berry_event` (subscribe, publish), `stream_frame`, and the renderer commands above for relay |
 
 results carry a status: `applied`, `rejected`, `overload`, `stale_epoch`,
 `expired`, `unavailable`, `timeout`, `conflict`. discrete commands are
@@ -1035,6 +1038,10 @@ api is for programs, not pages. `allowed_origins` can only be set by editing
 | `POST` | `/input` | control | `{"control":"left\|middle\|right\|knob\|rotary","event":"press\|release\|click\|long\|cw\|ccw","steps":1..16?,"request_id":hex,"epoch":u32}` | as above. `long` is the knob only; `cw`/`ccw` are the rotary only and take `steps` |
 | `GET` | `/screen` | control | | `{"width":52,"height":16,"epoch","revision","brightness","power","rgb_base64":"…"}`: the frame as shown, after fades, before brightness. `?format=raw` returns the 2,496 rgb bytes as `application/octet-stream` |
 | `GET` | `/logs?after=N` | control | | `{"next":seq,"lines":[{"seq":n,"text":"…"}…]}`: up to 16 lines of the [log ring](#the-log-ring) after sequence number `after` (0 = oldest kept); pass `next` back to continue. a jump in `seq` means lines were evicted |
+| `GET` | `/berry` | control | | `{"state":"off\|starting\|running\|failed","heap_bytes","heap_used","heap_high_water","alloc_failures","stops"}` |
+| `GET` | `/berry/scripts` | control | | `{"used":n,"budget":65536,"scripts":[{"name","bytes","compiled"}…]}` |
+| `PUT` | `/berry/scripts/{name}` | admin | `text/plain`, at most 8,000 bytes | `{"status":"ok","name":"…"}`. the script is **compiled before it is stored**: one that will not parse answers 400 `script_will_not_compile` carrying berry's own message, and never reaches flash |
+| `DELETE` | `/berry/scripts/{name}` | admin | | `{"status":"ok","name":"…"}`, or 404 |
 | `GET` | `/config` | control | | the [settings document](#settings) |
 | `PATCH` | `/config` | admin | any subset of the settings fields plus `expected_revision`? | the settings document after the patch |
 | `POST` | `/config/save` | admin | `{"revision":u32}` or an empty body, `application/json` either way | `{"status":"saved","saved_revision":n}` |
@@ -1131,7 +1138,8 @@ sensor.
 | `ntp.server`, `ntp.interval_s` (patch as `ntp_server`, `ntp_interval_s`) | dotted ipv4 or null; 300 or 600 | the sntp client restarts at once and syncs promptly; null disables it |
 | `night`, `night_brightness`, `night_lead_min` | bool; 1–100; 0–120 minutes | the [night brightness schedule](#the-night-brightness-schedule); reported as a `night` object in `/config` |
 | `latitude`, `longitude` | −90–90 and −180–180 degrees, both together or neither | pins where the device is, overriding the timezone's reference point; `location_auto: true` (patch only) drops the pin again. `/config` reports the pinned pair, and the point they resolve to under `location` with its `source` |
-| `frame_timeout_ms` | 100–2000 | stored only: belongs to the unimplemented streaming feature |
+| `frame_timeout_ms` | 100–2000 | how long one pushed [stream frame](#the-frame-stream) stands before the panel clears itself; carried with every frame |
+| `berry.enabled`, `berry.heap_kb`, `berry.handler_ms` (patch as `berry_enabled`, `berry_heap_kb`, `berry_handler_ms`) | bool, default false; 16–256 kb; 10–1000 ms | the [script interpreter](#scripting-berry). berryd is spawned only while enabled, and **replaced** on any change: a heap cannot be resized under a live vm |
 | `metrics_interval_s` | 0 (off) or 10–3600 | mqtt `metrics` cadence |
 | `discovery.enabled`, `discovery.prefix` (patch as `discovery`, `discovery_prefix`) | bool; ≤ 64 characters | home-assistant discovery on the next mqtt connection |
 | `allowed_origins` | up to four exact origins | read from the file only |
@@ -1156,6 +1164,144 @@ the file itself is the same document in a slightly different shape, with
 an invalid or unknown file is ignored with a warning (defaults are used and
 the file is left alone). the mqtt password is in that file in clear, mode
 0600, root only; it is never returned by the api.
+
+## scripting (berry)
+
+the device runs [berry](https://github.com/berry-lang/berry) scripts: react to
+buttons, mqtt, ntfy and timers, draw on the panel, and — when a script wants
+them — own the pixels at sixty frames a second. off by default; a device that has
+never been told to run scripts is not running one, and `tc002-berryd` is not even
+spawned.
+
+the interpreter is vendored at `runtime/vendor/berry/` (upstream `6e6e621`,
+mit, with its `coc` output committed). `runtime/vendor/berry/README.md` has the
+config table and what was changed. it is the one binary here that links libc:
+berry's error model is `setjmp`/`longjmp` and it formats reals with `snprintf`.
+
+### why a process of its own
+
+measured, not assumed. `zig build ipcbench` forks a peer over the same socketpair
+the runtime uses and pins both ends: a whole frame reaches another process in
+**8.3 us across the two cores**, 0.05% of a 16.7 ms frame budget, and streaming is
+*faster* across cores than on one because the processes run at the same time
+rather than ping-ponging through the scheduler.
+
+the interpreter costs far more than the boundary. on this device:
+
+| a script that, per frame… | cost | share of a frame |
+|---|---:|---:|
+| makes 20 native draw calls plus arithmetic | 0.20 ms | 1.2% |
+| touches all 832 pixels itself | 10.8 ms | 65% |
+
+so the boundary is free and berryd runs on the second core, where a slow script is
+somewhere the renderer's 60 fps loop never looks.
+
+### what a script can do
+
+`tc002` and `panel` are globals, assembled by a prelude in
+`src/berry/api.zig` — which is also the only place the script-facing names are
+written down.
+
+```berry
+tc002.scene('canvas')                  # clock, art or canvas
+tc002.brightness(40)
+tc002.notify('doorbell', 0xff0000, 5)
+tc002.subscribe('home/doorbell')       # mqtt in
+tc002.publish('tc002/hello', 'hi')     # mqtt out
+tc002.on('button', def (control, event, steps) ... end)
+tc002.on('mqtt',   def (topic, payload, n) ... end)
+tc002.on('ntfy',   def (topic, message, n) ... end)
+tc002.every(1000, def () ... end)
+tc002.after(250,  def () ... end)
+
+panel.clear()
+panel.rect(0, 0, 52, 16, 0x001020, 1)
+panel.text(2, 4, 'hi', 0xffffff)
+panel.icon(40, 4, 'clock', 0xffaa00)
+panel.pixel(51, 0, 0xff0000)
+panel.show()                           # install as a canvas document
+panel.stream(); panel.push()           # or own the frame, up to 60 a second
+```
+
+the vocabulary is the api's on purpose: bases are `clock|art|canvas`, icons are
+the names `/icons` lists, colours are `0xrrggbb` or `'rrggbb'`. a call turns into
+the same ipc message an http request turns into, and hears the same refusal —
+`tc002.brightness(0)` raises rather than quietly clamping.
+
+`print` reaches `GET /logs`: berryd's output goes to stdout, which the supervisor
+already reads into the log ring for every child it spawns.
+
+### the script store
+
+`config/scripts.bin` on `/data`, written with the same `saveFileAtomic` as
+`canvas.bin`. not a directory — `sys/linux.zig` has no `readdir` and a directory
+cannot be updated atomically — and not a fixed number of slots either. the bounds
+are the physical ones:
+
+| bound | value | where it comes from |
+|---|---|---|
+| one script | 8,000 bytes | it must reach berryd in one ipc datagram; there is no chunking |
+| the whole store | 64 kb | the supervisor's static save buffer, and the arena it implies |
+| one name | 32 bytes | it is a path segment and a log token; letters, digits, `-`, `_`, `.` |
+
+the count is whatever fits, and a full store reports `n of 65536 bytes used`
+rather than "no free slot". the script named `autoexec` runs once berryd has been
+handed the whole set, which is what makes a script survive a power cycle.
+
+### what a script cannot do
+
+| bound | mechanism |
+|---|---|
+| memory | one fixed arena (`berry.heap_kb`, default 256 kb). full, and berry raises; nothing else on the device notices |
+| cpu | berry's observability hook fires every 2¹⁶ instructions — about 7.8 ms here — and stops a handler past `berry.handler_ms` (default 100) |
+| a wedged vm | berryd reports every second; two seconds of silence and the supervisor kills it. a script looping forever leaves the process alive and silent, so silence is the only signal |
+| a dead script mid-animation | every stream frame carries `frame_timeout_ms`; the panel clears itself |
+| the network | berryd holds no network descriptor: it cannot bind, connect or resolve |
+| the filesystem | `BE_USE_FILE_SYSTEM` is off; `open()` raises `io_error` |
+| settings, tokens, credentials | there is no binding for them. scripts change what is on the panel, not what the device is |
+
+the two watchdogs are deliberately ordered: a runaway handler dies at 100 ms,
+twenty times over before the 2 s silence threshold could make the supervisor think
+berryd itself is wedged.
+
+### the frame stream
+
+`panel.push()` renders the document the script has been drawing into pixels — in
+zig, against the renderer's own canvas code — and sends it as a `stream_frame`.
+
+that is a different message kind from `frame`, not a faster one. `frame` is a
+discrete command and passes through the renderer's [deduplication
+window](#the-local-channel-ipc): 128 ids held for sixty seconds, which caps
+discrete commands at about **two a second**. a stream frame is idempotent — the
+last one wins and a lost one is a lost frame, not a lost side effect — so there is
+nothing for dedup to protect and it is carried ahead of it. it stays epoch-gated,
+carries a sequence number so drops and coalesces are counted, and never bumps the
+revision, because sixty state changes a second is not a state change.
+
+it lands in the same overlay slot a raw frame uses, so a base selection clears it
+and the user always wins.
+
+measured on the device: a bouncing block pushed by a script ran at **60 fps
+sustained (720 frames in 12 s) at 5% cpu**, using 22 kb of a 256 kb heap.
+
+### settings
+
+`berry.enabled` (default false), `berry.heap_kb` (16–256, default 256) and
+`berry.handler_ms` (10–1000, default 100), patched through `/config` like any
+other setting. berryd takes its heap once and cannot resize it under a live vm, so
+any berry settings change **replaces the process** rather than reconfiguring it.
+
+subscribed mqtt topics are not settings: a script declares them at runtime with
+`tc002.subscribe`, the supervisor holds the list (up to eight) and replays it
+whenever netd is spawned or the broker connection comes back.
+
+### testing
+
+`zig build test-berry` runs `.be` fixtures in `runtime/test/berry/` through the
+same interpreter the device runs, on the host, with the bindings installed and the
+messages recorded rather than sent. a fixture can declare what it expected to emit
+in a sibling `.emits` file, and what it expected to print in a `.expected` one. a
+fixture named `*.fail.be` **must** fail — that is the harness testing itself.
 
 ## mqtt
 
@@ -1438,8 +1584,12 @@ all on a warm device that had been up for days, under the lock, on
   ~70 ppm oscillator error described in [`DEVICE.md`](DEVICE.md#time) is
   corrected every poll rather than continuously. nothing survives a reboot:
   `ntp_server` must be in the saved settings or set again.
-- **streaming.** the stream routes answer `503 not_implemented`;
-  `arm_stream` and `frame_timeout_ms` exist for it.
+- **streaming, for network clients.** the `/streams` routes still answer
+  `503 not_implemented`. the *internal* path exists and is used: a script pushes
+  frames through `stream_frame`, outside the deduplication window and with
+  `frame_timeout_ms` as the deadman, measured at 60 fps sustained (see
+  [scripting](#scripting-berry)). what is missing is an http or mqtt surface for a
+  client that is not a script.
 - **network bring-up.** the runtime relies on the wifi and address the stock
   stack established before it took over. dhcp renewal after the takeover and
   the setup-ap flow are not handled and were not measured.
