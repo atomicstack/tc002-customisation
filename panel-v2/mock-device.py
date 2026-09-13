@@ -831,7 +831,10 @@ ROUTES = {("GET", "status"): "read", ("GET", "scenes"): "read", ("PUT", "scene")
           ("GET", "tokens"): "admin", ("POST", "tokens"): "admin"}
 
 
-MAX_CLIENTS = 120
+# mirrors the device, where this is derived from what a listing fits in one response buffer
+# (net/clients.zig). it cannot be derived here, so it is copied: if the device's number moves,
+# move this with it, or capacity testing against the mock quietly disagrees with the real thing.
+MAX_CLIENTS = 99
 NAME_RE = re.compile(r"^[a-zA-Z0-9_.-]{1,32}$")
 
 
