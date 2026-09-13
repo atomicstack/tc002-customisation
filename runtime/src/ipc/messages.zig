@@ -12,6 +12,7 @@ const ip = @import("../scene/ip.zig");
 const canvas = @import("../scene/canvas.zig");
 const store = @import("../berry/store.zig");
 const arbiter = @import("../scene/arbiter.zig");
+const sound_store = @import("../sound/store.zig");
 
 test "every message kind round-trips through a packet" {
     var frame = Frame{ .duration_s = 9, .rgb = geometry.black_rgb };
@@ -89,6 +90,20 @@ test "every message kind round-trips through a packet" {
         .{ .berry_result = .{ .outcome = 1, .name = store.Name.init("broken"), .text = config.Text.init("unexpected token") } },
         .berry_list_get,
         .{ .applied = Applied.init(.{ .kind = .set_base, .revision = 41, .at_ns = 0, .base = .clock }, .input, 120) },
+        .{ .sound_config = .{ .enabled = 1, .volume = 45 } },
+        .{ .sound_status = .{ .state = 3, .playing = sound_store.Name.init("chime"), .ms_left = 820, .underruns = 2 } },
+        .{ .sound_put = SoundPut.init(.chunk, "chime", 4096, "abcd") },
+        .{ .sound_put = SoundPut.init(.delete, "old", 0, "") },
+        .{ .sound_result = .{ .status = .applied, .used = 12345 } },
+        .{ .sound_cmd = SoundCmd.init(.play, "chime", 80, true) },
+        .{ .sound_cmd = SoundCmd.init(.stop, "", 0, false) },
+        .sound_list_get,
+        .{ .sound_list = blk: {
+            var l = SoundList{ .used = 999 };
+            _ = l.add("chime", 4096);
+            _ = l.add("beep", 128);
+            break :blk l;
+        } },
         .{ .applied = Applied.init(.{ .kind = .notify, .revision = 42, .at_ns = 0, .colour = .{ 1, 2, 3 }, .duration_s = 9, .text_len = 2, .text = [_]u8{ 'h', 'i' } ++ [_]u8{0} ** 126 }, .ntfy, 7) },
         .{ .berry_event = BerryEvent.init(.mqtt, "home/doorbell", "pressed") },
         .{ .berry_event = BerryEvent.init(.subscribe, "home/+/state", "") },
@@ -314,6 +329,17 @@ pub const Kind = enum(u8) {
     /// one carries the edges that are not statements, this one carries the statements, and between
     /// them a mirror sees everything that happens to this device.
     applied = 68,
+    // the speaker. the supervisor owns the sound store and hands audiod its settings; audiod
+    // reads the store file itself, because a sound does not fit an ipc datagram.
+    sound_config = 69,
+    sound_status = 70,
+    /// netd -> supervisor: one chunk of a sound arriving, or a delete
+    sound_put = 71,
+    sound_result = 72,
+    /// -> audiod: play this, or stop what is playing
+    sound_cmd = 73,
+    sound_list_get = 74,
+    sound_list = 75,
 };
 
 /// what the supervisor tells a fresh berryd about itself. the settings are the supervisor's, so
@@ -736,6 +762,175 @@ pub const Applied = struct {
         o += 1;
         @memcpy(&a.text, b[o..][0..arbiter.Statement.text_max]);
         return a;
+    }
+};
+
+/// what the supervisor tells audiod about how to behave. volume is 0-100 as the api reports it;
+/// mapping that onto whatever the hardware wants is audiod's business.
+pub const SoundConfig = struct { enabled: u8 = 0, volume: u8 = 60 };
+
+/// audiod's heartbeat and what it is doing
+pub const SoundStatus = struct {
+    /// 0 off, 1 starting, 2 ready, 3 playing, 4 failed
+    state: u8 = 0,
+    playing: sound_store.Name = .{},
+    /// how much of the current sound is left
+    ms_left: u32 = 0,
+    /// samples the device asked for that were not ready in time
+    underruns: u32 = 0,
+
+    pub const wire_len = 1 + 1 + sound_store.name_max + 4 + 4;
+
+    fn put(self: *const SoundStatus, out: []u8) void {
+        out[0] = self.state;
+        out[1] = self.playing.len;
+        @memcpy(out[2..][0..sound_store.name_max], &self.playing.bytes);
+        var o: usize = 2 + sound_store.name_max;
+        std.mem.writeInt(u32, out[o..][0..4], self.ms_left, .big);
+        o += 4;
+        std.mem.writeInt(u32, out[o..][0..4], self.underruns, .big);
+    }
+
+    fn get(b: []const u8) SoundStatus {
+        var s = SoundStatus{ .state = b[0] };
+        s.playing.len = @min(b[1], sound_store.name_max);
+        @memcpy(&s.playing.bytes, b[2..][0..sound_store.name_max]);
+        var o: usize = 2 + sound_store.name_max;
+        s.ms_left = std.mem.readInt(u32, b[o..][0..4], .big);
+        o += 4;
+        s.underruns = std.mem.readInt(u32, b[o..][0..4], .big);
+        return s;
+    }
+};
+
+/// a sound arriving from netd, a chunk at a time, because it fits neither an http body nor an ipc
+/// datagram whole. `offset` is checked against what has already landed rather than trusted.
+pub const SoundPut = struct {
+    pub const Op = enum(u8) { begin = 0, chunk = 1, commit = 2, delete = 3 };
+
+    kind: u8 = 0,
+    name: sound_store.Name = .{},
+    offset: u32 = 0,
+    len: u16 = 0,
+    data: [sound_store.chunk_max]u8 = [_]u8{0} ** sound_store.chunk_max,
+
+    pub const wire_len = 1 + 1 + sound_store.name_max + 4 + 2 + sound_store.chunk_max;
+
+    pub fn init(op: Op, name: []const u8, offset: u32, data: []const u8) SoundPut {
+        var p = SoundPut{ .kind = @intFromEnum(op), .name = sound_store.Name.init(name), .offset = offset };
+        p.len = @intCast(@min(data.len, sound_store.chunk_max));
+        @memcpy(p.data[0..p.len], data[0..p.len]);
+        return p;
+    }
+
+    pub fn slice(self: *const SoundPut) []const u8 {
+        return self.data[0..@min(self.len, sound_store.chunk_max)];
+    }
+
+    fn put(self: *const SoundPut, out: []u8) void {
+        out[0] = self.kind;
+        out[1] = self.name.len;
+        @memcpy(out[2..][0..sound_store.name_max], &self.name.bytes);
+        var o: usize = 2 + sound_store.name_max;
+        std.mem.writeInt(u32, out[o..][0..4], self.offset, .big);
+        o += 4;
+        std.mem.writeInt(u16, out[o..][0..2], self.len, .big);
+        o += 2;
+        @memcpy(out[o..][0..sound_store.chunk_max], &self.data);
+    }
+
+    fn get(b: []const u8) SoundPut {
+        var p = SoundPut{ .kind = b[0] };
+        p.name.len = @min(b[1], sound_store.name_max);
+        @memcpy(&p.name.bytes, b[2..][0..sound_store.name_max]);
+        var o: usize = 2 + sound_store.name_max;
+        p.offset = std.mem.readInt(u32, b[o..][0..4], .big);
+        o += 4;
+        p.len = @min(std.mem.readInt(u16, b[o..][0..2], .big), sound_store.chunk_max);
+        o += 2;
+        @memcpy(&p.data, b[o..][0..sound_store.chunk_max]);
+        return p;
+    }
+};
+
+pub const SoundResult = struct { status: Status, used: u32 = 0 };
+
+/// play or stop. one kind rather than two, the way `berry_event` carries four things that are all
+/// a topic and a payload.
+pub const SoundCmd = struct {
+    pub const Op = enum(u8) { play = 0, stop = 1 };
+
+    kind: u8 = 0,
+    name: sound_store.Name = .{},
+    /// 0 means "whatever the settings say"
+    volume: u8 = 0,
+    loop: u8 = 0,
+
+    pub const wire_len = 1 + 1 + sound_store.name_max + 1 + 1;
+
+    pub fn init(op: Op, name: []const u8, volume: u8, loop: bool) SoundCmd {
+        return .{ .kind = @intFromEnum(op), .name = sound_store.Name.init(name), .volume = volume, .loop = @intFromBool(loop) };
+    }
+
+    fn put(self: *const SoundCmd, out: []u8) void {
+        out[0] = self.kind;
+        out[1] = self.name.len;
+        @memcpy(out[2..][0..sound_store.name_max], &self.name.bytes);
+        out[2 + sound_store.name_max] = self.volume;
+        out[3 + sound_store.name_max] = self.loop;
+    }
+
+    fn get(b: []const u8) SoundCmd {
+        var c = SoundCmd{ .kind = b[0], .volume = b[2 + sound_store.name_max], .loop = b[3 + sound_store.name_max] };
+        c.name.len = @min(b[1], sound_store.name_max);
+        @memcpy(&c.name.bytes, b[2..][0..sound_store.name_max]);
+        return c;
+    }
+};
+
+/// the stored sounds, for `GET /api/v1/sounds`
+pub const SoundList = struct {
+    pub const max_entries = 16;
+
+    count: u8 = 0,
+    used: u32 = 0,
+    names: [max_entries]sound_store.Name = [_]sound_store.Name{.{}} ** max_entries,
+    bytes: [max_entries]u32 = [_]u32{0} ** max_entries,
+
+    pub const wire_len = 1 + 4 + max_entries * (1 + sound_store.name_max + 4);
+
+    pub fn add(self: *SoundList, name: []const u8, n: u32) bool {
+        if (self.count == max_entries) return false;
+        self.names[self.count] = sound_store.Name.init(name);
+        self.bytes[self.count] = n;
+        self.count += 1;
+        return true;
+    }
+
+    fn put(self: *const SoundList, out: []u8) void {
+        out[0] = self.count;
+        std.mem.writeInt(u32, out[1..5], self.used, .big);
+        var o: usize = 5;
+        for (0..max_entries) |i| {
+            out[o] = self.names[i].len;
+            @memcpy(out[o + 1 ..][0..sound_store.name_max], &self.names[i].bytes);
+            o += 1 + sound_store.name_max;
+            std.mem.writeInt(u32, out[o..][0..4], self.bytes[i], .big);
+            o += 4;
+        }
+    }
+
+    fn get(b: []const u8) SoundList {
+        var l = SoundList{ .count = @min(b[0], max_entries), .used = std.mem.readInt(u32, b[1..5], .big) };
+        var o: usize = 5;
+        for (0..max_entries) |i| {
+            l.names[i].len = @min(b[o], sound_store.name_max);
+            @memcpy(&l.names[i].bytes, b[o + 1 ..][0..sound_store.name_max]);
+            o += 1 + sound_store.name_max;
+            l.bytes[i] = std.mem.readInt(u32, b[o..][0..4], .big);
+            o += 4;
+        }
+        return l;
     }
 };
 
@@ -1552,6 +1747,13 @@ pub const Message = union(Kind) {
     berry_event: BerryEvent,
     stream_frame: StreamFrame,
     applied: Applied,
+    sound_config: SoundConfig,
+    sound_status: SoundStatus,
+    sound_put: SoundPut,
+    sound_result: SoundResult,
+    sound_cmd: SoundCmd,
+    sound_list_get,
+    sound_list: SoundList,
 };
 
 pub const Packet = struct { request_id: u64, epoch: u32, message: Message };
@@ -1668,6 +1870,32 @@ fn encodePayload(msg: Message, out: []u8) usize {
             a.put(out);
             return Applied.wire_len;
         },
+        .sound_config => |c| {
+            out[0] = c.enabled;
+            out[1] = c.volume;
+            return 2;
+        },
+        .sound_status => |st| {
+            st.put(out);
+            return SoundStatus.wire_len;
+        },
+        .sound_put => |sp| {
+            sp.put(out);
+            return SoundPut.wire_len;
+        },
+        .sound_result => |r| {
+            out[0] = @intFromEnum(r.status);
+            std.mem.writeInt(u32, out[1..5], r.used, .big);
+            return 5;
+        },
+        .sound_cmd => |c| {
+            c.put(out);
+            return SoundCmd.wire_len;
+        },
+        .sound_list => |l| {
+            l.put(out);
+            return SoundList.wire_len;
+        },
         .stream_frame => |f| {
             std.mem.writeInt(u32, out[0..4], f.seq, .big);
             std.mem.writeInt(u16, out[4..6], f.timeout_ms, .big);
@@ -1702,7 +1930,7 @@ fn encodePayload(msg: Message, out: []u8) usize {
             out[14] = d.night_placed;
             return DeviceStatus.wire_len;
         },
-        .ready, .arm_stream, .time_corrected, .stop, .config_get, .status_get, .screen_get, .canvas_get, .canvas_clear, .sprite_list_get, .berry_list_get => return 0,
+        .ready, .arm_stream, .time_corrected, .stop, .config_get, .status_get, .screen_get, .canvas_get, .canvas_clear, .sprite_list_get, .berry_list_get, .sound_list_get => return 0,
         .screen => |s| {
             std.mem.writeInt(u32, out[0..4], s.revision, .big);
             out[4] = s.brightness;
@@ -2131,6 +2359,10 @@ pub fn decodePacket(bytes: []const u8) Error!Packet {
             r.text = try getText(b, &o);
             break :blk .{ .berry_result = r };
         },
+        .sound_list_get => blk: {
+            _ = try fixed(p, 0);
+            break :blk .sound_list_get;
+        },
         .berry_list_get => blk: {
             _ = try fixed(p, 0);
             break :blk .berry_list_get;
@@ -2140,6 +2372,26 @@ pub fn decodePacket(bytes: []const u8) Error!Packet {
         },
         .applied => blk: {
             break :blk .{ .applied = Applied.get(try fixed(p, Applied.wire_len)) };
+        },
+        .sound_config => blk: {
+            const b = try fixed(p, 2);
+            break :blk .{ .sound_config = .{ .enabled = b[0], .volume = b[1] } };
+        },
+        .sound_status => blk: {
+            break :blk .{ .sound_status = SoundStatus.get(try fixed(p, SoundStatus.wire_len)) };
+        },
+        .sound_put => blk: {
+            break :blk .{ .sound_put = SoundPut.get(try fixed(p, SoundPut.wire_len)) };
+        },
+        .sound_result => blk: {
+            const b = try fixed(p, 5);
+            break :blk .{ .sound_result = .{ .status = enumFromInt(Status, b[0]) orelse return error.BadPayload, .used = std.mem.readInt(u32, b[1..5], .big) } };
+        },
+        .sound_cmd => blk: {
+            break :blk .{ .sound_cmd = SoundCmd.get(try fixed(p, SoundCmd.wire_len)) };
+        },
+        .sound_list => blk: {
+            break :blk .{ .sound_list = SoundList.get(try fixed(p, SoundList.wire_len)) };
         },
         .stream_frame => blk: {
             const b = try fixed(p, StreamFrame.wire_len);
