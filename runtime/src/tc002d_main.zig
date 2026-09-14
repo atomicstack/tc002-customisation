@@ -99,6 +99,12 @@ const Renderer = struct {
     late_total_ns: u64 = 0,
     late_wakes: u32 = 0,
     wakes: u32 = 0,
+    /// where a frame's time actually goes: drawing it, and handing it to the panel. the two run at
+    /// the same rate, so no measurement of the loop as a whole can tell them apart.
+    draw_ns: u64 = 0,
+    draw_max_ns: u64 = 0,
+    write_ns: u64 = 0,
+    write_max_ns: u64 = 0,
     dropped_actions: u32 = 0,
 
     fn send(self: *Renderer, msg: messages.Message, request_id: u64) void {
@@ -159,6 +165,12 @@ const Renderer = struct {
     }
 
     fn redraw(self: *Renderer, now: u64, base_deadline: u64) void {
+        const t0 = sys.monotonicNs();
+        defer {
+            const took = sys.monotonicNs() -| t0;
+            self.draw_ns += took;
+            if (took > self.draw_max_ns) self.draw_max_ns = took;
+        }
         const wall = sys.realtimeNs();
         arb.tick(now, wall);
         if (self.unrevealed and arb.power) self.unrevealed = false;
@@ -225,6 +237,12 @@ const Renderer = struct {
     }
 
     fn transfer(self: *Renderer, now: u64) void {
+        const t0 = sys.monotonicNs();
+        defer {
+            const took = sys.monotonicNs() -| t0;
+            self.write_ns += took;
+            if (took > self.write_max_ns) self.write_max_ns = took;
+        }
         if (self.device) |*d| {
             if (d.writeFrame(&frame)) |n| {
                 if (n != geometry.frame_bytes) self.short_writes += 1;
@@ -515,7 +533,7 @@ const Renderer = struct {
         const t = pres.transfers - self.stats_transfers;
         const r = self.redraws - self.stats_redraws;
         const mean_late_us = if (self.wakes != 0) self.late_total_ns / self.wakes / 1000 else 0;
-        log.info("transfers={d} redraws={d} fps={d}.{d} late={d}/{d} latemax_us={d} latemean_us={d} short={d} errors={d} visible={d} revision={d}", .{
+        log.info("transfers={d} redraws={d} fps={d}.{d} late={d}/{d} latemax_us={d} latemean_us={d} draw_us={d}/{d} write_us={d}/{d} short={d} errors={d} visible={d} revision={d}", .{
             t,
             r,
             t * ns_per_s / interval,
@@ -524,6 +542,10 @@ const Renderer = struct {
             self.wakes,
             self.late_max_ns / 1000,
             mean_late_us,
+            if (r != 0) self.draw_ns / r / 1000 else 0,
+            self.draw_max_ns / 1000,
+            if (t != 0) self.write_ns / t / 1000 else 0,
+            self.write_max_ns / 1000,
             self.short_writes,
             self.write_errors,
             pres.visible,
@@ -533,6 +555,10 @@ const Renderer = struct {
         self.stats_redraws = self.redraws;
         // the lateness figures describe the period just reported, not the run
         self.late_max_ns = 0;
+        self.draw_ns = 0;
+        self.draw_max_ns = 0;
+        self.write_ns = 0;
+        self.write_max_ns = 0;
         self.late_total_ns = 0;
         self.late_wakes = 0;
         self.wakes = 0;
