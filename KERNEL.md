@@ -374,14 +374,35 @@ none of the usual sysfs attributes (`timeout`, `state`, `identity` are all
 absent), so the timeout is unknown and would have to be read with
 `WDIOC_GETTIMEOUT` by a process that is prepared to keep petting it.
 
-### 2. `SCHED_FIFO` for the renderer
+### 2. `SCHED_FIFO` for the renderer — **tried, and it does not help**
+
+this section used to say a modest rt priority on `tc002d` would cut frame
+jitter. it was a guess, and measuring it showed it was wrong. it is left here
+with the numbers because the reasoning looked sound and the next person will
+have the same idea.
 
 `sched_setscheduler` is implemented and rt throttling is configured at the
-default 950 ms in every 1 s (`sched_rt_runtime_us`/`sched_rt_period_us`). the
-renderer paces frames at 60 fps against a tickless high-resolution timer on a
-box whose load average sits at 3.00 even idle (measured with the runtime running, not just the stock app). a modest rt priority on
-`tc002d` alone would cut frame jitter, and the 95% throttle means a runaway
-loop still cannot lock the system out.
+default 950 ms in every 1 s. the renderer was put on `SCHED_FIFO` at priority
+10 (kernel-confirmed: `policy=1 rtprio=10` in `/proc/<pid>/stat`) with the rt
+budget lowered to 900 ms for safety, and its wake latency measured against the
+same scene before and after:
+
+| | wakes >2 ms late, of ~615 | worst | mean |
+|---|---|---|---|
+| normal (cfs) | 33, 34, 70 | 5,026 µs | 278–530 µs |
+| `SCHED_FIFO` 10 | 24–76 | 4,938 µs | 223–554 µs |
+
+no difference at all. the reason is visible in a second measurement: the same
+build on the **clock** scene, which transfers twice a second instead of sixty
+times, reports `late=0/32, worst 103 µs`. the jitter tracks the *transfer rate*,
+not cpu contention — so the renderer is not waiting for a cpu it could be given
+sooner, it is busy. a 3,072-byte frame is about 2.5 ms on the spi bus
+([`LED-SPI.md`](LED-SPI.md)), ~15% of a 16.7 ms frame period, and the loop
+cannot return to its next deadline while that write is in progress.
+
+so the thing worth attacking is the frame delivery path, not the scheduler.
+the option exists (`--rt-priority N`, off by default) and costs nothing when
+unused, but nothing here has shown it earning its place.
 
 ### 3. the usb hid gadget — `f_hid`
 

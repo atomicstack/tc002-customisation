@@ -21,6 +21,7 @@ pub const usage =
     \\  --no-property           do not set sys.zkapp.state (host-less experiments only)
     \\  --close-inherited       close every inherited descriptor above stderr after the audit
     \\  --stats                 ask the renderer for periodic statistics
+    \\  --rt-priority N         run the renderer at SCHED_FIFO N (1..99); 0 leaves it normal
     \\  --from-bootstrap        set by the bootstrap shared object; logged only
     \\  --help
     \\
@@ -50,6 +51,8 @@ pub const Config = struct {
     no_property: bool = false,
     close_inherited: bool = false,
     stats: bool = false,
+    /// SCHED_FIFO priority for the renderer, 0 to leave it on the normal scheduler.
+    rt_priority: u8 = 0,
     from_bootstrap: bool = false,
 
     pub fn fallbackPath(self: Config) [:0]const u8 {
@@ -76,6 +79,13 @@ pub fn parse(args: []const [:0]const u8) ParseError!Outcome {
         }
         if (std.mem.eql(u8, a, "--close-inherited")) {
             c.close_inherited = true;
+            continue;
+        }
+        if (std.mem.eql(u8, a, "--rt-priority")) {
+            i += 1;
+            if (i >= args.len) return error.MissingValue;
+            c.rt_priority = std.fmt.parseInt(u8, args[i], 10) catch return error.BadValue;
+            if (c.rt_priority > 99) return error.BadValue;
             continue;
         }
         if (std.mem.eql(u8, a, "--stats")) {

@@ -2077,6 +2077,26 @@ const Supervisor = struct {
         return total;
     }
 
+    /// leave the rest of the system a guaranteed slice before anything runs real-time.
+    ///
+    /// the kernel caps real-time tasks at `sched_rt_runtime_us` in every `sched_rt_period_us`, and
+    /// the default is 950 ms in every 1 s -- a runaway rt loop still leaves 5% for everything else.
+    /// the renderer is a paced loop that sleeps between frames and comes nowhere near that, so the
+    /// budget costs it nothing, and 10% is a more comfortable margin for the adb shell you would
+    /// need to fix it with. on this device that shell is over wifi and is the only way in.
+    ///
+    /// the write is not persistent: a reboot restores the kernel default, like every other sysctl.
+    const rt_runtime_us = "900000";
+
+    fn applyRtBudget(self: *Supervisor) void {
+        if (self.cfg_cli.rt_priority == 0) return;
+        sys.writeSmallFile("/proc/sys/kernel/sched_rt_runtime_us", rt_runtime_us) catch |e| {
+            log.warn("rt budget not set ({s}); the kernel default of 950000 stands", .{sys.errText(e)});
+            return;
+        };
+        log.info("renderer will run at sched_fifo {d}; rt budget {s} us in every period", .{ self.cfg_cli.rt_priority, rt_runtime_us });
+    }
+
     fn readMac(self: *Supervisor) void {
         var buf: [32]u8 = undefined;
         const text = sys.readFile("/sys/class/net/wlan0/address", &buf) catch return;
@@ -2316,6 +2336,17 @@ const Supervisor = struct {
             sys.dup2(fds[1], 3) catch sys.exit(126);
             if (fds[0] != 3) sys.close(fds[0]);
             if (fds[1] != 3) sys.close(fds[1]);
+            // real-time before exec: the policy is inherited, so the renderer is on it from its
+            // first instruction and no pid has to be chased afterwards. the renderer alone gets
+            // this -- netd parses the network and must never outrank the rest of the system.
+            //
+            // not fatal if it is refused: a renderer at normal priority is worth far more than no
+            // renderer. it goes to stderr, which is the log pipe by this point.
+            if (self.cfg_cli.rt_priority > 0) {
+                sys.schedSetFifo(self.cfg_cli.rt_priority) catch {
+                    sys.writeAll(2, "tc002-supervisor: renderer rt priority refused; continuing normally\n") catch {};
+                };
+            }
             sys.prctlPdeathsig(.TERM) catch sys.exit(126);
             if (sys.getppid() != self.self_pid) sys.exit(125); // the parent died before pdeathsig was armed
             const envp = [_:null]?[*:0]const u8{};
@@ -2967,6 +2998,7 @@ fn run(cfg_in: cli.Config, environ: anytype, args: []const [:0]const u8) !u8 {
     sys.getrandom(&boot) catch {};
     s.boot_id = std.mem.readInt(u32, &boot, .little);
     s.snapshot.boot_id = s.boot_id;
+    s.applyRtBudget();
     s.readMac();
     if (s.snapshot.mac_present != 0) {
         const m = s.snapshot.mac;

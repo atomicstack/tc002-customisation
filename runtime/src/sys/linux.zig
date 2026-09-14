@@ -322,6 +322,23 @@ pub fn getppid() Pid {
     return linux.getppid();
 }
 
+/// put the calling process on the real-time scheduler at `priority` (1..99 for SCHED_FIFO).
+///
+/// the policy survives `execve`, so the supervisor sets it on the forked child before that child
+/// becomes the renderer -- no pid race, and no need for the renderer to know it happened.
+pub fn schedSetFifo(priority: i32) Error!void {
+    const param = linux.sched_param{ .priority = priority };
+    _ = try check(linux.sched_setscheduler(0, .{ .mode = .FIFO }, &param));
+}
+
+/// write a small value to a /proc or /sys file. best effort by the caller's choice: the errors
+/// worth distinguishing here are all "the kernel was not built with it", which read the same.
+pub fn writeSmallFile(path: [*:0]const u8, text: []const u8) Error!void {
+    const fd = try check(linux.openat(linux.AT.FDCWD, path, .{ .ACCMODE = .WRONLY }, 0));
+    defer close(@intCast(fd));
+    _ = try check(linux.write(@intCast(fd), text.ptr, text.len));
+}
+
 pub fn prctlPdeathsig(sig: linux.SIG) Error!void {
     _ = try check(linux.prctl(@intFromEnum(linux.PR.SET_PDEATHSIG), @intFromEnum(sig), 0, 0, 0));
 }
