@@ -320,10 +320,17 @@ keys            = up 103 (gpio 31), down 108 (gpio 32),
                   left 105 (gpio 33), right 106 (gpio 34)
 ```
 
-the four face keys are **polled every 20 ms**, not interrupt-driven. the
-rotary encoder is the opposite: `knob_a` and `knob_b` are real edge interrupts
-on `MS_GPI_INTC` (irqs 55 and 56), and the knob press arrives through a separate
-virtual input device.
+those four gpio keys are **polled every 20 ms**, not interrupt-driven — and
+they are not four face buttons. there are only three of those; the fourth key is
+**the knob's press**, which the runtime maps to keycode 103
+([`evdev.zig`](runtime/src/input/evdev.zig)). so the knob is split across two
+mechanisms: its *press* is polled with the buttons, while its *rotation* is not.
+`knob_a` and `knob_b` are real edge interrupts on `MS_GPI_INTC` (irqs 55 and 56)
+and surface on a separate virtual input device, `knob_key`, which reports
+`EV_ABS` only.
+
+that asymmetry is the thing to remember: **turning the knob is edge-accurate,
+pressing it is not.**
 
 two consequences for the press/release/long-press handling in
 [`runtime/src/input/actions.zig`](runtime/src/input/actions.zig):
