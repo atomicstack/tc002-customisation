@@ -619,12 +619,12 @@ const Netd = struct {
                 self.flushConn(c, now);
             },
             // issuing and revoking go to the supervisor, which owns the file and is its only writer
-            .client_add => |a| self.ask(c, .{ .client_add = .{ .name = clients.Name.init(a.name), .role = @intFromEnum(a.role) } }, .client_result, now),
+            .client_add => |a| self.ask(c, .{ .client_add = .{ .name = clients.Name.init(a.name), .scopes = a.scopes } }, .client_result, now),
             .client_remove => |r| self.ask(c, .{ .client_remove = .{ .name = clients.Name.init(r.name) } }, .client_result, now),
             .client_rotate => |r| self.ask(c, .{ .client_rotate = .{
                 .name = clients.Name.init(r.name),
-                .has_role = @intFromBool(r.role != null),
-                .role = if (r.role) |role| @intFromEnum(role) else 0,
+                .has_scopes = @intFromBool(r.scopes != null),
+                .scopes = r.scopes orelse 0,
             } }, .client_result, now),
             .mqtt_get => {
                 if (!self.have_cfg) {
@@ -966,8 +966,16 @@ const Netd = struct {
                     };
                     self.respond(c, 200, "application/json", listing);
                 } else {
-                    const role: clients.Role = if (r.role == @intFromEnum(clients.Role.control)) .control else .read;
-                    o.fmt("{{\"name\":\"{s}\",\"role\":\"{s}\",\"token\":\"{x}\"}}", .{ r.name.slice(), @tagName(role), &r.token });
+                    // the scopes come back from the supervisor rather than being echoed: `tokens`
+                    // is masked off by the store, so what was asked for is not always what was got
+                    o.fmt("{{\"name\":\"{s}\",\"scopes\":[", .{r.name.slice()});
+                    var first = true;
+                    for (std.enums.values(clients.Scope)) |scope| {
+                        if (!clients.has(r.scopes, scope)) continue;
+                        o.fmt("{s}\"{s}\"", .{ if (first) "" else ",", @tagName(scope) });
+                        first = false;
+                    }
+                    o.fmt("],\"token\":\"{x}\"}}", .{&r.token});
                     self.respond(c, 200, "application/json", o.slice());
                 }
             },
@@ -1026,8 +1034,7 @@ const Netd = struct {
                     }
                 },
                 .client_set => |c| {
-                    const role: clients.Role = if (c.role == @intFromEnum(clients.Role.control)) .control else .read;
-                    self.incoming_clients.add(c.name.slice(), role, c.token, c.created_s) catch {
+                    self.incoming_clients.add(c.name.slice(), c.scopes, c.token, c.created_s) catch {
                         log.warn("client {s} refused by the store", .{c.name.slice()});
                         return;
                     };

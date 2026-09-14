@@ -68,12 +68,18 @@ the stock app and its unauthenticated api are not, and the picture changes:
   labelled text (`control=<64 hex>` / `admin=<64 hex>`) so that choosing a
   token is deliberate: **an admin token satisfies control routes too**, so an
   integration handed the wrong one is over-privileged and nothing says so.
-  **named client tokens** ([`RUNTIME.md`](RUNTIME.md)) give an integration its
-  own credential: issued by `POST /api/v1/tokens` under the admin token,
+  **named client tokens** ([`RUNTIME.md`](RUNTIME.md#scopes)) give an integration
+  its own credential: issued by `POST /api/v1/tokens` under the admin token,
   revocable one at a time by `DELETE /api/v1/tokens/{name}`, taking effect on the
-  next request with no restart. a client token is `read` or `control` and never
-  `admin`, so it cannot mint more of itself, and a command from one is named in
-  the log ring. the secret is returned exactly once, at issue.
+  next request with no restart. a client token holds a **set of scopes** rather
+  than a rank — `notify` alone is a token that can raise a notification and do
+  nothing else — and never `tokens`, so it cannot mint more of itself. a command
+  from one is named in the log ring, and the secret is returned exactly once.
+  **`input` is the scope to grant deliberately**: injecting button events drives
+  the physical ui, and the knob's hold opens the device menu, which reaches
+  brightness, the night schedule, the ip layout, mqtt and ntfy on or off, and a
+  reboot — settings that `settings` gates over http. that was always true of any
+  token that could post to `/input`; scopes are what make it refusable.
   gap: the two built-in tokens still have no rotation — changing either means
   deleting the file and restarting, which invalidates every client at once.
 - **browser writes are refused.** a request carrying an `Origin` header is

@@ -261,7 +261,7 @@ class Device:
         self.started = time.monotonic()
         self.boot_id = secrets.token_hex(4)
         self.epoch, self.revision, self.minted = 1, 0, 0
-        self.clients = []  # named api tokens: {name, role, token, created_s, last_used_s}
+        self.clients = []  # named api tokens: {name, scopes, token, created_s, last_used_s}
         self.scripts = {}  # berry scripts: name -> source
         self.berry_enabled = False
         self.base, self.generator, self.brightness = "art", "popsquares", 100
@@ -514,38 +514,50 @@ class Device:
         return None
 
     def client_list(self):
-        return {"clients": [{k: c[k] for k in ("name", "role", "created_s", "last_used_s")} for c in self.clients],
+        return {"clients": [{k: c[k] for k in ("name", "scopes", "created_s", "last_used_s")} for c in self.clients],
                 "max": MAX_CLIENTS}
 
-    def client_add(self, name, role):
+    def check_scopes(self, names):
+        """the device's own rules: a known name, at least one, and never `tokens`."""
+        if not isinstance(names, list) or not names:
+            raise Reject(400, "invalid_scope", "a token with no scopes could do nothing; name at least one")
+        for n in names:
+            if n not in SCOPES:
+                raise Reject(400, "invalid_scope", "scopes must be drawn from " + ", ".join(SCOPES))
+            if n == "tokens":
+                raise Reject(400, "invalid_scope",
+                             "tokens is the admin token's alone: a token that could mint tokens could mint itself more")
+        # stored in the device's own order, which is the order the listing renders
+        return [n for n in SCOPES if n in names]
+
+    def client_add(self, name, scopes):
         if not valid_client_name(name):
             raise Reject(400, "invalid_name", "a name is 1..32 of [a-zA-Z0-9._-] and may not start with a dot")
-        if role not in ("read", "control"):
-            raise Reject(400, "invalid_role", "role must be read or control")
+        scopes = self.check_scopes(scopes)
         if any(c["name"] == name for c in self.clients):
             raise Reject(409, "conflict", "a client of that name already exists")
         if len(self.clients) >= MAX_CLIENTS:
             raise Reject(409, "conflict", "the client store is full")
         token = secrets.token_hex(32)
-        self.clients.append({"name": name, "role": role, "token": token,
+        self.clients.append({"name": name, "scopes": scopes, "token": token,
                              "created_s": int(time.time()), "last_used_s": 0})
-        self.log(f"client token issued: {name} ({role})")
-        return {"name": name, "role": role, "token": token}
+        self.log(f"client token issued: {name} ({'|'.join(scopes)})")
+        return {"name": name, "scopes": scopes, "token": token}
 
-    def client_rotate(self, name, role=None):
+    def client_rotate(self, name, scopes=None):
         """replace the secret in place. not create-then-revoke: at capacity there is no free slot,
         which is exactly when rotation matters most."""
-        if role is not None and role not in ("read", "control"):
-            raise Reject(400, "invalid_role", "role must be read or control")
+        if scopes is not None:
+            scopes = self.check_scopes(scopes)
         for c in self.clients:
             if c["name"] == name:
                 c["token"] = secrets.token_hex(32)
                 c["created_s"] = int(time.time())  # the age that matters is the secret's
                 c["last_used_s"] = 0               # nothing has picked the new one up yet
-                if role is not None:
-                    c["role"] = role
-                self.log(f"client token rotated: {name} ({c['role']})")
-                return {"name": name, "role": c["role"], "token": c["token"]}
+                if scopes is not None:
+                    c["scopes"] = scopes
+                self.log(f"client token rotated: {name} ({'|'.join(c['scopes'])})")
+                return {"name": name, "scopes": c["scopes"], "token": c["token"]}
         raise Reject(404, "not_found", "no client of that name")
 
     def client_remove(self, name):
@@ -855,8 +867,8 @@ SCHEMAS = {
                 "clock_digit", "ip_mode", "generator_params",
                 "night", "night_brightness", "night_lead_min", "latitude", "longitude", "location_auto"}, set()),
     "config/save": ({"revision"}, set()),
-    "tokens": ({"name", "role"}, {"name", "role"}),
-    "tokens/rotate": ({"role"}, set()),
+    "tokens": ({"name", "scopes"}, {"name", "scopes"}),
+    "tokens/rotate": ({"scopes"}, set()),
     # the canvas body is stored, not checked: the element schema is the runtime's and this file
     # does not keep a second copy of it. PUT sends elements, PATCH sends values
     "canvas": ({"elements", "values"}, set()),
@@ -885,7 +897,12 @@ ROUTES = {("GET", "status"): "read", ("GET", "scenes"): "read", ("PUT", "scene")
 # mirrors the device, where this is derived from what a listing fits in one response buffer
 # (net/clients.zig). it cannot be derived here, so it is copied: if the device's number moves,
 # move this with it, or capacity testing against the mock quietly disagrees with the real thing.
-MAX_CLIENTS = 99
+MAX_CLIENTS = 16  # the device's own cap, chosen rather than derived; see net/clients.zig
+
+# the device's scope names, in the device's own order: the listing renders them in this order and
+# the tests compare against it
+SCOPES = ("status", "screen", "logs", "notify", "display", "sound",
+          "input", "content", "scripts", "settings", "tokens")
 # mirrors runtime/src/berry/store.zig
 SCRIPT_MAX = 8000
 BERRY_BUDGET = 64 * 1024
@@ -1055,11 +1072,11 @@ class Handler(http.server.BaseHTTPRequestHandler):
                     return self._send(200, d.client_list())
                 if endpoint == "tokens" and method == "POST":
                     body = self._json_body("tokens")
-                    return self._send(200, d.client_add(body["name"], body["role"]))
+                    return self._send(200, d.client_add(body["name"], body.get("scopes")))
                 if endpoint.startswith("tokens/") and endpoint.endswith("/rotate") and method == "POST":
                     name = endpoint[len("tokens/"):-len("/rotate")]
                     body = self._json_body("tokens/rotate") if int(self.headers.get("Content-Length") or 0) else {}
-                    return self._send(200, d.client_rotate(name, body.get("role")))
+                    return self._send(200, d.client_rotate(name, body.get("scopes")))
                 if endpoint.startswith("tokens/") and method == "DELETE":
                     return self._send(200, d.client_remove(endpoint[len("tokens/"):]))
                 if endpoint == "status":

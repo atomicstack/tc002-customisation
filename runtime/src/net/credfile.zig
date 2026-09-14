@@ -22,8 +22,10 @@ const admin_key = "admin=";
 const client_key = "client=";
 pub const legacy_len = api.token_len * 2; // 64 raw bytes: control then admin
 pub const encoded_len = control_key.len + hex_len + 1 + admin_key.len + hex_len + 1;
-/// one client line is `client=<name>,<role>,<64 hex>\n`; "control" is the longer role name
-const client_line_max = client_key.len + clients.name_max + 1 + "control".len + 1 + hex_len + 1;
+/// one client line is `client=<name>,<scope|scope|...>,<64 hex>\n`, with the scope set written as
+/// names rather than a bitmask: this file's whole point is that a person can read it, and `0x2f`
+/// tells them nothing about what they are looking at.
+const client_line_max = client_key.len + clients.name_max + 1 + clients.text_max + 1 + hex_len + 1;
 /// the whole file at capacity, which is what the supervisor's read and write buffers must hold
 pub const encoded_max = encoded_len + clients.max_clients * client_line_max;
 
@@ -51,7 +53,8 @@ pub fn encode(creds: Credentials, store: *const clients.Store, out: []u8) []cons
     for (store.entries[0..store.len]) |c| {
         @memcpy(out[w..][0..client_key.len], client_key);
         w += client_key.len;
-        w += (std.fmt.bufPrint(out[w..], "{s},{s},{x}\n", .{ c.name.slice(), @tagName(c.role), &c.token }) catch unreachable).len;
+        var scope_buf: [clients.text_max]u8 = undefined;
+        w += (std.fmt.bufPrint(out[w..], "{s},{s},{x}\n", .{ c.name.slice(), clients.renderSet(c.scopes, &scope_buf), &c.token }) catch unreachable).len;
     }
     return out[0..w];
 }
@@ -85,15 +88,16 @@ pub fn parse(bytes: []const u8) ?Parsed {
             if (admin != null) return null;
             admin = hexToken(line[admin_key.len..]) orelse return null;
         } else if (std.mem.startsWith(u8, line, client_key)) {
-            // `<name>,<role>,<64 hex>`. a client line that is not wholly understood refuses the
-            // whole file, like every other line here.
+            // `<name>,<scopes>,<64 hex>`. a client line that is not wholly understood refuses the
+            // whole file, like every other line here -- including a scope name this build does not
+            // know, because granting less than the file says is worse than refusing to start.
             var field = std.mem.splitScalar(u8, line[client_key.len..], ',');
             const name = field.next() orelse return null;
-            const role_text = field.next() orelse return null;
+            const scope_text = field.next() orelse return null;
             const token_text = field.next() orelse return null;
             if (field.next() != null) return null;
-            const role = std.meta.stringToEnum(clients.Role, role_text) orelse return null;
-            store.add(name, role, hexToken(token_text) orelse return null, 0) catch return null;
+            const scopes = clients.parseSet(scope_text) orelse return null;
+            store.add(name, scopes, hexToken(token_text) orelse return null, 0) catch return null;
         } else return null; // an unknown line means a format we do not understand
     }
     return .{
@@ -153,18 +157,28 @@ test "the two forms cannot be confused for one another" {
 }
 
 test "client lines round-trip alongside the built-in tokens" {
+    const kitchen = clients.Scope.notify.bit() | clients.Scope.display.bit();
+    const wall = clients.Scope.status.bit();
     var store = clients.Store{};
-    try store.add("kitchen", .control, [_]u8{0x11} ** 32, 1000);
-    try store.add("wall", .read, [_]u8{0x22} ** 32, 1001);
+    try store.add("kitchen", kitchen, [_]u8{0x11} ** 32, 1000);
+    try store.add("wall", wall, [_]u8{0x22} ** 32, 1001);
     var buf: [encoded_max]u8 = undefined;
     const text = encode(sample, &store, &buf);
-    try testing.expect(std.mem.indexOf(u8, text, "client=kitchen,control," ++ "11" ** 32 ++ "\n") != null);
-    try testing.expect(std.mem.indexOf(u8, text, "client=wall,read," ++ "22" ** 32 ++ "\n") != null);
+    // the scope set is written the way it is meant to be read, in enum order
+    try testing.expect(std.mem.indexOf(u8, text, "client=kitchen,notify|display," ++ "11" ** 32 ++ "\n") != null);
+    try testing.expect(std.mem.indexOf(u8, text, "client=wall,status," ++ "22" ** 32 ++ "\n") != null);
     const p = parse(text).?;
     try testing.expectEqual(sample, p.creds);
     try testing.expectEqual(@as(usize, 2), p.clients.len);
-    try testing.expectEqual(clients.Role.read, p.clients.find("wall").?.role);
-    try testing.expectEqual(clients.Role.control, p.clients.find("kitchen").?.role);
+    try testing.expectEqual(wall, p.clients.find("wall").?.scopes);
+    try testing.expectEqual(kitchen, p.clients.find("kitchen").?.scopes);
+}
+
+test "a scope name this build does not know refuses the whole file" {
+    // granting less than the file says is a silent downgrade of someone's integration; refusing to
+    // start is loud, and the log ring says which file could not be read.
+    const line = "control=" ++ "ab" ** 32 ++ "\nadmin=" ++ "cd" ** 32 ++ "\nclient=x,notify|teleport," ++ "11" ** 32 ++ "\n";
+    try testing.expect(parse(line) == null);
 }
 
 test "a file with no client lines is still valid, and yields an empty store" {

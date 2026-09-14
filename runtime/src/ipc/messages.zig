@@ -1237,17 +1237,17 @@ comptime {
 }
 
 pub const ClientAdd = struct {
-    pub const wire_len = 1 + clients.name_max + 1;
+    pub const wire_len = 1 + clients.name_max + 2;
     name: clients.Name = .{},
-    role: u8 = 0,
+    scopes: clients.Set = 0,
 
     pub fn put(self: ClientAdd, out: []u8) void {
         out[0] = self.name.len;
         @memcpy(out[1..][0..clients.name_max], &self.name.bytes);
-        out[1 + clients.name_max] = self.role;
+        std.mem.writeInt(clients.Set, out[1 + clients.name_max ..][0..2], self.scopes, .big);
     }
     pub fn get(b: []const u8) ClientAdd {
-        var a = ClientAdd{ .role = b[1 + clients.name_max] };
+        var a = ClientAdd{ .scopes = std.mem.readInt(clients.Set, b[1 + clients.name_max ..][0..2], .big) };
         a.name.len = @min(b[0], clients.name_max);
         @memcpy(&a.name.bytes, b[1..][0..clients.name_max]);
         return a;
@@ -1288,20 +1288,20 @@ pub const BerryName = struct {
 };
 
 pub const ClientRotate = struct {
-    pub const wire_len = 1 + clients.name_max + 1 + 1;
+    pub const wire_len = 1 + clients.name_max + 1 + 2;
     name: clients.Name = .{},
-    /// zero leaves the role alone; rotation is about the secret
-    has_role: u8 = 0,
-    role: u8 = 0,
+    /// zero leaves the scopes alone; rotation is about the secret
+    has_scopes: u8 = 0,
+    scopes: clients.Set = 0,
 
     pub fn put(self: ClientRotate, out: []u8) void {
         out[0] = self.name.len;
         @memcpy(out[1..][0..clients.name_max], &self.name.bytes);
-        out[1 + clients.name_max] = self.has_role;
-        out[2 + clients.name_max] = self.role;
+        out[1 + clients.name_max] = self.has_scopes;
+        std.mem.writeInt(clients.Set, out[2 + clients.name_max ..][0..2], self.scopes, .big);
     }
     pub fn get(b: []const u8) ClientRotate {
-        var r = ClientRotate{ .has_role = b[1 + clients.name_max], .role = b[2 + clients.name_max] };
+        var r = ClientRotate{ .has_scopes = b[1 + clients.name_max], .scopes = std.mem.readInt(clients.Set, b[2 + clients.name_max ..][0..2], .big) };
         r.name.len = @min(b[0], clients.name_max);
         @memcpy(&r.name.bytes, b[1..][0..clients.name_max]);
         return r;
@@ -1309,10 +1309,10 @@ pub const ClientRotate = struct {
 };
 
 pub const ClientResult = struct {
-    pub const wire_len = 1 + 1 + clients.name_max + 1 + api.token_len;
+    pub const wire_len = 1 + 1 + clients.name_max + 2 + api.token_len;
     status: Status = .applied,
     name: clients.Name = .{},
-    role: u8 = 0,
+    scopes: clients.Set = 0,
     /// zero on a revoke; the freshly issued secret on an add
     token: api.Token = [_]u8{0} ** api.token_len,
 
@@ -1320,14 +1320,17 @@ pub const ClientResult = struct {
         out[0] = @intFromEnum(self.status);
         out[1] = self.name.len;
         @memcpy(out[2..][0..clients.name_max], &self.name.bytes);
-        out[2 + clients.name_max] = self.role;
-        @memcpy(out[3 + clients.name_max ..][0..api.token_len], &self.token);
+        std.mem.writeInt(clients.Set, out[2 + clients.name_max ..][0..2], self.scopes, .big);
+        @memcpy(out[4 + clients.name_max ..][0..api.token_len], &self.token);
     }
     pub fn get(b: []const u8) !ClientResult {
-        var r = ClientResult{ .status = enumFromInt(Status, b[0]) orelse return error.BadPayload, .role = b[2 + clients.name_max] };
+        var r = ClientResult{
+            .status = enumFromInt(Status, b[0]) orelse return error.BadPayload,
+            .scopes = std.mem.readInt(clients.Set, b[2 + clients.name_max ..][0..2], .big),
+        };
         r.name.len = @min(b[1], clients.name_max);
         @memcpy(&r.name.bytes, b[2..][0..clients.name_max]);
-        @memcpy(&r.token, b[3 + clients.name_max ..][0..api.token_len]);
+        @memcpy(&r.token, b[4 + clients.name_max ..][0..api.token_len]);
         return r;
     }
 };
@@ -1339,11 +1342,11 @@ pub const ClientsReset = struct { count: u8 = 0 };
 /// one named client on the wire. `role` is `@intFromEnum(clients.Role)`, so the enum's order is
 /// part of the protocol.
 pub const ClientSet = struct {
-    pub const wire_len = 1 + 1 + clients.name_max + 1 + api.token_len + 8;
+    pub const wire_len = 1 + 1 + clients.name_max + 2 + api.token_len + 8;
 
     index: u8 = 0,
     name: clients.Name = .{},
-    role: u8 = 0,
+    scopes: clients.Set = 0,
     token: api.Token = [_]u8{0} ** api.token_len,
     /// when it was issued. netd renders the listing from its own copy, so it needs this; it does
     /// not need last_used, which netd is the one to observe and keeps in memory.
@@ -1353,17 +1356,17 @@ pub const ClientSet = struct {
         out[0] = self.index;
         out[1] = self.name.len;
         @memcpy(out[2..][0..clients.name_max], &self.name.bytes);
-        out[2 + clients.name_max] = self.role;
-        @memcpy(out[3 + clients.name_max ..][0..api.token_len], &self.token);
-        std.mem.writeInt(i64, out[3 + clients.name_max + api.token_len ..][0..8], self.created_s, .big);
+        std.mem.writeInt(clients.Set, out[2 + clients.name_max ..][0..2], self.scopes, .big);
+        @memcpy(out[4 + clients.name_max ..][0..api.token_len], &self.token);
+        std.mem.writeInt(i64, out[4 + clients.name_max + api.token_len ..][0..8], self.created_s, .big);
     }
 
     pub fn get(b: []const u8) ClientSet {
-        var c = ClientSet{ .index = b[0], .role = b[2 + clients.name_max] };
+        var c = ClientSet{ .index = b[0], .scopes = std.mem.readInt(clients.Set, b[2 + clients.name_max ..][0..2], .big) };
         c.name.len = @min(b[1], clients.name_max);
         @memcpy(&c.name.bytes, b[2..][0..clients.name_max]);
-        @memcpy(&c.token, b[3 + clients.name_max ..][0..api.token_len]);
-        c.created_s = std.mem.readInt(i64, b[3 + clients.name_max + api.token_len ..][0..8], .big);
+        @memcpy(&c.token, b[4 + clients.name_max ..][0..api.token_len]);
+        c.created_s = std.mem.readInt(i64, b[4 + clients.name_max + api.token_len ..][0..8], .big);
         return c;
     }
 };
@@ -3119,7 +3122,7 @@ test "a client set survives the wire, and the union still fits a packet" {
     const msg = Message{ .client_set = .{
         .index = 3,
         .name = clients.Name.init("kitchen"),
-        .role = 1,
+        .scopes = clients.Scope.notify.bit() | clients.Scope.settings.bit(),
         .token = [_]u8{0x55} ** 32,
         .created_s = 1758000000,
     } };
@@ -3127,7 +3130,8 @@ test "a client set survives the wire, and the union still fits a packet" {
     const p = try decodePacket(packet);
     try std.testing.expectEqual(@as(u8, 3), p.message.client_set.index);
     try std.testing.expectEqualStrings("kitchen", p.message.client_set.name.slice());
-    try std.testing.expectEqual(@as(u8, 1), p.message.client_set.role);
+    // the widest scope bit has to survive, not just the low byte: a set is two bytes on the wire
+    try std.testing.expectEqual(clients.Scope.notify.bit() | clients.Scope.settings.bit(), p.message.client_set.scopes);
     try std.testing.expectEqual([_]u8{0x55} ** 32, p.message.client_set.token);
     try std.testing.expectEqual(@as(i64, 1758000000), p.message.client_set.created_s);
 

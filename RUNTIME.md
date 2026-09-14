@@ -1062,24 +1062,46 @@ and then `-H "authorization: Bearer $CONTROL"`.
 **give an integration its own token rather than the built-in one.**
 `POST /tokens` issues a named token you can revoke on its own; the two built-in
 tokens cannot be revoked without invalidating every client at once. the built-in
-admin token also satisfies every control route, so pasting the wrong line into a
-shortcut works and says nothing, while being able to rewrite settings, mqtt
-credentials and stored scripts.
+admin token holds every scope, so pasting the wrong line into a shortcut works
+and says nothing, while being able to rewrite settings, mqtt credentials and
+stored scripts.
 
-there are three authorities, `read < control < admin`:
+### scopes
 
-| role | reaches |
+a token holds a **set of scopes** and a route needs **one bit**. there is no
+hierarchy: holding `settings` does not imply `notify`, and a token can be given
+exactly one job. this replaced a `read < control < admin` ladder, which could
+not express the thing almost every integration wants — a token that may raise a
+notification and nothing else.
+
+| scope | reaches |
 |---|---|
-| `read` | `GET` `/status` `/scenes` `/config` `/screen` `/events` `/canvas` `/icons` `/sprites` `/sounds` `/mqtt/status` |
-| `control` | all of the above, every mutating route, **and** `GET /logs` and `GET /berry/scripts` |
-| `admin` | everything, plus settings, mqtt, ntfy, canvas `PUT` and the token routes |
+| `status` | the safe reads: `GET` `/status` `/scenes` `/config` `/canvas` `/icons` `/sprites` `/sounds` `/berry` `/berry/scripts` `/mqtt/status` |
+| `screen` | `GET /screen` — the one read that returns what is *on* the panel rather than how it is set up |
+| `logs` | `GET /logs` and `GET /events` — the ring carries whatever any component printed, a script's own `print` included |
+| `notify` | `POST /notify`, and nothing else |
+| `display` | what is on the panel now: `/scene`, `/action`, `/frame`, `/streams`, canvas `PATCH` and `DELETE` |
+| `sound` | `POST /sound` |
+| `input` | `POST /input` — **see the warning below** |
+| `content` | stored assets: sprites, sounds, canvas `PUT` |
+| `scripts` | the berry store: reading a script's source, writing, deleting, running |
+| `settings` | `PATCH /config`, `/config/save`, `/mqtt`, `/ntfy` — durable configuration, and the only place credentials live |
+| `tokens` | the token routes. **the admin token's alone**: one that could mint tokens could mint itself more, and revocation would stop meaning much |
 
-`GET /logs` and `GET /berry/scripts` are deliberately above `read`: the log ring
-is a history of every command including other clients', and the script list is
-your own code. neither is observing a clock.
+the two built-in secrets are scope sets like any other token. `admin` holds
+every scope. `control` holds `status screen logs notify display sound input` —
+operate the device and watch it, but do not store, reconfigure or mint.
 
-a named token is never `admin`. one that could be would mint itself more, and
-revocation would stop meaning much.
+**`input` reaches further than it looks.** injecting button events drives the
+physical ui, and the knob's hold opens the device menu, which can change
+brightness, the night schedule, the ip layout, mqtt and ntfy on or off, and
+reboot — all of which `settings` gates over http. that has always been true of
+any token that could post to `/input`; what is new is that a named token can now
+be issued **without** `input`, which is the only way that reach was ever going
+to be refusable. treat granting `input` as granting `settings`.
+
+a named token is never granted `tokens`, and asking for it is refused by name
+rather than quietly dropped.
 
 **rotating replaces a secret in place** rather than issuing a second token and
 revoking the first. at capacity there is no free slot, so create-then-revoke
@@ -1110,48 +1132,48 @@ api is for programs, not pages. `allowed_origins` can only be set by editing
 
 ### routes
 
-| method | path | token | body | reply |
+| method | path | scope | body | reply |
 |--------|------|-------|------|-------|
-| `GET` | `/status` | control | | the [status document](#the-status-document) |
-| `GET` | `/scenes` | control | | the static catalogue: bases, generators, notification and frame bounds |
-| `PUT` | `/scene` | control | `{"base":"clock\|art\|canvas","generator":"popsquares\|plasma\|cube"?,"seed":u32?,"clock":{"font","colour_mode","colour","colour2","gradient","spread"}?,"request_id":hex?,"epoch":u32?}` | `{"status":"applied","revision":n,"epoch":n,"request_id":…}` |
-| `POST` | `/action` | control | `{"action":"brightness\|reseed\|arm_stream","brightness":1..100?,"seed":u32?,"request_id":hex?,"epoch":u32?}` | as above |
-| `POST` | `/notify` | control | `{"text":"…","colour":"rrggbb"?,"duration_s":1..300?,"request_id":hex?,"epoch":u32?}` (`duration_s` optional, defaults to 5) | as above |
-| `POST` | `/frame?duration_s=` (`request_id`, `epoch` optional) | control | `application/octet-stream`, exactly 2,496 bytes | as above |
-| `POST` | `/action` (`"action":"power"`) | control | `{"action":"power","power":true\|false,"request_id":hex?,"epoch":u32?}` | as above; fades over 600 ms |
-| `POST` | `/input` | control | `{"control":"left\|middle\|right\|knob\|rotary","event":"press\|release\|click\|long\|cw\|ccw","steps":1..16?,"request_id":hex?,"epoch":u32?}` | as above. `click` is a request for a press and a release and reports as those two edges, never as a third; `long` is any button; `cw`/`ccw` are the rotary only and take `steps` |
-| `GET` | `/screen` | control | | `{"width":52,"height":16,"epoch","revision","brightness","power","rgb_base64":"…"}`: the frame as shown, after fades, before brightness. `?format=raw` returns the 2,496 rgb bytes as `application/octet-stream` |
-| `GET` | `/logs?after=N` | control | | `{"next":seq,"lines":[{"seq":n,"text":"…"}…]}`: up to 16 lines of the [log ring](#the-log-ring) after sequence number `after` (0 = oldest kept); pass `next` back to continue. a jump in `seq` means lines were evicted |
-| `GET` | `/events` | control | | an [event stream](#the-event-stream): `text/event-stream`, one `data:` frame per statement applied, held open until the client goes away |
-| `GET` | `/sounds` | control | | `{"used","budget","sounds":[{"name","bytes"}…]}` |
-| `PUT` | `/sounds/{name}?offset=N&final=1` | admin | `application/octet-stream`, at most 4,096 bytes | one chunk of a sound. `offset` must be exactly what has already landed; `final=1` commits. see [sound](#sound) |
-| `DELETE` | `/sounds/{name}` | admin | | `{"status":"ok",…}` |
-| `POST` | `/sound` | control | `{"name":"chime","volume":1..100?,"loop":bool?}` or `{"stop":true}` | plays a stored sound, or stops what is playing |
-| `GET` | `/berry` | control | | `{"state":"off\|starting\|running\|failed","heap_bytes","heap_used","heap_high_water","alloc_failures","stops"}` |
-| `GET` | `/berry/scripts` | control | | `{"used":n,"budget":65536,"scripts":[{"name","bytes","compiled"}…]}` |
-| `GET` | `/berry/scripts/{name}` | control | | the source as `text/plain`, byte for byte as stored and exactly what `PUT` takes back; 404 if there is no script of that name |
-| `PUT` | `/berry/scripts/{name}` | admin | `text/plain`, at most 8,000 bytes | `{"status":"ok","name":"…"}`. the script is **compiled before it is stored**: one that will not parse answers 400 `script_will_not_compile` carrying berry's own message, and never reaches flash |
-| `DELETE` | `/berry/scripts/{name}` | admin | | `{"status":"ok","name":"…"}`, or 404 |
-| `POST` | `/berry/scripts/{name}/run` | admin | **none** | runs the stored script: `{"status":"ok","name":"…"}` plus `"note"` when it evaluated to something. a body is `400 unexpected_body`; berry off is `409`; the vm not up yet is `503`; a script that raises is `400 script_failed` carrying berry's own message |
-| `GET` | `/config` | control | | the [settings document](#settings) |
-| `PATCH` | `/config` | admin | any subset of the settings fields plus `expected_revision`? | the settings document after the patch |
-| `POST` | `/config/save` | admin | `{"revision":u32}` or an empty body, `application/json` either way | `{"status":"saved","saved_revision":n}` |
-| `GET` | `/icons` | control | | `{"size":8,"names":[…]}`: the built-in [icon](#the-canvas) names |
-| `GET` | `/sprites` | control | | `{"slots":8,"sprites":[{"id","width","height"}…]}` |
-| `PUT` | `/sprites/{id}` | admin | `application/octet-stream`, 192 or 768 bytes of rgb888 | the sprite list |
-| `DELETE` | `/sprites/{id}` | control | | the sprite list |
-| `GET` | `/canvas` | control | | the [document](#the-canvas) as held, plus `limits` and the `age_ms` of every animation clock |
-| `PUT` | `/canvas` | admin | `{"elements":[…]}` | the document as stored |
-| `PATCH` | `/canvas` | control | `{"values":[{"id":"…","text"/"data"/"data_hex"/"value"/"colour"}…]}` | the document as stored |
-| `DELETE` | `/canvas` | control | | the emptied document |
-| `GET` | `/mqtt` | admin | | broker settings; `password_set` instead of the password |
-| `PUT` | `/mqtt` | admin | `{"enabled","host","port","username","password","client_id","prefix","tls"}`, any subset | the broker settings |
-| `GET` | `/mqtt/status` | control | | `{"enabled","connected","state","reconnect_delay_s","reconnects","last_error"}` |
-| `GET` | `/tokens` | admin | | `{"clients":[{"name","role","created_s","last_used_s"}],"max":n}`; **never a secret** |
-| `POST` | `/tokens` | admin | `{"name":"kitchen","role":"read\|control"}` | `{"name","role","token":"<64 hex>"}` — the only time a token is returned |
-| `POST` | `/tokens/{name}/rotate` | admin | `{"role":"read\|control"}?` (optional) | `{"name","role","token"}` — a new secret in place; `created_s` becomes now, `last_used_s` resets, the role is unchanged unless supplied |
-| `DELETE` | `/tokens/{name}` | admin | | the remaining list. takes effect immediately, no restart |
-| `POST` | `/streams`, `PUT` `/streams/{id}/palette`, `DELETE` `/streams/{id}` | control | | `503 not_implemented` |
+| `GET` | `/status` | `status` | | the [status document](#the-status-document) |
+| `GET` | `/scenes` | `status` | | the static catalogue: bases, generators, notification and frame bounds |
+| `PUT` | `/scene` | `display` | `{"base":"clock\|art\|canvas","generator":"popsquares\|plasma\|cube"?,"seed":u32?,"clock":{"font","colour_mode","colour","colour2","gradient","spread"}?,"request_id":hex?,"epoch":u32?}` | `{"status":"applied","revision":n,"epoch":n,"request_id":…}` |
+| `POST` | `/action` | `display` | `{"action":"brightness\|reseed\|arm_stream","brightness":1..100?,"seed":u32?,"request_id":hex?,"epoch":u32?}` | as above |
+| `POST` | `/notify` | `notify` | `{"text":"…","colour":"rrggbb"?,"duration_s":1..300?,"request_id":hex?,"epoch":u32?}` (`duration_s` optional, defaults to 5) | as above |
+| `POST` | `/frame?duration_s=` (`request_id`, `epoch` optional) | `display` | `application/octet-stream`, exactly 2,496 bytes | as above |
+| `POST` | `/action` (`"action":"power"`) | `display` | `{"action":"power","power":true\|false,"request_id":hex?,"epoch":u32?}` | as above; fades over 600 ms |
+| `POST` | `/input` | `input` | `{"control":"left\|middle\|right\|knob\|rotary","event":"press\|release\|click\|long\|cw\|ccw","steps":1..16?,"request_id":hex?,"epoch":u32?}` | as above. `click` is a request for a press and a release and reports as those two edges, never as a third; `long` is any button; `cw`/`ccw` are the rotary only and take `steps` |
+| `GET` | `/screen` | `screen` | | `{"width":52,"height":16,"epoch","revision","brightness","power","rgb_base64":"…"}`: the frame as shown, after fades, before brightness. `?format=raw` returns the 2,496 rgb bytes as `application/octet-stream` |
+| `GET` | `/logs?after=N` | `logs` | | `{"next":seq,"lines":[{"seq":n,"text":"…"}…]}`: up to 16 lines of the [log ring](#the-log-ring) after sequence number `after` (0 = oldest kept); pass `next` back to continue. a jump in `seq` means lines were evicted |
+| `GET` | `/events` | `logs` | | an [event stream](#the-event-stream): `text/event-stream`, one `data:` frame per statement applied, held open until the client goes away |
+| `GET` | `/sounds` | `status` | | `{"used","budget","sounds":[{"name","bytes"}…]}` |
+| `PUT` | `/sounds/{name}?offset=N&final=1` | `content` | `application/octet-stream`, at most 4,096 bytes | one chunk of a sound. `offset` must be exactly what has already landed; `final=1` commits. see [sound](#sound) |
+| `DELETE` | `/sounds/{name}` | `content` | | `{"status":"ok",…}` |
+| `POST` | `/sound` | `sound` | `{"name":"chime","volume":1..100?,"loop":bool?}` or `{"stop":true}` | plays a stored sound, or stops what is playing |
+| `GET` | `/berry` | `status` | | `{"state":"off\|starting\|running\|failed","heap_bytes","heap_used","heap_high_water","alloc_failures","stops"}` |
+| `GET` | `/berry/scripts` | `status` | | `{"used":n,"budget":65536,"scripts":[{"name","bytes","compiled"}…]}` |
+| `GET` | `/berry/scripts/{name}` | `scripts` | | the source as `text/plain`, byte for byte as stored and exactly what `PUT` takes back; 404 if there is no script of that name |
+| `PUT` | `/berry/scripts/{name}` | `scripts` | `text/plain`, at most 8,000 bytes | `{"status":"ok","name":"…"}`. the script is **compiled before it is stored**: one that will not parse answers 400 `script_will_not_compile` carrying berry's own message, and never reaches flash |
+| `DELETE` | `/berry/scripts/{name}` | `scripts` | | `{"status":"ok","name":"…"}`, or 404 |
+| `POST` | `/berry/scripts/{name}/run` | `scripts` | **none** | runs the stored script: `{"status":"ok","name":"…"}` plus `"note"` when it evaluated to something. a body is `400 unexpected_body`; berry off is `409`; the vm not up yet is `503`; a script that raises is `400 script_failed` carrying berry's own message |
+| `GET` | `/config` | `status` | | the [settings document](#settings) |
+| `PATCH` | `/config` | `settings` | any subset of the settings fields plus `expected_revision`? | the settings document after the patch |
+| `POST` | `/config/save` | `settings` | `{"revision":u32}` or an empty body, `application/json` either way | `{"status":"saved","saved_revision":n}` |
+| `GET` | `/icons` | `status` | | `{"size":8,"names":[…]}`: the built-in [icon](#the-canvas) names |
+| `GET` | `/sprites` | `status` | | `{"slots":8,"sprites":[{"id","width","height"}…]}` |
+| `PUT` | `/sprites/{id}` | `content` | `application/octet-stream`, 192 or 768 bytes of rgb888 | the sprite list |
+| `DELETE` | `/sprites/{id}` | `content` | | the sprite list |
+| `GET` | `/canvas` | `status` | | the [document](#the-canvas) as held, plus `limits` and the `age_ms` of every animation clock |
+| `PUT` | `/canvas` | `content` | `{"elements":[…]}` | the document as stored |
+| `PATCH` | `/canvas` | `display` | `{"values":[{"id":"…","text"/"data"/"data_hex"/"value"/"colour"}…]}` | the document as stored |
+| `DELETE` | `/canvas` | `display` | | the emptied document |
+| `GET` | `/mqtt` | `settings` | | broker settings; `password_set` instead of the password |
+| `PUT` | `/mqtt` | `settings` | `{"enabled","host","port","username","password","client_id","prefix","tls"}`, any subset | the broker settings |
+| `GET` | `/mqtt/status` | `status` | | `{"enabled","connected","state","reconnect_delay_s","reconnects","last_error"}` |
+| `GET` | `/tokens` | `tokens` | | `{"clients":[{"name","scopes":[…],"created_s","last_used_s"}],"max":16}`; **never a secret** |
+| `POST` | `/tokens` | `tokens` | `{"name":"kitchen","scopes":["notify","display"]}` | `{"name","scopes","token":"<64 hex>"}` — the only time a token is returned. an empty list, an unknown name or `tokens` is `400 invalid_scope` |
+| `POST` | `/tokens/{name}/rotate` | `tokens` | `{"scopes":[…]}?` (optional) | `{"name","scopes","token"}` — a new secret in place; `created_s` becomes now, `last_used_s` resets, the scopes are unchanged unless supplied |
+| `DELETE` | `/tokens/{name}` | `tokens` | | the remaining list. takes effect immediately, no restart |
+| `POST` | `/streams`, `PUT` `/streams/{id}/palette`, `DELETE` `/streams/{id}` | `display` | | `503 not_implemented` |
 
 json bodies must be `application/json`. `request_id` and `epoch` are both
 optional on every command: the shortest useful request is a one-liner with

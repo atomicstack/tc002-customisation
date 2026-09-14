@@ -37,11 +37,25 @@ pub const Credentials = struct { control: Token, admin: Token };
 
 /// none < read < control < admin. internal to this file -- never serialised, never stored -- so
 /// a new rung costs nothing in compatibility.
-pub const Authority = enum { none, read, control, admin };
+/// the two built-in secrets as scope sets.
+///
+/// `admin` is everything. `control` is the operating set: see it, say something, change what is on
+/// the panel, drive the controls. it does **not** carry `content`, `scripts`, `settings` or
+/// `tokens` -- storing things and reconfiguring the device are a different kind of act.
+///
+/// it does carry `input`, and `input` is worth knowing about: injecting button events reaches the
+/// device menu, and the menu can change brightness, the night schedule, the ip layout, mqtt and
+/// ntfy on or off, and reboot -- all of which `settings` gates over http. that is not new and
+/// holding this secret always implied it. what is new is that a *named* token can now be issued
+/// without `input`, which is the only way that reach was ever going to be refusable.
+pub const admin_scopes: clients.Set = clients.all;
+pub const control_scopes: clients.Set = clients.Scope.status.bit() | clients.Scope.screen.bit() |
+    clients.Scope.logs.bit() | clients.Scope.notify.bit() | clients.Scope.display.bit() |
+    clients.Scope.sound.bit() | clients.Scope.input.bit();
 
-/// what a presented token turned out to be. `client` is set only for a named token, so its
-/// presence is what distinguishes an integration from one of the two built-in secrets.
-pub const Auth = struct { authority: Authority = .none, client: ?clients.Name = null };
+/// what a presented token turned out to be: the scopes it holds, and, for a named token, which
+/// client it is. an empty set is an unauthenticated request -- there is no scope worth zero bits.
+pub const Auth = struct { scopes: clients.Set = 0, client: ?clients.Name = null };
 
 pub fn authenticate(creds: *const Credentials, store: *const clients.Store, authorization: ?[]const u8) Auth {
     const header = authorization orelse return .{};
@@ -53,14 +67,11 @@ pub fn authenticate(creds: *const Credentials, store: *const clients.Store, auth
     const is_admin = std.crypto.timing_safe.eql(Token, presented, creds.admin);
     const is_control = std.crypto.timing_safe.eql(Token, presented, creds.control);
     const hit = store.match(presented);
-    if (is_admin) return .{ .authority = .admin };
-    if (is_control) return .{ .authority = .control };
+    if (is_admin) return .{ .scopes = admin_scopes };
+    if (is_control) return .{ .scopes = control_scopes };
     if (hit) |i| {
         const c = &store.entries[i];
-        return .{ .authority = switch (c.role) {
-            .read => .read,
-            .control => .control,
-        }, .client = c.name };
+        return .{ .scopes = c.scopes, .client = c.name };
     }
     return .{};
 }
@@ -99,9 +110,9 @@ pub const Op = union(enum) {
     sound_put: struct { name: []const u8, offset: u32, final: bool, data: []const u8 },
     sound_delete: struct { name: []const u8 },
     client_list,
-    client_add: struct { name: []const u8, role: clients.Role },
+    client_add: struct { name: []const u8, scopes: clients.Set },
     client_remove: struct { name: []const u8 },
-    client_rotate: struct { name: []const u8, role: ?clients.Role },
+    client_rotate: struct { name: []const u8, scopes: ?clients.Set },
     sound_play: struct { name: []const u8, volume: ?u8, loop: bool },
     sound_stop,
     /// a remote control event: the same paths as a physical press
@@ -233,8 +244,31 @@ const ClockBody = struct { font: ?[]const u8 = null, colour_mode: ?[]const u8 = 
 /// table says how to read it: a choice by its name, a colour as rrggbb, a number in decimal, a
 /// toggle as on or off. `GET /scenes` publishes the table, so a client needs nothing else.
 const GenParamBody = struct { scene: []const u8, name: []const u8, value: []const u8 };
-const TokensBody = struct { name: []const u8, role: []const u8 };
-const RotateBody = struct { role: ?[]const u8 = null };
+const TokensBody = struct { name: []const u8, scopes: []const []const u8 };
+const RotateBody = struct { scopes: ?[]const []const u8 = null };
+
+/// every scope name, for the one error message that has to list them
+const scope_names = blk: {
+    var out: []const u8 = "";
+    for (@typeInfo(clients.Scope).@"enum".fields, 0..) |f, i| {
+        out = out ++ (if (i == 0) "" else ", ") ++ f.name;
+    }
+    break :blk out;
+};
+
+/// a scope list from a request body. `tokens` is refused by name rather than quietly dropped: a
+/// caller asking for it has a mistaken idea of what it is about to get.
+const ScopeError = enum { unknown, empty, minting };
+fn scopeSet(names: []const []const u8) union(enum) { set: clients.Set, err: ScopeError } {
+    if (names.len == 0) return .{ .err = .empty };
+    var set: clients.Set = 0;
+    for (names) |n| {
+        const scope = std.meta.stringToEnum(clients.Scope, n) orelse return .{ .err = .unknown };
+        if (scope == .tokens) return .{ .err = .minting };
+        set |= scope.bit();
+    }
+    return .{ .set = set };
+}
 const SceneBody = struct { base: []const u8, generator: ?[]const u8 = null, seed: ?u32 = null, clock: ?ClockBody = null, transition: ?[]const u8 = null, direction: ?[]const u8 = null, transition_ms: ?u32 = null, exit: ?[]const u8 = null, request_id: ?[]const u8 = null, epoch: ?u32 = null };
 const ActionBody = struct { action: []const u8, brightness: ?u8 = null, seed: ?u32 = null, power: ?bool = null, request_id: ?[]const u8 = null, epoch: ?u32 = null };
 const InputBody = struct { control: []const u8, event: []const u8, steps: u8 = 1, request_id: ?[]const u8 = null, epoch: ?u32 = null };
@@ -693,44 +727,44 @@ fn queryValue(query: []const u8, key: []const u8) ?[]const u8 {
     return null;
 }
 
-const Endpoint = struct { method: http.Method, path: []const u8, authority: Authority };
+const Endpoint = struct { method: http.Method, path: []const u8, scope: clients.Scope };
 
-/// authority per route. the hierarchy means a stronger token always satisfies a weaker route, so
-/// `read` classifies what a token may see rather than taking anything from control or admin.
+/// the one scope each route needs. there is no hierarchy any more: a token holds a set and a route
+/// names a bit, so "may raise a notification and nothing else" is a thing that can be said.
 const endpoints = [_]Endpoint{
-    .{ .method = .GET, .path = "/api/v1/status", .authority = .read },
-    .{ .method = .GET, .path = "/api/v1/scenes", .authority = .read },
-    .{ .method = .PUT, .path = "/api/v1/scene", .authority = .control },
-    .{ .method = .POST, .path = "/api/v1/action", .authority = .control },
-    .{ .method = .GET, .path = "/api/v1/config", .authority = .read },
-    .{ .method = .PATCH, .path = "/api/v1/config", .authority = .admin },
-    .{ .method = .POST, .path = "/api/v1/config/save", .authority = .admin },
-    .{ .method = .POST, .path = "/api/v1/notify", .authority = .control },
-    .{ .method = .POST, .path = "/api/v1/frame", .authority = .control },
-    .{ .method = .GET, .path = "/api/v1/icons", .authority = .read },
-    .{ .method = .GET, .path = "/api/v1/sprites", .authority = .read },
-    .{ .method = .GET, .path = "/api/v1/canvas", .authority = .read },
-    .{ .method = .PUT, .path = "/api/v1/canvas", .authority = .admin },
-    .{ .method = .PATCH, .path = "/api/v1/canvas", .authority = .control },
-    .{ .method = .DELETE, .path = "/api/v1/canvas", .authority = .control },
-    .{ .method = .GET, .path = "/api/v1/mqtt", .authority = .admin },
-    .{ .method = .PUT, .path = "/api/v1/mqtt", .authority = .admin },
-    .{ .method = .GET, .path = "/api/v1/mqtt/status", .authority = .read },
-    .{ .method = .GET, .path = "/api/v1/ntfy", .authority = .admin },
-    .{ .method = .PUT, .path = "/api/v1/ntfy", .authority = .admin },
-    .{ .method = .POST, .path = "/api/v1/streams", .authority = .control },
-    .{ .method = .GET, .path = "/api/v1/screen", .authority = .read },
-    .{ .method = .GET, .path = "/api/v1/logs", .authority = .control },
-    .{ .method = .GET, .path = "/api/v1/events", .authority = .read },
-    .{ .method = .GET, .path = "/api/v1/sounds", .authority = .read },
-    .{ .method = .POST, .path = "/api/v1/sound", .authority = .control },
-    .{ .method = .GET, .path = "/api/v1/berry", .authority = .control },
-    .{ .method = .GET, .path = "/api/v1/berry/scripts", .authority = .control },
-    .{ .method = .POST, .path = "/api/v1/input", .authority = .control },
+    .{ .method = .GET, .path = "/api/v1/status", .scope = .status },
+    .{ .method = .GET, .path = "/api/v1/scenes", .scope = .status },
+    .{ .method = .PUT, .path = "/api/v1/scene", .scope = .display },
+    .{ .method = .POST, .path = "/api/v1/action", .scope = .display },
+    .{ .method = .GET, .path = "/api/v1/config", .scope = .status },
+    .{ .method = .PATCH, .path = "/api/v1/config", .scope = .settings },
+    .{ .method = .POST, .path = "/api/v1/config/save", .scope = .settings },
+    .{ .method = .POST, .path = "/api/v1/notify", .scope = .notify },
+    .{ .method = .POST, .path = "/api/v1/frame", .scope = .display },
+    .{ .method = .GET, .path = "/api/v1/icons", .scope = .status },
+    .{ .method = .GET, .path = "/api/v1/sprites", .scope = .status },
+    .{ .method = .GET, .path = "/api/v1/canvas", .scope = .status },
+    .{ .method = .PUT, .path = "/api/v1/canvas", .scope = .content },
+    .{ .method = .PATCH, .path = "/api/v1/canvas", .scope = .display },
+    .{ .method = .DELETE, .path = "/api/v1/canvas", .scope = .display },
+    .{ .method = .GET, .path = "/api/v1/mqtt", .scope = .settings },
+    .{ .method = .PUT, .path = "/api/v1/mqtt", .scope = .settings },
+    .{ .method = .GET, .path = "/api/v1/mqtt/status", .scope = .status },
+    .{ .method = .GET, .path = "/api/v1/ntfy", .scope = .settings },
+    .{ .method = .PUT, .path = "/api/v1/ntfy", .scope = .settings },
+    .{ .method = .POST, .path = "/api/v1/streams", .scope = .display },
+    .{ .method = .GET, .path = "/api/v1/screen", .scope = .screen },
+    .{ .method = .GET, .path = "/api/v1/logs", .scope = .logs },
+    .{ .method = .GET, .path = "/api/v1/events", .scope = .logs },
+    .{ .method = .GET, .path = "/api/v1/sounds", .scope = .status },
+    .{ .method = .POST, .path = "/api/v1/sound", .scope = .sound },
+    .{ .method = .GET, .path = "/api/v1/berry", .scope = .status },
+    .{ .method = .GET, .path = "/api/v1/berry/scripts", .scope = .status },
+    .{ .method = .POST, .path = "/api/v1/input", .scope = .input },
     // named client tokens. admin for all three: issuing is how access is granted, and a token
     // that could issue tokens would make revocation meaningless.
-    .{ .method = .GET, .path = "/api/v1/tokens", .authority = .admin },
-    .{ .method = .POST, .path = "/api/v1/tokens", .authority = .admin },
+    .{ .method = .GET, .path = "/api/v1/tokens", .scope = .tokens },
+    .{ .method = .POST, .path = "/api/v1/tokens", .scope = .tokens },
 };
 
 /// `text/plain`, with or without a charset parameter
@@ -739,13 +773,8 @@ fn isText(content_type: ?[]const u8) bool {
     return std.ascii.startsWithIgnoreCase(std.mem.trim(u8, ct, " "), "text/plain");
 }
 
-fn sufficient(have: Authority, need: Authority) bool {
-    return switch (need) {
-        .none => true,
-        .read => have == .read or have == .control or have == .admin,
-        .control => have == .control or have == .admin,
-        .admin => have == .admin,
-    };
+fn sufficient(have: clients.Set, need: clients.Scope) bool {
+    return clients.has(have, need);
 }
 
 /// classify a complete request. `body` is exactly `content-length` bytes.
@@ -762,8 +791,8 @@ pub fn route(req: http.Request, body: []const u8, creds: *const Credentials, sto
         path_known = true;
         const rest = req.path[sprites_prefix.len..];
         if (std.mem.indexOfScalar(u8, rest, '/') == null and rest.len > 0) {
-            if (req.method == .PUT) matched = .{ .method = .PUT, .path = "/api/v1/sprites/{id}", .authority = .admin };
-            if (req.method == .DELETE) matched = .{ .method = .DELETE, .path = "/api/v1/sprites/{id}", .authority = .control };
+            if (req.method == .PUT) matched = .{ .method = .PUT, .path = "/api/v1/sprites/{id}", .scope = .content };
+            if (req.method == .DELETE) matched = .{ .method = .DELETE, .path = "/api/v1/sprites/{id}", .scope = .content };
         }
     }
     const tokens_prefix = "/api/v1/tokens/";
@@ -771,9 +800,9 @@ pub fn route(req: http.Request, body: []const u8, creds: *const Credentials, sto
         path_known = true;
         const rest = req.path[tokens_prefix.len..];
         if (std.mem.indexOfScalar(u8, rest, '/') == null and rest.len > 0) {
-            if (req.method == .DELETE) matched = .{ .method = .DELETE, .path = "/api/v1/tokens/{name}", .authority = .admin };
+            if (req.method == .DELETE) matched = .{ .method = .DELETE, .path = "/api/v1/tokens/{name}", .scope = .tokens };
         } else if (std.mem.endsWith(u8, rest, "/rotate") and std.mem.count(u8, rest, "/") == 1) {
-            if (req.method == .POST) matched = .{ .method = .POST, .path = "/api/v1/tokens/{name}/rotate", .authority = .admin };
+            if (req.method == .POST) matched = .{ .method = .POST, .path = "/api/v1/tokens/{name}/rotate", .scope = .tokens };
         }
     }
     const sounds_prefix = "/api/v1/sounds/";
@@ -783,8 +812,8 @@ pub fn route(req: http.Request, body: []const u8, creds: *const Credentials, sto
         if (std.mem.indexOfScalar(u8, rest, '/') == null and rest.len > 0) {
             // admin for both, like a script: a stored sound plays on a device somebody lives with,
             // long after the request that stored it
-            if (req.method == .PUT) matched = .{ .method = .PUT, .path = "/api/v1/sounds/{name}", .authority = .admin };
-            if (req.method == .DELETE) matched = .{ .method = .DELETE, .path = "/api/v1/sounds/{name}", .authority = .admin };
+            if (req.method == .PUT) matched = .{ .method = .PUT, .path = "/api/v1/sounds/{name}", .scope = .content };
+            if (req.method == .DELETE) matched = .{ .method = .DELETE, .path = "/api/v1/sounds/{name}", .scope = .content };
         }
     }
     const scripts_prefix = "/api/v1/berry/scripts/";
@@ -796,20 +825,20 @@ pub fn route(req: http.Request, body: []const u8, creds: *const Credentials, sto
             // different thing to hand out than the ability to read what is on the screen
             // reading a script is control, matching the list: a split where a token may enumerate
             // names but not read them protects little, and an editor needs admin to save anyway.
-            if (req.method == .GET) matched = .{ .method = .GET, .path = "/api/v1/berry/scripts/{name}", .authority = .control };
-            if (req.method == .PUT) matched = .{ .method = .PUT, .path = "/api/v1/berry/scripts/{name}", .authority = .admin };
-            if (req.method == .DELETE) matched = .{ .method = .DELETE, .path = "/api/v1/berry/scripts/{name}", .authority = .admin };
+            if (req.method == .GET) matched = .{ .method = .GET, .path = "/api/v1/berry/scripts/{name}", .scope = .scripts };
+            if (req.method == .PUT) matched = .{ .method = .PUT, .path = "/api/v1/berry/scripts/{name}", .scope = .scripts };
+            if (req.method == .DELETE) matched = .{ .method = .DELETE, .path = "/api/v1/berry/scripts/{name}", .scope = .scripts };
         } else if (std.mem.endsWith(u8, rest, "/run") and std.mem.count(u8, rest, "/") == 1) {
             // admin, like writing one: running a stored script is asking it to drive the panel now
-            if (req.method == .POST) matched = .{ .method = .POST, .path = "/api/v1/berry/scripts/{name}/run", .authority = .admin };
+            if (req.method == .POST) matched = .{ .method = .POST, .path = "/api/v1/berry/scripts/{name}/run", .scope = .scripts };
         }
     }
     const streams_prefix = "/api/v1/streams/";
     if (std.mem.startsWith(u8, req.path, streams_prefix)) {
         path_known = true;
         const rest = req.path[streams_prefix.len..];
-        if (req.method == .DELETE and std.mem.indexOfScalar(u8, rest, '/') == null) matched = .{ .method = .DELETE, .path = "/api/v1/streams/{id}", .authority = .control };
-        if (req.method == .PUT and std.mem.endsWith(u8, rest, "/palette")) matched = .{ .method = .PUT, .path = "/api/v1/streams/{id}/palette", .authority = .control };
+        if (req.method == .DELETE and std.mem.indexOfScalar(u8, rest, '/') == null) matched = .{ .method = .DELETE, .path = "/api/v1/streams/{id}", .scope = .display };
+        if (req.method == .PUT and std.mem.endsWith(u8, rest, "/palette")) matched = .{ .method = .PUT, .path = "/api/v1/streams/{id}/palette", .scope = .display };
     } else {
         for (endpoints) |e| {
             if (std.mem.eql(u8, e.path, req.path)) {
@@ -820,9 +849,9 @@ pub fn route(req: http.Request, body: []const u8, creds: *const Credentials, sto
     }
     const ep = matched orelse return .{ .reject = if (path_known) .{ .status = 405, .code = "method_not_allowed", .message = "this route does not accept that method" } else .{ .status = 404, .code = "not_found", .message = "no such route" } };
     // authentication applies to reads as well as writes
-    const authority = authenticate(creds, store, req.authorization).authority;
-    if (authority == .none) return .{ .reject = .{ .status = 401, .code = "unauthorized", .message = "a valid bearer token is required" } };
-    if (!sufficient(authority, ep.authority)) return .{ .reject = .{ .status = 403, .code = "forbidden", .message = "this route requires a higher authority" } };
+    const held = authenticate(creds, store, req.authorization).scopes;
+    if (held == 0) return .{ .reject = .{ .status = 401, .code = "unauthorized", .message = "a valid bearer token is required" } };
+    if (!sufficient(held, ep.scope)) return .{ .reject = .{ .status = 403, .code = "forbidden", .message = "this token does not hold the scope this route needs" } };
 
     if (std.mem.eql(u8, ep.path, "/api/v1/status")) return .{ .op = .status };
     if (std.mem.eql(u8, ep.path, "/api/v1/scenes")) return .{ .op = .scenes };
@@ -874,18 +903,32 @@ pub fn route(req: http.Request, body: []const u8, creds: *const Credentials, sto
         if (req.method == .GET) return .{ .op = .client_list };
         const b = json.parse(TokensBody, body, arena, &where) catch |e| return jsonError(e, where, arena);
         if (!clients.validName(b.name)) return bad("invalid_name", "a name is 1..32 of letters, digits, -, _ or . and may not start with a dot");
-        const role = std.meta.stringToEnum(clients.Role, b.role) orelse return bad("invalid_role", "role must be read or control");
-        return .{ .op = .{ .client_add = .{ .name = b.name, .role = role } } };
+        const scopes = switch (scopeSet(b.scopes)) {
+            .set => |v| v,
+            .err => |e| return switch (e) {
+                .unknown => bad("invalid_scope", "scopes must be drawn from " ++ scope_names),
+                .empty => bad("invalid_scope", "a token with no scopes could do nothing; name at least one"),
+                .minting => bad("invalid_scope", "tokens is the admin token's alone: a token that could mint tokens could mint itself more"),
+            },
+        };
+        return .{ .op = .{ .client_add = .{ .name = b.name, .scopes = scopes } } };
     }
     if (std.mem.eql(u8, ep.path, "/api/v1/tokens/{name}/rotate")) {
         const rest = req.path[tokens_prefix.len..];
         const name = rest[0 .. rest.len - "/rotate".len];
         if (!clients.validName(name)) return bad("invalid_name", "a name is 1..32 of letters, digits, -, _ or . and may not start with a dot");
-        // an empty body rotates the secret and leaves the role alone
-        if (body.len == 0) return .{ .op = .{ .client_rotate = .{ .name = name, .role = null } } };
+        // an empty body rotates the secret and leaves the scopes alone
+        if (body.len == 0) return .{ .op = .{ .client_rotate = .{ .name = name, .scopes = null } } };
         const b = json.parse(RotateBody, body, arena, &where) catch |e| return jsonError(e, where, arena);
-        const role = if (b.role) |r| (std.meta.stringToEnum(clients.Role, r) orelse return bad("invalid_role", "role must be read or control")) else null;
-        return .{ .op = .{ .client_rotate = .{ .name = name, .role = role } } };
+        const scopes: ?clients.Set = if (b.scopes) |names| switch (scopeSet(names)) {
+            .set => |v| v,
+            .err => |e| return switch (e) {
+                .unknown => bad("invalid_scope", "scopes must be drawn from " ++ scope_names),
+                .empty => bad("invalid_scope", "a token with no scopes could do nothing; name at least one"),
+                .minting => bad("invalid_scope", "tokens is the admin token's alone: a token that could mint tokens could mint itself more"),
+            },
+        } else null;
+        return .{ .op = .{ .client_rotate = .{ .name = name, .scopes = scopes } } };
     }
     if (std.mem.eql(u8, ep.path, "/api/v1/tokens/{name}")) {
         const name = req.path[tokens_prefix.len..];
@@ -1422,12 +1465,12 @@ test "playing a sound is control, and stopping needs no name" {
 
 test "authentication is constant-time bearer matching of either token" {
     const c = testCreds();
-    try std.testing.expectEqual(Authority.control, authenticate(&c, &no_clients, control_header).authority);
-    try std.testing.expectEqual(Authority.admin, authenticate(&c, &no_clients, admin_header).authority);
-    try std.testing.expectEqual(Authority.none, authenticate(&c, &no_clients, null).authority);
-    try std.testing.expectEqual(Authority.none, authenticate(&c, &no_clients, "Bearer " ++ "11" ** 31 ++ "12").authority);
-    try std.testing.expectEqual(Authority.none, authenticate(&c, &no_clients, "Basic " ++ "11" ** 32).authority);
-    try std.testing.expectEqual(Authority.none, authenticate(&c, &no_clients, "Bearer zz" ++ "11" ** 31).authority);
+    try std.testing.expectEqual(control_scopes, authenticate(&c, &no_clients, control_header).scopes);
+    try std.testing.expectEqual(admin_scopes, authenticate(&c, &no_clients, admin_header).scopes);
+    try std.testing.expectEqual(@as(clients.Set, 0), authenticate(&c, &no_clients, null).scopes);
+    try std.testing.expectEqual(@as(clients.Set, 0), authenticate(&c, &no_clients, "Bearer " ++ "11" ** 31 ++ "12").scopes);
+    try std.testing.expectEqual(@as(clients.Set, 0), authenticate(&c, &no_clients, "Basic " ++ "11" ** 32).scopes);
+    try std.testing.expectEqual(@as(clients.Set, 0), authenticate(&c, &no_clients, "Bearer zz" ++ "11" ** 31).scopes);
 }
 
 test "status codes: origin, route, method, credentials, authority" {
@@ -1877,76 +1920,93 @@ fn endpointFor(method: http.Method, path: []const u8) ?Endpoint {
     return null;
 }
 
-test "read sits below control, and lowering a route grants nobody anything new" {
-    try std.testing.expect(sufficient(.read, .read));
-    try std.testing.expect(sufficient(.control, .read)); // a control token still reaches it
-    try std.testing.expect(sufficient(.admin, .read));
-    try std.testing.expect(!sufficient(.read, .control));
-    try std.testing.expect(!sufficient(.read, .admin));
-    try std.testing.expect(!sufficient(.none, .read));
+test "a route asks for one bit, and a token either holds it or does not" {
+    // there is no ladder any more: holding `settings` does not imply `notify`, and that is the
+    // whole point -- a token can be given exactly one job.
+    const only_notify = clients.Scope.notify.bit();
+    try std.testing.expect(sufficient(only_notify, .notify));
+    try std.testing.expect(!sufficient(only_notify, .status));
+    try std.testing.expect(!sufficient(only_notify, .display));
+    try std.testing.expect(sufficient(admin_scopes, .tokens));
+    try std.testing.expect(!sufficient(control_scopes, .tokens));
+    // the shared control secret operates the device but does not reconfigure or store
+    try std.testing.expect(sufficient(control_scopes, .input));
+    try std.testing.expect(!sufficient(control_scopes, .settings));
+    try std.testing.expect(!sufficient(control_scopes, .scripts));
+    try std.testing.expect(!sufficient(control_scopes, .content));
+    try std.testing.expect(sufficient(control_scopes, .notify));
+    try std.testing.expect(!sufficient(0, .status));
 }
 
-test "read covers observation, and deliberately not the log ring or stored scripts" {
-    // an explicit list, not "every get": the two exclusions below are the whole point of one.
+test "status covers observing a clock, and the other reads have scopes of their own" {
+    // an explicit list, not "every get": the exclusions below are the whole point of one.
     for ([_][]const u8{
-        "/api/v1/status",     "/api/v1/scenes",  "/api/v1/config",  "/api/v1/screen",
-        "/api/v1/events",     "/api/v1/canvas",  "/api/v1/icons",   "/api/v1/sprites",
-        "/api/v1/sounds",     "/api/v1/mqtt/status",
+        "/api/v1/status",     "/api/v1/scenes",  "/api/v1/config",
+        "/api/v1/canvas",     "/api/v1/icons",   "/api/v1/sprites",
+        "/api/v1/sounds",     "/api/v1/mqtt/status", "/api/v1/berry", "/api/v1/berry/scripts",
     }) |p| {
-        try std.testing.expectEqual(Authority.read, endpointFor(.GET, p).?.authority);
+        try std.testing.expectEqual(clients.Scope.status, endpointFor(.GET, p).?.scope);
     }
-    // the log ring is a history of every command including other clients'; the script list is the
-    // user's own code. neither is observing a clock.
-    try std.testing.expectEqual(Authority.control, endpointFor(.GET, "/api/v1/logs").?.authority);
-    try std.testing.expectEqual(Authority.control, endpointFor(.GET, "/api/v1/berry/scripts").?.authority);
-    try std.testing.expectEqual(Authority.control, endpointFor(.GET, "/api/v1/berry").?.authority);
+    // and the reads that are not "observing a clock" have scopes of their own: the log ring is a
+    // history of every command including other clients', the panel's pixels are content rather
+    // than configuration, and a script's source is the user's own code.
+    try std.testing.expectEqual(clients.Scope.logs, endpointFor(.GET, "/api/v1/logs").?.scope);
+    try std.testing.expectEqual(clients.Scope.logs, endpointFor(.GET, "/api/v1/events").?.scope);
+    try std.testing.expectEqual(clients.Scope.screen, endpointFor(.GET, "/api/v1/screen").?.scope);
+    // (the templated routes are matched dynamically rather than from this table; reading a
+    // script's source is covered by its own test)
+    try std.testing.expectEqual(clients.Scope.status, endpointFor(.GET, "/api/v1/berry").?.scope);
 }
 
-test "a client token authenticates as its role and names itself" {
+test "a client token authenticates as its own scopes and names itself" {
     const c = testCreds();
+    const kitchen = clients.Scope.notify.bit() | clients.Scope.display.bit();
     var store = clients.Store{};
-    try store.add("kitchen", .control, [_]u8{0x33} ** 32, 1000);
-    try store.add("wall", .read, [_]u8{0x44} ** 32, 1000);
+    try store.add("kitchen", kitchen, [_]u8{0x33} ** 32, 1000);
+    try store.add("wall", clients.Scope.status.bit(), [_]u8{0x44} ** 32, 1000);
 
     const a = authenticate(&c, &store, "Bearer " ++ "33" ** 32);
-    try std.testing.expectEqual(Authority.control, a.authority);
+    try std.testing.expectEqual(kitchen, a.scopes);
     try std.testing.expectEqualStrings("kitchen", a.client.?.slice());
 
     const b = authenticate(&c, &store, "Bearer " ++ "44" ** 32);
-    try std.testing.expectEqual(Authority.read, b.authority);
+    try std.testing.expectEqual(clients.Scope.status.bit(), b.scopes);
     try std.testing.expectEqualStrings("wall", b.client.?.slice());
 
     // the built-in tokens are not clients and carry no name
-    try std.testing.expectEqual(Authority.admin, authenticate(&c, &store, admin_header).authority);
+    try std.testing.expectEqual(admin_scopes, authenticate(&c, &store, admin_header).scopes);
     try std.testing.expect(authenticate(&c, &store, control_header).client == null);
-    try std.testing.expectEqual(Authority.none, authenticate(&c, &store, "Bearer " ++ "99" ** 32).authority);
+    try std.testing.expectEqual(@as(clients.Set, 0), authenticate(&c, &store, "Bearer " ++ "99" ** 32).scopes);
 }
 
-test "a read client is refused a mutating route and the log ring" {
+test "a status-only client is refused everything else, including the log ring" {
     const c = testCreds();
     var store = clients.Store{};
-    try store.add("wall", .read, [_]u8{0x44} ** 32, 1000);
+    try store.add("wall", clients.Scope.status.bit(), [_]u8{0x44} ** 32, 1000);
     const hdr = "Bearer " ++ "44" ** 32;
     var arena: Arena = undefined;
     const origins = OriginPolicy{};
     try expectReject(route(testReq(.POST, "/api/v1/notify", "", hdr, "application/json", null), "{\"text\":\"x\"}", &c, &store, &origins, &arena, test_minted), 403, "forbidden");
     try expectReject(route(testReq(.GET, "/api/v1/logs", "", hdr, null, null), "", &c, &store, &origins, &arena, test_minted), 403, "forbidden");
-    try expectReject(route(testReq(.GET, "/api/v1/berry/scripts", "", hdr, null, null), "", &c, &store, &origins, &arena, test_minted), 403, "forbidden");
+    try expectReject(route(testReq(.POST, "/api/v1/input", "", hdr, "application/json", null), "{\"control\":\"left\",\"event\":\"press\"}", &c, &store, &origins, &arena, test_minted), 403, "forbidden");
     // but it reads what it is for. which client asked is a property of authentication, tested
     // there: Route.op is the operation union and has no room for a field common to every variant,
     // so netd asks authenticate directly on the paths where it wants the name.
     try std.testing.expect(route(testReq(.GET, "/api/v1/status", "", hdr, null, null), "", &c, &store, &origins, &arena, test_minted) == .op);
 }
 
-test "a control client reaches control routes but not admin ones" {
+test "a notify-only client can say something and do nothing else" {
     const c = testCreds();
     var store = clients.Store{};
-    try store.add("kitchen", .control, [_]u8{0x33} ** 32, 1000);
+    try store.add("kitchen", clients.Scope.notify.bit(), [_]u8{0x33} ** 32, 1000);
     const hdr = "Bearer " ++ "33" ** 32;
     var arena: Arena = undefined;
     const origins = OriginPolicy{};
     try std.testing.expect(route(testReq(.POST, "/api/v1/notify", "", hdr, "application/json", null), "{\"text\":\"x\"}", &c, &store, &origins, &arena, test_minted) == .op);
     try expectReject(route(testReq(.GET, "/api/v1/mqtt", "", hdr, null, null), "", &c, &store, &origins, &arena, test_minted), 403, "forbidden");
+    // not even the status it does not need -- this is the token the old role ladder could not make
+    try expectReject(route(testReq(.GET, "/api/v1/status", "", hdr, null, null), "", &c, &store, &origins, &arena, test_minted), 403, "forbidden");
+    try expectReject(route(testReq(.PUT, "/api/v1/scene", "", hdr, "application/json", null), "{\"base\":\"clock\"}", &c, &store, &origins, &arena, test_minted), 403, "forbidden");
 }
 
 test "the token routes are admin only, and validate before they reach the supervisor" {
@@ -1960,22 +2020,27 @@ test "the token routes are admin only, and validate before they reach the superv
     };
     // admin issues, lists and revokes
     try std.testing.expect(R.go(&c, &origins, &arena, .GET, "/api/v1/tokens", admin_header, "") == .op);
-    const made = R.go(&c, &origins, &arena, .POST, "/api/v1/tokens", admin_header, "{\"name\":\"kitchen\",\"role\":\"control\"}");
+    const made = R.go(&c, &origins, &arena, .POST, "/api/v1/tokens", admin_header, "{\"name\":\"kitchen\",\"scopes\":[\"notify\",\"display\"]}");
     try std.testing.expectEqualStrings("kitchen", made.op.client_add.name);
-    try std.testing.expectEqual(clients.Role.control, made.op.client_add.role);
+    try std.testing.expectEqual(clients.Scope.notify.bit() | clients.Scope.display.bit(), made.op.client_add.scopes);
+    // the scope list is validated here rather than after a round trip
+    try expectReject(R.go(&c, &origins, &arena, .POST, "/api/v1/tokens", admin_header, "{\"name\":\"k\",\"scopes\":[\"teleport\"]}"), 400, "invalid_scope");
+    try expectReject(R.go(&c, &origins, &arena, .POST, "/api/v1/tokens", admin_header, "{\"name\":\"k\",\"scopes\":[]}"), 400, "invalid_scope");
+    // and minting is refused by name rather than quietly dropped
+    try expectReject(R.go(&c, &origins, &arena, .POST, "/api/v1/tokens", admin_header, "{\"name\":\"k\",\"scopes\":[\"notify\",\"tokens\"]}"), 400, "invalid_scope");
     const gone = R.go(&c, &origins, &arena, .DELETE, "/api/v1/tokens/kitchen", admin_header, "");
     try std.testing.expectEqualStrings("kitchen", gone.op.client_remove.name);
 
     // a control token cannot reach any of them: issuing is how access is granted
     try expectReject(R.go(&c, &origins, &arena, .GET, "/api/v1/tokens", control_header, ""), 403, "forbidden");
-    try expectReject(R.go(&c, &origins, &arena, .POST, "/api/v1/tokens", control_header, "{\"name\":\"x\",\"role\":\"read\"}"), 403, "forbidden");
+    try expectReject(R.go(&c, &origins, &arena, .POST, "/api/v1/tokens", control_header, "{\"name\":\"x\",\"scopes\":[\"status\"]}"), 403, "forbidden");
     try expectReject(R.go(&c, &origins, &arena, .DELETE, "/api/v1/tokens/x", control_header, ""), 403, "forbidden");
 
     // validation happens here, not after a round trip
-    try expectReject(R.go(&c, &origins, &arena, .POST, "/api/v1/tokens", admin_header, "{\"name\":\"has space\",\"role\":\"read\"}"), 400, "invalid_name");
-    try expectReject(R.go(&c, &origins, &arena, .POST, "/api/v1/tokens", admin_header, "{\"name\":\".hidden\",\"role\":\"read\"}"), 400, "invalid_name");
-    try expectReject(R.go(&c, &origins, &arena, .POST, "/api/v1/tokens", admin_header, "{\"name\":\"ok\",\"role\":\"wizard\"}"), 400, "invalid_role");
-    try expectReject(R.go(&c, &origins, &arena, .POST, "/api/v1/tokens", admin_header, "{\"name\":\"ok\",\"role\":\"admin\"}"), 400, "invalid_role");
+    try expectReject(R.go(&c, &origins, &arena, .POST, "/api/v1/tokens", admin_header, "{\"name\":\"has space\",\"scopes\":[\"status\"]}"), 400, "invalid_name");
+    try expectReject(R.go(&c, &origins, &arena, .POST, "/api/v1/tokens", admin_header, "{\"name\":\".hidden\",\"scopes\":[\"status\"]}"), 400, "invalid_name");
+    // `role` is not a field any more, so a body written for the old shape is refused as such
+    try expectReject(R.go(&c, &origins, &arena, .POST, "/api/v1/tokens", admin_header, "{\"name\":\"ok\",\"role\":\"control\"}"), 400, "unknown_field");
     try expectReject(R.go(&c, &origins, &arena, .POST, "/api/v1/tokens", admin_header, "{\"name\":\"ok\"}"), 400, "missing_field");
     try expectReject(R.go(&c, &origins, &arena, .DELETE, "/api/v1/tokens/has space", admin_header, ""), 400, "invalid_name");
 }
@@ -1988,7 +2053,7 @@ test "a full store still renders a listing that fits one response" {
     while (i < clients.max_clients) : (i += 1) {
         var name: [clients.name_max]u8 = undefined;
         _ = std.fmt.bufPrint(&name, "{s}{d:0>4}", .{"n" ** (clients.name_max - 4), i}) catch unreachable;
-        try store.add(&name, .control, [_]u8{@intCast(i & 0xff)} ** 32, std.math.minInt(i64));
+        try store.add(&name, clients.grantable, [_]u8{@intCast(i & 0xff)} ** 32, std.math.minInt(i64));
     }
     var buf: [http.response_buf_len]u8 = undefined;
     const listing = clients.renderList(&store, &buf);
@@ -2010,19 +2075,19 @@ test "rotation is its own route, and never a silent overwrite of create" {
     };
     const bare = R.go(&c, &origins, &arena, .POST, "/api/v1/tokens/kitchen/rotate", admin_header, "");
     try std.testing.expectEqualStrings("kitchen", bare.op.client_rotate.name);
-    try std.testing.expect(bare.op.client_rotate.role == null); // unchanged unless supplied
+    try std.testing.expect(bare.op.client_rotate.scopes == null); // unchanged unless supplied
 
-    const with_role = R.go(&c, &origins, &arena, .POST, "/api/v1/tokens/kitchen/rotate", admin_header, "{\"role\":\"read\"}");
-    try std.testing.expectEqual(clients.Role.read, with_role.op.client_rotate.role.?);
+    const with_scopes = R.go(&c, &origins, &arena, .POST, "/api/v1/tokens/kitchen/rotate", admin_header, "{\"scopes\":[\"status\"]}");
+    try std.testing.expectEqual(clients.Scope.status.bit(), with_scopes.op.client_rotate.scopes.?);
 
     // re-creating an existing name is still a 409 elsewhere; rotation never happens by accident
     try expectReject(R.go(&c, &origins, &arena, .POST, "/api/v1/tokens/kitchen/rotate", control_header, ""), 403, "forbidden");
     try expectReject(R.go(&c, &origins, &arena, .POST, "/api/v1/tokens/has space/rotate", admin_header, ""), 400, "invalid_name");
-    try expectReject(R.go(&c, &origins, &arena, .POST, "/api/v1/tokens/kitchen/rotate", admin_header, "{\"role\":\"admin\"}"), 400, "invalid_role");
+    try expectReject(R.go(&c, &origins, &arena, .POST, "/api/v1/tokens/kitchen/rotate", admin_header, "{\"scopes\":[\"admin\"]}"), 400, "invalid_scope");
     try expectReject(R.go(&c, &origins, &arena, .GET, "/api/v1/tokens/kitchen/rotate", admin_header, ""), 405, "method_not_allowed");
 }
 
-test "a stored script can be read back, at the same authority as the listing" {
+test "a stored script can be read back, and reading source needs the scripts scope" {
     const c = testCreds();
     var arena: Arena = undefined;
     const origins = OriginPolicy{};
@@ -2031,19 +2096,21 @@ test "a stored script can be read back, at the same authority as the listing" {
             return route(testReq(m, path, "", hdr, null, null), "", cc, &no_clients, o, a, test_minted);
         }
     };
-    const got = R.go(&c, &origins, &arena, .GET, "/api/v1/berry/scripts/autoexec", control_header);
+    const got = R.go(&c, &origins, &arena, .GET, "/api/v1/berry/scripts/autoexec", admin_header);
     try std.testing.expectEqualStrings("autoexec", got.op.berry_get.name);
-    // the list is control, so reading one is too -- writing one is still admin. asserted through
-    // the router rather than the endpoint table, because a `{name}` route is matched dynamically
-    // and does not appear in it.
+    // asserted through the router rather than the endpoint table, because a `{name}` route is
+    // matched dynamically and does not appear in it. the operating secret lists script names --
+    // that is `status` -- but does not read their source or write one.
+    try expectReject(R.go(&c, &origins, &arena, .GET, "/api/v1/berry/scripts/autoexec", control_header), 403, "forbidden");
     try expectReject(R.go(&c, &origins, &arena, .DELETE, "/api/v1/berry/scripts/autoexec", control_header), 403, "forbidden");
     try std.testing.expect(R.go(&c, &origins, &arena, .DELETE, "/api/v1/berry/scripts/autoexec", admin_header) == .op);
     try std.testing.expect(R.go(&c, &origins, &arena, .GET, "/api/v1/berry/scripts/autoexec", admin_header) == .op);
-    // a read token is below the listing's authority and so below this one
+    // reading a script's source needs `scripts`, not the `status` that lists their names: with a
+    // real scope set the split protects something, where under the old ladder it protected little
     var store = clients.Store{};
-    try store.add("wall", .read, [_]u8{0x77} ** 32, 1);
+    try store.add("wall", clients.Scope.status.bit(), [_]u8{0x77} ** 32, 1);
     try expectReject(route(testReq(.GET, "/api/v1/berry/scripts/autoexec", "", "Bearer " ++ "77" ** 32, null, null), "", &c, &store, &origins, &arena, test_minted), 403, "forbidden");
-    try expectReject(R.go(&c, &origins, &arena, .GET, "/api/v1/berry/scripts/has space", control_header), 400, "invalid_script_name");
+    try expectReject(R.go(&c, &origins, &arena, .GET, "/api/v1/berry/scripts/has space", admin_header), 400, "invalid_script_name");
 }
 
 test "running a stored script is admin, and never carries source" {
@@ -2062,6 +2129,6 @@ test "running a stored script is admin, and never carries source" {
     try expectReject(R.go(&c, &origins, &arena, .POST, "/api/v1/berry/scripts/greet/run", control_header, ""), 403, "forbidden");
     try expectReject(R.go(&c, &origins, &arena, .POST, "/api/v1/berry/scripts/has space/run", admin_header, ""), 400, "invalid_script_name");
     try expectReject(R.go(&c, &origins, &arena, .GET, "/api/v1/berry/scripts/greet/run", admin_header, ""), 405, "method_not_allowed");
-    // and reading is still control, unchanged
-    try std.testing.expect(R.go(&c, &origins, &arena, .GET, "/api/v1/berry/scripts/greet", control_header, "") == .op);
+    // reading the source is `scripts` now, like running it: the operating secret does neither
+    try expectReject(R.go(&c, &origins, &arena, .GET, "/api/v1/berry/scripts/greet", control_header, ""), 403, "forbidden");
 }

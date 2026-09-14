@@ -33,8 +33,10 @@ commands:
   logs [after] [--follow]             the log ring after a sequence number; --follow polls every second
   config                              effective settings (admin token needed for patch/save)
   tokens                              list named client tokens (admin)
-  token-new NAME [--role read|control]   issue one; the secret is shown once (admin)
-  token-rotate NAME [--role read|control]   new secret in place; shown once (admin)
+  token-new NAME --scope notify [--scope display ...]   issue one; the secret is shown once (admin)
+  token-rotate NAME [--scope ...]        new secret in place; shown once (admin)
+                                         scopes: status screen logs notify display sound input
+                                                 content scripts settings
   token-revoke NAME                   revoke one, effective immediately (admin)
   config-set key=value ...            patch settings; keys: brightness base generator timezone ntp_server
                                       ntp_interval_s frame_timeout_ms metrics_interval_s discovery discovery_prefix
@@ -151,7 +153,10 @@ def main():
     ap.add_argument("--colour-mode")
     ap.add_argument("--colour2")
     ap.add_argument("--gradient")
-    ap.add_argument("--role", default="control", choices=["read", "control"])
+    ap.add_argument("--scope", action="append", default=[], metavar="NAME",
+                    choices=["status", "screen", "logs", "notify", "display", "sound",
+                             "input", "content", "scripts", "settings"],
+                    help="repeatable; a token holds exactly the scopes it is given")
     ap.add_argument("--spread", type=int)
     ap.add_argument("--transition")
     ap.add_argument("--direction")
@@ -171,9 +176,11 @@ def main():
         return show(*call(a, "GET", "/tokens", token=token))
     if c == "token-new":
         # the secret comes back once and is never retrievable again
-        return show(*call(a, "POST", "/tokens", {"name": a.args[0], "role": a.role}, token=token))
+        if not a.scope:
+            sys.exit("token-new needs at least one --scope; a token with none could do nothing")
+        return show(*call(a, "POST", "/tokens", {"name": a.args[0], "scopes": a.scope}, token=token))
     if c == "token-rotate":
-        body = {"role": a.role} if "--role" in sys.argv else {}
+        body = {"scopes": a.scope} if a.scope else {}
         return show(*call(a, "POST", f"/tokens/{a.args[0]}/rotate", body, token=token))
     if c == "token-revoke":
         return show(*call(a, "DELETE", f"/tokens/{a.args[0]}", token=token))

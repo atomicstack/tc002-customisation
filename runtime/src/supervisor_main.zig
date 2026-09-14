@@ -607,7 +607,7 @@ const Supervisor = struct {
             self.sendNetd(.{ .client_set = .{
                 .index = @intCast(i),
                 .name = c.name,
-                .role = @intFromEnum(c.role),
+                .scopes = c.scopes,
                 .token = c.token,
                 .created_s = c.created_s,
             } }, 0);
@@ -1845,8 +1845,8 @@ const Supervisor = struct {
                         self.sendNetd(.{ .client_result = .{ .status = .unavailable } }, p.request_id);
                         continue;
                     };
-                    const role: clients.Role = if (a.role == @intFromEnum(clients.Role.control)) .control else .read;
-                    self.clients.add(a.name.slice(), role, token, unixNow()) catch {
+                    // the store masks `tokens` off itself; netd has already refused it by name
+                    self.clients.add(a.name.slice(), a.scopes, token, unixNow()) catch {
                         self.sendNetd(.{ .client_result = .{ .status = .conflict } }, p.request_id);
                         continue;
                     };
@@ -1858,8 +1858,10 @@ const Supervisor = struct {
                         continue;
                     }
                     self.pushClients();
-                    log.info("client token issued: {s} ({s})", .{ a.name.slice(), @tagName(role) });
-                    self.sendNetd(.{ .client_result = .{ .status = .applied, .name = a.name, .role = a.role, .token = token } }, p.request_id);
+                    const granted = self.clients.find(a.name.slice()).?.scopes;
+                    var scope_buf: [clients.text_max]u8 = undefined;
+                    log.info("client token issued: {s} ({s})", .{ a.name.slice(), clients.renderSet(granted, &scope_buf) });
+                    self.sendNetd(.{ .client_result = .{ .status = .applied, .name = a.name, .scopes = granted, .token = token } }, p.request_id);
                 },
                 .berry_run => |g| {
                     const w = requests.prepareRun(
@@ -1908,22 +1910,20 @@ const Supervisor = struct {
                         continue;
                     };
                     const kept = before.*;
-                    const role: ?clients.Role = if (r.has_role != 0)
-                        (if (r.role == @intFromEnum(clients.Role.control)) .control else .read)
-                    else
-                        null;
-                    _ = self.clients.rotate(r.name.slice(), token, unixNow(), role);
+                    const scopes: ?clients.Set = if (r.has_scopes != 0) r.scopes else null;
+                    _ = self.clients.rotate(r.name.slice(), token, unixNow(), scopes);
                     if (self.saveCredentials() != .applied) {
                         // put the old secret back: a rotation that is not on disk is a token that
                         // works until the next restart and then silently does not
-                        _ = self.clients.rotate(r.name.slice(), kept.token, kept.created_s, kept.role);
+                        _ = self.clients.rotate(r.name.slice(), kept.token, kept.created_s, kept.scopes);
                         self.sendNetd(.{ .client_result = .{ .status = .unavailable } }, p.request_id);
                         continue;
                     }
                     self.pushClients();
-                    const now_role = self.clients.find(r.name.slice()).?.role;
-                    log.info("client token rotated: {s} ({s})", .{ r.name.slice(), @tagName(now_role) });
-                    self.sendNetd(.{ .client_result = .{ .status = .applied, .name = r.name, .role = @intFromEnum(now_role), .token = token } }, p.request_id);
+                    const now_scopes = self.clients.find(r.name.slice()).?.scopes;
+                    var scope_buf: [clients.text_max]u8 = undefined;
+                    log.info("client token rotated: {s} ({s})", .{ r.name.slice(), clients.renderSet(now_scopes, &scope_buf) });
+                    self.sendNetd(.{ .client_result = .{ .status = .applied, .name = r.name, .scopes = now_scopes, .token = token } }, p.request_id);
                 },
                 .client_remove => |r| {
                     if (!self.clients.remove(r.name.slice())) {
