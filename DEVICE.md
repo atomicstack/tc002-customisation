@@ -36,7 +36,7 @@ wireless chip, inputs, audio, power) lives in the
 | | |
 |---|---|
 | SoC | SigmaStar SSD21x "Pioneer3", 2 × Cortex-A7 at a fixed 1.0 GHz (`Zkswe_SSD21X_SPINOR`) |
-| Kernel | Linux 4.9.84 SMP PREEMPT, built with OpenWrt GCC 9.1.0 |
+| Kernel | Linux 4.9.84 SMP PREEMPT, built with OpenWrt GCC 9.1.0. What it was and was not built with — no NFS, no netfilter, no IPv6, no tracing — is in [`KERNEL.md`](KERNEL.md) |
 | RAM | 64 MB in-package; ~35 MB left for Linux after the media-heap and framebuffer reservations |
 | Flash | 32 MiB SPI NOR, eight MTD partitions |
 | Root fs | squashfs, 3.5 MB, **read-only** |
@@ -72,7 +72,9 @@ holds the device's cloud credentials (`secretKey`, `authToken`,
 
 ## Time
 
-There is **no RTC** (`/dev/rtc*` and `/sys/class/rtc` are absent). The system
+There is **no RTC** (`/dev/rtc*` and `/sys/class/rtc` are absent — the SoC's RTC
+block is enabled in the device tree, but no driver was compiled in; see
+[`KERNEL.md`](KERNEL.md#the-rtc-nuance)). The system
 clock starts at the 1970 epoch on every boot and is set purely by an SNTP
 client built into the app library (`ntp::` in `libzkgui.so`, calling
 `settimeofday`). Everything below was read out of that library's disassembly
