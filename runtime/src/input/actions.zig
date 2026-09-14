@@ -97,13 +97,18 @@ pub const button_count = @intFromEnum(Control.rotary);
 /// report press and release, any of them reports `long` once held past the threshold, and the
 /// rotary reports one cw/ccw per detent.
 ///
-/// **2 is missing on purpose.** `click` used to sit there, and nothing has ever pushed one -- a
-/// click is two edges, so injecting one produces a press and a release. it was reachable only as a
-/// name in this enum, which meant a script or an mqtt consumer could wait for a click for ever and
-/// nothing would say why. it is a request rather than an event and now lives in `InputRequest`,
-/// where it can be asked for and cannot be awaited. the numbering is the wire encoding, so the
-/// hole stays rather than shifting `long`, `cw` and `ccw` under every deployed binary.
-pub const EdgeEvent = enum(u8) { release = 0, press = 1, long = 3, cw = 4, ccw = 5 };
+/// `click` is not here, and never was reachable: nothing has ever pushed a click edge, because a
+/// click is two edges -- injecting one produces a press and a release. it was only ever a name in
+/// this enum, which meant a script or an mqtt consumer could wait for a click for ever and nothing
+/// would say why. it is a request rather than an event and lives in `InputRequest`, where it can
+/// be asked for and cannot be awaited.
+///
+/// the numbering is this type's own wire encoding and is contiguous. it briefly kept a hole at 2
+/// where `click` had been, out of a habit of not moving wire values under deployed binaries -- but
+/// nothing outside this repository speaks it, and a gap that exists to commemorate a mistake is
+/// just a second mistake. `inject_input` carries an `InputRequest` and `input` carries an
+/// `EdgeEvent`, so the two numberings are independent and neither has to leave room for the other.
+pub const EdgeEvent = enum(u8) { release = 0, press = 1, long = 2, cw = 3, ccw = 4 };
 
 /// what `POST /api/v1/input` and the mqtt `cmd/input` topic accept: every edge a control can
 /// report, plus `click` -- a press and a release asked for in one call, which reports as those two
@@ -446,3 +451,16 @@ test "every button has a long press, and a hold is not also a tap" {
     try std.testing.expectEqual(@as(usize, 0), q.len);
 }
 
+
+test "both input vocabularies are contiguous, and neither leaves room for the other" {
+    // each is its own wire encoding -- `input` carries an EdgeEvent and `inject_input` an
+    // InputRequest -- so they are pinned separately and neither needs a hole in it.
+    inline for (@typeInfo(EdgeEvent).@"enum".fields, 0..) |f, i| {
+        try std.testing.expectEqual(i, f.value);
+    }
+    inline for (@typeInfo(InputRequest).@"enum".fields, 0..) |f, i| {
+        try std.testing.expectEqual(i, f.value);
+    }
+    try std.testing.expectEqual(@as(u8, 2), @intFromEnum(EdgeEvent.long));
+    try std.testing.expectEqual(@as(u8, 2), @intFromEnum(InputRequest.click));
+}
