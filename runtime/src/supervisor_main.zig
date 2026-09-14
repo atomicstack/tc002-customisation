@@ -27,6 +27,7 @@ const param = @import("scene/param.zig");
 const sntp = @import("supervisor/sntp.zig");
 const metrics = @import("supervisor/metrics.zig");
 const night = @import("supervisor/night.zig");
+const recovery = @import("sys/recovery.zig");
 const power = @import("supervisor/power.zig");
 const battery_notice = @import("supervisor/battery_notice.zig");
 const icons = @import("scene/icons.zig");
@@ -447,6 +448,9 @@ const Supervisor = struct {
     child_pid: ?sys.Pid = null,
     child_fd: ?sys.Fd = null,
     child_spawned_ns: u64 = 0,
+    /// when this supervisor started, and whether the boot has been declared good yet
+    started_ns: u64 = 0,
+    boot_health_done: bool = false,
     heartbeats: u64 = 0,
     restarts: u32 = 0,
     request_id: u64 = 1,
@@ -2088,6 +2092,21 @@ const Supervisor = struct {
     /// the write is not persistent: a reboot restores the kernel default, like every other sysctl.
     const rt_runtime_us = "900000";
 
+    /// once this boot has lasted long enough to call it good, forget the failures behind it.
+    ///
+    /// the bootstrap counts a boot on the way in and nothing else ever clears it, so a runtime that
+    /// keeps dying before this point counts itself down to the hand-back with no help. only a
+    /// non-zero counter is written back: a healthy boot should not spend a jffs2 write saying so.
+    fn pollBootHealth(self: *Supervisor, now: u64) void {
+        if (self.boot_health_done) return;
+        if (now -| self.started_ns < recovery.healthy_after_ns) return;
+        self.boot_health_done = true;
+        const fails = recovery.readFailCount();
+        if (fails == 0) return;
+        recovery.writeFailCount(0);
+        log.info("boot healthy after {d} s; cleared {d} recorded boot failure(s)", .{ recovery.healthy_after_ns / ns_per_s, fails });
+    }
+
     fn applyRtBudget(self: *Supervisor) void {
         if (self.cfg_cli.rt_priority == 0) return;
         sys.writeSmallFile("/proc/sys/kernel/sched_rt_runtime_us", rt_runtime_us) catch |e| {
@@ -2972,7 +2991,7 @@ fn run(cfg_in: cli.Config, environ: anytype, args: []const [:0]const u8) !u8 {
         const n = @min(id.len, messages.build_id_max);
         @memcpy(snapshot_build[0..n], id[0..n]);
     }
-    var s = Supervisor{ .cfg_cli = cfg, .cfg_dir_text = cfg.dir, .state_dir_text = cfg.state, .cfg_stats = cfg.stats, .ep = ep, .timer = timer, .sigfd = sigfd, .keys = keys, .self_pid = sys.getpid() };
+    var s = Supervisor{ .started_ns = now0, .cfg_cli = cfg, .cfg_dir_text = cfg.dir, .state_dir_text = cfg.state, .cfg_stats = cfg.stats, .ep = ep, .timer = timer, .sigfd = sigfd, .keys = keys, .self_pid = sys.getpid() };
     s.snapshot.build = snapshot_build;
     // settings and credentials belong on the persistent partition; if it cannot be used the
     // runtime still comes up, on the volatile directory, and says so rather than failing to start
@@ -3042,6 +3061,7 @@ fn run(cfg_in: cli.Config, environ: anytype, args: []const [:0]const u8) !u8 {
         s.pollLifecycle(now);
         s.pollIp(now);
         s.pollMac(now);
+        s.pollBootHealth(now);
         s.pushDeviceStatus(now);
         s.pollNight(now);
         s.pollPower(now);

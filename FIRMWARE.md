@@ -6,6 +6,19 @@ runtime before it can be baked into flash. This is the groundwork for
 replacing the volatile `/tmp` install described in [`RUNTIME.md`](RUNTIME.md)
 with a rebuilt `res` partition delivered through the vendor's own update path.
 
+> **Boot machinery, part one, landed 2026-09-15: the recovery net.** The
+> boot-failure counter and the stock-config fallback are implemented in
+> `runtime/src/sys/recovery.zig`, armed by the bootstrap and cleared by the
+> supervisor after 60 s of healthy running. **Verified on the device through the
+> real loader**, using `tc002-boot-experiment.sh` so the vendor app was always one
+> power cycle away: a bootstrap-led boot took the counter 0 → 1 and started the
+> runtime; with the counter forced to 3 the bootstrap wrote the stock
+> `/tmp/EasyUI.cfg`, exited, and **the vendor app came up instead of the runtime**
+> (`startupLibPath = /res/lib/libzkgui.so`, no tc002 processes); and a healthy boot
+> cleared a seeded count of 2. The other three items below — yielding to a pending
+> upgrade, cold-boot wifi, and the gpio-35 panel gate — are **not done**, so this
+> is still not a flashable tree.
+
 > **Adopted from aquarat's fork (`c069a48`) on 2026-09-15, and re-verified here
 > before it was taken.** Against the vendor `update.img` pulled from this unit's
 > `/mnt/storage`: `inspect` passes every check (header crc32 `0xe6bd4276`,
