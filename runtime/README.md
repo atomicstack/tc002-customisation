@@ -161,6 +161,10 @@ controls. the full reference is [`RUNTIME.md`](../RUNTIME.md).
 after a reboot the stock app is back and nothing of the runtime is left on the device. one
 command brings it up again, with the settings applied and the console's tokens pulled:
 
+> making that survive a reboot means flashing the runtime into the `res` partition, which is
+> **not done here** — see [busybox, for a persistent install](#busybox-for-a-persistent-install)
+> for the one piece of groundwork that exists so far.
+
 ```bash
 runtime/tools/tc002-up.sh                          # adb connect, build, push, start, settings, tokens
 runtime/tools/tc002-up.sh --tz Australia/Melbourne --font classic --no-build
@@ -264,3 +268,39 @@ then `config-save` to keep it across restarts. `/status` reports `time.state` (`
 `stale`) and `time.age_s`; the supervisor log shows every exchange as `sntp: offset N ms, delay N ms,
 stratum N, stepped|slewing`. the client, its validation rules and the step/slew thresholds are described
 in [RUNTIME.md](../RUNTIME.md#time-sntp).
+
+
+## busybox, for a persistent install
+
+a runtime that boots on its own, before the stock app, has to bring the network up itself: load the
+aic8800 driver, wait for the supplicant to associate, and run a dhcp client. the device's own
+busybox resolves almost nothing — **there is no `udhcpc`**, and no `grep`, `sed`, `head` or `wc`
+either, which is a tax on every investigation on this device.
+
+so the image needs a busybox of its own. `runtime/tools/tc002-mkbusybox.sh` builds one from source
+rather than taking a prebuilt binary from anywhere:
+
+```bash
+runtime/tools/tc002-mkbusybox.sh [workdir] [out]   # -> a static armv7 busybox, ~300 kb, 42 applets
+```
+
+it fetches a pinned busybox tarball, **checks it against a recorded sha256**, configures from
+`allnoconfig` up (so the applet list is a decision, not a default), and cross-compiles.
+
+**zig is the entire toolchain.** the repo already pins zig 0.16 for the runtime and `zig cc` ships
+musl and the linux headers, so this adds no dependency: no docker, no crosstool, no homebrew
+binutils. `zig ar` stands in for gnu `ar` and `zig cc` drives the relocatable link, because macos
+ships bsd versions of both that busybox's makefiles cannot use.
+
+four things about that build are not obvious, and each one cost a round:
+
+| symptom | cause |
+|---|---|
+| `undefined symbol: _libintl_gettext` linking kconfig | kconfig wants gettext on macos. `-DKBUILD_NO_NLS` is upstream's switch; `lkc.h` then defines `gettext()` as the identity |
+| `BUG_off_t_size_is_misdetected` | musl's `off_t` is 64-bit even on 32-bit arm, and busybox static-asserts its own `uoff_t` matches. `CONFIG_LFS=y` |
+| `busybox: applet not found`, for every applet | `allnoconfig` turns off `CONFIG_BUSYBOX`, the multiplexer. without it the binary works only through argv[0] symlinks, and `busybox insmod …` — which is how every boot script calls it — fails. it builds and runs, so nothing catches this but trying it |
+| `strip: unrecognized option --remove-section` | busybox strips with gnu options. `SKIP_STRIP=y`; lld has already stripped the output |
+
+the binary was pushed to the device's `/tmp` and run: 42 applets, `udhcpc`/`insmod`/`ifconfig`/
+`route`/`ash` all present, `ifconfig wlan0` reporting the real interface. then removed.
+**nothing here writes to `/res`.**
