@@ -1709,8 +1709,15 @@ literal (there is no resolver). keepalive is 30 s, a missed ping response
 within 15 s drops the connection, and reconnects back off from 1 s to 60 s
 with jitter. `tls: true` is accepted as a setting and makes the client **stay
 disconnected** with `last_error: tls is not available in this build`; it
-never falls back to plaintext silently. the client id defaults to
-`tc002-<boot_id>`. all topics live under `prefix` (default `tc002`):
+never falls back to plaintext silently. the client id defaults to the
+device's own stable name — `tc002-<mac>`, the same string home assistant
+knows the device by, falling back to `tc002-boot<boot_id>` only in the
+window on a cold boot before `wlan0` exists. it was `tc002-<boot_id>`
+unconditionally, which meant a rebooted clock arrived as a *different*
+client: the broker kept the previous session until its keepalive expired,
+and that dead session's will (`offline`) was then published after the new
+one had said `online`, leaving every home-assistant entity unavailable.
+all topics live under `prefix` (default `tc002`):
 
 | topic | direction | payload |
 |-------|-----------|---------|

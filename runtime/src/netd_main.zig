@@ -15,6 +15,7 @@ const clients = @import("net/clients.zig");
 const berry_store = @import("berry/store.zig");
 const json = @import("net/json.zig");
 const mqtt = @import("net/mqtt.zig");
+const identity = @import("net/identity.zig");
 const messages = @import("ipc/messages.zig");
 const codec = @import("ipc/codec.zig");
 const config = @import("supervisor/config.zig");
@@ -1595,8 +1596,12 @@ const Netd = struct {
             .send_connect => {
                 var will_topic: [96]u8 = undefined;
                 const wt = self.topic(&will_topic, "availability");
-                var cid_buf: [48]u8 = undefined;
-                const cid = if (self.cfg.mqtt.client_id.len > 0) self.cfg.mqtt.client_id.slice() else std.fmt.bufPrint(&cid_buf, "tc002-{x:0>8}", .{self.status.boot_id}) catch "tc002";
+                // the device's own name, not a per-boot one: a fresh client id on every boot left
+                // the previous session alive at the broker until its keepalive expired, and that
+                // dead session's will (`offline`) then landed after this one published `online`.
+                var cid_buf: [identity.max]u8 = undefined;
+                const st = self.status;
+                const cid = identity.clientId(&cid_buf, self.cfg.mqtt.client_id.slice(), st.mac_present != 0, st.mac, st.boot_id);
                 const m = &self.cfg.mqtt;
                 const space = self.mqttSpace();
                 const n = mqtt.encodeConnect(space, .{
@@ -1948,10 +1953,9 @@ const Netd = struct {
     };
 
     /// the stable device identity: the wlan0 mac, or the boot id when there is none. never the ip.
-    fn deviceId(self: *Netd, buf: *[24]u8) []const u8 {
+    fn deviceId(self: *Netd, buf: *[identity.max]u8) []const u8 {
         const st = self.status;
-        if (st.mac_present != 0) return std.fmt.bufPrint(buf, "tc002-{x:0>2}{x:0>2}{x:0>2}{x:0>2}{x:0>2}{x:0>2}", .{ st.mac[0], st.mac[1], st.mac[2], st.mac[3], st.mac[4], st.mac[5] }) catch buf[0..0];
-        return std.fmt.bufPrint(buf, "tc002-boot{x:0>8}", .{st.boot_id}) catch buf[0..0];
+        return identity.deviceId(buf, st.mac_present != 0, st.mac, st.boot_id);
     }
 
     fn discoveryTopic(self: *Netd, buf: []u8, e: Entity) []const u8 {

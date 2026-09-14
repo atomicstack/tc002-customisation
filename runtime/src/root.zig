@@ -49,6 +49,7 @@ test {
     _ = @import("net/credfile.zig");
     _ = @import("net/clients.zig");
     _ = @import("net/mqtt.zig");
+    _ = @import("net/identity.zig");
     _ = @import("supervisor/config.zig");
     _ = @import("supervisor/mcu.zig");
     _ = @import("supervisor/logring.zig");
