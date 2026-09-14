@@ -126,6 +126,11 @@ const Relay = struct { used: bool = false, id: u64 = 0, deadline_ns: u64 = 0, fr
 const mcu_reply_timeout_ns: u64 = 500_000_000;
 /// the ordinary mcu poll cadence: version, battery and usb state every thirty seconds
 const mcu_poll_ns: u64 = 30 * ns_per_s;
+/// how often the usb rail is read. the pack voltage moves over hours and is polled on
+/// `--mcu-poll`; the rail changes the instant someone lifts the clock off its dock, and they are
+/// looking at the panel when they do it. one six-byte frame a second on a 1.5 mbaud link is
+/// nothing, and it is the difference between "it noticed" and "it did not".
+const usb_poll_ns: u64 = 1 * ns_per_s;
 
 /// the single nonblocking handler for the pixel mcu's serial link: one outstanding query at a
 /// time, bounded reads, unsolicited frames (mic reports) counted and discarded, no state changes
@@ -136,6 +141,9 @@ const McuLink = struct {
     awaiting: ?u8 = null,
     deadline_ns: u64 = 0,
     next_poll_ns: u64 = 0,
+    /// the usb rail is asked for on its own schedule, far more often than the pack voltage.
+    /// undocking is an event someone is waiting to see acknowledged; a cell's charge is not.
+    next_usb_ns: u64 = 0,
     poll_ns: u64 = mcu_poll_ns,
     /// what `--mcu-poll` asked for. the low-battery policy borrows `poll_ns` while the cell is
     /// low and hands it back to this, rather than to the default -- otherwise a device configured
@@ -147,6 +155,10 @@ const McuLink = struct {
     timeouts: u32 = 0,
     unsolicited: u32 = 0,
     last_ok_ns: u64 = 0,
+    /// when a *battery* reply last parsed. `last_ok_ns` says the link is alive, which the usb poll
+    /// now keeps true every second; freshness of the charge has to be measured on its own or a
+    /// stale voltage would look current for ever.
+    last_battery_ns: u64 = 0,
     version: [24]u8 = undefined,
     version_len: usize = 0,
 
@@ -208,13 +220,20 @@ const McuLink = struct {
                 if (mcu.parseBattery(f.payload)) |b| {
                     s.snapshot.battery_mv = b.millivolts;
                     s.snapshot.battery_pct = if (b.raw_first <= 100) b.raw_first else 255;
+                    self.last_battery_ns = now;
                     if (s.cfg_stats) log.info("mcu battery: first={d} raw={d} -> {d} mv", .{ b.raw_first, b.raw_value, b.millivolts });
                 } else log.warn("mcu battery reply too short: {d} bytes", .{f.payload.len});
-                self.send(@intFromEnum(mcu.Command.query_usb), "", now);
             },
             @intFromEnum(mcu.Command.query_usb) => {
                 if (f.payload.len >= 1) {
-                    s.snapshot.usb_present = if (f.payload[0] != 0) 1 else 0;
+                    const now_usb: u8 = if (f.payload[0] != 0) 1 else 0;
+                    // logged on every change rather than only under --stats: this is the line that
+                    // says whether a charging dock reaches the same rail the mcu reports, which is
+                    // not something the vendor library answered
+                    if (now_usb != s.snapshot.usb_present) {
+                        log.info("mcu usb rail: {s} (raw {d})", .{ if (now_usb == 1) "present" else "absent", f.payload[0] });
+                    }
+                    s.snapshot.usb_present = now_usb;
                     if (s.cfg_stats) log.info("mcu usb: {d}", .{f.payload[0]});
                 }
             },
@@ -238,12 +257,24 @@ const McuLink = struct {
             }
             return;
         }
-        if (now < self.next_poll_ns) return;
-        self.next_poll_ns = now + self.poll_ns;
         if (!self.version_asked) {
+            if (now < self.next_poll_ns) return;
+            self.next_poll_ns = now + self.poll_ns;
             self.version_asked = true;
             self.send(@intFromEnum(mcu.Command.query_version), "", now);
-        } else self.send(@intFromEnum(mcu.Command.query_battery), "", now);
+            return;
+        }
+        // one outstanding request at a time, so the two cadences take turns: whichever is due.
+        // usb first when both are -- it is the one with someone watching the panel for it.
+        if (now >= self.next_usb_ns) {
+            self.next_usb_ns = now + usb_poll_ns;
+            self.send(@intFromEnum(mcu.Command.query_usb), "", now);
+            return;
+        }
+        if (now >= self.next_poll_ns) {
+            self.next_poll_ns = now + self.poll_ns;
+            self.send(@intFromEnum(mcu.Command.query_battery), "", now);
+        }
     }
 };
 
@@ -2538,7 +2569,7 @@ const Supervisor = struct {
         return .{
             .millivolts = self.snapshot.battery_mv,
             .usb = self.snapshot.usb_present,
-            .fresh = self.mcu_link.last_ok_ns != 0 and now -| self.mcu_link.last_ok_ns <= mcu_stale_after_ns,
+            .fresh = self.mcu_link.last_battery_ns != 0 and now -| self.mcu_link.last_battery_ns <= mcu_stale_after_ns,
         };
     }
 

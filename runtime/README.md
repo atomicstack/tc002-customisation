@@ -245,11 +245,15 @@ a big-endian 16-bit byte sum, commands `01` mic level, `02` usb state, `03` batt
 report, `10` power off, `11` version, `13` led register. the battery reply is one byte (percent) and a
 16-bit value the vendor multiplies by 1.3235 to get millivolts; measured here: version `V1.0.17`,
 `89 %`, raw 3121 → 4130 mV, usb present. the supervisor only queries (version once, then battery and
-usb every `--mcu-poll` seconds, one outstanding request, 500 ms timeout), and sends `10` power off
+the pack voltage every `--mcu-poll` seconds and the usb rail **every second**, one outstanding
+request at a time, 500 ms timeout), and sends `10` power off
 when the cell runs out — see [the low-battery shutdown](../RUNTIME.md#the-low-battery-shutdown).
-while the battery is low the poll drops to three times a second, so a cable plugged in during a
-countdown is noticed within a second rather than at the next thirty-second poll; it is handed back
-to whatever `--mcu-poll` asked for, not to the default. the register and firmware-upload commands
+the two cadences are separate because they answer different questions: a cell's charge moves over
+hours, but the rail changes the instant someone lifts the clock off its dock and they are looking
+at the panel when they do it. while the battery is *low* the voltage poll also drops to three times
+a second, and is handed back to whatever `--mcu-poll` asked for rather than to the default.
+measured on the device: an undock is seen in under a second, and the pogo-pin dock registers on the
+same `vin` the usb-c port does. the register and firmware-upload commands
 are still never sent. the mcu also streams unsolicited mic reports that the synchroniser discards.
 
 ### time sync (sntp)

@@ -1398,7 +1398,7 @@ usb power is present.
 | where the decision lives | `runtime/src/supervisor/power.zig`, pure and host-tested |
 | where it acts | the supervisor, which is the only process that writes flash |
 | how it powers off | the mcu's own `powerOff` command (`0x10`) |
-| how often it is asked | every second; the mcu is polled every 30 s, or **three times a second while the cell is low** |
+| how often it is asked | every second; the pack voltage every 30 s (three times a second while the cell is low), and the **usb rail every second** |
 | what the panel shows | a [coloured battery icon](#the-battery-icon) on an unplug and on the way down through 50%, 20% and 5% |
 
 **the warning threshold is derived, not configured.** it is `shutdown_mv + 50`,
@@ -1422,7 +1422,11 @@ it is raised by three kinds of moment, and only while the device is actually
 running on its cell:
 
 - **the cable coming out.** an unplug shows the icon at whatever the charge is,
-  which is the one moment you most want to know it.
+  which is the one moment you most want to know it. the rail is read once a
+  second for this: it was once a side effect of the thirty-second battery poll,
+  and a ten-second undock could then pass entirely between two readings and be
+  seen by nobody. measured after the split: **under a second**, and the pogo-pin
+  dock registers on the same `vin` the usb-c port does.
 - **falling through 50%, 20% or 5%.** downwards only — a clock that flashed at
   you while it was charging back up would be noise. falling past two thresholds
   between one mcu reading and the next reports the lower one.
