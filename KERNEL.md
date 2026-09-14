@@ -392,13 +392,21 @@ same scene before and after:
 | normal (cfs) | 33, 34, 70 | 5,026 µs | 278–530 µs |
 | `SCHED_FIFO` 10 | 24–76 | 4,938 µs | 223–554 µs |
 
-no difference at all. the reason is visible in a second measurement: the same
-build on the **clock** scene, which transfers twice a second instead of sixty
-times, reports `late=0/32, worst 103 µs`. the jitter tracks the *transfer rate*,
-not cpu contention — so the renderer is not waiting for a cpu it could be given
-sooner, it is busy. a 3,072-byte frame is about 2.5 ms on the spi bus
-([`LED-SPI.md`](LED-SPI.md)), ~15% of a 16.7 ms frame period, and the loop
-cannot return to its next deadline while that write is in progress.
+no difference at all. timing the two halves of a frame separately says why:
+
+| per frame, plasma at 60 fps | mean | worst |
+|---|---|---|
+| drawing it | **95 µs** | 252 µs |
+| writing it to `spidev0.0` | **4,999 µs** | 5,229 µs |
+
+the renderer is not waiting for a cpu it could be given sooner — it is sitting
+in one `write`, for **5 ms of every 16.7 ms frame period**. no scheduling
+policy can help with that, which is exactly what the table above shows.
+
+that is also twice what this repo assumed: the readme puts a 3,072-byte frame
+at "~2.5 ms on the bus" at 10 mhz, which is the right arithmetic for the bytes.
+where the other 2.5 ms goes has not been looked at, and it is the single
+biggest lever on this device's frame budget.
 
 so the thing worth attacking is the frame delivery path, not the scheduler.
 the option exists (`--rt-priority N`, off by default) and costs nothing when
