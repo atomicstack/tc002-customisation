@@ -32,7 +32,8 @@ APPLETS_BOOT="SH_IS_ASH ASH ASH_OPTIMIZE_FOR_SIZE FEATURE_SH_MATH
               ROUTE SLEEP CAT KILL ECHO TEST PIDOF"
 APPLETS_DEBUG="GREP SED HEAD TAIL WC LS PS DF FREE MKDIR RM CP MV LN CHMOD SYNC DMESG
                MOUNT UMOUNT TR CUT SORT UNIQ TOUCH DATE HEXDUMP MD5SUM SHA256SUM
-               FEATURE_FANCY_HEAD FEATURE_FANCY_TAIL FEATURE_PS_LONG FEATURE_DATE_ISOFMT"
+               FEATURE_FANCY_HEAD FEATURE_FANCY_TAIL FEATURE_PS_LONG FEATURE_DATE_ISOFMT
+               FEATURE_HUMAN_READABLE"
 # non-applet switches that are not optional:
 #  BUSYBOX -- the multiplexer itself. `allnoconfig` turns it off, and without it the binary only
 #             works through argv[0] symlinks: `busybox insmod ...`, which is how every boot script
