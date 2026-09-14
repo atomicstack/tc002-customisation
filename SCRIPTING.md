@@ -219,9 +219,14 @@ thirty-third subscription by logging why rather than by failing the call, so `GE
 where a topic that never arrives explains itself.
 
 thirty-two is not a taste judgement — it was eight, and that was. it is what one reconnect can
-replay into netd's 4 kb outbound buffer after the device's own command topics have taken their
-share, because every topic here is re-subscribed on every reconnect and a topic that silently
-stops arriving afterwards is the worst failure this code has.
+replay into netd's outbound buffer after the device's own command topics have taken their share,
+because every topic here is re-subscribed on every reconnect and a topic that silently stops
+arriving afterwards is the worst failure this code has.
+
+that buffer was 4 kb, and adding the `cmd/sound` command topic left the worst-case replay three
+bytes inside it. it is 5 kb now, and the sum is a compile-time assertion in
+`messages.BerryEvent` rather than arithmetic in a comment, so the next command topic either fits
+or fails the build.
 
 **a filter may not cover the device's own command topics.** netd hands a
 script-matched arrival to the script and stops there, so `tc002/cmd/#` — or a bare

@@ -502,12 +502,11 @@ pub const BerryEvent = struct {
     /// list has a physical bound.
     ///
     /// on every reconnect netd re-subscribes to each of these, one packet each, queued into its
-    /// 4,096-byte outbound buffer and flushed once at the end. the device's own command topics go
-    /// first and take at most ~625 bytes of it (seven `<prefix>/cmd/*` with a 64-byte prefix, plus
-    /// the discovery birth topic), leaving ~3,471. a subscribe for a 96-byte filter is 103 bytes,
-    /// so 33 fit and **32 is the most that always fits with room to spare**. past that the batch
-    /// would be split or dropped, and a topic that silently stops arriving after a reconnect is the
-    /// worst failure this code has.
+    /// `mqtt.out_buf_len` outbound buffer and flushed once at the end. the device's own command
+    /// topics go first, as a single subscribe, and the script's filters follow one packet each. a
+    /// topic that silently stops arriving after a reconnect is the worst failure this code has, so
+    /// the budget is asserted below rather than recomputed by hand here -- the arithmetic was prose
+    /// until `cmd/sound` was added and moved every number in it.
     ///
     /// it costs 32 x 97 bytes of static list in netd and the same again in the supervisor: 6.2 kb
     /// for the pair, against 16 mb of available ram.
@@ -515,6 +514,24 @@ pub const BerryEvent = struct {
     /// it lives here because netd does the subscribing and the supervisor owns the list, and two
     /// constants that must agree are one constant.
     pub const topics_max = 32;
+
+    comptime {
+        // the worst-case reconnect replay must fit netd's outbound buffer in one flush. the prefix
+        // is at its longest, every filter is `topic_max`, and home-assistant discovery is on.
+        //
+        // this sums the space each subscribe needs to *encode*, which slightly overestimates the
+        // buffer actually consumed, since a packet compacts behind its real header once written.
+        // that is the right direction for a bound: it can only refuse a replay that would have
+        // fitted, never admit one that would not.
+        const prefix_max = config.text_max;
+        var cmd_len: usize = 0;
+        for (mqtt.command_suffixes) |suffix| cmd_len += prefix_max + 1 + suffix.len;
+        cmd_len += prefix_max + "/status".len; // the discovery birth topic rides along
+        const commands = mqtt.subscribeSpace(mqtt.command_suffixes.len + 1, cmd_len);
+        const scripts = topics_max * mqtt.subscribeSpace(1, topic_max);
+        std.debug.assert(commands + scripts <= mqtt.out_buf_len);
+    }
+
     /// the longest topic filter. mqtt itself allows far more; this is what the two lists above
     /// hold, and a filter is a device-side thing rather than a general subscription.
     pub const topic_max = 96;

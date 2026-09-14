@@ -519,8 +519,42 @@ test "topic filters match the way the broker says they do" {
     try std.testing.expect(!topicMatches("home/door", "home/doorbell"));
 }
 
+/// netd's outbound buffer, and the thing the reconnect replay has to fit inside. it is named
+/// here rather than in netd because `messages.BerryEvent.topics_max` is derived from it: a size
+/// that two files reason about separately is a size that drifts, and the drift shows up as a
+/// subscription that silently stops arriving.
+///
+/// it was 4,096, chosen so 32 script filters replay "with room to spare". adding `cmd/sound` to
+/// the command topics spent that room: the bound asserted in `messages.BerryEvent` went from
+/// 4,016 to **4,093 of 4,096**, three bytes short of the failure it was sized to avoid, and the
+/// next command topic would have overflowed it silently. 1 kb more static netd memory, against
+/// ~11 mb available, restores the margin and leaves room for about ten more filters.
+pub const out_buf_len = 5120;
+
+/// the buffer space `encodeSubscribe` needs for `count` filters totalling `total_len` bytes.
+///
+/// this is deliberately the space needed to *encode*, not the size of the packet produced. the
+/// encoder lays the variable header out at `out[5..]` -- five bytes being the type byte plus a
+/// remaining-length varint at its longest -- and only then compacts it behind the real header. so
+/// a subscribe that ends up 103 bytes long still needs 106 free, and a caller that budgeted for
+/// the smaller number would fail on the last packet of a full replay.
+pub fn subscribeSpace(count: usize, total_len: usize) usize {
+    return 5 + 2 + total_len + count * 3; // header slack, packet id, then per filter: length, topic, qos
+}
+
+test "subscribing needs more room than the packet it produces" {
+    var buf: [256]u8 = undefined;
+    const filter = "a" ** 96;
+    const n = try encodeSubscribe(&buf, 1, &.{filter}, 1);
+    try std.testing.expectEqual(@as(usize, 103), n);
+    try std.testing.expectEqual(@as(usize, 106), subscribeSpace(1, filter.len));
+    // and the bound must really be enough: the encoder fails in exactly one less
+    var tight: [105]u8 = undefined;
+    try std.testing.expectError(error.Overflow, encodeSubscribe(&tight, 1, &.{filter}, 1));
+}
+
 /// the topics the device answers commands on, under whatever prefix is configured.
-pub const command_suffixes = [_][]const u8{ "cmd/frame", "cmd/screen", "cmd/scene", "cmd/action", "cmd/notify", "cmd/config", "cmd/input" };
+pub const command_suffixes = [_][]const u8{ "cmd/frame", "cmd/screen", "cmd/scene", "cmd/action", "cmd/notify", "cmd/config", "cmd/input", "cmd/sound" };
 
 /// would a script's filter take delivery of the device's own commands? netd hands a matching
 /// arrival to the script and returns, so `tc002/cmd/#` -- or a bare `#` -- would quietly swallow
@@ -541,6 +575,7 @@ test "a filter that would swallow the command surface is recognised" {
     try std.testing.expect(shadowsCommands("#", "tc002"));
     try std.testing.expect(shadowsCommands("tc002/+/scene", "tc002"));
     try std.testing.expect(shadowsCommands("tc002/cmd/frame", "tc002"));
+    try std.testing.expect(shadowsCommands("tc002/cmd/sound", "tc002"));
     try std.testing.expect(shadowsCommands("clock/cmd/notify", "clock"));
     // the prefix is the device's own, so another device's commands are not ours to protect
     try std.testing.expect(!shadowsCommands("other/cmd/#", "tc002"));

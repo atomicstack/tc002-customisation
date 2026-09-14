@@ -1562,6 +1562,11 @@ the device has a speaker, and the runtime can store short sounds on `/data` and 
 time: on its own, alongside a notification or a canvas, or from a berry script with
 `tc002.play('chime')`.
 
+four ways in, all of them the same command underneath — `POST /sound` over http, `cmd/sound` over
+mqtt, `tc002.play()` from a script, or the on-panel menu. uploading a wav is http only
+(`PUT /sounds/{name}`, in chunks): mqtt has no place to put 192 kb, and the reason the http side
+is chunked at all is that netd caps a request body at 8 kb.
+
 **off by default**, like scripting: `tc002-audiod` is not spawned until `sound.enabled`.
 
 ### what plays
@@ -1717,6 +1722,7 @@ never falls back to plaintext silently. the client id defaults to
 | `cmd/frame` | in, qos 1 | binary, 2,510 bytes big-endian: `u64 request_id`, `u32 epoch`, `u16 duration_s`, 2,496 rgb bytes. a binary payload cannot leave a field out, so zero says "you pick": a zero id is minted by the device, a zero epoch means the current one; or 2,514 / 2,515 bytes with `u8 effect`, `u8 direction`, `u16 duration_ms` and optionally `u8 exit` before the rgb (see [transitions](#transitions)) |
 | `cmd/config` | in, qos 1 | the control subset only: `brightness`, `base`, `generator` (transient, like `/action` and `/scene`). any durable field is answered `admin_only`; those are administered over http |
 | `cmd/input` | in, qos 1 | the `/input` json body; answered on `result` |
+| `cmd/sound` | in, qos 1 | the `POST /sound` json body — `{"name","volume"?,"loop"?}` or `{"stop":true}`; answered on `result`. the only command topic whose answer is not the renderer's: the id in that `result` is minted by the device, because the body carries no `request_id` to echo. `sound.enabled` is off by default, and playing while it is off answers `unavailable` rather than failing silently |
 | `cmd/screen` | in, qos 1 | any payload; answered on `screen` |
 | `screen` | out, not retained | binary, 2,502 bytes: `u32 revision, u8 brightness, u8 power`, then the 2,496 rgb bytes as shown |
 | `input/left`, `input/middle`, `input/right`, `input/knob`, `input/rotary` | out, qos 0, **not retained** | one json object per event, `{"event_type":"press\|release\|long\|cw\|ccw","position":n}`, the shape home assistant's mqtt `event` entities consume. deliberately not retained: a consumer that reconnects after being offline must not act on a stale press. events raised while the broker is unreachable are lost |

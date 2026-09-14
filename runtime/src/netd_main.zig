@@ -193,7 +193,7 @@ const Netd = struct {
     mfd: ?sys.Fd = null,
     m_in: [4096]u8 = undefined,
     m_in_len: usize = 0,
-    m_out: [4096]u8 = undefined,
+    m_out: [mqtt.out_buf_len]u8 = undefined,
     m_out_len: usize = 0,
     m_out_off: usize = 0,
     m_pending: [mqtt_pending_max]MqttPending = [_]MqttPending{.{}} ** mqtt_pending_max,
@@ -257,7 +257,15 @@ const Netd = struct {
     }
 
     fn onSoundResult(self: *Netd, request_id: u64, r: messages.SoundResult, now: u64) void {
-        const c = self.findConn(true, request_id) orelse return;
+        const c = self.findConn(true, request_id) orelse {
+            // no connection is waiting, so this answers a `cmd/sound` arrival
+            for (&self.m_pending) |*p| if (p.used and p.id == request_id) {
+                p.used = false;
+                self.publishResult(request_id, r.status, self.status.revision);
+                return;
+            };
+            return;
+        };
         if (c.awaiting != .sound_result) return;
         switch (r.status) {
             .applied => {
@@ -1605,17 +1613,19 @@ const Netd = struct {
                 self.mqttFlush();
             },
             .send_subscribe => {
-                var tb: [7][96]u8 = undefined;
-                var topics: [7][]const u8 = undefined;
-                const names = [_][]const u8{ "cmd/scene", "cmd/action", "cmd/notify", "cmd/frame", "cmd/config", "cmd/screen", "cmd/input" };
-                for (names, 0..) |n, i| topics[i] = self.topic(&tb[i], n);
+                // the command topics are `mqtt.command_suffixes` rather than a second list written
+                // out here. they were two lists until `cmd/sound` was added, and a divergence
+                // means either subscribing to a topic `shadowsCommands` does not protect, or
+                // protecting one that nothing listens on -- both silent.
+                const cmd_count = mqtt.command_suffixes.len;
+                var tb: [cmd_count][96]u8 = undefined;
+                var all: [cmd_count + 1][]const u8 = undefined;
+                for (mqtt.command_suffixes, 0..) |n, i| all[i] = self.topic(&tb[i], n);
                 var birth_buf: [96]u8 = undefined;
                 const birth = std.fmt.bufPrint(&birth_buf, "{s}/status", .{self.cfg.discovery_prefix.slice()}) catch "homeassistant/status";
-                var all: [8][]const u8 = undefined;
-                for (topics, 0..) |t, i| all[i] = t;
-                all[7] = birth;
+                all[cmd_count] = birth;
                 const space = self.mqttSpace();
-                const n = mqtt.encodeSubscribe(space, self.client.packetId(), if (self.cfg.discovery) all[0..8] else all[0..7], 1) catch return;
+                const n = mqtt.encodeSubscribe(space, self.client.packetId(), if (self.cfg.discovery) all[0 .. cmd_count + 1] else all[0..cmd_count], 1) catch return;
                 self.mqttQueue(n);
                 self.m_connected = true;
                 // and every topic a script asked for. a reconnect is a new session, so these have
@@ -1791,7 +1801,7 @@ const Netd = struct {
             self.mqttRelay(.screen_get, self.newId(), 0, now);
             return;
         }
-        const kind: api.BodyKind = if (std.mem.eql(u8, suffix, "scene")) .scene else if (std.mem.eql(u8, suffix, "action")) .action else if (std.mem.eql(u8, suffix, "notify")) .notify else if (std.mem.eql(u8, suffix, "config")) .config_patch else if (std.mem.eql(u8, suffix, "input")) .input else return;
+        const kind: api.BodyKind = if (std.mem.eql(u8, suffix, "scene")) .scene else if (std.mem.eql(u8, suffix, "action")) .action else if (std.mem.eql(u8, suffix, "notify")) .notify else if (std.mem.eql(u8, suffix, "config")) .config_patch else if (std.mem.eql(u8, suffix, "input")) .input else if (std.mem.eql(u8, suffix, "sound")) .sound else return;
         switch (api.parseBody(kind, p.payload, &arena, self.newId())) {
             .reject => |j| {
                 var o = Out{ .buf = &json_buf };
@@ -1807,6 +1817,12 @@ const Netd = struct {
                     .power => self.mqttRelay(.{ .power = .{ .on = @intFromBool(a.power.?) } }, a.request_id, a.epoch orelse 0, now),
                 },
                 .input => |i| self.mqttRelay(.{ .inject_input = .{ .control = @intFromEnum(i.control), .event = @intFromEnum(i.event), .steps = i.steps } }, i.request_id, i.epoch orelse 0, now),
+                // sound is the first ask-style command to reach mqtt: the supervisor answers with a
+                // `sound_result` rather than an `applied`, which is why `onSoundResult` grew an
+                // mqtt arm. the id is minted here the way `cmd/screen` mints one -- the body has no
+                // request_id field, so there is nothing of the caller's to echo back.
+                .sound_play => |sp| self.mqttRelay(.{ .sound_cmd = messages.SoundCmd.init(.play, sp.name, sp.volume orelse 0, sp.loop) }, self.newId(), 0, now),
+                .sound_stop => self.mqttRelay(.{ .sound_cmd = messages.SoundCmd.init(.stop, "", 0, false) }, self.newId(), 0, now),
                 .notify => |n| self.mqttRelay(.{ .notify = messages.Notify.init(n.text, n.colour, n.duration_s, messages.Transition.fromSpec(n.transition)) }, n.request_id, n.epoch orelse 0, now),
                 .config_patch => |cp| {
                     // the control subset only: transient brightness and scene parameters
