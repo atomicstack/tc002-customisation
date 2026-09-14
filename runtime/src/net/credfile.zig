@@ -59,6 +59,19 @@ pub fn encode(creds: Credentials, store: *const clients.Store, out: []u8) []cons
     return out[0..w];
 }
 
+/// the two roles that existed before scopes, as the scope sets they meant.
+///
+/// `control` is exact: it is what the built-in control secret still holds. `read` is not, and
+/// cannot be -- it reached `GET /events`, which is now under `logs` alongside the log ring it was
+/// deliberately kept away from. it migrates to what it unambiguously had, and loses the event
+/// stream rather than gaining the ring: granting less is a broken integration that says so, and
+/// granting more is a quiet privilege upgrade nobody asked for.
+fn legacyRole(name: []const u8) ?clients.Set {
+    if (std.mem.eql(u8, name, "control")) return api.control_scopes;
+    if (std.mem.eql(u8, name, "read")) return clients.Scope.status.bit() | clients.Scope.screen.bit();
+    return null;
+}
+
 fn hexToken(text: []const u8) ?api.Token {
     if (text.len != hex_len) return null;
     var tok: api.Token = undefined;
@@ -77,6 +90,7 @@ pub fn parse(bytes: []const u8) ?Parsed {
     var control: ?api.Token = null;
     var admin: ?api.Token = null;
     var store = clients.Store{};
+    var legacy_role_seen = false;
     var lines = std.mem.splitScalar(u8, bytes, '\n');
     while (lines.next()) |raw_line| {
         const line = std.mem.trim(u8, raw_line, " \t\r");
@@ -96,14 +110,23 @@ pub fn parse(bytes: []const u8) ?Parsed {
             const scope_text = field.next() orelse return null;
             const token_text = field.next() orelse return null;
             if (field.next() != null) return null;
-            const scopes = clients.parseSet(scope_text) orelse return null;
+            const scopes = clients.parseSet(scope_text) orelse blk: {
+                // a file written before scopes existed holds a role name here. refusing it would
+                // be correct about the format and catastrophic in effect: the caller answers an
+                // unreadable credentials file by generating new tokens, so a device would come
+                // back from this upgrade having silently invalidated every integration it had.
+                // so a role is migrated to the scopes it used to mean, and the file is rewritten.
+                const migrated = legacyRole(scope_text) orelse return null;
+                legacy_role_seen = true;
+                break :blk migrated;
+            };
             store.add(name, scopes, hexToken(token_text) orelse return null, 0) catch return null;
         } else return null; // an unknown line means a format we do not understand
     }
     return .{
         .creds = .{ .control = control orelse return null, .admin = admin orelse return null },
         .clients = store,
-        .legacy = false,
+        .legacy = legacy_role_seen,
     };
 }
 
@@ -172,6 +195,32 @@ test "client lines round-trip alongside the built-in tokens" {
     try testing.expectEqual(@as(usize, 2), p.clients.len);
     try testing.expectEqual(wall, p.clients.find("wall").?.scopes);
     try testing.expectEqual(kitchen, p.clients.find("kitchen").?.scopes);
+}
+
+test "a file written before scopes keeps its clients, migrated rather than thrown away" {
+    // this is not hypothetical: the device had exactly this file when the scopes build was first
+    // deployed to it. refusing it would have made the supervisor generate new tokens and silently
+    // invalidate every integration on the network.
+    const older = "control=" ++ "ab" ** 32 ++ "\nadmin=" ++ "cd" ** 32 ++
+        "\nclient=kitchen,control," ++ "11" ** 32 ++ "\nclient=wall,read," ++ "22" ** 32 ++ "\n";
+    const p = parse(older).?;
+    try testing.expectEqual(@as(usize, 2), p.clients.len);
+    try testing.expectEqual(api.control_scopes, p.clients.find("kitchen").?.scopes);
+    try testing.expectEqual(clients.Scope.status.bit() | clients.Scope.screen.bit(), p.clients.find("wall").?.scopes);
+    // the built-in secrets are untouched, which is the whole point
+    try testing.expectEqual([_]u8{0xab} ** 32, p.creds.control);
+    try testing.expectEqual([_]u8{0xcd} ** 32, p.creds.admin);
+    // and it is reported as legacy, so the caller rewrites the file in the new form and the
+    // migration happens once rather than on every start
+    try testing.expect(p.legacy);
+
+    var buf: [encoded_max]u8 = undefined;
+    const rewritten = encode(p.creds, &p.clients, &buf);
+    try testing.expect(std.mem.indexOf(u8, rewritten, "client=kitchen,status|screen|logs|notify|display|sound|input,") != null);
+    try testing.expect(std.mem.indexOf(u8, rewritten, "client=wall,status|screen,") != null);
+    // the rewritten file parses as an ordinary one, with nothing left to migrate
+    const again = parse(rewritten).?;
+    try testing.expect(!again.legacy);
 }
 
 test "a scope name this build does not know refuses the whole file" {

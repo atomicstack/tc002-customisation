@@ -1105,6 +1105,17 @@ to be refusable. treat granting `input` as granting `settings`.
 a named token is never granted `tokens`, and asking for it is refused by name
 rather than quietly dropped.
 
+**a credentials file written before scopes existed is migrated, not refused.**
+its client lines carry a role name; `control` becomes exactly the set the
+built-in control secret holds, and `read` becomes `status screen` — it reached
+`GET /events`, which now lives under `logs` beside the log ring it was
+deliberately kept away from, so it loses the event stream rather than gaining
+the ring. the file is rewritten in the new form on the next start, so the
+migration happens once. this matters more than it sounds: an unreadable
+credentials file makes the supervisor **generate new tokens**, so refusing the
+old format would have answered an upgrade by silently invalidating every
+integration on the network.
+
 **rotating replaces a secret in place** rather than issuing a second token and
 revoking the first. at capacity there is no free slot, so create-then-revoke
 could not rotate the token you would most need to; it is also two calls where a
