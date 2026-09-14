@@ -1251,12 +1251,18 @@ a behaviour that only the new build has, or the mtime of a pushed binary — and
 all of those work only when the change happens to be observable. a push that
 silently left an old binary in place passed every one of them.
 
-**every binary logs its own on the first line it writes**, and the supervisor
-pipes each child's stdout into the log ring, so one call shows the whole set:
+**every binary logs its own as soon as it can**, and the supervisor pipes each
+child's stdout into the log ring, so one call shows the whole set:
 
 ```sh
 tc002 logs | grep build
 ```
+
+the supervisor says it twice on purpose: once at entry, which reaches the log
+*file* and is the only place it appears if a run dies before the ring exists, and
+once the ring is up, which is what `GET /logs` can actually see. the first
+version of this shipped with only the entry line, and the supervisor was the one
+binary missing from its own check.
 
 that is the check that matters. the six binaries are built together and share an
 id by construction, so a disagreement in that list is not a build problem — it is

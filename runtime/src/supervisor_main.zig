@@ -2811,6 +2811,11 @@ fn redirectLog(cfg: cli.Config) void {
 fn run(cfg_in: cli.Config, environ: anytype, args: []const [:0]const u8) !u8 {
     const t0 = sys.monotonicNs();
     log.sink = ringSink;
+    // said again now that the ring exists. the line in `main` goes to the log file, which is the
+    // right place when a run fails before it gets this far; this one goes to `GET /logs`, where
+    // every child's build line lands too, so one call shows the whole set. the check is worth
+    // nothing if the supervisor is the one binary missing from it.
+    log.info("build {s}", .{build_options.build_id});
     // --tz may be an iana zone name; the renderer only speaks posix rules
     var cfg = cfg_in;
     var tz_buf: [config.text_max + 1]u8 = undefined;
