@@ -43,6 +43,7 @@ commands:
                                       clock_font clock_colour_mode clock_colour clock_colour2 clock_gradient
                                       clock_spread ip_mode night night_brightness night_lead_min latitude
                                       longitude location_auto berry_enabled berry_heap_kb berry_handler_ms
+                                      battery_shutdown battery_shutdown_mv battery_grace_s
                                       (scripting: see SCRIPTING.md); timezone takes a posix rule or an iana name
                                       (Europe/Amsterdam), which also places the device for the night schedule
   config-save [revision]              write the settings file, optionally only at that revision

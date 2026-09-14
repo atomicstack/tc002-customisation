@@ -19,12 +19,14 @@ const logring = @import("supervisor/logring.zig");
 const tz = @import("scene/tz.zig");
 const clock = @import("scene/clockfont.zig");
 const scene = @import("scene/scene.zig");
+const arbiter = @import("scene/arbiter.zig");
 const ip = @import("scene/ip.zig");
 const clockscene = @import("scene/clock.zig");
 const param = @import("scene/param.zig");
 const sntp = @import("supervisor/sntp.zig");
 const metrics = @import("supervisor/metrics.zig");
 const night = @import("supervisor/night.zig");
+const power = @import("supervisor/power.zig");
 const canvas = @import("scene/canvas.zig");
 const berry_store = @import("berry/store.zig");
 const requests = @import("berry/requests.zig");
@@ -54,6 +56,15 @@ const tick_ns: u64 = 100_000_000;
 /// how often the night schedule is consulted: a ramp of tens of minutes over a hundred steps moves
 /// no faster than this, and asking costs a few dozen floating point operations
 const night_poll_ns: u64 = 10 * ns_per_s;
+/// the low-battery policy is evaluated every second so a countdown can report every second, and
+/// so a cable plugged in during one is noticed within a second of the mcu saying so.
+const power_poll_ns: u64 = 1 * ns_per_s;
+/// how long a battery reading stays worth acting on. three missed polls: the link has to be
+/// properly gone, not briefly busy, before a countdown is cancelled for staleness.
+const mcu_stale_after_ns: u64 = 95 * ns_per_s;
+/// the mcu is asked three times a second while the battery is low, so a cable reaches the policy
+/// quickly. at 30 s a countdown would be over before the next reading arrived.
+const mcu_poll_low_ns: u64 = 333 * std.time.ns_per_ms;
 const property_timeout_ns: u64 = 2 * ns_per_s;
 const ipc_packets_per_iteration = 32;
 const relay_timeout_ns: u64 = 2 * ns_per_s;
@@ -110,6 +121,8 @@ fn ringSink(line: []const u8) void {
 const Relay = struct { used: bool = false, id: u64 = 0, deadline_ns: u64 = 0, from_ntfy: bool = false };
 
 const mcu_reply_timeout_ns: u64 = 500_000_000;
+/// the ordinary mcu poll cadence: version, battery and usb state every thirty seconds
+const mcu_poll_ns: u64 = 30 * ns_per_s;
 
 /// the single nonblocking handler for the pixel mcu's serial link: one outstanding query at a
 /// time, bounded reads, unsolicited frames (mic reports) counted and discarded, no state changes
@@ -120,7 +133,12 @@ const McuLink = struct {
     awaiting: ?u8 = null,
     deadline_ns: u64 = 0,
     next_poll_ns: u64 = 0,
-    poll_ns: u64 = 30 * ns_per_s,
+    poll_ns: u64 = mcu_poll_ns,
+    /// what `--mcu-poll` asked for. the low-battery policy borrows `poll_ns` while the cell is
+    /// low and hands it back to this, rather than to the default -- otherwise a device configured
+    /// with a slower or faster poll would silently be reset to thirty seconds the first time its
+    /// battery dipped.
+    configured_poll_ns: u64 = mcu_poll_ns,
     version_asked: bool = false,
     replies: u32 = 0,
     timeouts: u32 = 0,
@@ -451,6 +469,9 @@ const Supervisor = struct {
     /// the night brightness schedule; the phase it is in lives in the snapshot
     night: night.Schedule = .{},
     next_night_poll: u64 = 0,
+    /// the low-battery policy, and when it was last asked
+    power_policy: power.Policy = .{},
+    next_power_poll: u64 = 0,
 
     fn send(self: *Supervisor, msg: messages.Message) void {
         self.request_id += 1;
@@ -2456,6 +2477,89 @@ const Supervisor = struct {
         } });
     }
 
+    /// the low-battery policy: warn, count down, and then put the device away.
+    ///
+    /// the decision is `supervisor/power.zig` and is pure; this is the edge that feeds it a
+    /// reading and acts on what comes back. the reading is only offered as fresh while the mcu has
+    /// answered recently, because the poll loop keeps the last value when the link goes quiet and
+    /// a stale 3.4 v would otherwise power off a clock sitting on a charger.
+    fn pollPower(self: *Supervisor, now: u64) void {
+        if (now < self.next_power_poll) return;
+        self.next_power_poll = now + power_poll_ns;
+
+        const fresh = self.mcu_link.last_ok_ns != 0 and now -| self.mcu_link.last_ok_ns <= mcu_stale_after_ns;
+        const reading = power.Reading{
+            .millivolts = self.snapshot.battery_mv,
+            .usb = self.snapshot.usb_present,
+            .fresh = fresh,
+        };
+        const cfg = power.Settings{
+            .enabled = self.cfg.battery.shutdown,
+            .shutdown_mv = self.cfg.battery.shutdown_mv,
+            .grace_s = self.cfg.battery.grace_s,
+        };
+
+        switch (self.power_policy.update(cfg, reading, now)) {
+            .none => {},
+            .low => |mv| {
+                log.warn("battery low: {d} mv and no usb power", .{mv});
+                self.notifyPanel("battery low", .{ 0xff, 0xaa, 0x33 }, 10);
+            },
+            .recovered => log.info("battery back above the warning threshold", .{}),
+            .countdown => |left| {
+                // one notification for the whole countdown rather than one a second: it is an
+                // overlay with a duration, and the renderer is not the place to run a clock
+                if (left == cfg.grace_s) {
+                    log.warn("battery critical at {d} mv: shutting down in {d} s unless usb power arrives", .{ reading.millivolts, left });
+                    self.notifyPanel("plug me in", .{ 0xff, 0x44, 0x44 }, left);
+                }
+            },
+            .cancelled => |why| {
+                log.info("battery shutdown cancelled: {s}", .{@tagName(why)});
+                if (why == .usb) self.notifyPanel("charging", .{ 0x44, 0xff, 0x88 }, 4);
+            },
+            .shutdown => self.powerOffNow(),
+        }
+
+        // while the cell is low the mcu is asked far more often, so a cable reaches the policy in
+        // a second rather than at the next thirty-second poll -- which would be after the
+        // countdown had already run out.
+        const want_ns: u64 = if (self.power_policy.phase == .ok) self.mcu_link.configured_poll_ns else mcu_poll_low_ns;
+        if (self.mcu_link.poll_ns != want_ns) {
+            self.mcu_link.poll_ns = want_ns;
+            self.mcu_link.next_poll_ns = now; // take effect now rather than after the old interval
+        }
+    }
+
+    fn notifyPanel(self: *Supervisor, text: []const u8, colour: [3]u8, seconds: u16) void {
+        const s_clamped: u16 = @max(arbiter.min_duration_s, @min(seconds, arbiter.max_duration_s));
+        self.send(.{ .notify = messages.Notify.init(text, colour, s_clamped, .{}) });
+    }
+
+    /// the cell is flat and nothing is charging it: put the device away.
+    ///
+    /// the order is the whole point. the settings are written first, because this is the last
+    /// moment they can be, and a save begun *after* the power-off command would be exactly the
+    /// interrupted jffs2 write this feature exists to avoid. nothing else here writes flash -- the
+    /// supervisor owns the state directory and the children only relay -- so there is nothing else
+    /// to wind down, and the panel is blanked only so the device does not sit showing a frozen
+    /// clock on the way out.
+    ///
+    /// the power-off goes through the mcu, which is the only thing on this board that can actually
+    /// cut the rails; the soc halting on its own would leave them up. the policy never reaches here
+    /// with a silent mcu, because a link we cannot hear is a link we cannot use.
+    fn powerOffNow(self: *Supervisor) void {
+        log.warn("battery shutdown: {d} mv, no usb power", .{self.snapshot.battery_mv});
+        if (self.cfg.revision != self.cfg.saved_revision) {
+            log.info("battery shutdown: saving settings at revision {d} first", .{self.cfg.revision});
+            _ = self.saveConfig();
+        }
+        self.send(.{ .power = .{ .on = 0 } });
+        self.snapshot.power = 0;
+        self.mcu_link.send(@intFromEnum(mcu.Command.power_off), "", sys.monotonicNs());
+        log.warn("battery shutdown: power-off sent to the mcu", .{});
+    }
+
     /// the night brightness schedule. it drives the panel transiently, exactly as an api client
     /// would: the settings keep the daylight brightness, and nothing is written to flash by a ramp
     /// that runs every evening.
@@ -2731,6 +2835,7 @@ fn run(cfg_in: cli.Config, environ: anytype, args: []const [:0]const u8) !u8 {
     // 8. the pixel mcu link: queries only, on the vendor's baud
     if (!cfg.no_mcu) {
         s.mcu_link.poll_ns = @as(u64, cfg.mcu_poll_s) * ns_per_s;
+        s.mcu_link.configured_poll_ns = s.mcu_link.poll_ns;
         if (sys.uartOpen(cfg.mcu_path, cfg.mcu_baud)) |fd| {
             s.mcu_link.fd = fd;
             try sys.epollAdd(ep, fd, linux.EPOLL.IN, @intFromEnum(Tag.mcu));
@@ -2753,6 +2858,7 @@ fn run(cfg_in: cli.Config, environ: anytype, args: []const [:0]const u8) !u8 {
         s.pollIp(now);
         s.pushDeviceStatus(now);
         s.pollNight(now);
+        s.pollPower(now);
         s.drainNetd(now);
         s.pollNetd(now);
         s.drainNtfy(now);

@@ -1333,6 +1333,7 @@ const Netd = struct {
         self.generatorParamsJson(o, c);
         o.fmt(",\"berry\":{{\"enabled\":{},\"heap_kb\":{d},\"handler_ms\":{d}}}", .{ c.berry.enabled, c.berry.heap_kb, c.berry.handler_ms });
         o.fmt(",\"sound\":{{\"enabled\":{},\"volume\":{d}}}", .{ c.sound.enabled, c.sound.volume });
+        o.fmt(",\"battery\":{{\"shutdown\":{},\"shutdown_mv\":{d},\"grace_s\":{d}}}", .{ c.battery.shutdown, c.battery.shutdown_mv, c.battery.grace_s });
         o.add(",\"allowed_origins\":[");
         for (c.origins[0..c.origin_count], 0..) |*org, i| {
             if (i > 0) o.add(",");

@@ -159,6 +159,13 @@ pub const max_night_lead_min = 120;
 /// with room to do something; the ceiling is what src/berry/vm.zig reserves statically.
 pub const sound_volume_min: u8 = 1;
 pub const sound_volume_max: u8 = 100;
+/// the low-battery thresholds a caller may set. the floor is well under the cell's empty voltage
+/// and the ceiling under its full one, so neither end can be set to "always" or "never" by
+/// accident; `power.zig` carries the numbers the stock firmware used.
+pub const battery_shutdown_mv_min: u16 = 3000;
+pub const battery_shutdown_mv_max: u16 = 4000;
+/// five minutes of countdown is already far longer than a cell at 3.55 v has to spare
+pub const battery_grace_s_max: u16 = 300;
 pub const berry_heap_kb_min: u16 = 16;
 pub const berry_heap_kb_max: u16 = 256;
 /// how long one handler may run. the ceiling stays well under the two seconds of silence that make
@@ -198,6 +205,9 @@ pub const ConfigPatch = struct {
     sound_enabled: ?bool = null,
     sound_volume: ?u8 = null,
     berry_heap_kb: ?u16 = null,
+    battery_shutdown: ?bool = null,
+    battery_shutdown_mv: ?u16 = null,
+    battery_grace_s: ?u16 = null,
     berry_handler_ms: ?u16 = null,
 };
 
@@ -306,6 +316,9 @@ const ConfigBody = struct {
     location_auto: ?bool = null,
     berry_enabled: ?bool = null,
     berry_heap_kb: ?u16 = null,
+    battery_shutdown: ?bool = null,
+    battery_shutdown_mv: ?u16 = null,
+    battery_grace_s: ?u16 = null,
     berry_handler_ms: ?u16 = null,
     sound_enabled: ?bool = null,
     sound_volume: ?u8 = null,
@@ -1118,6 +1131,8 @@ pub fn parseBody(kind: BodyKind, body: []const u8, arena: *Arena, generated_id: 
             if (b.night_brightness) |v| if (v < 1 or v > 100) return bad("invalid_night_brightness", "night_brightness must be 1..100");
             if (b.night_lead_min) |v| if (v > max_night_lead_min) return bad("invalid_night_lead", "night_lead_min must be 0..120");
             if (b.berry_heap_kb) |v| if (v < berry_heap_kb_min or v > berry_heap_kb_max) return bad("invalid_berry_heap", "berry_heap_kb must be 16..256");
+            if (b.battery_shutdown_mv) |v| if (v < battery_shutdown_mv_min or v > battery_shutdown_mv_max) return bad("invalid_battery_shutdown_mv", "battery_shutdown_mv must be 3000..4000");
+            if (b.battery_grace_s) |v| if (v > battery_grace_s_max) return bad("invalid_battery_grace", "battery_grace_s must be 0..300");
             if (b.berry_handler_ms) |v| if (v < berry_handler_ms_min or v > berry_handler_ms_max) return bad("invalid_berry_handler", "berry_handler_ms must be 10..1000");
             const location = switch (parseLocation(b.latitude, b.longitude)) {
                 .reject => |j| return .{ .reject = j },
@@ -1155,6 +1170,9 @@ pub fn parseBody(kind: BodyKind, body: []const u8, arena: *Arena, generated_id: 
                 .location_auto = b.location_auto,
                 .berry_enabled = b.berry_enabled,
                 .berry_heap_kb = b.berry_heap_kb,
+                .battery_shutdown = b.battery_shutdown,
+                .battery_shutdown_mv = b.battery_shutdown_mv,
+                .battery_grace_s = b.battery_grace_s,
                 .berry_handler_ms = b.berry_handler_ms,
                 .sound_enabled = b.sound_enabled,
                 .sound_volume = b.sound_volume,

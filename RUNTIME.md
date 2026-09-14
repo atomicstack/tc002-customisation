@@ -72,9 +72,11 @@ values), can close them all (`--close-inherited`), and redirects its log to
 `zkswe`, starts the supervisor from an adb shell, and `stop` restores the stock
 app. `tools/tc002-boot-experiment.sh` is the loader path above.
 
-**power:** the stock app is what polls the mcu for battery level and shuts the
-device down at 3550 mv. the runtime does not talk to the mcu at all, so run it
-on usb power. nothing here reads the battery.
+**power:** the runtime polls the mcu for the pack voltage and usb state and
+puts the device away when the cell is flat, at the stock firmware's own
+thresholds — see [the low-battery shutdown](#the-low-battery-shutdown). the
+behaviour has not been watched through a real discharge, so on a bench run it is
+still worth staying on usb power.
 
 ## the supervisor
 
@@ -1341,6 +1343,7 @@ shows up as a revision gap, and the gap is the signal to resync.
 | `frame_timeout_ms` | 100–2000 | how long one pushed [stream frame](#the-frame-stream) stands before the panel clears itself; carried with every frame |
 | `berry.enabled`, `berry.heap_kb`, `berry.handler_ms` (patch as `berry_enabled`, `berry_heap_kb`, `berry_handler_ms`) | bool, default false; 16–256 kb; 10–1000 ms | the [script interpreter](#scripting-berry). berryd is spawned only while enabled, and **replaced** on any change: a heap cannot be resized under a live vm |
 | `sound.enabled`, `sound.volume` (patch as `sound_enabled`, `sound_volume`) | bool, default false; 1–100, default 60 | the [speaker](#sound). audiod is spawned only while enabled, and **replaced** on any change |
+| `battery.shutdown`, `battery.shutdown_mv`, `battery.grace_s` (patch as `battery_shutdown`, `battery_shutdown_mv`, `battery_grace_s`) | bool, default **true**; 3000–4000 mv, default 3550; 0–300 s, default 30 | [low-battery shutdown](#the-low-battery-shutdown). the warning threshold is `shutdown_mv + 50` and is not a setting of its own |
 | `metrics_interval_s` | 0 (off) or 10–3600 | mqtt `metrics` cadence |
 | `discovery.enabled`, `discovery.prefix` (patch as `discovery`, `discovery_prefix`) | bool; ≤ 64 characters | home-assistant discovery on the next mqtt connection |
 | `allowed_origins` | up to four exact origins | read from the file only |
@@ -1365,6 +1368,74 @@ the file itself is the same document in a slightly different shape, with
 an invalid or unknown file is ignored with a warning (defaults are used and
 the file is left alone). the mqtt password is in that file in clear, mode
 0600, root only; it is never returned by the api.
+
+## the low-battery shutdown
+
+the clock has a 3,600 mah cell and no way to tell you it is nearly empty. left
+alone it runs until the rails collapse, and the write it collapses during is the
+one that matters: the settings file lives on jffs2, and a brownout mid-write is
+how a device comes back without its configuration — or without its filesystem.
+
+so the supervisor watches the pack and puts the device away first. the numbers
+are the **stock firmware's own**, recovered during the reverse engineering and
+recorded in [`README.md`](README.md#power): warn below 3,600 mv, and
+below 3,550 mv run a thirty-second countdown and then power off, skipped while
+usb power is present.
+
+| | |
+|---|---|
+| where the decision lives | `runtime/src/supervisor/power.zig`, pure and host-tested |
+| where it acts | the supervisor, which is the only process that writes flash |
+| how it powers off | the mcu's own `powerOff` command (`0x10`) |
+| how often it is asked | every second; the mcu is polled every 30 s, or **three times a second while the cell is low** |
+
+**the warning threshold is derived, not configured.** it is `shutdown_mv + 50`,
+the stock app's own gap. two independent thresholds can be set the wrong way
+round, and then this code has to decide what someone meant.
+
+### silence is not a low battery
+
+three rules are this runtime's own rather than the vendor's, and they all say
+the same thing:
+
+- **a reading only counts while the mcu is answering.** the poll loop keeps the
+  last value when the link goes quiet, so a stale 3.4 v would otherwise power
+  off a clock that is sitting happily on a charger. a reading older than 95 s —
+  three missed polls — is not acted on.
+- **losing the link cancels a countdown** rather than letting it run out. we
+  could not see a cable being plugged in either, and the power-off goes *through*
+  the mcu: a link we cannot hear is a link we cannot use.
+- **one low reading is a dip, not a flat battery.** the pack voltage is a raw adc
+  value scaled by a float and read while the panel is drawing, so a single sample
+  can sag under load. two consecutive readings start the countdown; the first one
+  only warns.
+
+a countdown is cancelled by usb power, by the cell recovering 30 mv clear of the
+threshold, by the link going quiet, or by the setting being turned off. the
+panel says `battery low` when the warning band is entered and `plug me in` for
+the length of the countdown, and every transition is a line in the log ring.
+
+### what happens at the end
+
+in this order, and the order is the point:
+
+1. **the settings are written** if the live revision is ahead of the saved one.
+   this is the last moment they can be, and a save begun *after* the power-off
+   command would be exactly the interrupted write this feature exists to avoid.
+2. the panel is blanked, so the device does not sit showing a frozen clock.
+3. `powerOff` goes to the mcu, which is the only thing on this board that can
+   actually cut the rails — the soc halting on its own would leave them up.
+
+nothing else needs winding down: the supervisor owns the state directory and the
+children only relay, so there is no other flash writer to stop.
+
+### what is not verified
+
+the thresholds are the vendor's and the policy has eleven host tests, but
+**nothing here has watched a real discharge cross 3,550 mv**, and the `powerOff`
+command has never been sent to this hardware. if the reading turns out to be
+scaled differently under load, the threshold is a setting for that reason.
+`battery_shutdown: false` turns the whole thing off.
 
 ## sound
 
@@ -1821,10 +1892,13 @@ all on a warm device that had been up for days, under the lock, on
   stack established before it took over. dhcp renewal after the takeover and
   the setup-ap flow are not handled and were not measured.
 - **the mcu.** the supervisor queries the version, battery and usb state
-  every 30 s (see [the pixel mcu link](runtime/README.md#the-pixel-mcu-link))
-  and reports them; nothing reads the microphone, sets the led current gain
-  or uses the power-off command, and the low-battery behaviour is not
-  reproduced. run on usb power.
+  (see [the pixel mcu link](runtime/README.md#the-pixel-mcu-link)), reports
+  them, and uses the power-off command when the cell runs out — see
+  [the low-battery shutdown](#the-low-battery-shutdown). nothing reads the
+  microphone or sets the led current gain. **what is untested is the part only a
+  flat battery can test:** the thresholds are the vendor's own but nothing here
+  has watched a real discharge cross them, and the power-off command has never
+  been sent to this hardware.
 - **persistence.** settings and credentials are durable (`/data/tc002/state`),
   but the **binaries are not**: they are pushed to `/tmp` and a power cycle
   brings the stock app back, so the runtime is still started by hand. a

@@ -3,6 +3,7 @@
 //! little-endian ipc encoding so netd never sees the file. pure.
 const std = @import("std");
 const api = @import("../net/api.zig");
+const power = @import("power.zig");
 const clock = @import("../scene/clock.zig");
 const clockfont = @import("../scene/clockfont.zig");
 const param = @import("../scene/param.zig");
@@ -90,6 +91,7 @@ pub const Config = struct {
     ntfy: Ntfy = .{},
     berry: Berry = .{},
     sound: Sound = .{},
+    battery: Battery = .{},
     clock_font: u8 = 0,
     clock_colour_mode: u8 = 0,
     clock_colour: [3]u8 = .{ 255, 255, 255 },
@@ -224,6 +226,15 @@ pub const Config = struct {
             if (v < api.berry_handler_ms_min or v > api.berry_handler_ms_max) return error.Invalid;
             next.berry.handler_ms = v;
         }
+        if (p.battery_shutdown) |v| next.battery.shutdown = v;
+        if (p.battery_shutdown_mv) |v| {
+            if (v < api.battery_shutdown_mv_min or v > api.battery_shutdown_mv_max) return error.Invalid;
+            next.battery.shutdown_mv = v;
+        }
+        if (p.battery_grace_s) |v| {
+            if (v > api.battery_grace_s_max) return error.Invalid;
+            next.battery.grace_s = v;
+        }
         next.revision = self.revision + 1;
         self.* = next;
     }
@@ -282,6 +293,17 @@ fn enumOr(comptime E: type, value: u8, default: E) E {
 
 /// the script interpreter's settings. off by default: a device that has never been told to run
 /// scripts should not be running one, and the binary is not even spawned while this is false.
+/// the low-battery policy. the thresholds are the stock firmware's own; see `power.zig` for why
+/// they are those numbers and what the warning band is derived from.
+pub const Battery = struct {
+    /// off means the device will happily run its cell flat, which is what it did before this
+    /// existed. on is the stock firmware's behaviour and the safer default: a brownout during a
+    /// jffs2 write is the failure this is here to avoid.
+    shutdown: bool = true,
+    shutdown_mv: u16 = power.default_shutdown_mv,
+    grace_s: u16 = power.default_grace_s,
+};
+
 pub const Berry = struct {
     enabled: bool = false,
     /// the vm's whole heap. four times the script store, so a completely full store still leaves
@@ -312,7 +334,7 @@ fn getText(in: []const u8, off: *usize) error{BadPayload}!Text {
 const text_wire = 1 + text_max;
 /// schema, revisions, brightness/base/generator, timezone, ntp, intervals, discovery, origins,
 /// mqtt, the clock style, the night schedule
-pub const encoded_len = 1 + 4 + 4 + 3 + text_wire + 5 + 4 + 2 + 4 + 1 + text_wire + 1 + api.max_origins * text_wire + 1 + text_wire + 2 + 4 * text_wire + 1 + 12 + 8 + 1 + 5 * text_wire + 2 + 1 + param.owner_count * param.max_per_owner * 4 + (1 + 2 + 2) + (1 + 1);
+pub const encoded_len = 1 + 4 + 4 + 3 + text_wire + 5 + 4 + 2 + 4 + 1 + text_wire + 1 + api.max_origins * text_wire + 1 + text_wire + 2 + 4 * text_wire + 1 + 12 + 8 + 1 + 5 * text_wire + 2 + 1 + param.owner_count * param.max_per_owner * 4 + (1 + 2 + 2) + (1 + 1) + (1 + 2 + 2);
 
 pub fn encode(c: *const Config, out: *[encoded_len]u8) void {
     var o: usize = 0;
@@ -391,6 +413,12 @@ pub fn encode(c: *const Config, out: *[encoded_len]u8) void {
     std.mem.writeInt(u16, out[o..][0..2], c.berry.heap_kb, .little);
     o += 2;
     std.mem.writeInt(u16, out[o..][0..2], c.berry.handler_ms, .little);
+    o += 2;
+    out[o] = @intFromBool(c.battery.shutdown);
+    o += 1;
+    std.mem.writeInt(u16, out[o..][0..2], c.battery.shutdown_mv, .little);
+    o += 2;
+    std.mem.writeInt(u16, out[o..][0..2], c.battery.grace_s, .little);
     o += 2;
     out[o] = @intFromBool(c.sound.enabled);
     o += 1;
@@ -479,6 +507,12 @@ pub fn decode(in: []const u8) error{BadPayload}!Config {
     o += 2;
     c.berry.handler_ms = std.mem.readInt(u16, in[o..][0..2], .little);
     o += 2;
+    c.battery.shutdown = in[o] != 0;
+    o += 1;
+    c.battery.shutdown_mv = std.mem.readInt(u16, in[o..][0..2], .little);
+    o += 2;
+    c.battery.grace_s = std.mem.readInt(u16, in[o..][0..2], .little);
+    o += 2;
     c.sound.enabled = in[o] != 0;
     o += 1;
     c.sound.volume = in[o];
@@ -535,6 +569,11 @@ const FileForm = struct {
         password: []const u8 = "",
         duration_s: u16 = 10,
         insecure: bool = false,
+    } = .{},
+    battery: struct {
+        shutdown: bool = true,
+        shutdown_mv: u16 = power.default_shutdown_mv,
+        grace_s: u16 = power.default_grace_s,
     } = .{},
     sound: struct {
         enabled: bool = false,
@@ -616,6 +655,7 @@ pub fn toJson(c: *const Config, out: []u8) error{Overflow}![]u8 {
             .duration_s = c.ntfy.duration_s,
             .insecure = c.ntfy.insecure,
         },
+        .battery = .{ .shutdown = c.battery.shutdown, .shutdown_mv = c.battery.shutdown_mv, .grace_s = c.battery.grace_s },
         .sound = .{ .enabled = c.sound.enabled, .volume = c.sound.volume },
         .berry = .{
             .enabled = c.berry.enabled,
@@ -688,6 +728,11 @@ pub fn fromJson(bytes: []const u8, arena: []u8) error{ Invalid, TooLong }!Config
         slots.* = scene.generator_defaults[i];
     };
     c.ip_mode = @intFromEnum(api.enumByName(ip.Mode, f.ip_mode) orelse return error.Invalid);
+    c.battery.shutdown = f.battery.shutdown;
+    if (f.battery.shutdown_mv < api.battery_shutdown_mv_min or f.battery.shutdown_mv > api.battery_shutdown_mv_max) return error.Invalid;
+    c.battery.shutdown_mv = f.battery.shutdown_mv;
+    if (f.battery.grace_s > api.battery_grace_s_max) return error.Invalid;
+    c.battery.grace_s = f.battery.grace_s;
     c.sound.enabled = f.sound.enabled;
     if (f.sound.volume < api.sound_volume_min or f.sound.volume > api.sound_volume_max) return error.Invalid;
     c.sound.volume = f.sound.volume;
@@ -1060,4 +1105,46 @@ test "a secret is reported as changed and never as a value" {
         try std.testing.expect(std.mem.indexOf(u8, sink.at(i), "hunter3") == null);
         try std.testing.expect(std.mem.indexOf(u8, sink.at(i), "tk_secret") == null);
     }
+}
+
+test "the low-battery settings round-trip through the patch, the wire and the file" {
+    var c = Config{};
+    // on by default, and at the stock firmware's own numbers: a clock that runs its cell flat
+    // mid-write is the failure this exists to avoid, so off is the deliberate choice, not on
+    try std.testing.expect(c.battery.shutdown);
+    try std.testing.expectEqual(@as(u16, 3550), c.battery.shutdown_mv);
+    try std.testing.expectEqual(@as(u16, 30), c.battery.grace_s);
+
+    try std.testing.expectError(error.Invalid, c.patch(.{ .battery_shutdown_mv = api.battery_shutdown_mv_min - 1 }));
+    try std.testing.expectError(error.Invalid, c.patch(.{ .battery_shutdown_mv = api.battery_shutdown_mv_max + 1 }));
+    try std.testing.expectError(error.Invalid, c.patch(.{ .battery_grace_s = api.battery_grace_s_max + 1 }));
+
+    try c.patch(.{ .battery_shutdown = false, .battery_shutdown_mv = 3700, .battery_grace_s = 0 });
+    try std.testing.expect(!c.battery.shutdown);
+    try std.testing.expectEqual(@as(u16, 3700), c.battery.shutdown_mv);
+    try std.testing.expectEqual(@as(u16, 0), c.battery.grace_s);
+
+    // the wire: a setting that does not survive encode/decode is not a setting
+    var buf: [encoded_len]u8 = undefined;
+    encode(&c, &buf);
+    const back = try decode(&buf);
+    try std.testing.expect(!back.battery.shutdown);
+    try std.testing.expectEqual(@as(u16, 3700), back.battery.shutdown_mv);
+    try std.testing.expectEqual(@as(u16, 0), back.battery.grace_s);
+
+    // and the json the settings file actually is
+    var json_buf: [8192]u8 = undefined;
+    const text = try toJson(&c, &json_buf);
+    var arena: [8192]u8 = undefined;
+    const c2 = try fromJson(text, &arena);
+    try std.testing.expect(!c2.battery.shutdown);
+    try std.testing.expectEqual(@as(u16, 3700), c2.battery.shutdown_mv);
+    try std.testing.expectEqual(@as(u16, 0), c2.battery.grace_s);
+
+    // a settings file written before this existed has no battery object at all, and must keep its
+    // defaults rather than arriving as a device that never shuts itself down
+    const older = "{\"schema\":1,\"revision\":3,\"brightness\":40}";
+    const c3 = try fromJson(older, &arena);
+    try std.testing.expect(c3.battery.shutdown);
+    try std.testing.expectEqual(@as(u16, 3550), c3.battery.shutdown_mv);
 }

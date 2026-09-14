@@ -320,6 +320,7 @@ sigmastar mi api is used instead.
 | battery | 3.7 v, **3600 mah, 13.32 wh** li-ion (*spec*); up to 2 h at maximum brightness (*spec*) |
 | charging | **usb-c, 5 v ⎓ 3 a** (*spec*), or the pogo-pin charging dock (*spec*) |
 | monitoring | done by the mcu: the app polls pack millivolts and `vin` (usb present). firmware thresholds: **low battery below 3600 mv**, **emergency below 3550 mv** → 30 s countdown → shutdown (skipped while on usb power) |
+| shutdown | the custom runtime reproduces those thresholds — see [`RUNTIME.md`](RUNTIME.md#the-low-battery-shutdown) — and powers off through the mcu's own `powerOff` command rather than halting the soc, which would leave the rails up |
 | usb | the soc has both an ehci **host** (with `vold` ready to mount a stick at `/mnt/usb1`, used for factory-test configs) and a device controller (`Sstar-udc`, msb250x). in normal use the port presents the `UDISK` partition as mass storage, not adb |
 | rtc | **none usable**: the soc's rtc block is enabled in the device tree but no driver is bound, so there is no `/dev/rtc` and the clock is set purely by sntp ([`DEVICE.md`](DEVICE.md#time)) |
 

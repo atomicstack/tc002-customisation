@@ -245,9 +245,12 @@ a big-endian 16-bit byte sum, commands `01` mic level, `02` usb state, `03` batt
 report, `10` power off, `11` version, `13` led register. the battery reply is one byte (percent) and a
 16-bit value the vendor multiplies by 1.3235 to get millivolts; measured here: version `V1.0.17`,
 `89 %`, raw 3121 → 4130 mV, usb present. the supervisor only queries (version once, then battery and
-usb every `--mcu-poll` seconds, one outstanding request, 500 ms timeout); it never sends the
-power-off, register or firmware-upload commands. the mcu also streams unsolicited mic reports that the
-synchroniser discards.
+usb every `--mcu-poll` seconds, one outstanding request, 500 ms timeout), and sends `10` power off
+when the cell runs out — see [the low-battery shutdown](../RUNTIME.md#the-low-battery-shutdown).
+while the battery is low the poll drops to three times a second, so a cable plugged in during a
+countdown is noticed within a second rather than at the next thirty-second poll; it is handed back
+to whatever `--mcu-poll` asked for, not to the default. the register and firmware-upload commands
+are still never sent. the mcu also streams unsolicited mic reports that the synchroniser discards.
 
 ### time sync (sntp)
 

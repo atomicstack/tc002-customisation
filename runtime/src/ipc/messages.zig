@@ -1407,6 +1407,9 @@ pub const ConfigPatch = struct {
     sound_volume: u8 = 0,
     berry_heap_kb: u16 = 0,
     berry_handler_ms: u16 = 0,
+    battery_shutdown: u8 = 0,
+    battery_shutdown_mv: u16 = 0,
+    battery_grace_s: u16 = 0,
 
     pub const F = struct {
         pub const brightness: u32 = 1 << 0;
@@ -1434,6 +1437,12 @@ pub const ConfigPatch = struct {
         pub const location: u32 = 1 << 22;
         pub const location_auto: u32 = 1 << 23;
         pub const berry_enabled: u32 = 1 << 24;
+        pub const battery_shutdown: u32 = 1 << 29;
+        pub const battery_shutdown_mv: u32 = 1 << 30;
+        // the last one. `has` is a u32 and bit 31 is now spoken for: the next setting to arrive
+        // here widens it, which is a wire change for the three binaries that speak this and
+        // nothing else.
+        pub const battery_grace_s: u32 = 1 << 31;
         pub const berry_heap_kb: u32 = 1 << 25;
         pub const berry_handler_ms: u32 = 1 << 26;
         pub const sound_enabled: u32 = 1 << 27;
@@ -1543,6 +1552,18 @@ pub const ConfigPatch = struct {
             w.has |= F.sound_volume;
             w.sound_volume = v;
         }
+        if (p.battery_shutdown) |v| {
+            w.has |= F.battery_shutdown;
+            w.battery_shutdown = @intFromBool(v);
+        }
+        if (p.battery_shutdown_mv) |v| {
+            w.has |= F.battery_shutdown_mv;
+            w.battery_shutdown_mv = v;
+        }
+        if (p.battery_grace_s) |v| {
+            w.has |= F.battery_grace_s;
+            w.battery_grace_s = v;
+        }
         if (p.berry_heap_kb) |v| {
             w.has |= F.berry_heap_kb;
             w.berry_heap_kb = v;
@@ -1597,6 +1618,9 @@ pub const ConfigPatch = struct {
             .location_auto = if (h & F.location_auto != 0) true else null,
             .berry_enabled = if (h & F.berry_enabled != 0) self.berry_enabled != 0 else null,
             .berry_heap_kb = if (h & F.berry_heap_kb != 0) self.berry_heap_kb else null,
+            .battery_shutdown = if (h & F.battery_shutdown != 0) self.battery_shutdown != 0 else null,
+            .battery_shutdown_mv = if (h & F.battery_shutdown_mv != 0) self.battery_shutdown_mv else null,
+            .battery_grace_s = if (h & F.battery_grace_s != 0) self.battery_grace_s else null,
             .sound_enabled = if (h & F.sound_enabled != 0) self.sound_enabled != 0 else null,
             .sound_volume = if (h & F.sound_volume != 0) self.sound_volume else null,
             .berry_handler_ms = if (h & F.berry_handler_ms != 0) self.berry_handler_ms else null,
@@ -2354,6 +2378,10 @@ fn encodePayload(msg: Message, out: []u8) usize {
             out[o] = p.sound_enabled;
             out[o + 1] = p.sound_volume;
             o += 2;
+            out[o] = p.battery_shutdown;
+            std.mem.writeInt(u16, out[o + 1 ..][0..2], p.battery_shutdown_mv, .little);
+            std.mem.writeInt(u16, out[o + 3 ..][0..2], p.battery_grace_s, .little);
+            o += 5;
             out[o] = p.param_count;
             o += 1;
             for (p.params[0..p.param_count]) |rp| {
@@ -2907,6 +2935,10 @@ pub fn decodePacket(bytes: []const u8) Error!Packet {
             w.sound_enabled = b[o];
             w.sound_volume = b[o + 1];
             o += 2;
+            w.battery_shutdown = b[o];
+            w.battery_shutdown_mv = std.mem.readInt(u16, b[o + 1 ..][0..2], .little);
+            w.battery_grace_s = std.mem.readInt(u16, b[o + 3 ..][0..2], .little);
+            o += 5;
             if (b.len < o + 1) return error.BadPayload;
             w.param_count = @min(b[o], w.params.len);
             o += 1;
