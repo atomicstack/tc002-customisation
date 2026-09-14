@@ -12,6 +12,7 @@ const ip = @import("../scene/ip.zig");
 const ntfy_url = @import("../ntfy/url.zig");
 const tz = @import("../scene/tz.zig");
 const solar = @import("../sys/solar.zig");
+const arbiter = @import("../scene/arbiter.zig");
 const night = @import("night.zig");
 
 pub const text_max = 64;
@@ -527,7 +528,7 @@ const FileForm = struct {
     revision: u32 = 0,
     brightness: u8 = 100,
     base: []const u8 = base_names[base_clock],
-    generator: []const u8 = "popsquares",
+    generator: []const u8 = generator_names[0],
     timezone: []const u8 = "UTC0",
     ntp_server: ?[]const u8 = null,
     ntp_interval_s: u32 = 300,
@@ -586,11 +587,31 @@ const FileForm = struct {
     } = .{},
 };
 
-const base_names = [_][]const u8{ "clock", "art", "canvas" };
+/// the names the settings file stores for the base and the art generator, taken from the enums
+/// the rest of the runtime already uses.
+///
+/// these were two hand-written lists, and a hand-written list falls behind: `cube` was added to
+/// `scene.Generator` and not here, so saving clamped it to the last name the table knew. picking
+/// cube applied it live, wrote `plasma` to flash, and gave back plasma on the next boot -- and had
+/// a `cube` ever reached the file by another route, `fromFileForm` would have rejected the whole
+/// settings document as invalid. deriving them means the next generator cannot repeat it.
+fn enumNames(comptime E: type) [@typeInfo(E).@"enum".fields.len][]const u8 {
+    const fields = @typeInfo(E).@"enum".fields;
+    var out: [fields.len][]const u8 = undefined;
+    for (fields, 0..) |f, i| {
+        // the enum value is the index these are looked up by, so a gap or a reordering would hand
+        // back someone else's name rather than fail
+        if (f.value != i) @compileError("enum " ++ @typeName(E) ++ " field " ++ f.name ++ " is not its own index");
+        out[i] = f.name;
+    }
+    return out;
+}
+
+const base_names = enumNames(arbiter.Base);
 /// the base scene of a device with no settings file: a power cycle wipes /tmp, and the first
 /// frame after a cold start must be the clock rather than a flash of the art generator.
 const base_clock: u8 = 0;
-const generator_names = [_][]const u8{ "popsquares", "plasma" };
+const generator_names = enumNames(scene.Generator);
 
 fn nameIndex(names: []const []const u8, name: []const u8) ?u8 {
     for (names, 0..) |n, i| if (std.mem.eql(u8, n, name)) return @intCast(i);
@@ -1147,4 +1168,23 @@ test "the low-battery settings round-trip through the patch, the wire and the fi
     const c3 = try fromJson(older, &arena);
     try std.testing.expect(c3.battery.shutdown);
     try std.testing.expectEqual(@as(u16, 3550), c3.battery.shutdown_mv);
+}
+
+test "every base and every generator survives the settings file" {
+    // the file stores these as names, and the names were a hand-kept list that fell behind the
+    // enums: `cube` was added to `scene.Generator` and not to `generator_names`, so saving clamped
+    // it to the last name the table knew. the generator applied live, went to flash as `plasma` and
+    // came back wrong on the next boot. walking every value is the only version of this test that
+    // keeps working when the next generator is added.
+    var arena: [4096]u8 = undefined;
+    var out: [file_max]u8 = undefined;
+    inline for (@typeInfo(arbiter.Base).@"enum".fields) |bf| {
+        inline for (@typeInfo(scene.Generator).@"enum".fields) |gf| {
+            var c = Config{};
+            try c.patch(.{ .base = @enumFromInt(bf.value), .generator = @enumFromInt(gf.value) });
+            const back = try fromJson(try toJson(&c, &out), &arena);
+            try std.testing.expectEqual(@as(u8, @intCast(bf.value)), back.base);
+            try std.testing.expectEqual(@as(u8, @intCast(gf.value)), back.generator);
+        }
+    }
 }
