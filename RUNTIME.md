@@ -1988,13 +1988,14 @@ all on a warm device that had been up for days, under the lock, on
 | graceful stop | black presented, renderer exit 0, supervisor exit 0 |
 | boot experiment | `/tmp/EasyUI.cfg` precedence confirmed; bootstrap execs the supervisor in place keeping the `zkswe` pid; `ctl.start` → property 1.67 s versus 1.57–2.66 s stock; init restarts the service about 1 s after the supervisor dies and retries every ~4 s after a failed exec, property untouched |
 | http | every route and every documented error code exercised; 20 parallel status requests → 14×200 and 6×429; a half-sent request times out at 5 s; a 10 s flood of garbage, wrong methods and 5 kb headers left the renderer at 59.7–59.9 fps with cpu at 5 % |
-| mqtt | will, subscriptions, retained `state`, `metrics`, all five `cmd/*` topics answered on `result`; broker stopped → backoff with reconnects counted; broker back → reconnected within 4 s |
+| mqtt | will, subscriptions, retained `state`, `metrics`, every `cmd/*` topic of the day answered on `result` (five then, eight now); broker stopped → backoff with reconnects counted; broker back → reconnected within 4 s |
 | discovery | 13 retained configs published one per second, cleared exactly on disable |
 | netd restart | `SIGTERM` to netd → respawned 1 s later with fresh credentials; the renderer never noticed |
 | memory | the table above; the whole runtime leaves 2 mb more available than the stock app |
 | screen, input, logs (2026-09-07) | `/screen` json and raw (2,496 bytes) match the panel; injected clicks, rotary steps and a knob long press produce the same scene changes and the same outward events as the mapper would (30 events over mqtt in one run, none retained); `/logs` pages both children's lines through the pipe while `supervisor.log` stays complete |
 | power and fades (2026-09-07) | power off ramps the mean level 29 → 0 in ~600 ms, then a 5 s window shows `transfers=1 redraws=0`; power on ramps 0 → 127 in ~600 ms; a plasma → clock cross-fade runs 127 → 29 in ~500 ms; cpu 2 % overall with mqtt, discovery and fades active |
 | discovery (2026-09-07) | 30 retained configs (24 sensors, 1 binary sensor, 5 event entities), one per second; `cmd/screen` answered with 2,502 bytes on `screen` |
+| `cmd/sound` (2026-09-14) | against a real broker: `{"stop":true}`, a name that is not stored, a body with neither, and `{"name":"cityrail","volume":25}` all made the round trip and answered on `result` — three `applied` and one `rejected` / `missing_field` for the bad body. the clock played the 1,495 ms 44.1 khz sound audibly at volume 25 and logged `finished`. a name that is not stored still answers `applied`: the supervisor replies as soon as it has handed the command to audiod, which only then logs `no sound called ...`. http has always behaved the same way, so this is the speaker's contract rather than something mqtt introduced |
 
 ## what is not there yet
 
