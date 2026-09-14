@@ -29,6 +29,7 @@ const night = @import("supervisor/night.zig");
 const power = @import("supervisor/power.zig");
 const battery_notice = @import("supervisor/battery_notice.zig");
 const icons = @import("scene/icons.zig");
+const batteryart = @import("scene/batteryart.zig");
 const geometry = @import("panel/geometry.zig");
 const canvas = @import("scene/canvas.zig");
 const berry_store = @import("berry/store.zig");
@@ -2594,16 +2595,20 @@ const Supervisor = struct {
                 if (style.blink) ", blinking" else "",
             });
         }
-        // the cable going back in answers the question the notice was asking
-        if (reading.usb == 1 and self.battery_notices.active(now)) self.battery_notices.clear();
-
         if (!self.battery_notices.active(now)) return;
         if (self.snapshot.renderer_state != 2) return;
         // the shutdown countdown has the panel and is saying something more urgent
         if (self.power_policy.phase == .critical) return;
 
         var frame: geometry.Rgb = geometry.black_rgb;
-        if (self.battery_notices.visible(now)) drawBatteryIcon(&frame, self.battery_notices.style());
+        if (self.battery_notices.visible(now)) {
+            batteryart.draw(
+                &frame,
+                self.battery_notices.fillNow(now),
+                self.battery_notices.style().colour,
+                self.battery_notices.plugAlpha(now),
+            );
+        }
         const left_ms = (self.battery_notices.until_ns -| now) / std.time.ns_per_ms;
         self.battery_stream_seq +%= 1;
         _ = self.sendRenderer(.{ .stream_frame = .{
@@ -3008,20 +3013,3 @@ pub fn main(init: std.process.Init.Minimal) u8 {
     };
 }
 
-/// draw one icon, centred, in a colour. the glyphs are monochrome and take the tint, which is what
-/// makes "the same icon in three colours" a thing this can do at all.
-fn drawBatteryIcon(rgb: *geometry.Rgb, style: battery_notice.Style) void {
-    const index = icons.indexOf(style.icon) orelse return;
-    const art = icons.bitmaps[index];
-    const x0 = (geometry.width - icons.size) / 2;
-    const y0 = (geometry.height - icons.size) / 2;
-    for (art, 0..) |row, y| {
-        for (0..icons.size) |x| {
-            if (row & (@as(u8, 0x80) >> @intCast(x)) == 0) continue;
-            const o = geometry.pixelOffset(x0 + x, y0 + y);
-            rgb[o] = style.colour[0];
-            rgb[o + 1] = style.colour[1];
-            rgb[o + 2] = style.colour[2];
-        }
-    }
-}

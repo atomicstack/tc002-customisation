@@ -1408,15 +1408,16 @@ round, and then this code has to decide what someone meant.
 ### the battery icon
 
 the shutdown is the last thing that happens; long before it, the panel says what
-the cell is doing. an 8x8 battery glyph appears in the middle of the screen for
-four seconds when there is something to say, tinted by what is left:
+the cell is doing. a battery is drawn across the **whole panel** for four seconds
+when there is something to say — a case, a terminal, and a fill bar as long as
+the charge — tinted by what is left:
 
 | charge | colour | glyph | |
 |---|---|---|---|
-| over 50% | green | `battery-full` | |
-| 20–50% | amber | `battery-half` | |
-| 5–20% | red | `battery-low` | |
-| under 5% | red | `battery-empty` | **blinking**, 400 ms on, 400 ms off |
+| over 50% | green | | |
+| 20–50% | amber | | |
+| 5–20% | red | | |
+| under 5% | red | a sliver | **blinking**, 400 ms on, 400 ms off |
 
 it is raised by three kinds of moment, and only while the device is actually
 running on its cell:
@@ -1433,8 +1434,36 @@ running on its cell:
 - nothing at boot: a device that starts up already at 30% has not *crossed*
   anything, and an icon on every power-on would be a nag rather than a warning.
 
-plugging back in clears a notice that is still showing, and a countdown suppresses
-one entirely — `plug me in` is the more urgent thing to be reading.
+**plugging back in replaces a warning rather than clearing it.** the reconnect is
+a trigger of its own: the same battery, with the `plug` glyph fading in over the
+bar. the question a red battery was asking is answered, which is better than the
+answer simply being that the question went away. a countdown still suppresses a
+notice entirely — `plug me in` is the more urgent thing to be reading.
+
+### how it arrives
+
+the bar is not drawn at its final length. it **grows from nothing to the reading
+over 700 ms**, eased with a smoothstep — flat at both ends, quickest through the
+middle — so the charge arrives rather than appearing. there is no libm on this
+device, which rules out anything with a sine in it; smoothstep is `t²(3−2t)` and
+is nothing but multiplication.
+
+the plug fades in over 350 ms, and **starts the moment the growing bar passes the
+midpoint of the battery, or when the bar stops growing, whichever comes first**.
+for a cell over half full the first of those happens and the plug is fully in
+before the fill has finished; for one under half full the bar never reaches the
+midpoint, so the end of the fill is what releases it. the fade mixes with
+whatever is under it, so the glyph emerges out of the bar rather than sitting in
+a hole punched through it.
+
+blinking waits for the fill to finish. a bar that is growing *and* flashing reads
+as a fault rather than as a measurement, and a charging notice never blinks at
+all — flashing red at someone who has just plugged the clock in is telling them
+off for fixing it.
+
+the pictures in this section can be regenerated without a device:
+`zig run src/battery_preview_main.zig 2> frames.hex` prints every frame of every
+state, drawn by the same two files the panel uses.
 
 the icon is pushed as stream frames rather than installed as one timed frame,
 which sounds like more work and is less: blinking is an animation, and a stream

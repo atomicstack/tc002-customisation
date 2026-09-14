@@ -14,6 +14,9 @@ const power = @import("power.zig");
 
 pub const pct_unknown: u8 = 255;
 
+/// the reading this and the shutdown policy share
+pub const Reading = power.Reading;
+
 /// the bands. "green over 50, yellow down to 20, red below that, and red blinking under 5."
 pub const green_above: u8 = 50;
 pub const yellow_above: u8 = 20;
@@ -27,9 +30,22 @@ pub const red: [3]u8 = .{ 0xff, 0x33, 0x22 };
 pub const show_ns: u64 = 4 * std.time.ns_per_s;
 /// half a blink: on for this long, then off for this long
 pub const blink_half_ns: u64 = 400 * std.time.ns_per_ms;
+/// how long the charge takes to fill in when a notice appears. long enough to read as movement,
+/// short enough that the reading is settled well inside the four seconds the notice stands.
+pub const fill_ns: u64 = 700 * std.time.ns_per_ms;
+/// and how long the plug takes to arrive once it starts
+pub const plug_fade_ns: u64 = 350 * std.time.ns_per_ms;
+
+/// the ease on the fill. smoothstep: flat at both ends, quickest in the middle, and nothing in it
+/// but multiplication -- there is no libm on this device, so anything with a sine in it would not
+/// link.
+fn smoothstep(t: f32) f32 {
+    const c = std.math.clamp(t, 0.0, 1.0);
+    return c * c * (3.0 - 2.0 * c);
+}
 
 /// what fired, so the log line can say why the panel lit up
-pub const Trigger = enum { unplugged, below_50, below_20, below_5 };
+pub const Trigger = enum { unplugged, plugged_in, below_50, below_20, below_5 };
 
 pub const Style = struct {
     /// a name from `scene/icons.zig`; the glyph is monochrome and takes `colour`
@@ -51,8 +67,13 @@ pub const Notices = struct {
     last_pct: u8 = pct_unknown,
     started_ns: u64 = 0,
     until_ns: u64 = 0,
-    /// the charge the showing notice was raised at, so the icon does not change under the viewer
+    /// the charge the showing notice was raised at, so the picture does not change under the viewer
     showing_pct: u8 = pct_unknown,
+    /// whether the showing notice is the one that says power came back
+    charging: bool = false,
+    /// when the plug began to arrive, latched the first time the fill reaches the midpoint or the
+    /// fill finishes -- whichever comes first, which for a cell under half full is the finish
+    plug_from_ns: u64 = 0,
 
     /// feed it a reading; it answers with the trigger that fired, if one did.
     pub fn update(self: *Notices, r: power.Reading, pct: u8, now_ns: u64) ?Trigger {
@@ -65,9 +86,20 @@ pub const Notices = struct {
         self.last_usb = r.usb;
         self.last_pct = pct;
 
-        // on the charger there is nothing to warn about, and climbing back through a threshold is
-        // good news rather than news
-        if (r.usb != 0) return null;
+        // power coming back is worth a picture of its own. it replaces whatever warning was up,
+        // which is better than merely clearing it: the question the warning asked is answered.
+        if (r.usb == 1) {
+            if (was_usb == 0) {
+                self.started_ns = now_ns;
+                self.until_ns = now_ns + show_ns;
+                self.showing_pct = pct;
+                self.charging = true;
+                self.plug_from_ns = 0;
+                return .plugged_in;
+            }
+            return null;
+        }
+        if (r.usb != 0) return null; // unknown: say nothing rather than guess
 
         const trigger: ?Trigger = blk: {
             // the lowest threshold crossed wins: falling past two at once is the more urgent one
@@ -84,6 +116,8 @@ pub const Notices = struct {
             self.started_ns = now_ns;
             self.until_ns = now_ns + show_ns;
             self.showing_pct = pct;
+            self.charging = false;
+            self.plug_from_ns = 0;
             return t;
         }
         return null;
@@ -94,22 +128,54 @@ pub const Notices = struct {
     }
 
     /// the blink phase. a notice that does not blink is simply always visible.
+    ///
+    /// a charging notice never blinks, however flat the cell is: the alarm has been answered, and
+    /// flashing red at someone who has just plugged the clock in is telling them off for fixing it.
     pub fn visible(self: *const Notices, now_ns: u64) bool {
         if (!self.active(now_ns)) return false;
-        if (!styleFor(self.showing_pct).blink) return true;
-        const half = (now_ns -| self.started_ns) / blink_half_ns;
+        if (self.charging or !styleFor(self.showing_pct).blink) return true;
+        // let the fill finish before any blinking starts: a bar that is growing and flashing at
+        // the same time reads as a fault rather than a measurement
+        const since = now_ns -| self.started_ns;
+        if (since < fill_ns) return true;
+        const half = (since - fill_ns) / blink_half_ns;
         return half % 2 == 0;
+    }
+
+    /// the charge to draw *now*: eased from nothing up to the real reading over `fill_ns`, so the
+    /// bar arrives rather than appearing. every notice animates -- each one is the icon being shown
+    /// afresh, which is the moment worth drawing.
+    pub fn fillNow(self: *const Notices, now_ns: u64) u8 {
+        const since = now_ns -| self.started_ns;
+        if (since >= fill_ns) return self.showing_pct;
+        const t = @as(f32, @floatFromInt(since)) / @as(f32, @floatFromInt(fill_ns));
+        const grown = smoothstep(t) * @as(f32, @floatFromInt(self.showing_pct));
+        return @intFromFloat(grown);
+    }
+
+    /// how far in the plug is, 0 to 255.
+    ///
+    /// it starts the moment the growing bar passes the midpoint of the battery, or when the bar
+    /// stops growing, whichever comes first -- for a cell under half full the bar never reaches the
+    /// midpoint, so the end of the fill is what releases it. latched on first sight rather than
+    /// solved for: the panel is redrawn ten times a second and smoothstep has no cheap inverse.
+    pub fn plugAlpha(self: *Notices, now_ns: u64) u8 {
+        if (!self.charging) return 0;
+        if (self.plug_from_ns == 0) {
+            const reached_midpoint = self.fillNow(now_ns) >= green_above;
+            const fill_done = now_ns -| self.started_ns >= fill_ns;
+            if (!reached_midpoint and !fill_done) return 0;
+            self.plug_from_ns = now_ns;
+        }
+        const since = now_ns -| self.plug_from_ns;
+        if (since >= plug_fade_ns) return 255;
+        return @intCast((since * 255) / plug_fade_ns);
     }
 
     pub fn style(self: *const Notices) Style {
         return styleFor(self.showing_pct);
     }
 
-    /// stop showing, without waiting the notice out: the cable going back in answers the question
-    pub fn clear(self: *Notices) void {
-        self.until_ns = 0;
-        self.started_ns = 0;
-    }
 };
 
 // -- tests -------------------------------------------------------------------------------------
@@ -194,9 +260,11 @@ test "under five percent it blinks, and the phase alternates" {
     _ = n.update(onCell(), 50, 0);
     _ = n.update(onCell(), 3, 1 * s_ns);
     try testing.expect(n.style().blink);
-    try testing.expect(n.visible(1 * s_ns)); // on
-    try testing.expect(!n.visible(1 * s_ns + blink_half_ns)); // off
-    try testing.expect(n.visible(1 * s_ns + 2 * blink_half_ns)); // on again
+    // the phase is measured from the end of the fill, not from the start of the notice
+    const from = 1 * s_ns + fill_ns;
+    try testing.expect(n.visible(from)); // on
+    try testing.expect(!n.visible(from + blink_half_ns)); // off
+    try testing.expect(n.visible(from + 2 * blink_half_ns)); // on again
     // and blinking stops when the notice does, rather than going on for ever
     try testing.expect(!n.visible(1 * s_ns + show_ns + 1));
 }
@@ -215,12 +283,107 @@ test "a reading the mcu has not confirmed is not a reading" {
     try testing.expectEqual(Trigger.below_50, m.update(onCell(), 40, 2 * s_ns).?);
 }
 
-test "plugging back in clears a notice that is still showing" {
+test "plugging back in replaces the warning rather than merely clearing it" {
     var n = Notices{};
     _ = n.update(onCell(), 60, 0);
-    _ = n.update(onCell(), 10, 1 * s_ns);
+    try testing.expectEqual(Trigger.below_20, n.update(onCell(), 10, 1 * s_ns).?); // past both
     try testing.expect(n.active(2 * s_ns));
-    n.clear();
-    try testing.expect(!n.active(2 * s_ns));
-    try testing.expect(!n.visible(2 * s_ns));
+    try testing.expect(!n.charging);
+
+    // the question the warning asked is answered, so the answer is what goes on the panel
+    try testing.expectEqual(Trigger.plugged_in, n.update(plugged(), 10, 2 * s_ns).?);
+    try testing.expect(n.charging);
+    try testing.expect(n.active(3 * s_ns));
+    // and the fill starts again from nothing, because this is a new thing being said
+    try testing.expectEqual(@as(u8, 0), n.fillNow(2 * s_ns));
+}
+
+test "the charge grows in rather than appearing, and settles on the real reading" {
+    var n = Notices{};
+    _ = n.update(plugged(), 80, 0);
+    _ = n.update(onCell(), 80, 1 * s_ns);
+    const t0 = 1 * s_ns;
+
+    try testing.expectEqual(@as(u8, 0), n.fillNow(t0)); // nothing at the start
+    // smoothstep is flat at both ends, so the first tenth has barely moved and the middle is quick
+    const tenth = n.fillNow(t0 + fill_ns / 10);
+    const half = n.fillNow(t0 + fill_ns / 2);
+    const most = n.fillNow(t0 + fill_ns * 9 / 10);
+    try testing.expect(tenth < 5);
+    try testing.expectEqual(@as(u8, 40), half); // exactly half the reading at the midpoint
+    try testing.expect(most > 74 and most < 80);
+    try testing.expect(tenth < half and half < most);
+
+    try testing.expectEqual(@as(u8, 80), n.fillNow(t0 + fill_ns)); // and it lands on the truth
+    try testing.expectEqual(@as(u8, 80), n.fillNow(t0 + 2 * fill_ns));
+}
+
+test "the plug waits for the bar to pass the midpoint, then fades" {
+    var n = Notices{};
+    _ = n.update(onCell(), 90, 0);
+    _ = n.update(plugged(), 90, 1 * s_ns); // power back at 90%
+    const t0 = 1 * s_ns;
+    try testing.expect(n.charging);
+
+    try testing.expectEqual(@as(u8, 0), n.plugAlpha(t0)); // the bar has not reached halfway
+    try testing.expectEqual(@as(u8, 0), n.plugAlpha(t0 + fill_ns / 4));
+
+    // find the instant the plug is released rather than guessing it: smoothstep is symmetric in
+    // time but the battery is not -- at 90% the bar crosses the midpoint a little after the
+    // halfway mark, and the rule is about the bar's position, not the clock's.
+    var released: u64 = 0;
+    var t: u64 = t0;
+    while (t <= t0 + fill_ns) : (t += 5 * std.time.ns_per_ms) {
+        if (n.plugAlpha(t) > 0) {
+            released = t;
+            break;
+        }
+    }
+    try testing.expect(released > t0 + fill_ns / 2); // after halfway in time
+    try testing.expect(released < t0 + fill_ns); // but before the bar stops growing
+    try testing.expect(n.fillNow(released) >= green_above); // and the bar really had passed it
+
+    try testing.expect(n.plugAlpha(released + plug_fade_ns / 2) > 100);
+    try testing.expectEqual(@as(u8, 255), n.plugAlpha(released + plug_fade_ns));
+}
+
+test "a cell under half full releases the plug when the bar stops, not at the midpoint" {
+    var n = Notices{};
+    _ = n.update(onCell(), 30, 0);
+    _ = n.update(plugged(), 30, 1 * s_ns);
+    const t0 = 1 * s_ns;
+
+    // the bar never reaches the midpoint of the battery, so nothing can be released by it
+    try testing.expect(n.fillNow(t0 + fill_ns) < green_above);
+    try testing.expectEqual(@as(u8, 0), n.plugAlpha(t0 + fill_ns / 2));
+    try testing.expectEqual(@as(u8, 0), n.plugAlpha(t0 + fill_ns - 1));
+    // the end of the fill is what lets it in
+    try testing.expectEqual(@as(u8, 0), n.plugAlpha(t0 + fill_ns));
+    try testing.expectEqual(@as(u8, 255), n.plugAlpha(t0 + fill_ns + plug_fade_ns));
+}
+
+test "a discharging notice never grows a plug, however long it is watched" {
+    var n = Notices{};
+    _ = n.update(plugged(), 90, 0);
+    _ = n.update(onCell(), 90, 1 * s_ns);
+    var i: u64 = 0;
+    while (i < 40) : (i += 1) {
+        try testing.expectEqual(@as(u8, 0), n.plugAlpha(1 * s_ns + i * 100 * std.time.ns_per_ms));
+    }
+}
+
+test "blinking waits for the fill, so a growing bar is never also a flashing one" {
+    var n = Notices{};
+    _ = n.update(onCell(), 50, 0);
+    _ = n.update(onCell(), 3, 1 * s_ns); // under five percent: this one blinks
+    const t0 = 1 * s_ns;
+    try testing.expect(styleFor(3).blink);
+    // solid while it grows
+    try testing.expect(n.visible(t0));
+    try testing.expect(n.visible(t0 + fill_ns / 2));
+    try testing.expect(n.visible(t0 + fill_ns - 1));
+    // and only then does it start flashing
+    try testing.expect(n.visible(t0 + fill_ns));
+    try testing.expect(!n.visible(t0 + fill_ns + blink_half_ns));
+    try testing.expect(n.visible(t0 + fill_ns + 2 * blink_half_ns));
 }
