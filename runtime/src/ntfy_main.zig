@@ -4,6 +4,7 @@
 //! official service and any server with a let's encrypt certificate; an extra ca or `insecure`
 //! covers a self-hosted one), and turns each message into a notification for the panel. blocking
 //! io in a process of its own: reconnects with backoff, `since=<last id>` catches up after a gap.
+const build_options = @import("build_options");
 const std = @import("std");
 const linux = std.os.linux;
 const sys = @import("sys/linux.zig");
@@ -234,6 +235,7 @@ fn subscribe(st: *State) Failure!void {
 pub fn main(init: std.process.Init.Minimal) u8 {
     _ = init;
     log.program = "tc002-ntfy";
+    log.info("build {s}", .{build_options.build_id});
     var st = State{ .cfg = waitConfig() catch |e| {
         log.err("no settings received: {s}", .{sys.errText(e)});
         return 1;

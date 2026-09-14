@@ -15,6 +15,7 @@
 //!
 //! playback goes through the device's own `libmi_ao.so` (`sound/vendor.zig`), so this binary is
 //! dynamically linked where the rest of the runtime is static.
+const build_options = @import("build_options");
 const std = @import("std");
 const linux = std.os.linux;
 const sys = @import("sys/linux.zig");
@@ -304,6 +305,7 @@ fn run(state_dir: []const u8) !u8 {
 
 pub fn main(init: std.process.Init.Minimal) u8 {
     log.program = "tc002-audiod";
+    log.info("build {s}", .{build_options.build_id});
     var state_dir: []const u8 = "/data/tc002/state";
     var i: usize = 1;
     while (i < init.args.vector.len) : (i += 1) {

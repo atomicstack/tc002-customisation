@@ -1922,6 +1922,11 @@ pub const CanvasView = struct {
     element_age_ms: [canvas.max_elements]u32 = [_]u32{0} ** canvas.max_elements,
 };
 
+/// as much of a build id as reaches a device. `git describe --always --dirty --abbrev=12` is 13 to
+/// 19 characters; a tagged release with a distance on it can be longer, and is cut here rather than
+/// in `build.zig`, so there is one number deciding this and not two.
+pub const build_id_max = 40;
+
 pub const StatusSnapshot = struct {
     renderer_state: u8 = 0, // 0 none, 1 starting, 2 running, 3 stopping
     epoch: u32 = 0,
@@ -2011,8 +2016,11 @@ pub const StatusSnapshot = struct {
     // heap figure that would be zero either way.
     berry_state: u8 = 0,
     berry: BerryStatus = .{},
+    // v11: which build is running. `boot_id` says the runtime restarted; this says what into.
+    // null-padded rather than length-prefixed because it is only ever read as a whole.
+    build: [build_id_max]u8 = [_]u8{0} ** build_id_max,
 
-    pub const wire_len = 4 + 3 + 2 + 1 + 4 + 4 + 8 + 4 + 4 + 4 + 1 + 4 + 4 + 4 + 4 + 2 + 1 + 4 + 1 + 4 + 4 + 4 + 4 + 4 + (6 + 1 + 2 + 4 + 2 + 1 + 2 + 2 + 2 + 4 + 2 + 1 + 1) + 1 + ClockStyle.wire_len + 1 + NtfyStatus.wire_len + 4 * 4 + (10 * 4) + (4 * 4) + (4 + 4 + 4 + 2) + (1 + BerryStatus.wire_len);
+    pub const wire_len = build_id_max + 4 + 3 + 2 + 1 + 4 + 4 + 8 + 4 + 4 + 4 + 1 + 4 + 4 + 4 + 4 + 2 + 1 + 4 + 1 + 4 + 4 + 4 + 4 + 4 + (6 + 1 + 2 + 4 + 2 + 1 + 2 + 2 + 2 + 4 + 2 + 1 + 1) + 1 + ClockStyle.wire_len + 1 + NtfyStatus.wire_len + 4 * 4 + (10 * 4) + (4 * 4) + (4 + 4 + 4 + 2) + (1 + BerryStatus.wire_len);
 };
 
 pub const Message = union(Kind) {
@@ -2533,6 +2541,8 @@ fn encodePayload(msg: Message, out: []u8) usize {
             o += 1;
             st.berry.put(out[o..]);
             o += BerryStatus.wire_len;
+            out[o..][0..build_id_max].* = st.build;
+            o += build_id_max;
             return o;
         },
         .result => |r| {
@@ -3096,6 +3106,8 @@ pub fn decodePacket(bytes: []const u8) Error!Packet {
             o += 1;
             st.berry = BerryStatus.get(b[o..][0..BerryStatus.wire_len]);
             o += BerryStatus.wire_len;
+            st.build = b[o..][0..build_id_max].*;
+            o += build_id_max;
             break :blk .{ .status = st };
         },
         .ready => blk: {
@@ -3177,4 +3189,27 @@ test "the clients deliberately do not travel as one message" {
     // supervisor sends one client at a time.
     try std.testing.expect(@sizeOf(Message) <= codec.max_payload);
     try std.testing.expect(@sizeOf(ClientSet) < 128);
+}
+
+test "the build id survives the status wire, whole and null-padded" {
+    // the whole point of this field is that it can be trusted: a truncated or shifted build id is
+    // worse than none, because it answers "what is running" with something plausible and wrong.
+    var buf: [codec.max_message]u8 = undefined;
+    var st = StatusSnapshot{ .epoch = 1, .revision = 2 };
+    const id = "v0.1.0-46-g1bc9d77d1dc1-dirty";
+    @memcpy(st.build[0..id.len], id);
+
+    const p = try decodePacket(try encodePacket(.{ .status = st }, 9, 1, &buf));
+    const back = p.message.status;
+    try std.testing.expectEqualStrings(id, back.build[0..id.len]);
+    try std.testing.expectEqual(@as(u8, 0), back.build[id.len]); // and padded, not trailing rubbish
+    // the fields on either side of it are still where they were
+    try std.testing.expectEqual(@as(u32, 1), back.epoch);
+    try std.testing.expectEqual(@as(u32, 2), back.revision);
+
+    // an id exactly as long as the field leaves no terminator, and must still come back whole
+    var full = StatusSnapshot{};
+    @memset(&full.build, 'x');
+    const p2 = try decodePacket(try encodePacket(.{ .status = full }, 9, 1, &buf));
+    try std.testing.expectEqual(full.build, p2.message.status.build);
 }

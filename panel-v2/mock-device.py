@@ -360,7 +360,7 @@ class Device:
                 "night": self.night_status(),
                 "config_revision": self.config["revision"], "saved_revision": self.config["saved_revision"],
                 "transport": "plaintext", "mqtt": self.mqtt_status(), "ntfy": self.ntfy_doc()["status"],
-                "boot_id": self.boot_id, "sample_age_ms": 200}
+                "build": "mock", "boot_id": self.boot_id, "sample_age_ms": 200}
 
     def logs(self, after):
         lines = [{"seq": s, "text": t} for s, t in self.log_lines if s > after][:16]

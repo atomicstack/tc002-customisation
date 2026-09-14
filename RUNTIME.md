@@ -1147,7 +1147,7 @@ api is for programs, not pages. `allowed_origins` can only be set by editing
 
 | method | path | scope | body | reply |
 |--------|------|-------|------|-------|
-| `GET` | `/status` | `status` | | the [status document](#the-status-document) |
+| `GET` | `/status` | `status` | | the [status document](#the-status-document), including `build` — see [which build is running](#which-build-is-running) |
 | `GET` | `/scenes` | `status` | | the static catalogue: bases, generators, notification and frame bounds |
 | `PUT` | `/scene` | `display` | `{"base":"clock\|art\|canvas","generator":"popsquares\|plasma\|cube"?,"seed":u32?,"clock":{"font","colour_mode","colour","colour2","gradient","spread"}?,"request_id":hex?,"epoch":u32?}` | `{"status":"applied","revision":n,"epoch":n,"request_id":…}` |
 | `POST` | `/action` | `display` | `{"action":"brightness\|reseed\|arm_stream","brightness":1..100?,"seed":u32?,"request_id":hex?,"epoch":u32?}` | as above |
@@ -1237,6 +1237,39 @@ the clients that hand-roll their json:
 | 429 | `overload` (connections or the renderer's dedup window), `frame_rate` |
 | 503 | `not_ready` (netd has no credentials or settings yet), `supervisor_unavailable`, `renderer_unavailable`, `save_failed`, `not_implemented`, `too_many_subscribers` (two event streams are already held) |
 | 504 | `timeout` |
+
+### which build is running
+
+`GET /status` reports `build`: `git describe --always --dirty --abbrev=12`,
+resolved when the build graph is made and compiled into every binary.
+
+it exists because there was no way to answer the question. `boot_id` changes on
+every runtime start, so it says the thing restarted, not what it restarted into;
+`uptime_s` is the *device's* uptime and does not move when the runtime does. the
+only checks available were inference — a log line that only the new build emits,
+a behaviour that only the new build has, or the mtime of a pushed binary — and
+all of those work only when the change happens to be observable. a push that
+silently left an old binary in place passed every one of them.
+
+**every binary logs its own on the first line it writes**, and the supervisor
+pipes each child's stdout into the log ring, so one call shows the whole set:
+
+```sh
+tc002 logs | grep build
+```
+
+that is the check that matters. the six binaries are built together and share an
+id by construction, so a disagreement in that list is not a build problem — it is
+a **deploy** problem, one binary left behind from a previous push. the ipc
+between them has changed repeatedly, and a mismatched set fails in ways that look
+like anything except a version mismatch.
+
+two honest limits. `-dirty` is a flag, not a fingerprint: two builds of the same
+uncommitted tree share an id, and when that matters, commit. and the id is
+resolved at configure time rather than compile time, so it is deliberately not a
+timestamp — a value that changed on every build would invalidate the options
+module and rebuild all six binaries every time, to answer a question a clock
+cannot answer anyway.
 
 ### the status document
 

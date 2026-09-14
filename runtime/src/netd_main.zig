@@ -3,6 +3,7 @@
 //! descriptors: fd 3, the supervisor's seqpacket channel, and fd 5, the already-bound listener.
 //! it holds no authoritative state: every scene command is relayed to the supervisor, which
 //! forwards it to the live renderer and returns the renderer's own result.
+const build_options = @import("build_options");
 const std = @import("std");
 const sys = @import("sys/linux.zig");
 const log = @import("sys/log.zig");
@@ -1265,7 +1266,7 @@ const Netd = struct {
         berryStatusJson(o, &st);
         o.fmt(",\"config_revision\":{d},\"saved_revision\":{d},\"transport\":\"plaintext\",\"mqtt\":", .{ st.config_revision, st.saved_revision });
         self.mqttStatusJson(o, now);
-        o.fmt(",\"boot_id\":\"{x:0>8}\",\"sample_age_ms\":{d},", .{ st.boot_id, st.sample_age_ms + @as(u32, @intCast(@min((now -| self.status_at_ns) / 1_000_000, 0xffffffff))) });
+        o.fmt(",\"build\":\"{s}\",\"boot_id\":\"{x:0>8}\",\"sample_age_ms\":{d},", .{ buildText(&st.build), st.boot_id, st.sample_age_ms + @as(u32, @intCast(@min((now -| self.status_at_ns) / 1_000_000, 0xffffffff))) });
         self.telemetryJson(o);
         o.add("}");
     }
@@ -1303,6 +1304,14 @@ const Netd = struct {
         _ = enc.encode(o.buf[o.len .. o.len + need], &sc.rgb);
         o.len += need;
         o.add("\"}");
+    }
+
+    /// the build id as text: a null-padded array on the wire, a string here. takes the array by
+    /// reference -- a copy would put the slice's backing store in a frame that ends before the
+    /// caller has written it out.
+    fn buildText(build: *const [messages.build_id_max]u8) []const u8 {
+        const end = std.mem.indexOfScalar(u8, build, 0) orelse build.len;
+        return build[0..end];
     }
 
     fn configJson(self: *Netd, o: *Out) void {
@@ -2165,6 +2174,7 @@ fn run(stats: bool) !u8 {
 
 pub fn main(init: std.process.Init.Minimal) u8 {
     log.program = "tc002-netd";
+    log.info("build {s}", .{build_options.build_id});
     var stats = false;
     for (init.args.vector[1..]) |a| {
         const s = std.mem.span(a);

@@ -2,6 +2,7 @@
 //! inherited from the vendor loader, then supervises the renderer over a private seqpacket
 //! channel: ready and heartbeat deadlines, graceful stop with escalation, bounded restarts with a
 //! fallback binary, the physical maintenance gesture, and wlan0 address changes.
+const build_options = @import("build_options");
 const std = @import("std");
 const sys = @import("sys/linux.zig");
 const log = @import("sys/log.zig");
@@ -60,6 +61,8 @@ const tick_ns: u64 = 100_000_000;
 /// how often the night schedule is consulted: a ramp of tens of minutes over a hundred steps moves
 /// no faster than this, and asking costs a few dozen floating point operations
 const night_poll_ns: u64 = 10 * ns_per_s;
+/// the build id, widened to the wire field once at startup
+var snapshot_build: [messages.build_id_max]u8 = [_]u8{0} ** messages.build_id_max;
 /// the low-battery policy is evaluated every second so a countdown can report every second, and
 /// so a cable plugged in during one is noticed within a second of the mcu saying so.
 const power_poll_ns: u64 = 1 * ns_per_s;
@@ -2876,7 +2879,14 @@ fn run(cfg_in: cli.Config, environ: anytype, args: []const [:0]const u8) !u8 {
     try sys.epollAdd(ep, sigfd, linux.EPOLL.IN, @intFromEnum(Tag.signals));
     if (keys) |fd| try sys.epollAdd(ep, fd, linux.EPOLL.IN, @intFromEnum(Tag.keys));
 
+    // what is running, carried in the status document so a device can be asked rather than inferred
+    {
+        const id = build_options.build_id;
+        const n = @min(id.len, messages.build_id_max);
+        @memcpy(snapshot_build[0..n], id[0..n]);
+    }
     var s = Supervisor{ .cfg_cli = cfg, .cfg_dir_text = cfg.dir, .state_dir_text = cfg.state, .cfg_stats = cfg.stats, .ep = ep, .timer = timer, .sigfd = sigfd, .keys = keys, .self_pid = sys.getpid() };
+    s.snapshot.build = snapshot_build;
     // settings and credentials belong on the persistent partition; if it cannot be used the
     // runtime still comes up, on the volatile directory, and says so rather than failing to start
     if (s.makeStateDir()) |_| {
@@ -2987,6 +2997,7 @@ fn run(cfg_in: cli.Config, environ: anytype, args: []const [:0]const u8) !u8 {
 
 pub fn main(init: std.process.Init.Minimal) u8 {
     log.program = "tc002-supervisor";
+    log.info("build {s}", .{build_options.build_id});
     var args: [32][:0]const u8 = undefined;
     const raw = init.args.vector;
     const n = @min(raw.len, args.len);

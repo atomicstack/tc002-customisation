@@ -31,12 +31,42 @@ fn addBerry(b: *std.Build, m: *std.Build.Module) void {
     });
 }
 
+
+/// what this build is, for a device to report back.
+///
+/// `git describe --always --dirty`, resolved once when the build graph is made. it is deliberately
+/// **not** a timestamp: a value that changed every build would invalidate the options module and
+/// rebuild all six binaries on every `zig build`, and the question this answers is "which source is
+/// running", which a clock cannot tell you anyway.
+///
+/// `-dirty` is the honest part. these binaries are usually built from a worktree with uncommitted
+/// changes, and a bare hash would then claim a provenance the tree does not have. two builds of the
+/// same dirty tree share an id, which is the limit of what a commit hash can say; when that matters,
+/// commit.
+///
+/// no git, no repository, or a git that fails: "unknown". a build id is a convenience and must
+/// never be the reason a build does not happen.
+fn buildId(b: *std.Build) []const u8 {
+    const argv = [_][]const u8{ "git", "-C", b.pathFromRoot("."), "describe", "--always", "--dirty", "--abbrev=12" };
+    var code: u8 = 0;
+    // `runAllowFail` rather than `run`: `run` aborts the build when the command fails, and a
+    // missing git is not a reason to refuse to compile a clock
+    const out = b.runAllowFail(&argv, &code, .ignore) catch return "unknown";
+    if (code != 0) return "unknown";
+    const text = std.mem.trim(u8, out, " \t\r\n");
+    if (text.len == 0) return "unknown";
+    // no cap here on purpose: `messages.build_id_max` is the one that decides how much of this
+    // reaches a device, and a second number here could only ever disagree with it
+    return b.dupe(text);
+}
+
 pub fn build(b: *std.Build) void {
     if (!std.mem.eql(u8, builtin.zig_version_string, "0.16.0")) @panic("this project pins zig 0.16.0");
 
     const supervisor_path = b.option([]const u8, "supervisor_path", "path the bootstrap execs") orelse "/tmp/tc002/tc002-supervisor";
     const options = b.addOptions();
     options.addOption([]const u8, "supervisor_path", supervisor_path);
+    options.addOption([]const u8, "build_id", buildId(b));
 
     const device = b.resolveTargetQuery(.{
         .cpu_arch = .arm,
@@ -119,6 +149,7 @@ pub fn build(b: *std.Build) void {
         }),
     });
     audiod.root_module.linkSystemLibrary("dl", .{});
+    audiod.root_module.addOptions("build_options", options);
     b.installArtifact(audiod);
 
     // a diagnostic: walks the audio control plane and prints what each ioctl returned
@@ -155,6 +186,7 @@ pub fn build(b: *std.Build) void {
         .linkage = .static,
     });
     addBerry(b, berryd.root_module);
+    berryd.root_module.addOptions("build_options", options);
     b.installArtifact(berryd);
 
     // a diagnostic rather than part of the runtime: proves the vendored interpreter links for the

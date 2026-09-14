@@ -12,6 +12,7 @@
 //!
 //! the once-a-second report doubles as the liveness ping. a script stuck in a loop leaves this
 //! process perfectly healthy and simply silent, so silence is the signal the supervisor watches.
+const build_options = @import("build_options");
 const std = @import("std");
 const linux = std.os.linux;
 const sys = @import("sys/linux.zig");
@@ -150,6 +151,7 @@ fn runAutoexec(vm: *berry.Vm, handler_ms: u16) void {
 pub fn main(init: std.process.Init.Minimal) u8 {
     _ = init;
     log.program = "tc002-berryd";
+    log.info("build {s}", .{build_options.build_id});
 
     const cfg = waitConfig() orelse {
         log.err("no settings arrived; nothing to run", .{});

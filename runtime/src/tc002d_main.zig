@@ -1,6 +1,7 @@
 //! tc002d: the renderer. one epoll loop with a monotonic timer, evdev, the supervisor's
 //! seqpacket channel and a signalfd. owns the panel through an exclusive lock, the applied scene
 //! state, the presentation model, and command deduplication. no steady-state allocation.
+const build_options = @import("build_options");
 const std = @import("std");
 const sys = @import("sys/linux.zig");
 const log = @import("sys/log.zig");
@@ -650,6 +651,7 @@ fn run(cfg: cli.Config) !u8 {
 
 pub fn main(init: std.process.Init.Minimal) u8 {
     log.program = "tc002d";
+    log.info("build {s}", .{build_options.build_id});
     var args: [32][:0]const u8 = undefined;
     const raw = init.args.vector;
     const n = @min(raw.len -| 1, args.len);
