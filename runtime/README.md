@@ -304,3 +304,44 @@ four things about that build are not obvious, and each one cost a round:
 the binary was pushed to the device's `/tmp` and run: 42 applets, `udhcpc`/`insmod`/`ifconfig`/
 `route`/`ash` all present, `ifconfig wlan0` reporting the real interface. then removed.
 **nothing here writes to `/res`.**
+
+
+## assembling an image (not flashing one)
+
+`runtime/tools/tc002-mkimage.sh` takes a stock `update.img`, adds the runtime, the bootstrap and
+our own busybox, points the loader's `EasyUI.cfg` at the bootstrap, repacks and validates:
+
+```bash
+runtime/tools/tc002-mkimage.sh /path/to/stock-update.img OUT.img
+```
+
+it needs `squashfs-tools` (`brew install squashfs-tools`) and builds busybox itself if there
+isn't one already.
+
+**the size question is answered.** the stock `res` is 2,781,184 bytes compressed; the four
+binaries, the bootstrap and busybox add **1.23 mb**, landing at about **4.0 mb of the 8 mib
+partition — 47% used, 4.4 mb spare**. a persistent install fits comfortably.
+
+the pipeline is also verified in both directions: the reader reproduces the vendor image byte for
+byte from an untouched payload, and a repack of the *unmodified* tree comes back the same size and
+differs only in the superblock's `mkfs_time` and `flags` — the timestamp, and mksquashfs 4.7.5's
+defaults against whatever version the vendor used. content-identical, not byte-identical, and
+byte-identity is not something a repack needs.
+
+### what it is not
+
+the image it writes would be **accepted by the flasher and must not be given to one**. four things
+have to exist first, and each turns a bad boot into a device with no way back in — the recovery
+routes are in [`FIRMWARE.md`](../FIRMWARE.md), and the only verified one is adb over the device's
+own wifi:
+
+1. the boot-failure counter and stock-config fallback, so three bad boots hand the panel back to
+   the vendor app unattended;
+2. yielding to a pending upgrade, or the reset button's reflash stops working — that is the last
+   recovery route, and a bad image is exactly when it is needed;
+3. wifi bring-up at cold boot, because the loader being replaced is what starts it today;
+4. exporting gpio 35 and waiting for `spidev0.0`, or the renderer cannot open the panel at all.
+
+the runtime in the image is also built with this tree's default paths (`/tmp/tc002`) rather than
+`/res/bin`, so its binaries would not find each other. that is a build option this tree does not
+have yet.
