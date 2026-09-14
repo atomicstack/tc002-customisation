@@ -8,6 +8,9 @@ http api on port 80 plus root `adbd` on port 5555. everything here talks to
 those directly, so you can set the device up, control it, and drive the display
 without installing anything from ulanzi.
 
+note: this is beta software and changes to APIs / logic / file formats have the
+potential to break between commits. patches welcome 🫠
+
 ## what's here
 
 docs, one topic each:
