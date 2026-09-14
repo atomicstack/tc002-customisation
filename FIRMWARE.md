@@ -6,6 +6,17 @@ runtime before it can be baked into flash. This is the groundwork for
 replacing the volatile `/tmp` install described in [`RUNTIME.md`](RUNTIME.md)
 with a rebuilt `res` partition delivered through the vendor's own update path.
 
+> **Adopted from aquarat's fork (`c069a48`) on 2026-09-15, and re-verified here
+> before it was taken.** Against the vendor `update.img` pulled from this unit's
+> `/mnt/storage`: `inspect` passes every check (header crc32 `0xe6bd4276`,
+> device code `0xaa550606` → `Zkswe_SSD21X_SPINOR`, payload md5
+> `021d1589…`), and `unpack` then `pack --template` reproduces the vendor image
+> **byte for byte**. The payload it extracts is also byte-identical to the one
+> an independently written reader extracted here, which is what settled that the
+> container layout below is right rather than merely self-consistent — the first
+> 16 bytes of the `res` squashfs really are moved into the header and replaced
+> by the md5 of the whole payload. Still nothing flashed.
+
 Everything here was established on 2026-09-12 against the unit described in
 [`DEVICE.md`](DEVICE.md) (`Zkswe_SSD21X_SPINOR`, app 1.1.1, kernel 4.9.84
 build #1624) by pulling the binaries over adb and disassembling them with
