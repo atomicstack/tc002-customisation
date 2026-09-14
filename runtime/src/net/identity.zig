@@ -31,6 +31,33 @@ pub fn clientId(buf: *[max]u8, configured: []const u8, mac_present: bool, mac: [
     return deviceId(buf, mac_present, mac, boot_id);
 }
 
+/// has the name the device is published under changed since discovery last ran?
+///
+/// this is the cold-boot case: `wlan0` does not exist yet when the supervisor first reads the mac,
+/// so discovery goes out under the `boot` fallback. when the mac turns up a few seconds later the
+/// identity changes, and without a republish home assistant keeps a device that will never be
+/// spoken to again -- a fresh one every reboot, each with the previous one's entities left behind.
+pub fn shouldRepublish(published: []const u8, current: []const u8) bool {
+    if (published.len == 0) return false; // discovery has not run; there is nothing to move
+    return !std.mem.eql(u8, published, current);
+}
+
+test "a late mac moves the device, and nothing else does" {
+    var a: [max]u8 = undefined;
+    var b: [max]u8 = undefined;
+    const mac = [6]u8{ 0xde, 0xad, 0xbe, 0xef, 0x00, 0x01 };
+    const boot = deviceId(&a, false, .{0} ** 6, 0x1234);
+    var boot_copy: [max]u8 = undefined;
+    @memcpy(boot_copy[0..boot.len], boot);
+    const real = deviceId(&b, true, mac, 0x1234);
+    // the bug: published under the boot fallback, then the mac arrives
+    try std.testing.expect(shouldRepublish(boot_copy[0..boot.len], real));
+    // steady state: nothing to do
+    try std.testing.expect(!shouldRepublish(real, real));
+    // discovery has never run, so there is nothing to move even though the id will change
+    try std.testing.expect(!shouldRepublish("", real));
+}
+
 test "the client id is stable across reboots once the mac is known" {
     const mac = [6]u8{ 0xde, 0xad, 0xbe, 0xef, 0x00, 0x01 };
     var a: [max]u8 = undefined;

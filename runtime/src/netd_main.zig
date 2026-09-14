@@ -214,6 +214,11 @@ const Netd = struct {
     disc_next_ns: u64 = 0,
     disc_published: bool = false,
     disc_prefix_used: config.Text = .{},
+    /// the device name discovery was last published under. a cold boot can publish under the
+    /// `boot` fallback and only then learn the mac, which changes the name; without this there is
+    /// nothing to notice that by, and home assistant keeps a device nothing will ever address.
+    disc_id_buf: [identity.max]u8 = undefined,
+    disc_id_len: usize = 0,
     // counters
     http_requests: u32 = 0,
     http_rejected: u32 = 0,
@@ -806,6 +811,14 @@ const Netd = struct {
         self.status = st;
         self.status_at_ns = now;
         if (changed) self.state_dirty = true;
+        // the mac can arrive after discovery has already gone out under the boot fallback
+        if (self.disc_published and self.cfg.discovery) {
+            var id: [identity.max]u8 = undefined;
+            if (identity.shouldRepublish(self.disc_id_buf[0..self.disc_id_len], self.deviceId(&id))) {
+                log.info("device identity changed; republishing discovery", .{});
+                self.discoveryStart(false, now);
+            }
+        }
         if (request_id != 0) {
             if (self.findConn(true, request_id)) |c| {
                 if (c.awaiting == .status) {
@@ -1966,7 +1979,13 @@ const Netd = struct {
     /// start a discovery pass: publish (or, when removing, clear) every entity, one per second.
     fn discoveryStart(self: *Netd, remove: bool, now: u64) void {
         if (!self.m_connected) return;
-        if (!remove) self.disc_prefix_used = self.cfg.discovery_prefix;
+        if (!remove) {
+            self.disc_prefix_used = self.cfg.discovery_prefix;
+            var id: [identity.max]u8 = undefined;
+            const d = self.deviceId(&id);
+            @memcpy(self.disc_id_buf[0..d.len], d);
+            self.disc_id_len = d.len;
+        }
         self.disc_index = 0;
         self.disc_active = true;
         self.disc_remove = remove;

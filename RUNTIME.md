@@ -1793,7 +1793,18 @@ the same block is in `GET /status`, so the console sees it too.
 opt-in with `discovery: true`. on every mqtt connection netd publishes one
 retained config per second under
 `<discovery_prefix>/<component>/tc002-<mac>/<key>/config` (the boot id stands
-in when there is no wlan0 mac): 43 read-only diagnostic `sensor` entities that
+in when there is no wlan0 mac).
+
+the mac is read once at startup, and on a **cold boot `wlan0` does not exist
+yet** — netup loads the wifi driver a few seconds later — so that fallback used
+to be permanent for the life of the run: discovery went out under a random
+per-boot id and home assistant made a new device on every reboot, each one
+orphaning the last one's entities. the supervisor now keeps looking until the
+mac appears and pushes it to netd, and netd republishes discovery if the
+identity changed under it. in practice the mac is there well before the broker
+connects, so the republish is a guard on the race rather than the normal path.
+
+the set is 43 read-only diagnostic `sensor` entities that
 read from the `metrics` topic (uptime, memory used and available and total and
 cached and dirty and slab, cpu
 overall and per process, load, wifi signal and quality and byte rates and totals

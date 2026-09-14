@@ -2060,6 +2060,25 @@ const Supervisor = struct {
         self.snapshot.mac_present = 1;
     }
 
+    /// keep looking for the mac until it turns up.
+    ///
+    /// on a cold boot `wlan0` does not exist yet when `readMac` runs at startup -- netup loads the
+    /// wifi driver a few seconds later -- so the mac, which is the only identity that survives a
+    /// reboot, is missing and discovery goes out under the random per-boot id instead. home
+    /// assistant then makes a new device on every boot and orphans the last one's entities.
+    ///
+    /// the mac exists as soon as the interface does, well before dhcp, so this is a cheap read that
+    /// stops the moment it succeeds. netd is told because it is the one publishing discovery.
+    fn pollMac(self: *Supervisor, now: u64) void {
+        _ = now;
+        if (self.snapshot.mac_present != 0) return;
+        self.readMac();
+        if (self.snapshot.mac_present == 0) return;
+        const m = self.snapshot.mac;
+        log.info("device identity from wlan0 (late): tc002-{x:0>2}{x:0>2}{x:0>2}{x:0>2}{x:0>2}{x:0>2}", .{ m[0], m[1], m[2], m[3], m[4], m[5] });
+        self.sendNetd(.{ .status = self.snapshot }, 0);
+    }
+
     fn rssOf(pid: ?sys.Pid) u32 {
         const p = pid orelse return 0;
         var path: [48]u8 = undefined;
@@ -2958,6 +2977,7 @@ fn run(cfg_in: cli.Config, environ: anytype, args: []const [:0]const u8) !u8 {
         s.pollGesture(now);
         s.pollLifecycle(now);
         s.pollIp(now);
+        s.pollMac(now);
         s.pushDeviceStatus(now);
         s.pollNight(now);
         s.pollPower(now);
