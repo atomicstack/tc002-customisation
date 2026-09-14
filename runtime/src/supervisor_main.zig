@@ -289,8 +289,11 @@ const McuLink = struct {
 const SntpLink = struct {
     fd: ?sys.Fd = null,
     client: sntp.Client = .{},
+    sock: sntp.Socket = .{},
     nonce: u32 = 0x9e37_79b9,
     consecutive_failures: u32 = 0,
+    /// so a retry loop does not fill the ring with the same line
+    open_failed_logged: bool = false,
 
     fn nextNonce(self: *SntpLink) u32 {
         var x = self.nonce;
@@ -301,33 +304,59 @@ const SntpLink = struct {
         return x;
     }
 
-    /// (re)open the socket for the configured server; at startup and whenever the settings change.
+    /// take the settings; the socket itself is opened by `pollSocket` on the next tick.
+    ///
+    /// this used to open the socket here and, if that failed, call `client.configure(null, ...)` --
+    /// which means "no server configured", so sntp was off for the rest of the run. on a cold boot
+    /// `connect` fails for the first few seconds because there is no route yet, and this device has
+    /// no rtc, so the clock stayed at the 1970 epoch until someone restarted the runtime.
     fn configure(self: *SntpLink, s: *Supervisor, now: u64) void {
+        self.closeSocket(s, now);
+        self.client.configure(s.cfg.ntp_server, s.cfg.ntp_interval_s, now);
+        self.client.setNetwork(s.last_ip != null, now);
+        self.consecutive_failures = 0; // a new server gets its own first warning
+        self.open_failed_logged = false;
+        if (s.cfg.ntp_server) |addr| {
+            log.info("sntp server {d}.{d}.{d}.{d}, polling every {d} s once wlan0 has an address", .{ addr[0], addr[1], addr[2], addr[3], s.cfg.ntp_interval_s });
+        } else log.info("sntp disabled: no ntp_server configured", .{});
+    }
+
+    fn closeSocket(self: *SntpLink, s: *Supervisor, now: u64) void {
         if (self.fd) |fd| {
             sys.epollDel(s.ep, fd);
             sys.close(fd);
             self.fd = null;
         }
-        self.client.configure(s.cfg.ntp_server, s.cfg.ntp_interval_s, now);
-        self.client.setNetwork(s.last_ip != null, now);
-        self.consecutive_failures = 0; // a new server gets its own first warning
-        const addr = s.cfg.ntp_server orelse {
-            log.info("sntp disabled: no ntp_server configured", .{});
-            return;
-        };
+        self.sock.reset(now);
+    }
+
+    /// open the socket when there is a server and an address, retrying for as long as it takes.
+    fn pollSocket(self: *SntpLink, s: *Supervisor, now: u64) void {
+        const addr = self.client.server orelse return;
+        if (!self.sock.shouldOpen(true, self.client.network_up, now)) return;
         const fd = sys.udpConnect(addr, sntp.port) catch |e| {
-            log.warn("sntp socket to {d}.{d}.{d}.{d} failed: {s}", .{ addr[0], addr[1], addr[2], addr[3], sys.errText(e) });
-            self.client.configure(null, s.cfg.ntp_interval_s, now);
+            self.sock.failed(now);
+            if (!self.open_failed_logged) {
+                log.warn("sntp socket to {d}.{d}.{d}.{d} failed: {s}; retrying", .{ addr[0], addr[1], addr[2], addr[3], sys.errText(e) });
+                self.open_failed_logged = true;
+            }
             return;
         };
         sys.epollAdd(s.ep, fd, linux.EPOLL.IN, @intFromEnum(Tag.sntp)) catch |e| {
-            log.warn("sntp socket epoll add failed: {s}", .{sys.errText(e)});
             sys.close(fd);
-            self.client.configure(null, s.cfg.ntp_interval_s, now);
+            self.sock.failed(now);
+            if (!self.open_failed_logged) {
+                log.warn("sntp socket epoll add failed: {s}; retrying", .{sys.errText(e)});
+                self.open_failed_logged = true;
+            }
             return;
         };
         self.fd = fd;
-        log.info("sntp server {d}.{d}.{d}.{d}, polling every {d} s once wlan0 has an address", .{ addr[0], addr[1], addr[2], addr[3], s.cfg.ntp_interval_s });
+        self.sock.opened();
+        if (self.open_failed_logged) {
+            log.info("sntp socket open after all", .{});
+            self.open_failed_logged = false;
+        }
     }
 
     fn failure(self: *SntpLink, text: []const u8) void {
@@ -2773,6 +2802,9 @@ const Supervisor = struct {
         if (std.meta.eql(addr, self.last_ip)) return;
         self.last_ip = addr;
         self.sntp_link.client.setNetwork(addr != null, now); // sntp
+        // an address arriving (or coming back) is exactly when a socket that could not find a
+        // route will now open, so do not sit out the remaining backoff
+        if (addr != null) self.sntp_link.sock.reset(now);
         if (addr) |a| log.info("wlan0 address {d}.{d}.{d}.{d}", .{ a[0], a[1], a[2], a[3] }) else log.info("wlan0 has no address", .{});
         self.send(.{ .ip_changed = .{ .present = if (addr != null) 1 else 0, .addr = addr orelse .{ 0, 0, 0, 0 } } });
     }
@@ -2992,6 +3024,7 @@ fn run(cfg_in: cli.Config, environ: anytype, args: []const [:0]const u8) !u8 {
         s.pollAudio(now);
         s.pollBerryPending(now);
         s.mcu_link.poll(&s, now);
+        s.sntp_link.pollSocket(&s, now); // sntp
         s.sntp_link.poll(now); // sntp
         s.expireRelays(now);
         if (now >= s.next_sample_ns) {

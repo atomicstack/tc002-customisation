@@ -497,3 +497,99 @@ test "kiss-o'-death: rate doubles the wait, deny stops polling until reconfigure
     c.configure(.{ 10, 0, 0, 136 }, 600, 0);
     try std.testing.expectEqual(Reject.originate, c.onReply(&kiss, t1, 0).rejected);
 }
+
+/// when the link should (re)try opening its udp socket.
+///
+/// the socket is `connect`ed to the server, and connect fails with no route to the host -- which is
+/// exactly what the first seconds of a cold boot look like, and what a wifi hiccup looks like at
+/// any other time. that failure used to be treated as "no server configured", which disabled sntp
+/// for the rest of the run. this device has **no rtc**: the clock starts at the 1970 epoch and sntp
+/// is the only thing that ever sets it, so giving up meant a clock that never told the time until
+/// someone restarted the runtime.
+///
+/// so a failure here is transient, always. it backs off, and it never stops trying.
+pub const Socket = struct {
+    pub const first_retry_ns: u64 = 2 * std.time.ns_per_s;
+    pub const max_retry_ns: u64 = 60 * std.time.ns_per_s;
+
+    open: bool = false,
+    retry_ns: u64 = first_retry_ns,
+    next_try_ns: u64 = 0,
+
+    /// a socket is wanted when there is a server to talk to and an address to talk from; the
+    /// network check is not politeness, it is what connect needs to find a route at all.
+    pub fn shouldOpen(self: *const Socket, has_server: bool, network_up: bool, now_ns: u64) bool {
+        if (self.open or !has_server or !network_up) return false;
+        return now_ns >= self.next_try_ns;
+    }
+
+    pub fn opened(self: *Socket) void {
+        self.open = true;
+        self.retry_ns = first_retry_ns;
+    }
+
+    /// the socket is gone and we do not know when it will work: back off, but stay willing.
+    pub fn failed(self: *Socket, now_ns: u64) void {
+        self.open = false;
+        self.next_try_ns = now_ns +| self.retry_ns;
+        self.retry_ns = @min(self.retry_ns * 2, max_retry_ns);
+    }
+
+    /// deliberately dropped (settings changed, or an address arrived): try again at once.
+    pub fn reset(self: *Socket, now_ns: u64) void {
+        self.open = false;
+        self.retry_ns = first_retry_ns;
+        self.next_try_ns = now_ns;
+    }
+};
+
+test "a socket failure is never permanent" {
+    var s = Socket{};
+    // this is the bug: one failed open used to end sntp for the whole run
+    try std.testing.expect(s.shouldOpen(true, true, 0));
+    s.failed(0);
+    try std.testing.expect(!s.shouldOpen(true, true, 0)); // backing off, not giving up
+    try std.testing.expect(s.shouldOpen(true, true, Socket.first_retry_ns));
+
+    // and it survives a long outage: still asking, however many times it has failed
+    var now: u64 = 0;
+    for (0..200) |_| {
+        s.failed(now);
+        now += Socket.max_retry_ns;
+        try std.testing.expect(s.shouldOpen(true, true, now));
+    }
+}
+
+test "the backoff grows and then stops growing" {
+    var s = Socket{};
+    s.failed(0);
+    try std.testing.expectEqual(Socket.first_retry_ns * 2, s.retry_ns);
+    var now: u64 = 0;
+    for (0..40) |_| {
+        s.failed(now);
+        now += Socket.max_retry_ns;
+    }
+    try std.testing.expectEqual(Socket.max_retry_ns, s.retry_ns);
+}
+
+test "nothing to open without a server or without an address" {
+    var s = Socket{};
+    try std.testing.expect(!s.shouldOpen(false, true, 0)); // no ntp_server configured
+    try std.testing.expect(!s.shouldOpen(true, false, 0)); // wlan0 has no address yet
+    try std.testing.expect(s.shouldOpen(true, true, 0));
+    s.opened();
+    try std.testing.expect(!s.shouldOpen(true, true, 0)); // already holding one
+}
+
+test "an address arriving retries at once, whatever the backoff had reached" {
+    var s = Socket{};
+    var now: u64 = 0;
+    for (0..10) |_| {
+        s.failed(now);
+        now += Socket.max_retry_ns;
+    }
+    s.failed(now);
+    try std.testing.expect(!s.shouldOpen(true, true, now));
+    s.reset(now); // wlan0 just got an address
+    try std.testing.expect(s.shouldOpen(true, true, now));
+}

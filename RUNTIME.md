@@ -201,7 +201,17 @@ reported as-is with a `sample_age_ms`. `wlan0`'s address is polled every
 
 with `ntp_server` set, the supervisor runs a minimal sntp client (rfc 4330)
 on one udp socket connected to that ipv4 address on port 123: no dns, no
-thread, no rtc. it sends a 48-byte ntpv4 request as soon as wlan0 has an
+thread, no rtc.
+
+**opening that socket is retried for as long as it takes.** `connect` needs a
+route, so it fails for the first seconds of a cold boot and during any wifi
+outage; that used to be treated as "no `ntp_server` configured" and switched
+sntp off for the rest of the run. with no rtc on this device the clock then sat
+at the 1970 epoch until someone restarted the runtime. the open now backs off
+2, 4, 8 … up to 60 s and never gives up, and an address arriving retries at
+once rather than waiting out the backoff.
+
+it sends a 48-byte ntpv4 request as soon as wlan0 has an
 address and then every `ntp_interval_s` (300 or 600). a reply is accepted only
 when it echoes the request's transmit timestamp, comes from a synchronised
 server with stratum 1..15, carries nonzero server timestamps, a date within
