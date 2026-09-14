@@ -28,7 +28,7 @@ commands:
                                       the same way), none (a cut)
   power <on|off>                      display power (fades to and from black)
   input <control> <event> [--steps N] press a control remotely: left|middle|right|knob with
-                                      press|release|click (knob also long); rotary with cw|ccw
+                                      press|release|long|click; rotary with cw|ccw
   screen [--out FILE] [--ascii]       the framebuffer as shown: metadata, raw rgb to a file, or a preview
   logs [after] [--follow]             the log ring after a sequence number; --follow polls every second
   config                              effective settings (admin token needed for patch/save)

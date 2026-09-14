@@ -43,7 +43,7 @@ cat night-mode.be mqtt-gauge.be watch-my-clock.be > autoexec.be
 | [`alarm.be`](alarm.be) | wakes you at a local time, lighting the panel gradually over the first minute; left stops, right snoozes | the clock synced; a sound for the sound |
 | [`ambient.be`](ambient.be) | a slow colour wash across thirteen bands; the right button starts and stops it | — |
 | [`auto-brightness.be`](auto-brightness.be) | follows a lux topic, smoothed and with hysteresis, so the panel stops being blinding at night | mqtt, a light sensor |
-| [`button-macros.be`](button-macros.be) | gives the three buttons a long press the firmware does not have, and publishes each gesture | mqtt |
+| [`button-macros.be`](button-macros.be) | maps a tap and a hold on each button to a topic that means something to the rest of the house | mqtt |
 | [`countdown.be`](countdown.be) | days, hours and minutes until a date you care about | the clock synced |
 | [`knob-dimmer.be`](knob-dimmer.be) | the dial sets the brightness, with the reading drawn while you turn | — |
 | [`mqtt-alert.be`](mqtt-alert.be) | flashes the whole panel until you clear it or press a button | mqtt |
@@ -67,12 +67,16 @@ around. most of them were measured in the runtime source rather than read from a
   clipped at the panel edge, never wrapped.
 - **a canvas document holds twenty-four elements** and 256 bytes of text. that is why the
   sparkline here draws twelve columns and not fifty-two.
-- **the buttons keep their own job.** left, middle and right select the clock, art and canvas
-  bases, and a script cannot swallow that. the scripts here use the **right** button, because
-  selecting the canvas is exactly what a script drawing on the canvas wants anyway.
-- **there is no click and no long press on the three buttons.** the hardware reports `press` and
-  `release`; `long` belongs to the knob, and `click` only ever arrives from an injected
-  `/api/v1/input`. `button-macros.be` times its own long press for that reason.
+- **a script cannot swallow a gesture.** every button has a tap and a hold and the device acts on
+  both: a tap selects the clock, art or canvas base; a hold shows that base and opens its settings
+  menu; the dial's tap goes to the showing scene (art takes a new seed) and its hold opens the
+  device menu. the scripts here use the **right** button, because selecting the canvas is exactly
+  what a script drawing on the canvas wants anyway.
+- **a hold is not also a tap.** `long` is reported once a button is held past 700 ms and the tap's
+  action is suppressed, so the two gestures stay distinct. a hold still opens a settings menu,
+  though, so it is the wrong thing for a script to build on unless you want the menu as well.
+- **there is no `click` event.** a click is a *request* for a press and a release, and it arrives as
+  those two edges and nothing else. a script that waits for one waits for ever.
 - **the rotary is free on the canvas and nowhere else.** it pages clock faces on the clock base
   and art generators on the art base, but the arbiter returns early for the canvas — so a script
   showing a canvas owns the dial.
@@ -90,8 +94,10 @@ around. most of them were measured in the runtime source rather than read from a
   convert with an explicit offset, which does not follow daylight saving. they also refuse to act
   on an unsynced clock, which reads as january 1970.
 - **subscribe refusals are logged, not raised.** the call only complains about the topic's length.
-  the eight-topic cap and the refusal to shadow the device's own `cmd/` topics both happen in the
-  supervisor, so a ninth subscription silently does nothing — `GET /api/v1/logs` says why.
+  the thirty-two-topic cap and the refusal to shadow the device's own `cmd/` topics both happen in
+  the supervisor, so a thirty-third subscription silently does nothing — `GET /api/v1/logs` says
+  why. thirty-two is what one broker reconnect can replay into netd's outbound buffer, which is the
+  only place the list has a physical bound.
 - **sound is off by default.** every `tc002.play` here is wrapped, so a clock with no speaker
   enabled still gets the rest of the script.
 
@@ -102,8 +108,8 @@ cd runtime && zig build check-scripts
 ```
 
 that runs every script in this directory through the same interpreter the device runs, on the host,
-and then fires the events the device really produces at whatever the script registered: presses and
-releases on all four buttons, a long press on the knob, the dial in both directions, an mqtt
+and then fires the events the device really produces at whatever the script registered: presses, holds and
+releases on all four buttons, the dial in both directions, an mqtt
 arrival on each filter the script subscribed to with nineteen different payloads — most of them
 deliberately wrong — every one of those as an ntfy message, and two minutes of timer ticks followed
 by an hour in one jump.

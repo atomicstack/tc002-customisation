@@ -20,7 +20,10 @@ pub const Cadence = union(enum) {
 };
 
 /// normalized physical actions; no required action uses a button combination.
-pub const Action = enum { left, middle, right, knob_short, knob_long, rotate_cw, rotate_ccw };
+/// what a control did, in the arbiter's own terms. the three base buttons have a tap and a hold:
+/// the tap selects a base and the hold opens that base's settings, which is why the dial's click is
+/// free for the showing scene to use.
+pub const Action = enum { left, middle, right, left_long, middle_long, right_long, knob_short, knob_long, rotate_cw, rotate_ccw };
 
 pub const Generator = enum(u8) { popsquares = 0, plasma = 1, cube = 2 };
 pub const generator_count: u8 = @typeInfo(Generator).@"enum".fields.len;

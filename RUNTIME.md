@@ -737,15 +737,36 @@ does not know is rejected with `400 rejected`.
 
 | control | in `art` | in `clock` | in `canvas` |
 |---------|----------|------------|-------------|
-| left button (release) | select `clock` | select `clock` | select `clock` |
-| middle button (release) | select `art` | select `art` | select `art` |
-| right button (release) | select `canvas` | select `canvas` | select `canvas` |
+| left button (tap) | select `clock` | select `clock` | select `clock` |
+| middle button (tap) | select `art` | select `art` | select `art` |
+| right button (tap) | select `canvas` | select `canvas` | select `canvas` |
+| left button (hold, 700 ms) | show the clock and open [its settings](#scene-parameters) | " | " |
+| middle button (hold) | show art and open its settings | " | " |
+| right button (hold) | show the canvas and open its settings | " | " |
 | knob rotate | next / previous generator | next / previous clock face | nothing: a canvas is what was pushed to it and has no pages |
-| knob short press | the showing scene's own settings | the showing scene's own settings | the showing scene's own settings |
-| knob long press (700 ms) | the [device menu](#the-settings-menu) | the device menu | the device menu |
+| knob tap | a new seed | nothing yet | nothing yet |
+| knob hold (700 ms) | the [device menu](#the-settings-menu) | the device menu | the device menu |
 
-while the menu is open every control belongs to it; the table above applies
-only when it is closed.
+while the menu is open every control belongs to it — **except the three holds**,
+which work from anywhere and walk straight from one scene's settings to the
+next. the rest of the table applies only when the menu is closed.
+
+**every button has a tap and a hold, and they are one pair.** a button selects a
+base and holding it opens that base's settings, so the settings you are editing
+always belong to the thing you are looking at, and you never have to select a
+scene before you can configure it.
+
+**a hold is not also a tap.** `long` is reported once held past 700 ms and the
+tap's action is then suppressed on release, so holding `left` opens the clock's
+settings rather than also selecting the clock twice over. that is what makes a
+hold a gesture rather than a slow press, and it is the rule the knob has always
+followed.
+
+**which is what freed the dial's click.** it used to open the showing scene's
+settings; that is the hold's job now, so a click goes to the scene itself. art
+takes a new seed from it — which is what a click on a generated picture should
+do, and what it did before the menus existed. the clock and the canvas do
+nothing with one yet.
 
 **the page indicator.** wherever the dial pages something, turning it raises a
 row of dots along the bottom: one per page, the one you are on solid and the
@@ -852,8 +873,9 @@ the menus draw in the 3x5 `mini` font, the one the mini clock face and the
 mini ip layout use: thirteen characters across, and easier to read close up
 than the 5x7. that font gained a letter set for them.
 
-a **short press of the knob** opens the showing scene's table as a menu, one
-entry per screen with an `exit` at the end. a colour draws as a swatch rather
+**holding a base's own button** — left for the clock, middle for art, right for
+the canvas — shows that base and opens its parameter table as a menu, one entry
+per screen with an `exit` at the end. a colour draws as a swatch rather
 than six hex digits, and turning the dial walks a hue wheel of 32 positions at
 full saturation, snapped to those positions so repeated turns do not drift.
 saturation, value and an exact hex belong to the console; a parameter can say
@@ -865,7 +887,7 @@ settings patch, so it persists and reaches netd like any other.
 
 ### the settings menu
 
-the knob's **long** press opens the device's own menu, so brightness, the
+the knob's **hold** opens the device's own menu, so brightness, the
 night schedule and the two message services can be changed with nothing else
 to hand.
 one item shows at a time, which is the only honest layout on 52x16: the item's
@@ -1097,7 +1119,7 @@ api is for programs, not pages. `allowed_origins` can only be set by editing
 | `POST` | `/notify` | control | `{"text":"…","colour":"rrggbb"?,"duration_s":1..300?,"request_id":hex?,"epoch":u32?}` (`duration_s` optional, defaults to 5) | as above |
 | `POST` | `/frame?duration_s=` (`request_id`, `epoch` optional) | control | `application/octet-stream`, exactly 2,496 bytes | as above |
 | `POST` | `/action` (`"action":"power"`) | control | `{"action":"power","power":true\|false,"request_id":hex?,"epoch":u32?}` | as above; fades over 600 ms |
-| `POST` | `/input` | control | `{"control":"left\|middle\|right\|knob\|rotary","event":"press\|release\|click\|long\|cw\|ccw","steps":1..16?,"request_id":hex?,"epoch":u32?}` | as above. `long` is the knob only; `cw`/`ccw` are the rotary only and take `steps` |
+| `POST` | `/input` | control | `{"control":"left\|middle\|right\|knob\|rotary","event":"press\|release\|click\|long\|cw\|ccw","steps":1..16?,"request_id":hex?,"epoch":u32?}` | as above. `click` is a request for a press and a release and reports as those two edges, never as a third; `long` is any button; `cw`/`ccw` are the rotary only and take `steps` |
 | `GET` | `/screen` | control | | `{"width":52,"height":16,"epoch","revision","brightness","power","rgb_base64":"…"}`: the frame as shown, after fades, before brightness. `?format=raw` returns the 2,496 rgb bytes as `application/octet-stream` |
 | `GET` | `/logs?after=N` | control | | `{"next":seq,"lines":[{"seq":n,"text":"…"}…]}`: up to 16 lines of the [log ring](#the-log-ring) after sequence number `after` (0 = oldest kept); pass `next` back to continue. a jump in `seq` means lines were evicted |
 | `GET` | `/events` | control | | an [event stream](#the-event-stream): `text/event-stream`, one `data:` frame per statement applied, held open until the client goes away |
@@ -1556,8 +1578,8 @@ and as a percentage, battery and usb power, renderer restarts, mqtt reconnects,
 scene, brightness, fps, frames presented, time sync state), one
 `binary_sensor` for display power that reads the retained `state` topic, and
 five `event` entities (left, middle and right buttons, the knob, the rotary)
-fed by the momentary `input/<control>` topics with `event_types` press/release
-(plus `long` for the knob, `cw`/`ccw` for the rotary). forty-nine entities at
+fed by the momentary `input/<control>` topics with `event_types`
+press/release/long for all four buttons and `cw`/`ccw` for the rotary. forty-nine entities at
 one per second means a full pass takes about that many seconds. they are grouped into
 one device, linked to the `availability` topic, and the metrics sensors expire
 after three metrics intervals. a home-assistant birth message

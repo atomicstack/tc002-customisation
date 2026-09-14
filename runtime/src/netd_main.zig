@@ -1605,7 +1605,13 @@ const Netd = struct {
                 // to go again rather than being assumed to have survived.
                 for (0..self.berry_topic_count) |i| {
                     var one = [_][]const u8{self.berry_topics[i][0..self.berry_topic_len[i]]};
-                    const sn = mqtt.encodeSubscribe(self.mqttSpace(), self.client.packetId(), one[0..1], 1) catch continue;
+                    const sn = mqtt.encodeSubscribe(self.mqttSpace(), self.client.packetId(), one[0..1], 1) catch {
+                        // `topics_max` is derived so the whole replay fits this buffer. if that
+                        // ever stops being true the remaining topics simply stop arriving, so say
+                        // so rather than dropping them into the silence the cap was chosen against.
+                        log.warn("could not replay {d} of {d} script topic(s) on reconnect", .{ self.berry_topic_count - i, self.berry_topic_count });
+                        break;
+                    };
                     self.mqttQueue(sn);
                 }
                 log.info("mqtt connected", .{});
@@ -1856,9 +1862,9 @@ const Netd = struct {
     };
     const entities = [_]Entity{
         .{ .key = "power", .name = "display power", .component = .binary_sensor, .topic = "state", .template = "{{ 'ON' if value_json.power else 'OFF' }}", .device_class = "power" },
-        .{ .key = "button_left", .name = "left button", .component = .event, .topic = "input/left", .event_types = "\"press\",\"release\"", .device_class = "button", .diagnostic = false },
-        .{ .key = "button_middle", .name = "middle button", .component = .event, .topic = "input/middle", .event_types = "\"press\",\"release\"", .device_class = "button", .diagnostic = false },
-        .{ .key = "button_right", .name = "right button", .component = .event, .topic = "input/right", .event_types = "\"press\",\"release\"", .device_class = "button", .diagnostic = false },
+        .{ .key = "button_left", .name = "left button", .component = .event, .topic = "input/left", .event_types = "\"press\",\"release\",\"long\"", .device_class = "button", .diagnostic = false },
+        .{ .key = "button_middle", .name = "middle button", .component = .event, .topic = "input/middle", .event_types = "\"press\",\"release\",\"long\"", .device_class = "button", .diagnostic = false },
+        .{ .key = "button_right", .name = "right button", .component = .event, .topic = "input/right", .event_types = "\"press\",\"release\",\"long\"", .device_class = "button", .diagnostic = false },
         .{ .key = "knob", .name = "knob", .component = .event, .topic = "input/knob", .event_types = "\"press\",\"release\",\"long\"", .device_class = "button", .diagnostic = false },
         .{ .key = "rotary", .name = "rotary", .component = .event, .topic = "input/rotary", .event_types = "\"cw\",\"ccw\"", .diagnostic = false },
         .{ .key = "uptime", .name = "uptime", .template = "{{ value_json.uptime_s }}", .unit = "s", .device_class = "duration", .state_class = "" },

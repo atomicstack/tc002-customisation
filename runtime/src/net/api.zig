@@ -105,7 +105,7 @@ pub const Op = union(enum) {
     sound_play: struct { name: []const u8, volume: ?u8, loop: bool },
     sound_stop,
     /// a remote control event: the same paths as a physical press
-    input: struct { control: actions.Control, event: actions.EdgeEvent, steps: u8, request_id: u64, epoch: ?u32 },
+    input: struct { control: actions.Control, event: actions.InputRequest, steps: u8, request_id: u64, epoch: ?u32 },
     notify: struct { text: []const u8, colour: [3]u8, duration_s: u16, transition: ?transition.Spec, request_id: u64, epoch: ?u32 },
     frame: struct { rgb: *const geometry.Rgb, duration_s: u16, transition: ?transition.Spec, request_id: u64, epoch: ?u32 },
     config_get,
@@ -1028,11 +1028,10 @@ pub fn parseBody(kind: BodyKind, body: []const u8, arena: *Arena, generated_id: 
         .input => {
             const b = json.parse(InputBody, body, arena, &where) catch |e| return jsonError(e, where, arena);
             const control = enumByName(actions.Control, b.control) orelse return bad("invalid_control", "control must be left, middle, right, knob or rotary");
-            const event = enumByName(actions.EdgeEvent, b.event) orelse return bad("invalid_event", "event must be press, release, click, long, cw or ccw");
+            const event = enumByName(actions.InputRequest, b.event) orelse return bad("invalid_event", "event must be press, release, click, long, cw or ccw");
             const rotary = control == .rotary;
             const turning = event == .cw or event == .ccw;
             if (rotary != turning) return bad("invalid_event", "cw and ccw belong to the rotary; buttons take press, release, click or long");
-            if (event == .long and control != .knob) return bad("invalid_event", "only the knob has a long press");
             if (b.steps < 1 or b.steps > 16) return bad("invalid_steps", "steps must be 1..16");
             if (b.steps != 1 and !turning) return bad("invalid_steps", "steps applies to cw and ccw only");
             const rid = if (b.request_id) |t| (parseRequestId(t) orelse return bad("invalid_request_id", "request_id must be 1..16 hex digits")) else generated_id;
@@ -1639,13 +1638,18 @@ test "screen, logs and input routes" {
     try expectReject(route(testReq(.GET, "/api/v1/logs", "", null, null, null), "", &c, &no_clients, &origins, &arena, test_minted), 401, "unauthorized");
     const i = route(testReq(.POST, "/api/v1/input", "", control_header, "application/json", null), "{\"control\":\"rotary\",\"event\":\"ccw\",\"steps\":3,\"request_id\":\"c\",\"epoch\":1}", &c, &no_clients, &origins, &arena, test_minted);
     try std.testing.expectEqual(actions.Control.rotary, i.op.input.control);
-    try std.testing.expectEqual(actions.EdgeEvent.ccw, i.op.input.event);
+    try std.testing.expectEqual(actions.InputRequest.ccw, i.op.input.event);
     try std.testing.expectEqual(@as(u8, 3), i.op.input.steps);
     const k = route(testReq(.POST, "/api/v1/input", "", control_header, "application/json", null), "{\"control\":\"knob\",\"event\":\"long\",\"request_id\":\"c\",\"epoch\":1}", &c, &no_clients, &origins, &arena, test_minted);
-    try std.testing.expectEqual(actions.EdgeEvent.long, k.op.input.event);
+    try std.testing.expectEqual(actions.InputRequest.long, k.op.input.event);
     try std.testing.expectEqual(@as(u8, 1), k.op.input.steps);
     try expectReject(route(testReq(.POST, "/api/v1/input", "", control_header, "application/json", null), "{\"control\":\"left\",\"event\":\"cw\",\"request_id\":\"c\",\"epoch\":1}", &c, &no_clients, &origins, &arena, test_minted), 400, "invalid_event");
-    try expectReject(route(testReq(.POST, "/api/v1/input", "", control_header, "application/json", null), "{\"control\":\"left\",\"event\":\"long\",\"request_id\":\"c\",\"epoch\":1}", &c, &no_clients, &origins, &arena, test_minted), 400, "invalid_event");
+    // a long press is no longer the knob's alone: every button reports one, so the route takes one
+    const l = route(testReq(.POST, "/api/v1/input", "", control_header, "application/json", null), "{\"control\":\"left\",\"event\":\"long\",\"request_id\":\"c\",\"epoch\":1}", &c, &no_clients, &origins, &arena, test_minted);
+    try std.testing.expectEqual(actions.Control.left, l.op.input.control);
+    try std.testing.expectEqual(actions.InputRequest.long, l.op.input.event);
+    // but the rotary is a dial: it has nothing to hold
+    try expectReject(route(testReq(.POST, "/api/v1/input", "", control_header, "application/json", null), "{\"control\":\"rotary\",\"event\":\"long\",\"request_id\":\"c\",\"epoch\":1}", &c, &no_clients, &origins, &arena, test_minted), 400, "invalid_event");
     try expectReject(route(testReq(.POST, "/api/v1/input", "", control_header, "application/json", null), "{\"control\":\"rotary\",\"event\":\"click\",\"request_id\":\"c\",\"epoch\":1}", &c, &no_clients, &origins, &arena, test_minted), 400, "invalid_event");
     try expectReject(route(testReq(.POST, "/api/v1/input", "", control_header, "application/json", null), "{\"control\":\"middle\",\"event\":\"click\",\"steps\":2,\"request_id\":\"c\",\"epoch\":1}", &c, &no_clients, &origins, &arena, test_minted), 400, "invalid_steps");
     try expectReject(route(testReq(.POST, "/api/v1/input", "", control_header, "application/json", null), "{\"control\":\"rotary\",\"event\":\"cw\",\"steps\":17,\"request_id\":\"c\",\"epoch\":1}", &c, &no_clients, &origins, &arena, test_minted), 400, "invalid_steps");

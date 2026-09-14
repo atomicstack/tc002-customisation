@@ -394,7 +394,8 @@ const Renderer = struct {
             .power => |pw| arb.apply(.{ .power = pw.on != 0 }, now),
             .inject_input => |i| blk: {
                 const control = messages.enumFromInt(actions.Control, i.control) orelse break :blk arbiter.Result{ .rejected = .invalid_text };
-                const event = messages.enumFromInt(actions.EdgeEvent, i.event) orelse break :blk arbiter.Result{ .rejected = .invalid_text };
+                // a request, not an edge: `inject_input` is the only place a click is speakable
+                const event = messages.enumFromInt(actions.InputRequest, i.event) orelse break :blk arbiter.Result{ .rejected = .invalid_text };
                 var queue = actions.ActionQueue{};
                 var edges = actions.EdgeQueue{};
                 if (!self.mapper.inject(control, event, i.steps, now, &queue, &edges)) break :blk arbiter.Result{ .rejected = .invalid_text };

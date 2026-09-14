@@ -254,8 +254,8 @@ test "physical actions: buttons select the base, rotary and knob depend on the b
     try std.testing.expectEqual(scene.Generator.popsquares, a.art.generator); // all the way round
     var before: geometry.Rgb = undefined;
     a.render(0, &before);
-    // a short knob press opens the showing scene's settings, which take every control
-    a.action(.knob_short, 0);
+    // holding the showing base's own button opens its settings, which take every control
+    a.action(.middle_long, 0);
     try std.testing.expect(a.menuOpen());
     try std.testing.expectEqual(menu.Kind.scene, a.menu_state.?.kind);
     var after: geometry.Rgb = undefined;
@@ -1015,11 +1015,21 @@ pub const Arbiter = struct {
     }
 
     pub fn action(self: *Arbiter, a: scene.Action, now_ns: u64) void {
+        // holding a base button is the same gesture wherever you are, menu open or not: it shows
+        // that base and opens its settings. a hold is never a menu keystroke, so nothing collides,
+        // and holding another base's button walks straight from one scene's settings to the next.
+        switch (a) {
+            .left_long => return self.baseSettings(.clock, now_ns),
+            .middle_long => return self.baseSettings(.art, now_ns),
+            .right_long => return self.baseSettings(.canvas, now_ns),
+            else => {},
+        }
         if (self.menu_state != null) return self.menuAction(a, now_ns);
         switch (a) {
             .left => _ = self.apply(.{ .set_base = .clock }, now_ns),
             .middle => _ = self.apply(.{ .set_base = .art }, now_ns),
             .right => _ = self.apply(.{ .set_base = .canvas }, now_ns),
+            .left_long, .middle_long, .right_long => unreachable, // answered above
             // the knob pages through the current scene: generators in art, faces in the clock. a
             // canvas is whatever was pushed to it and has no pages of its own.
             .rotate_cw, .rotate_ccw => {
@@ -1031,9 +1041,29 @@ pub const Arbiter = struct {
                 self.pages_at = now_ns;
                 self.dirty = true;
             },
-            // a short press is the showing scene's own settings; a long one the device's
-            .knob_short => self.openSceneMenu(now_ns),
+            // the dial's click belongs to whatever is showing; its hold is the device's own menu
+            .knob_short => self.sceneClick(now_ns),
             .knob_long => self.openMenu(now_ns),
+        }
+    }
+
+    /// show a base and open its settings: one gesture, so the settings you are editing are always
+    /// the settings of the thing you are looking at.
+    fn baseSettings(self: *Arbiter, base: Base, now_ns: u64) void {
+        _ = self.apply(.{ .set_base = base }, now_ns);
+        self.openSceneMenu(now_ns);
+    }
+
+    /// what a click on the dial means to the scene that is showing.
+    ///
+    /// it used to open the scene menu, which is now a hold on that scene's own button -- and that
+    /// left the click free for the scene itself, which is where a click on a picture belongs. art
+    /// takes a new seed from it. the clock and the canvas have nothing to do with one yet, and this
+    /// is the seam where that goes.
+    fn sceneClick(self: *Arbiter, now_ns: u64) void {
+        switch (self.base) {
+            .art => _ = self.apply(.{ .reseed = self.art.seed *% 1664525 +% 1013904223 }, now_ns),
+            .clock, .canvas => {},
         }
     }
 
@@ -1126,7 +1156,8 @@ pub const Arbiter = struct {
             .middle => .back,
             .right => .step_up,
             .left => .step_down,
-            .knob_long => return, // the stream gesture stays out of the menu
+            .knob_long => return, // the device menu is not reachable from inside a menu
+            .left_long, .middle_long, .right_long => unreachable, // answered before the menu sees it
         };
         const m = &(self.menu_state.?);
         self.handleMenu(m.input(ev, now_ns), now_ns);
@@ -1310,3 +1341,41 @@ pub const Arbiter = struct {
         };
     }
 };
+
+test "a hold opens that base's settings, and the dial's click belongs to the scene" {
+    var a = fresh();
+
+    // holding a base button is one gesture doing the whole job: show that base, open its settings
+    a.action(.left_long, 0);
+    try std.testing.expect(a.base == .clock);
+    try std.testing.expect(a.menuOpen());
+    try std.testing.expectEqual(menu.Kind.scene, a.menu_state.?.kind);
+
+    // and it works from inside another scene's settings, so the three holds walk between them
+    a.action(.right_long, 0);
+    try std.testing.expect(a.base == .canvas);
+    try std.testing.expect(a.menuOpen());
+    try std.testing.expectEqual(menu.Kind.scene, a.menu_state.?.kind);
+    a.action(.middle, 0); // back out
+    try std.testing.expect(!a.menuOpen());
+
+    // the dial's click is the scene's own now. art takes a new seed from it and no menu opens --
+    // opening one is what the hold is for.
+    a.action(.middle, 0);
+    try std.testing.expect(a.base == .art);
+    const seed = a.art.seed;
+    a.action(.knob_short, 0);
+    try std.testing.expect(a.art.seed != seed);
+    try std.testing.expect(!a.menuOpen());
+
+    // the clock has nothing to do with a click yet, and quietly does nothing rather than surprising
+    a.action(.left, 0);
+    a.action(.knob_short, 0);
+    try std.testing.expect(a.base == .clock);
+    try std.testing.expect(!a.menuOpen());
+
+    // and the dial's hold is still the device's own menu
+    a.action(.knob_long, 0);
+    try std.testing.expect(a.menuOpen());
+    try std.testing.expectEqual(menu.Kind.device, a.menu_state.?.kind);
+}

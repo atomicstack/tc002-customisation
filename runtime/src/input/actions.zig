@@ -89,10 +89,26 @@ fn abs(value: i32) evdev.Event {
 /// the physical controls as reported outward and as remote injection targets.
 pub const Control = enum(u8) { left = 0, middle = 1, right = 2, knob = 3, rotary = 4 };
 
-/// what happened on a control. buttons and the knob report press/release (the knob also `long`
-/// once held past the threshold); the rotary reports one cw/ccw per detent. `click` exists only
-/// as an injection request (press then release).
-pub const EdgeEvent = enum(u8) { release = 0, press = 1, click = 2, long = 3, cw = 4, ccw = 5 };
+/// how many of those are buttons that can be held. the rotary is a dial with no press, and it is
+/// last in the enum so that the buttons are exactly `0..button_count`.
+pub const button_count = @intFromEnum(Control.rotary);
+
+/// what happened on a control, and the whole of what one can report: every button and the knob
+/// report press and release, any of them reports `long` once held past the threshold, and the
+/// rotary reports one cw/ccw per detent.
+///
+/// **2 is missing on purpose.** `click` used to sit there, and nothing has ever pushed one -- a
+/// click is two edges, so injecting one produces a press and a release. it was reachable only as a
+/// name in this enum, which meant a script or an mqtt consumer could wait for a click for ever and
+/// nothing would say why. it is a request rather than an event and now lives in `InputRequest`,
+/// where it can be asked for and cannot be awaited. the numbering is the wire encoding, so the
+/// hole stays rather than shifting `long`, `cw` and `ccw` under every deployed binary.
+pub const EdgeEvent = enum(u8) { release = 0, press = 1, long = 3, cw = 4, ccw = 5 };
+
+/// what `POST /api/v1/input` and the mqtt `cmd/input` topic accept: every edge a control can
+/// report, plus `click` -- a press and a release asked for in one call, which reports as those two
+/// edges and no third thing.
+pub const InputRequest = enum(u8) { release = 0, press = 1, click = 2, long = 3, cw = 4, ccw = 5 };
 
 /// one outward event: the control, what it did, and the rotary position after it.
 pub const Edge = struct { control: Control, event: EdgeEvent, position: i32 };
@@ -147,8 +163,10 @@ pub const ActionQueue = struct {
 pub const Mapper = struct {
     keymap: evdev.KeyMap,
     long_press_ns: u64 = 700_000_000,
-    knob_down_since: ?u64 = null,
-    knob_long_sent: bool = false,
+    /// when each button went down and whether its long press has already been reported, indexed by
+    /// `Control`. the rotary has no hold, so its slot is never used.
+    down_since: [button_count]?u64 = [_]?u64{null} ** button_count,
+    long_sent: [button_count]bool = [_]bool{false} ** button_count,
     /// detents since start, cw positive; reported with every rotary edge.
     position: i32 = 0,
     /// the last keycode that matched nothing, for the renderer to log; 0 = none.
@@ -189,21 +207,28 @@ pub const Mapper = struct {
                 };
                 edges.push(.{ .control = control, .event = if (down) .press else .release, .position = self.position });
                 if (down) self.last_press = .{ .code = ev.code, .control = control };
-                if (control == .knob) {
-                    if (down) {
-                        self.knob_down_since = now_ns;
-                        self.knob_long_sent = false;
-                    } else {
-                        if (self.knob_down_since != null and !self.knob_long_sent) _ = out.push(.knob_short);
-                        self.knob_down_since = null;
-                    }
-                } else if (!down) {
-                    _ = out.push(switch (control) {
-                        .left => .left,
-                        .middle => .middle,
-                        else => .right,
-                    });
+                const i = @intFromEnum(control);
+                if (down) {
+                    self.down_since[i] = now_ns;
+                    self.long_sent[i] = false;
+                    return;
                 }
+                // a release the mapper never saw the press for is not a press: it is a button that
+                // was already held when the runtime started, and acting on it would move the panel
+                // for something the user did before this process existed.
+                const pressed = self.down_since[i] != null;
+                const was_long = self.long_sent[i];
+                self.down_since[i] = null;
+                // the short action belongs to a short press. a long one has already reported itself
+                // as its own gesture, and firing both would leave a hold indistinguishable in
+                // effect from a tap -- which is what made the long press useless before it existed.
+                if (!pressed or was_long) return;
+                _ = out.push(switch (control) {
+                    .left => .left,
+                    .middle => .middle,
+                    .right => .right,
+                    else => .knob_short,
+                });
             },
             evdev.EV_ABS => {
                 // the vendor's knob driver reports state codes on ABS_X, not a counter: one
@@ -223,20 +248,36 @@ pub const Mapper = struct {
         }
     }
 
-    /// called every loop iteration: a knob held past the threshold yields one long press.
+    /// the action a hold on each button carries. the knob's opens the device menu, as it always
+    /// has; the other three open the settings of the base they select, so the gesture a button has
+    /// is the tap-then-hold pair for one scene rather than three unrelated things.
+    fn longActionOf(control: Control) scene.Action {
+        return switch (control) {
+            .left => .left_long,
+            .middle => .middle_long,
+            .right => .right_long,
+            else => .knob_long,
+        };
+    }
+
+    /// called every loop iteration: any button held past the threshold yields one long press, once.
     pub fn poll(self: *Mapper, now_ns: u64, out: *ActionQueue, edges: *EdgeQueue) void {
-        if (self.knob_down_since) |since| {
-            if (!self.knob_long_sent and now_ns - since >= self.long_press_ns) {
-                self.knob_long_sent = true;
-                _ = out.push(.knob_long);
-                edges.push(.{ .control = .knob, .event = .long, .position = self.position });
-            }
+        for (0..button_count) |i| {
+            const since = self.down_since[i] orelse continue;
+            if (self.long_sent[i] or now_ns - since < self.long_press_ns) continue;
+            self.long_sent[i] = true;
+            const control: Control = @enumFromInt(i);
+            _ = out.push(longActionOf(control));
+            edges.push(.{ .control = control, .event = .long, .position = self.position });
         }
     }
 
     /// a remote request: the same paths as physical input, so it produces the same actions and
     /// edges. `steps` applies to the rotary only.
-    pub fn inject(self: *Mapper, control: Control, event: EdgeEvent, steps: u8, now_ns: u64, out: *ActionQueue, edges: *EdgeQueue) bool {
+    ///
+    /// this takes an `InputRequest` rather than an `EdgeEvent` because `click` can be asked for and
+    /// cannot happen: it goes out as a press and a release, which is what a click is.
+    pub fn inject(self: *Mapper, control: Control, event: InputRequest, steps: u8, now_ns: u64, out: *ActionQueue, edges: *EdgeQueue) bool {
         const km = self.keymap;
         const code: u16 = switch (control) {
             .left => km.left,
@@ -256,11 +297,11 @@ pub const Mapper = struct {
                 self.feed(key(code, 0), now_ns, out, edges);
             },
             .long => {
-                if (control != .knob) return false;
+                if (control == .rotary) return false;
                 self.feed(key(code, 1), now_ns, out, edges);
-                self.knob_long_sent = true;
-                _ = out.push(.knob_long);
-                edges.push(.{ .control = .knob, .event = .long, .position = self.position });
+                self.long_sent[@intFromEnum(control)] = true;
+                _ = out.push(longActionOf(control));
+                edges.push(.{ .control = control, .event = .long, .position = self.position });
                 self.feed(key(code, 0), now_ns, out, edges);
             },
             .cw, .ccw => {
@@ -325,7 +366,83 @@ test "injected events take the physical paths and validate their shape" {
     try std.testing.expect(m.inject(.knob, .release, 1, 100_000_000, &q, &e));
     try std.testing.expectEqualSlices(scene.Action, &.{.knob_short}, q.slice());
     try std.testing.expect(!m.inject(.rotary, .click, 1, 0, &q, &e));
-    try std.testing.expect(!m.inject(.left, .long, 1, 0, &q, &e));
+    try std.testing.expect(!m.inject(.rotary, .long, 1, 0, &q, &e));
     try std.testing.expect(!m.inject(.rotary, .cw, 17, 0, &q, &e));
     try std.testing.expect(!m.inject(.left, .cw, 1, 0, &q, &e));
 }
+
+test "a click is a request and never an edge" {
+    // nothing has ever pushed a click edge. the three buttons and the knob report press and
+    // release, the knob adds long once it is held, and the rotary reports detents -- that is the
+    // whole of what a control does. `click` sat in the reported vocabulary regardless, so a script
+    // or an mqtt consumer could wait for one for ever and nothing would ever say why.
+    //
+    // it is a request: one press and one release asked for in a single call, which reports as
+    // those two edges. so it belongs where it can be asked for and not where it can be awaited.
+    try std.testing.expect(std.meta.stringToEnum(EdgeEvent, "click") == null);
+    try std.testing.expect(std.meta.stringToEnum(InputRequest, "click") != null);
+
+    // and asking for one produces exactly the two edges it is made of
+    var m = Mapper.init(.{});
+    var q = ActionQueue{};
+    var e = EdgeQueue{};
+    try std.testing.expect(m.inject(.middle, .click, 1, 0, &q, &e));
+    const both = [_]Edge{
+        .{ .control = .middle, .event = .press, .position = 0 },
+        .{ .control = .middle, .event = .release, .position = 0 },
+    };
+    try std.testing.expectEqualSlices(Edge, &both, e.slice());
+}
+
+const ms = std.time.ns_per_ms;
+const s_ns = std.time.ns_per_s;
+
+test "every button has a long press, and a hold is not also a tap" {
+    // the knob has had one since the beginning and the other three had nothing: holding left was a
+    // press that happened to take a while, so a script could not tell a hold from a tap and the
+    // panel changed base either way. now the hold is its own gesture on all four.
+    var m = Mapper.init(.{});
+    var q = ActionQueue{};
+    var e = EdgeQueue{};
+
+    // a short press still selects the clock, because a tap is what that action is for
+    m.feed(key(108, 1), 0, &q, &e);
+    m.poll(100 * ms, &q, &e);
+    m.feed(key(108, 0), 200 * ms, &q, &e);
+    try std.testing.expectEqualSlices(scene.Action, &.{.left}, q.slice());
+
+    // held past the threshold it reports `long` once, however long it is held after that
+    q.clear();
+    e = .{};
+    m.feed(key(108, 1), 1 * s_ns, &q, &e);
+    m.poll(1 * s_ns + 600 * ms, &q, &e);
+    try std.testing.expectEqual(@as(usize, 1), e.len); // the press; not yet long
+    m.poll(1 * s_ns + 800 * ms, &q, &e);
+    m.poll(1 * s_ns + 900 * ms, &q, &e);
+    m.poll(3 * s_ns, &q, &e);
+    m.feed(key(108, 0), 4 * s_ns, &q, &e);
+    const held = [_]Edge{
+        .{ .control = .left, .event = .press, .position = 0 },
+        .{ .control = .left, .event = .long, .position = 0 },
+        .{ .control = .left, .event = .release, .position = 0 },
+    };
+    try std.testing.expectEqualSlices(Edge, &held, e.slice());
+    // the hold carries its own action and not the tap's: holding left opens the clock's settings,
+    // it does not also select the clock the way a tap does
+    try std.testing.expectEqualSlices(scene.Action, &.{.left_long}, q.slice());
+
+    // the knob keeps its own action, which is the device menu
+    q.clear();
+    e = .{};
+    m.feed(key(103, 1), 5 * s_ns, &q, &e);
+    m.poll(6 * s_ns, &q, &e);
+    m.feed(key(103, 0), 7 * s_ns, &q, &e);
+    try std.testing.expectEqualSlices(scene.Action, &.{.knob_long}, q.slice());
+
+    // a release the mapper never saw the press for is not a press
+    q.clear();
+    e = .{};
+    m.feed(key(106, 0), 8 * s_ns, &q, &e);
+    try std.testing.expectEqual(@as(usize, 0), q.len);
+}
+

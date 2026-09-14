@@ -49,9 +49,10 @@ HEX_ID = re.compile(r"^[0-9a-fA-F]{1,16}$")
 
 # physical controls (RUNTIME.md "physical controls"): which events each control accepts
 CONTROL_EVENTS = {
-    "left": {"press", "release", "click"},
-    "middle": {"press", "release", "click"},
-    "right": {"press", "release", "click"},
+    # every button has a long press; a click is a request for a press and a release, never an edge
+    "left": {"press", "release", "click", "long"},
+    "middle": {"press", "release", "click", "long"},
+    "right": {"press", "release", "click", "long"},
     "knob": {"press", "release", "click", "long"},
     "rotary": {"cw", "ccw"},
 }

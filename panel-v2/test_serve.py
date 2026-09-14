@@ -319,7 +319,10 @@ class EndToEndTests(unittest.TestCase):
         self.assertEqual((status, doc["status"]), (200, "applied"))
         _, st3 = self.call("GET", "status")
         self.assertEqual(st3["brightness"], 60)
+        # every button has a long press now, so this is accepted; the dial has nothing to hold
         status, doc = self.call("POST", "input", {"control": "left", "event": "long", "request_id": "e3", "epoch": st3["epoch"]})
+        self.assertEqual((status, doc["status"]), (200, "applied"))
+        status, doc = self.call("POST", "input", {"control": "rotary", "event": "long", "request_id": "e3b", "epoch": st3["epoch"]})
         self.assertEqual((status, doc["error"]), (400, "invalid_event"))
         status, doc = self.call("POST", "input", {"control": "rotary", "event": "cw", "steps": 17, "request_id": "e4", "epoch": st3["epoch"]})
         self.assertEqual((status, doc["error"]), (400, "invalid_steps"))

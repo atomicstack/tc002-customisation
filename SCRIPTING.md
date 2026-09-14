@@ -85,7 +85,7 @@ same refusal — `tc002.brightness(0)` raises rather than quietly clamping.
 | `tc002.scene(name)` | `'clock'`, `'art'` or `'canvas'` | |
 | `tc002.brightness(n)` | 1–100 | outside the range it raises |
 | `tc002.notify(text, colour, seconds)` | colour defaults white, seconds defaults 5 | the same overlay `POST /notify` uses |
-| `tc002.subscribe(filter[, f])` | an mqtt topic filter, `+` and `#` allowed; optionally a handler | up to eight; see [mqtt](#mqtt) |
+| `tc002.subscribe(filter[, f])` | an mqtt topic filter, `+` and `#` allowed; optionally a handler | up to thirty-two; see [mqtt](#mqtt) |
 | `tc002.unsubscribe(filter)` | the same filter, exactly as given to `subscribe` | frees its slot, tells the broker, drops its handler |
 | `tc002.publish(topic, payload)` | | through the device's own broker connection |
 | `tc002.play(name, volume, loop)` | volume 1–100 (0 = the setting), loop defaults false | plays a stored sound; see [sound](RUNTIME.md#sound) |
@@ -124,22 +124,35 @@ tc002.after(250,  def () … end)     # once, after 250 ms
 
 | event | arguments |
 |---|---|
-| `button` | `control` is `left`, `middle`, `right`, `knob` or `rotary`; `event` is `press`, `release`, `click`, `long`, `cw` or `ccw`; `steps` matters for the rotary |
+| `button` | `control` is `left`, `middle`, `right`, `knob` or `rotary`; `event` is `press`, `release` or `long` for the four buttons and `cw` or `ccw` for the rotary, where `steps` is the detent count |
 | `mqtt` | the topic it arrived on, the payload, and the filter that matched |
 | `ntfy` | **the topic is always empty** — ntfy has no topic here — the message is the second argument |
 
 `tc002.on` may be called more than once for the same event; every handler runs.
 
-**the hardware produces a narrower vocabulary than that list.** the three buttons report `press`
-and `release` and nothing else; `long` comes from the knob alone, once it is held past the
-threshold; and `click` reaches a script only when something injects it through `/api/v1/input`. a
-script that waits for a click on the left button waits for ever.
+**there is no `click` event.** a click is a *request* — `POST /api/v1/input` with
+`"event":"click"` asks for a press and a release — and it arrives as those two edges and no third
+thing. nothing has ever reported one, so a script that waits for a click waits for ever. it is not
+in the list above for that reason.
 
-**a script cannot swallow a button either.** left, middle and right select the clock, art and
-canvas bases whatever a script does with them, so a script drawing on the canvas is best driven by
-the **right** button, whose own job is to select the canvas. the dial is the exception: it pages
-clock faces and art generators, but the arbiter returns early on the canvas base, so a script
-showing a canvas owns the rotary completely.
+**every button has a tap and a hold.** the hold is reported as `long` once held past 700 ms, and
+the tap's action is then suppressed — holding `left` does not also select the clock. that is what
+makes a hold a gesture rather than a slow press.
+
+**a script cannot swallow either of them.** the device acts on every one:
+
+| gesture | what the device does regardless of your script |
+|---|---|
+| tap left / middle / right | select the clock, art or canvas base |
+| hold left / middle / right | show that base and open its settings menu |
+| tap the knob | hand the click to the showing scene — art takes a new seed |
+| hold the knob | open the device menu |
+| turn the dial | page clock faces on the clock and generators on art; **nothing on the canvas** |
+
+so a script drawing on the canvas is best driven by the **right** button, whose own job is to
+select the canvas, and by the dial, which the arbiter deliberately leaves alone on that base — a
+script showing a canvas owns the rotary completely. a hold is the wrong gesture for a script to
+build on unless you want its settings menu too.
 
 
 **a handler that raises is caught, named in the log, and left registered** — one
@@ -194,16 +207,21 @@ end)
 
 `tc002.subscribe(filter)` takes an mqtt topic filter, wildcards included. the
 subscription is **not a setting**: a script declares it at runtime, the supervisor
-holds the list (up to eight) and replays it whenever netd is spawned or the broker
+holds the list (up to thirty-two) and replays it whenever netd is spawned or the broker
 connection comes back, so a reconnect does not silently stop delivering.
 
 a filter is not a prefix. `home/+/state` matches `home/kitchen/state` but not
 `home/kitchen/light/state`; `home/#` matches everything below `home/`.
 
 **the refusals are logged, not raised.** `tc002.subscribe` complains only about the topic's own
-length. the eight-topic cap and the rule below are both the supervisor's, and it answers a ninth
-subscription by logging why rather than by failing the call, so `GET /api/v1/logs` is where a topic
-that never arrives explains itself.
+length. the thirty-two-topic cap and the rule below are both the supervisor's, and it answers a
+thirty-third subscription by logging why rather than by failing the call, so `GET /api/v1/logs` is
+where a topic that never arrives explains itself.
+
+thirty-two is not a taste judgement — it was eight, and that was. it is what one reconnect can
+replay into netd's 4 kb outbound buffer after the device's own command topics have taken their
+share, because every topic here is re-subscribed on every reconnect and a topic that silently
+stops arriving afterwards is the worst failure this code has.
 
 **a filter may not cover the device's own command topics.** netd hands a
 script-matched arrival to the script and stops there, so `tc002/cmd/#` — or a bare

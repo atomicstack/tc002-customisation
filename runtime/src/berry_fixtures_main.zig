@@ -54,10 +54,10 @@ const exercise_budget_ns: u64 = 40 * fixture_budget_ns;
 
 /// what a script meets on the device, fired at whatever it registered.
 ///
-/// the button vocabulary is the real one, not the documented superset: the three buttons report
-/// `press` and `release` only, `long` belongs to the knob, and `click` reaches a script only when
-/// something injects it. the payloads are deliberately wrong as often as they are right, because a
-/// topic a script subscribed to is a topic anything on the broker can publish to.
+/// the button vocabulary is the real one: press, release and long on all four buttons, detents on
+/// the rotary, and no `click` -- a click is a request for two edges, never an edge of its own. the
+/// payloads are deliberately wrong as often as they are right, because a topic a script subscribed
+/// to is a topic anything on the broker can publish to.
 const exercise_source =
     \\import string
     \\def ex_topic_for(f)
@@ -84,8 +84,10 @@ const exercise_source =
     \\for c : ['left', 'middle', 'right', 'knob']
     \\  _tc002_dispatch('button', c, 'press', 0)
     \\  _tc002_dispatch('button', c, 'release', 0)
+    \\  _tc002_dispatch('button', c, 'press', 0)
+    \\  _tc002_dispatch('button', c, 'long', 0)
+    \\  _tc002_dispatch('button', c, 'release', 0)
     \\end
-    \\_tc002_dispatch('button', 'knob', 'long', 0)
     \\var spin = 0
     \\while spin < 6
     \\  _tc002_dispatch('button', 'rotary', 'cw', 1)

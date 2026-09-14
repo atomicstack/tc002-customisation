@@ -494,11 +494,27 @@ pub const BerryEvent = struct {
     /// how many ops there are, for the `@min` that keeps a bad byte off the enum
     pub const op_max = @intFromEnum(Op.unsubscribe);
 
-    /// as many topics as a device will subscribe to on a script's behalf. eight is not a physical
-    /// bound; it is the point past which a clock is doing something a clock should not. it lives
-    /// here because netd does the subscribing and the supervisor owns the list, and two constants
-    /// that must agree are one constant.
-    pub const topics_max = 8;
+    /// as many topics as a device will subscribe to on a script's behalf.
+    ///
+    /// eight was a judgement -- "past here a clock is doing something a clock should not" -- and it
+    /// was wrong: a handful of sensors and one home is already eight, and the ninth subscription
+    /// failed in a log line nobody was reading. so this is derived instead, from the one place the
+    /// list has a physical bound.
+    ///
+    /// on every reconnect netd re-subscribes to each of these, one packet each, queued into its
+    /// 4,096-byte outbound buffer and flushed once at the end. the device's own command topics go
+    /// first and take at most ~625 bytes of it (seven `<prefix>/cmd/*` with a 64-byte prefix, plus
+    /// the discovery birth topic), leaving ~3,471. a subscribe for a 96-byte filter is 103 bytes,
+    /// so 33 fit and **32 is the most that always fits with room to spare**. past that the batch
+    /// would be split or dropped, and a topic that silently stops arriving after a reconnect is the
+    /// worst failure this code has.
+    ///
+    /// it costs 32 x 97 bytes of static list in netd and the same again in the supervisor: 6.2 kb
+    /// for the pair, against 16 mb of available ram.
+    ///
+    /// it lives here because netd does the subscribing and the supervisor owns the list, and two
+    /// constants that must agree are one constant.
+    pub const topics_max = 32;
     /// the longest topic filter. mqtt itself allows far more; this is what the two lists above
     /// hold, and a filter is a device-side thing rather than a general subscription.
     pub const topic_max = 96;
