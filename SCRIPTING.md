@@ -40,6 +40,11 @@ curl -H "authorization: Bearer $TOKEN" http://10.0.0.111/api/v1/berry/scripts
 curl -H "authorization: Bearer $TOKEN" http://10.0.0.111/api/v1/berry
 ```
 
+there is a library of ready scripts in
+[`runtime/scripts/berry/`](runtime/scripts/berry/README.md) — an alarm, a pomodoro, a knob dimmer, a
+scrolling ticker, mqtt gauges and charts, a clock that watches its own health — each with its
+settings at the top, and all of them run and shaken by `zig build check-scripts` on every build.
+
 a script is **compiled before it is stored**. one that will not parse is refused
 with `400 script_will_not_compile` carrying berry's own message, and never
 reaches flash — so a typo cannot leave the device with a script that breaks it on
@@ -93,11 +98,16 @@ same refusal — `tc002.brightness(0)` raises rather than quietly clamping.
 | `panel.clear()` | | empties the document being built |
 | `panel.pixel(x, y, colour)` | colour defaults white | |
 | `panel.rect(x, y, w, h, colour, filled)` | `w`,`h` default 1; colour white; `filled` 0 | `filled` non-zero fills, otherwise it outlines |
-| `panel.text(x, y, text, colour)` | colour defaults white | |
+| `panel.text(x, y, text, colour)` | colour defaults white | always the 5×7 `small` face: eight characters is a full line |
 | `panel.icon(x, y, name, colour)` | colour defaults white | `name` from `GET /icons` |
 | `panel.show()` | | install what you drew as the canvas document |
 | `panel.stream()` | | ask for the frame stream |
 | `panel.push()` | | send one frame, up to sixty a second |
+
+a document holds **twenty-four elements and 256 bytes of text**, whichever runs out first, and a
+script draws in one font: the four faces in [`CANVAS.md`](CANVAS.md) belong to documents sent over
+http, and `panel.text` is always the small one. so a chart drawn from a script is a dozen columns
+rather than fifty-two, and a label is eight characters rather than a sentence.
 
 the panel is 52×16. `panel.show()` and `panel.push()` are two different things
 and the difference matters — see [drawing](#drawing-two-ways).
@@ -119,6 +129,18 @@ tc002.after(250,  def () … end)     # once, after 250 ms
 | `ntfy` | **the topic is always empty** — ntfy has no topic here — the message is the second argument |
 
 `tc002.on` may be called more than once for the same event; every handler runs.
+
+**the hardware produces a narrower vocabulary than that list.** the three buttons report `press`
+and `release` and nothing else; `long` comes from the knob alone, once it is held past the
+threshold; and `click` reaches a script only when something injects it through `/api/v1/input`. a
+script that waits for a click on the left button waits for ever.
+
+**a script cannot swallow a button either.** left, middle and right select the clock, art and
+canvas bases whatever a script does with them, so a script drawing on the canvas is best driven by
+the **right** button, whose own job is to select the canvas. the dial is the exception: it pages
+clock faces and art generators, but the arbiter returns early on the canvas base, so a script
+showing a canvas owns the rotary completely.
+
 
 **a handler that raises is caught, named in the log, and left registered** — one
 bad event is not a reason to stop listening. but ten failures in a row and it is
@@ -177,6 +199,11 @@ connection comes back, so a reconnect does not silently stop delivering.
 
 a filter is not a prefix. `home/+/state` matches `home/kitchen/state` but not
 `home/kitchen/light/state`; `home/#` matches everything below `home/`.
+
+**the refusals are logged, not raised.** `tc002.subscribe` complains only about the topic's own
+length. the eight-topic cap and the rule below are both the supervisor's, and it answers a ninth
+subscription by logging why rather than by failing the call, so `GET /api/v1/logs` is where a topic
+that never arrives explains itself.
 
 **a filter may not cover the device's own command topics.** netd hands a
 script-matched arrival to the script and stops there, so `tc002/cmd/#` — or a bare
@@ -371,6 +398,13 @@ messages recorded rather than sent:
 - a sibling `.emits` file asserts the messages it produced
 - a fixture named `*.fail.be` **must** fail — that is the harness testing itself
 
+`zig build check-scripts` is the same harness pointed at `runtime/scripts/berry/` with `--exercise`,
+which fires the events the device really produces at whatever each script registered — every button
+edge, the dial both ways, an mqtt arrival on each filter a script subscribed to with nineteen
+payloads that are as often wrong as right, the same as ntfy messages, and two minutes of timer ticks
+followed by an hour in one jump. a handler that raises is caught by the prelude and printed rather
+than thrown, so the check reads the output: silence is the pass.
+
 one number does not transfer: compiled berry is **2.3× its source on 32-bit arm
 and 2.8× on a 64-bit host**, so heap figures from the harness are not the
 device's.
@@ -395,6 +429,8 @@ device's.
   and the ipc it speaks
 - [`runtime/vendor/berry/README.md`](runtime/vendor/berry/README.md) — the
   vendored interpreter: the config table and everything changed from upstream
+- [`runtime/scripts/berry/README.md`](runtime/scripts/berry/README.md) — the script library, and
+  the panel and input facts every one of them is written around
 - [`CANVAS.md`](CANVAS.md) — every font, icon and drawing primitive, in pictures
 - [`SECURITY.md`](SECURITY.md#the-custom-runtime-runtime) — what running user
   scripts on the device does and does not expose
