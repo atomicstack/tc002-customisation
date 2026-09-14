@@ -27,6 +27,9 @@ const sntp = @import("supervisor/sntp.zig");
 const metrics = @import("supervisor/metrics.zig");
 const night = @import("supervisor/night.zig");
 const power = @import("supervisor/power.zig");
+const battery_notice = @import("supervisor/battery_notice.zig");
+const icons = @import("scene/icons.zig");
+const geometry = @import("panel/geometry.zig");
 const canvas = @import("scene/canvas.zig");
 const berry_store = @import("berry/store.zig");
 const requests = @import("berry/requests.zig");
@@ -472,6 +475,9 @@ const Supervisor = struct {
     /// the low-battery policy, and when it was last asked
     power_policy: power.Policy = .{},
     next_power_poll: u64 = 0,
+    /// the battery icon shown on the panel when the cell is worth mentioning
+    battery_notices: battery_notice.Notices = .{},
+    battery_stream_seq: u32 = 0,
 
     fn send(self: *Supervisor, msg: messages.Message) void {
         self.request_id += 1;
@@ -2487,12 +2493,7 @@ const Supervisor = struct {
         if (now < self.next_power_poll) return;
         self.next_power_poll = now + power_poll_ns;
 
-        const fresh = self.mcu_link.last_ok_ns != 0 and now -| self.mcu_link.last_ok_ns <= mcu_stale_after_ns;
-        const reading = power.Reading{
-            .millivolts = self.snapshot.battery_mv,
-            .usb = self.snapshot.usb_present,
-            .fresh = fresh,
-        };
+        const reading = self.batteryReading(now);
         const cfg = power.Settings{
             .enabled = self.cfg.battery.shutdown,
             .shutdown_mv = self.cfg.battery.shutdown_mv,
@@ -2529,6 +2530,56 @@ const Supervisor = struct {
             self.mcu_link.poll_ns = want_ns;
             self.mcu_link.next_poll_ns = now; // take effect now rather than after the old interval
         }
+    }
+
+    /// what the mcu has told us about the cell, and whether it was recent enough to believe. the
+    /// shutdown policy and the panel notice share it so they can never disagree about that.
+    fn batteryReading(self: *const Supervisor, now: u64) power.Reading {
+        return .{
+            .millivolts = self.snapshot.battery_mv,
+            .usb = self.snapshot.usb_present,
+            .fresh = self.mcu_link.last_ok_ns != 0 and now -| self.mcu_link.last_ok_ns <= mcu_stale_after_ns,
+        };
+    }
+
+    /// the battery icon: raised when the cable comes out or the charge falls through a threshold,
+    /// and held on the panel for a few seconds.
+    ///
+    /// it is pushed as stream frames rather than installed as one timed frame for two reasons: a
+    /// blinking icon is an animation, and a stream frame carries its own deadline -- so the last
+    /// frame of a notice is sent with exactly the time remaining, and the overlay expires when the
+    /// notice does rather than leaving the panel dark until some fixed timeout runs out.
+    ///
+    /// it lands in the same overlay slot a script's animation uses, so a notice interrupts one.
+    /// that is the right way round: the cell running out outranks whatever was being drawn.
+    fn pollBatteryNotice(self: *Supervisor, now: u64) void {
+        const reading = self.batteryReading(now);
+        if (self.battery_notices.update(reading, self.snapshot.battery_pct, now)) |t| {
+            const style = self.battery_notices.style();
+            log.info("battery notice: {s} at {d}% ({s}{s})", .{
+                @tagName(t),
+                self.snapshot.battery_pct,
+                style.icon,
+                if (style.blink) ", blinking" else "",
+            });
+        }
+        // the cable going back in answers the question the notice was asking
+        if (reading.usb == 1 and self.battery_notices.active(now)) self.battery_notices.clear();
+
+        if (!self.battery_notices.active(now)) return;
+        if (self.snapshot.renderer_state != 2) return;
+        // the shutdown countdown has the panel and is saying something more urgent
+        if (self.power_policy.phase == .critical) return;
+
+        var frame: geometry.Rgb = geometry.black_rgb;
+        if (self.battery_notices.visible(now)) drawBatteryIcon(&frame, self.battery_notices.style());
+        const left_ms = (self.battery_notices.until_ns -| now) / std.time.ns_per_ms;
+        self.battery_stream_seq +%= 1;
+        _ = self.sendRenderer(.{ .stream_frame = .{
+            .seq = self.battery_stream_seq,
+            .timeout_ms = @intCast(@max(100, @min(left_ms, 2000))),
+            .rgb = frame,
+        } }, 0, lifecycle.epoch);
     }
 
     fn notifyPanel(self: *Supervisor, text: []const u8, colour: [3]u8, seconds: u16) void {
@@ -2859,6 +2910,7 @@ fn run(cfg_in: cli.Config, environ: anytype, args: []const [:0]const u8) !u8 {
         s.pushDeviceStatus(now);
         s.pollNight(now);
         s.pollPower(now);
+        s.pollBatteryNotice(now);
         s.drainNetd(now);
         s.pollNetd(now);
         s.drainNtfy(now);
@@ -2923,4 +2975,22 @@ pub fn main(init: std.process.Init.Minimal) u8 {
         log.err("fatal: {s}", .{sys.errText(e)});
         return 1;
     };
+}
+
+/// draw one icon, centred, in a colour. the glyphs are monochrome and take the tint, which is what
+/// makes "the same icon in three colours" a thing this can do at all.
+fn drawBatteryIcon(rgb: *geometry.Rgb, style: battery_notice.Style) void {
+    const index = icons.indexOf(style.icon) orelse return;
+    const art = icons.bitmaps[index];
+    const x0 = (geometry.width - icons.size) / 2;
+    const y0 = (geometry.height - icons.size) / 2;
+    for (art, 0..) |row, y| {
+        for (0..icons.size) |x| {
+            if (row & (@as(u8, 0x80) >> @intCast(x)) == 0) continue;
+            const o = geometry.pixelOffset(x0 + x, y0 + y);
+            rgb[o] = style.colour[0];
+            rgb[o + 1] = style.colour[1];
+            rgb[o + 2] = style.colour[2];
+        }
+    }
 }

@@ -1388,10 +1388,46 @@ usb power is present.
 | where it acts | the supervisor, which is the only process that writes flash |
 | how it powers off | the mcu's own `powerOff` command (`0x10`) |
 | how often it is asked | every second; the mcu is polled every 30 s, or **three times a second while the cell is low** |
+| what the panel shows | a [coloured battery icon](#the-battery-icon) on an unplug and on the way down through 50%, 20% and 5% |
 
 **the warning threshold is derived, not configured.** it is `shutdown_mv + 50`,
 the stock app's own gap. two independent thresholds can be set the wrong way
 round, and then this code has to decide what someone meant.
+
+### the battery icon
+
+the shutdown is the last thing that happens; long before it, the panel says what
+the cell is doing. an 8x8 battery glyph appears in the middle of the screen for
+four seconds when there is something to say, tinted by what is left:
+
+| charge | colour | glyph | |
+|---|---|---|---|
+| over 50% | green | `battery-full` | |
+| 20–50% | amber | `battery-half` | |
+| 5–20% | red | `battery-low` | |
+| under 5% | red | `battery-empty` | **blinking**, 400 ms on, 400 ms off |
+
+it is raised by three kinds of moment, and only while the device is actually
+running on its cell:
+
+- **the cable coming out.** an unplug shows the icon at whatever the charge is,
+  which is the one moment you most want to know it.
+- **falling through 50%, 20% or 5%.** downwards only — a clock that flashed at
+  you while it was charging back up would be noise. falling past two thresholds
+  between one mcu reading and the next reports the lower one.
+- nothing at boot: a device that starts up already at 30% has not *crossed*
+  anything, and an icon on every power-on would be a nag rather than a warning.
+
+plugging back in clears a notice that is still showing, and a countdown suppresses
+one entirely — `plug me in` is the more urgent thing to be reading.
+
+the icon is pushed as stream frames rather than installed as one timed frame,
+which sounds like more work and is less: blinking is an animation, and a stream
+frame carries its own deadline, so the last frame of a notice is sent with
+exactly the time remaining and the overlay expires when the notice does instead
+of leaving the panel dark until a fixed timeout runs out. it lands in the same
+overlay slot a script's animation uses, so a notice interrupts one — which is the
+right way round.
 
 ### silence is not a low battery
 
