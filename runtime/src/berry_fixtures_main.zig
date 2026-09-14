@@ -48,6 +48,71 @@ fn steppingClock() u64 {
 
 const fixture_budget_ns: u64 = 50 * std.time.ns_per_ms;
 
+/// exercising a script walks a great many more instructions than loading one, so it gets a great
+/// many more hook visits before the watchdog is entitled to an opinion.
+const exercise_budget_ns: u64 = 40 * fixture_budget_ns;
+
+/// what a script meets on the device, fired at whatever it registered.
+///
+/// the button vocabulary is the real one, not the documented superset: the three buttons report
+/// `press` and `release` only, `long` belongs to the knob, and `click` reaches a script only when
+/// something injects it. the payloads are deliberately wrong as often as they are right, because a
+/// topic a script subscribed to is a topic anything on the broker can publish to.
+const exercise_source =
+    \\import string
+    \\def ex_topic_for(f)
+    \\  var parts = string.split(f, '/')
+    \\  var out = ''
+    \\  var i = 0
+    \\  while i < size(parts)
+    \\    var seg = parts[i]
+    \\    if seg == '+' || seg == '#' seg = 'x' end
+    \\    if i > 0 out += '/' end
+    \\    out += seg
+    \\    i += 1
+    \\  end
+    \\  return out
+    \\end
+    \\var ex_topics = []
+    \\for k : tc002._handlers.keys()
+    \\  if string.startswith(k, 'mqtt:') ex_topics.push(k[5..size(k) - 1]) end
+    \\end
+    \\ex_topics.push('tc002/state')
+    \\var ex_payloads = ['', 'x', '0', '1', '42', '-7', '3.5', 'on', 'off', 'true',
+    \\  '{"value":21,"unit":"c"}', '{"value":"warm"}', '{}', '[1,2,3]', 'null',
+    \\  '99999999999', 'not json {', 'a b c', '0.0.0.0']
+    \\for c : ['left', 'middle', 'right', 'knob']
+    \\  _tc002_dispatch('button', c, 'press', 0)
+    \\  _tc002_dispatch('button', c, 'release', 0)
+    \\end
+    \\_tc002_dispatch('button', 'knob', 'long', 0)
+    \\var spin = 0
+    \\while spin < 6
+    \\  _tc002_dispatch('button', 'rotary', 'cw', 1)
+    \\  _tc002_dispatch('button', 'rotary', 'ccw', 2)
+    \\  spin += 1
+    \\end
+    \\for t : ex_topics
+    \\  for p : ex_payloads
+    \\    _tc002_dispatch('mqtt', ex_topic_for(t), p, t)
+    \\  end
+    \\end
+    \\for p : ex_payloads
+    \\  _tc002_dispatch('ntfy', '', p, 0)
+    \\end
+    \\var frame = 0
+    \\while frame < 120
+    \\  _tc002_tick(16)
+    \\  frame += 1
+    \\end
+    \\var slow = 0
+    \\while slow < 5
+    \\  _tc002_tick(1000)
+    \\  slow += 1
+    \\end
+    \\_tc002_tick(3600000)
+;
+
 /// what the fixtures asked the device to do. a script cannot see this, which is the point: the
 /// fixture calls tc002.scene('art') and the harness checks a set_base actually left the building.
 var emitted: [64]messages.Kind = undefined;
@@ -77,9 +142,19 @@ pub fn main(init: std.process.Init) !void {
     var args = init.minimal.args.iterate();
     _ = args.next(); // argv[0]
     const dir_path = args.next() orelse {
-        std.debug.print("usage: berry-fixtures <directory of .be files>\n", .{});
+        std.debug.print("usage: berry-fixtures <directory of .be files> [--exercise]\n", .{});
         std.process.exit(2);
     };
+
+    // the shipped scripts are not fixtures. they register handlers and return, so merely running
+    // one proves it compiles and nothing more -- and a script that works on the bench but raises
+    // on the first button press is exactly the failure a user meets first. --exercise fires the
+    // events the device really produces at whatever the script registered, with payloads it did
+    // not ask for, because anything on the broker can publish to a topic a script subscribed to.
+    var exercise = false;
+    while (args.next()) |a| {
+        if (std.mem.eql(u8, a, "--exercise")) exercise = true;
+    }
 
     berry.sink = collect;
     berry.clock = steppingClock;
@@ -128,6 +203,19 @@ pub fn main(init: std.process.Init) !void {
         const status = vm.runFor(name, source, fixture_budget_ns);
         const message = if (status != .ok) vm.errorText() else "";
 
+        // the prelude catches a raising handler rather than letting it out, so the only evidence
+        // is what it printed. that is the thing to look for: silence here is the pass.
+        var shaken: ?[]const u8 = null;
+        if (exercise and status == .ok and !must_fail) {
+            if (vm.runFor("exercise", exercise_source, exercise_budget_ns) != .ok) {
+                shaken = vm.errorText();
+            } else if (std.mem.indexOf(u8, captured(), "handler for ") != null) {
+                shaken = "a handler raised while it was being exercised";
+            } else if (std.mem.indexOf(u8, captured(), "timer failed:") != null) {
+                shaken = "a timer raised while it was being exercised";
+            }
+        }
+
         if (must_fail) {
             if (status == .ok) {
                 std.debug.print("  {s}: PASSED, but the name says it must fail\n", .{name});
@@ -139,6 +227,12 @@ pub fn main(init: std.process.Init) !void {
             std.debug.print("  {s}: {s}\n", .{ name, message });
             if (capture_len > 0) std.debug.print("    output: {s}\n", .{captured()});
             failed += 1;
+        } else if (shaken) |why| {
+            std.debug.print("  {s}: {s}\n", .{ name, why });
+            if (capture_len > 0) std.debug.print("    output: {s}\n", .{captured()});
+            failed += 1;
+        } else if (exercise) {
+            std.debug.print("  {s}: ok, survived the events\n", .{name});
         } else if (try sidecar(io, arena, dir, name, ".emits")) |wanted| {
             // one kind per line: the fixture says what it asked the device for, and the harness
             // checks the message actually left rather than trusting the script's own account

@@ -250,6 +250,16 @@ pub fn build(b: *std.Build) void {
     const berry_test_step = b.step("test-berry", "run the .be fixtures through the vendored interpreter on the host");
     berry_test_step.dependOn(&run_fixtures.step);
 
+    // the scripts in scripts/berry are shipped for people to put on a device, so they get the same
+    // interpreter and one thing more: a burst of the events the device really produces, fired at
+    // whatever each script registered. a script that compiles but raises on the first button press
+    // is the failure a user meets first, and it is invisible to a plain load.
+    const run_scripts = b.addRunArtifact(berry_fixtures);
+    run_scripts.addDirectoryArg(b.path("scripts/berry"));
+    run_scripts.addArg("--exercise");
+    const scripts_step = b.step("check-scripts", "run the shipped berry scripts and fire real events at them");
+    scripts_step.dependOn(&run_scripts.step);
+
     // elf check of the device bootstrap (host tool reads the built .so)
     const elfcheck = b.addExecutable(.{ .name = "elfcheck", .root_module = b.createModule(.{
         .root_source_file = b.path("src/elfcheck_main.zig"),

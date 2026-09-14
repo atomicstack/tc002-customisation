@@ -26,6 +26,7 @@ zig build check      # elf sanity of the bootstrap: arm et_dyn, no dt_needed, ha
 zig build wasm       # the scene code as wasm for the console preview -> ../panel-v2/tc002-panel.wasm
 zig build test-berry # the .be fixtures in test/berry/ through the vendored interpreter, on the host
 zig build berry-check # links the vendored interpreter for the device; not installed by default
+zig build check-scripts # the shipped scripts in scripts/berry/, run and then fired real events at
 ```
 
 `-Dsupervisor_path=/res/bin/tc002-supervisor` selects the production exec path; the default is the
