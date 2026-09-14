@@ -88,6 +88,17 @@ const Renderer = struct {
     short_writes: u64 = 0,
     stats_transfers: u64 = 0,
     stats_redraws: u64 = 0,
+    /// how late the loop woke, against the deadline it armed the timer for.
+    ///
+    /// the loop arms a timerfd at an absolute time and blocks in `epoll_wait`, so the gap between
+    /// that time and the clock on the way back is scheduling latency and nothing else: it is the
+    /// panel's jitter, measured where it happens. `fps` alone cannot show this -- sixty frames an
+    /// interval says nothing about whether they were evenly spaced.
+    wake_target: ?u64 = null,
+    late_max_ns: u64 = 0,
+    late_total_ns: u64 = 0,
+    late_wakes: u32 = 0,
+    wakes: u32 = 0,
     dropped_actions: u32 = 0,
 
     fn send(self: *Renderer, msg: messages.Message, request_id: u64) void {
@@ -485,15 +496,34 @@ const Renderer = struct {
         }
     }
 
+    /// a wake later than this is the kind that could show as a stutter; a frame is 16.7 ms.
+    const late_threshold_ns: u64 = 2 * std.time.ns_per_ms;
+
+    fn noteWake(self: *Renderer, now: u64) void {
+        const target = self.wake_target orelse return;
+        self.wake_target = null;
+        self.wakes += 1;
+        if (now <= target) return;
+        const late = now - target;
+        self.late_total_ns += late;
+        if (late > self.late_max_ns) self.late_max_ns = late;
+        if (late >= late_threshold_ns) self.late_wakes += 1;
+    }
+
     fn stats(self: *Renderer, now: u64) void {
         const interval = now - (self.next_stats - stats_period_ns);
         const t = pres.transfers - self.stats_transfers;
         const r = self.redraws - self.stats_redraws;
-        log.info("transfers={d} redraws={d} fps={d}.{d} short={d} errors={d} visible={d} revision={d}", .{
+        const mean_late_us = if (self.wakes != 0) self.late_total_ns / self.wakes / 1000 else 0;
+        log.info("transfers={d} redraws={d} fps={d}.{d} late={d}/{d} latemax_us={d} latemean_us={d} short={d} errors={d} visible={d} revision={d}", .{
             t,
             r,
             t * ns_per_s / interval,
             (t * ns_per_s * 10 / interval) % 10,
+            self.late_wakes,
+            self.wakes,
+            self.late_max_ns / 1000,
+            mean_late_us,
             self.short_writes,
             self.write_errors,
             pres.visible,
@@ -501,6 +531,11 @@ const Renderer = struct {
         });
         self.stats_transfers = pres.transfers;
         self.stats_redraws = self.redraws;
+        // the lateness figures describe the period just reported, not the run
+        self.late_max_ns = 0;
+        self.late_total_ns = 0;
+        self.late_wakes = 0;
+        self.wakes = 0;
     }
 };
 
@@ -590,6 +625,7 @@ fn run(cfg: cli.Config) !u8 {
     var events: [8]sys.Event = undefined;
     while (true) {
         const now = sys.monotonicNs();
+        r.noteWake(now);
 
         while (try sys.readSignal(r.sigfd)) |info| {
             log.info("signal {d}, stopping", .{info.signo});
@@ -629,7 +665,9 @@ fn run(cfg: cli.Config) !u8 {
 
         const wake = sched.earliest(r.render_deadline, pres.dueAt(), r.next_heartbeat, arb.nextExpiryNs());
         const wake_at = if (cfg.stats) sched.earliest(wake, r.next_stats, null, null) else wake;
-        try sys.timerfdArmAt(r.timer, @max(wake_at orelse (now + ns_per_s), now + 1));
+        const armed = @max(wake_at orelse (now + ns_per_s), now + 1);
+        r.wake_target = armed;
+        try sys.timerfdArmAt(r.timer, armed);
         const n = try sys.epollWait(r.ep, &events, -1);
         for (events[0..n]) |ev| if (ev.data.u64 == @intFromEnum(Tag.timer)) sys.timerfdDrain(r.timer);
     }
