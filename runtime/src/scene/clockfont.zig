@@ -112,7 +112,7 @@ const mini_letters = [26]Glyph{
     fromArt(3, 5, .{ "#.#", "#.#", "##.", "#.#", "#.#" }), // k
     fromArt(3, 5, .{ "#..", "#..", "#..", "#..", "###" }), // l
     fromArt(3, 5, .{ "#.#", "###", "###", "#.#", "#.#" }), // m
-    fromArt(3, 5, .{ "#.#", "###", "###", "###", "#.#" }), // n
+    fromArt(3, 5, .{ "#.#", "##.", "###", ".##", "#.#" }), // n
     fromArt(3, 5, .{ ".#.", "#.#", "#.#", "#.#", ".#." }), // o
     fromArt(3, 5, .{ "##.", "#.#", "##.", "#..", "#.." }), // p
     fromArt(3, 5, .{ ".#.", "#.#", "#.#", "###", ".##" }), // q
@@ -487,4 +487,30 @@ test "the styles draw differently, and a shadow sits behind the digit" {
     blitStyled(&m1, 4, 2, .mini, "8", white, .solid);
     blitStyled(&m2, 4, 2, .mini, "8", white, .shadow);
     try std.testing.expectEqualSlices(u8, &m1, &m2);
+}
+
+test "mini n is not a blob, and is not m with a extra row" {
+    // reported from the panel: the n looked bad. it was three solid rows out of five, and it
+    // differed from m by exactly one pixel row, so "unplug" and "umplug" would have looked alike.
+    // n now carries a diagonal, which is what the eye reads an n by at this size.
+    const n = glyph(.mini, 'n');
+    const m = glyph(.mini, 'm');
+
+    var solid_rows: usize = 0;
+    for (0..5) |r| {
+        var lit: usize = 0;
+        for (0..3) |c| if (n.a[r][c] != 0) {
+            lit += 1;
+        };
+        if (lit == 3) solid_rows += 1;
+    }
+    try std.testing.expect(solid_rows <= 1);
+
+    var differing: usize = 0;
+    for (0..5) |r| {
+        for (0..3) |c| if ((n.a[r][c] != 0) != (m.a[r][c] != 0)) {
+            differing += 1;
+        };
+    }
+    try std.testing.expect(differing >= 3);
 }
