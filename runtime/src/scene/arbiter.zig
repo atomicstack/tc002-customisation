@@ -251,6 +251,8 @@ test "physical actions: buttons select the base, rotary and knob depend on the b
     a.action(.rotate_cw, 0);
     try std.testing.expectEqual(scene.Generator.cube, a.art.generator);
     a.action(.rotate_cw, 0);
+    try std.testing.expectEqual(scene.Generator.terrain, a.art.generator);
+    a.action(.rotate_cw, 0);
     try std.testing.expectEqual(scene.Generator.popsquares, a.art.generator); // all the way round
     var before: geometry.Rgb = undefined;
     a.render(0, &before);

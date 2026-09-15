@@ -606,7 +606,7 @@ const FileForm = struct {
     clock_spread: u8 = clock.default_spread,
     clock_digit: []const u8 = "solid",
     clock_fade: bool = false,
-    generator_params: [param.owner_count]param.Values = scene.generator_defaults,
+    generator_params: []const param.Values = &scene.generator_defaults,
     ip_mode: []const u8 = "lines",
     night: bool = false,
     night_brightness: u8 = 10,
@@ -700,7 +700,7 @@ pub fn toJson(c: *const Config, out: []u8) error{Overflow}![]u8 {
         .clock_spread = c.clock_spread,
         .clock_digit = @tagName(enumOr(clockfont.DigitStyle, c.clock_digit, .solid)),
         .clock_fade = c.clock_fade,
-        .generator_params = c.generator_params,
+        .generator_params = &c.generator_params,
         .ip_mode = @tagName(enumOr(ip.Mode, c.ip_mode, .lines)),
         .night = c.night,
         .night_brightness = c.night_brightness,
@@ -816,7 +816,9 @@ pub fn fromJson(bytes: []const u8, arena: []u8) error{ Invalid, TooLong }!Config
     c.clock_spread = f.clock_spread;
     c.clock_digit = @intFromEnum(api.enumByName(clockfont.DigitStyle, f.clock_digit) orelse return error.Invalid);
     c.clock_fade = f.clock_fade;
-    c.generator_params = f.generator_params;
+    // older files have fewer owners; retain their slots and default newly appended scenes.
+    if (f.generator_params.len > param.owner_count) return error.Invalid;
+    for (f.generator_params, 0..) |slots, i| c.generator_params[i] = slots;
     for (&c.generator_params, 0..) |*slots, i| if (scene.slotsUnset(slots.*)) {
         slots.* = scene.generator_defaults[i];
     };
@@ -1306,4 +1308,31 @@ test "a settings file written by a newer build still loads on this one" {
     try std.testing.expectEqualStrings("Europe/Amsterdam", c.timezone.slice());
     // a duplicated known field is still a corrupt file
     try std.testing.expectError(error.Invalid, fromJson("{\"schema\":1,\"clock_font\":\"block\",\"clock_font\":\"mini\"}", &arena));
+}
+
+test "terrain upgrades old three-generator settings without losing their values" {
+    var arena: [8192]u8 = undefined;
+    const old =
+        \\{"schema":1,"revision":71,"brightness":42,"generator":"cube","generator_params":[[3000,80,25,0,100,15,3829413,0],[0,0,0,0,0,0,0,0],[1,3186943,30,0,2,9,150,0]]}
+    ;
+    const c = try fromJson(old, &arena);
+    try std.testing.expectEqual(@as(u32, 71), c.revision);
+    try std.testing.expectEqual(@as(u8, 42), c.brightness);
+    try std.testing.expectEqual(@as(u32, 3000), c.generator_params[0][0]);
+    try std.testing.expectEqual(@as(u32, 150), c.generator_params[2][6]);
+    try std.testing.expectEqual(@as(usize, 4), c.generator_params.len);
+    try std.testing.expectEqualSlices(u32, &scene.generator_defaults[c.generator_params.len - 1], &c.generator_params[c.generator_params.len - 1]);
+}
+
+test "terrain selection and controls round-trip through settings and ipc" {
+    var arena: [8192]u8 = undefined;
+    var c = try fromJson("{\"generator\":\"terrain\",\"base\":\"art\"}", &arena);
+    try c.patch(.{ .generator_params = &.{.{ .owner = 3, .slot = 0, .value = 12 }} });
+    var wire: [encoded_len]u8 = undefined;
+    encode(&c, &wire);
+    const decoded = try decode(&wire);
+    var out: [file_max]u8 = undefined;
+    const back = try fromJson(try toJson(&decoded, &out), &arena);
+    try std.testing.expectEqualStrings("terrain", generator_names[back.generator]);
+    try std.testing.expectEqual(@as(u32, 12), back.generator_params[back.generator_params.len - 1][0]);
 }

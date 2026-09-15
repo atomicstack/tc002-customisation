@@ -17,6 +17,7 @@ const sound_store = @import("../sound/store.zig");
 const icons = @import("../scene/icons.zig");
 const param = @import("../scene/param.zig");
 const cube = @import("../scene/cube.zig");
+const terrain = @import("../scene/terrain.zig");
 const popsquares = @import("../scene/popsquares.zig");
 const plasma = @import("../scene/plasma.zig");
 const ntfy_url = @import("../ntfy/url.zig");
@@ -1395,7 +1396,8 @@ fn paramsJson(comptime table: []const param.Param) []const u8 {
 pub const scenes_body = "{\"bases\":" ++ namesJson(Base) ++ ",\"generators\":[" ++
     "{\"index\":0,\"name\":\"popsquares\",\"parameters\":" ++ paramsJson(&popsquares.params) ++ "}," ++
     "{\"index\":1,\"name\":\"plasma\",\"parameters\":" ++ paramsJson(&plasma.params) ++ "}," ++
-    "{\"index\":2,\"name\":\"cube\",\"parameters\":" ++ paramsJson(&cube.params) ++ "}]," ++
+    "{\"index\":2,\"name\":\"cube\",\"parameters\":" ++ paramsJson(&cube.params) ++ "}," ++
+    "{\"index\":3,\"name\":\"terrain\",\"parameters\":" ++ paramsJson(&terrain.params) ++ "}]," ++
     "\"parameters\":{\"art\":" ++ paramsJson(&scene.art_params) ++ ",\"clock\":" ++ paramsJson(&clock.params) ++ ",\"canvas\":" ++ paramsJson(&canvas.params) ++ "}," ++
     "\"clock\":{\"fonts\":" ++ namesJson(clock.Font) ++ ",\"colour_modes\":[\"solid\",\"gradient\"],\"digits\":" ++ namesJson(clock.DigitStyle) ++ ",\"gradients\":[\"horizontal\",\"vertical\",\"diagonal\"],\"spread\":[0,255],\"max_spread\":255},\"ip\":{\"modes\":" ++ namesJson(ip.Mode) ++ "},\"notify\":{\"text_max\":128,\"duration_s\":[1,300]},\"frame\":{\"bytes\":2496,\"duration_s\":[1,300]},\"transitions\":{\"effects\":" ++ namesJson(transition.Effect) ++ ",\"directions\":" ++ namesJson(transition.Direction) ++ ",\"exits\":" ++ namesJson(transition.Exit) ++ ",\"duration_ms\":[0,5000]}}";
 

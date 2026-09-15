@@ -7,7 +7,7 @@ zig-built replacement for the stock application on the ulanzi tc002, following t
 what is here: a no-libc bootstrap shared object that the vendor loader dlopens and whose
 constructor execs the supervisor; `tc002-supervisor`, which raises the anti-brick property first and
 then supervises the renderer and the network daemon; `tc002d`, the renderer, with a hardware-free
-presentation model, pure scenes (three bases — clock, art and canvas — with popsquares, plasma and cube as the art generators), overlays, evdev input and a
+presentation model, pure scenes (three bases — clock, art and canvas — with popsquares, plasma, cube and terrain as the art generators), overlays, evdev input and a
 bounded ipc channel; `tc002-netd`, the unprivileged http `/api/v1` server and mqtt client; and
 `tc002-memdump`, a memory-audit tool. ~~nothing here writes flash or `/data`; every device run is
 volatile under `/tmp/tc002/`~~ — **✗ no longer true:** settings and credentials live on `/data/tc002/state`, and the runtime is flashed to `/res`; `tools/tc002-flash.sh` is the one script here that writes flash. **the architecture, the api and the measured results are documented
@@ -28,6 +28,25 @@ zig build test-berry # the .be fixtures in test/berry/ through the vendored inte
 zig build berry-check # links the vendored interpreter for the device; not installed by default
 zig build check-scripts # the shipped scripts in scripts/berry/, run and then fired real events at
 ```
+
+### terrain art
+
+`terrain` is a native procedural recreation of a pixoo rainbow-landscape gif, fitted
+to the 52×16 display. black sky, rolling hills, a cycling rainbow palette; no gif file
+or host stream is needed. build the runtime and refresh the console with
+`zig build wasm scenes`, then select `terrain` in art mode.
+
+with the updated go client and an installed runtime containing this scene:
+
+```sh
+tc002 scene art --generator terrain --seed 7
+tc002 config set --generator-params '[{"scene":"terrain","name":"speed","value":"8"},{"scene":"terrain","name":"height","value":"120"}]'
+```
+
+speed, height and colour drift are also available in the art menu and web console.
+this change has host tests, an arm build and a wasm preview; terrain's physical-panel
+frame rate has not yet been measured. replace the runtime binaries together because
+the config ipc grows with the new generator's parameter slots.
 
 ### where the binaries live
 
@@ -129,6 +148,12 @@ schema generation uses only the python standard library; validators are developm
 normal firmware builds embed the checked-in artifacts and do not require python or node.
 
 ## tradeoffs made for this device (reported, not hidden)
+
+- **terrain:** two octaves of hashed value noise, cubic interpolation and front-to-back
+  column occlusion instead of a mesh or noise library. it uses fixed state, no allocation
+  and no runtime libm. perspective, hill scale and palette are adapted to sixteen rows;
+  this recreates the reference's appearance, not its unknown original algorithm or exact frames.
+
 
 - **own http/1.1 parser and mqtt codec** instead of `std.http.Server` or a library: fixed buffers,
   eight connections, one request each (plus the event stream, which is one response that never

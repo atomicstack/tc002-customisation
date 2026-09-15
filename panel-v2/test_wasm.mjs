@@ -53,7 +53,7 @@ test('catalogues come from the zig enums, not from a list in this file', () => {
   // point at which the console needs to preview the ip layouts through the device menu instead
   assert.ok(W.BASES.includes('art') && W.BASES.includes('clock'), `bases: ${W.BASES.join(',')}`);
   assert.ok(W.BASES.length >= 2);
-  assert.deepEqual(W.GENERATORS, ['popsquares', 'plasma', 'cube']);
+  assert.deepEqual(W.GENERATORS, ['popsquares', 'plasma', 'cube', 'terrain']);
   assert.deepEqual(W.CLOCK_FONTS, ['classic', 'mini', 'segment', 'big', 'block', 'hires']);
   assert.deepEqual(W.CLOCK_MODES, ['solid', 'gradient']);
   assert.deepEqual(W.GRADIENTS, ['horizontal', 'vertical', 'diagonal']);
@@ -579,4 +579,18 @@ test('the brightness lut is the firmware level curve', () => {
   // v * 50 / 100 is integer division, so 255 scales to 127, not 128
   assert.equal(half[255], full[127], 'half brightness is the curve of half the value');
   assert.deepEqual(W.buildLut(255), full, 'brightness is clamped to 100');
+});
+
+test('terrain renders in art mode and receives its declared controls', () => {
+  const scenes = JSON.parse(readFileSync(join(here, 'scenes.json'), 'utf8'));
+  const status = { base: 'art', overlay: 'none', generator: 'terrain', brightness: 100, seed: 7 };
+  W.reset('art', 'terrain', 7);
+  const defaults = W.compose(status, localWith(W), WALL).rgb.slice();
+  assert.equal(lit(defaults.subarray(0, W.WIDTH * 3)), 0, 'the sky must be black');
+  assert.ok(lit(defaults.subarray(-W.WIDTH * 3)) > W.WIDTH, 'terrain covers the foreground');
+  assert.equal(W.applyGeneratorParams(scenes, { generators: { terrain: {
+    speed: 12, height: 160, 'colour drift': 35,
+  } } }), 3);
+  const configured = W.compose(status, localWith(W), WALL).rgb;
+  assert.ok(bytesDiffering(defaults, configured) > 100, 'height must change the landscape');
 });

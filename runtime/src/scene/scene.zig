@@ -8,6 +8,7 @@ const geometry = @import("../panel/geometry.zig");
 const popsquares = @import("popsquares.zig");
 const plasma = @import("plasma.zig");
 const cube = @import("cube.zig");
+const terrain = @import("terrain.zig");
 
 /// how a scene wants to be redrawn.
 pub const Cadence = union(enum) {
@@ -25,7 +26,7 @@ pub const Cadence = union(enum) {
 /// free for the showing scene to use.
 pub const Action = enum { left, middle, right, left_long, middle_long, right_long, knob_short, knob_long, rotate_cw, rotate_ccw };
 
-pub const Generator = enum(u8) { popsquares = 0, plasma = 1, cube = 2 };
+pub const Generator = enum(u8) { popsquares = 0, plasma = 1, cube = 2, terrain = 3 };
 pub const generator_count: u8 = @typeInfo(Generator).@"enum".fields.len;
 
 pub const frame_period_ns: u64 = 16_666_667; // 60 hz
@@ -107,6 +108,7 @@ pub const art_params = [_]param.Param{
 const params_popsquares = art_params ++ popsquares.params;
 const params_plasma = art_params ++ plasma.params;
 const params_cube = art_params ++ cube.params;
+const params_terrain = art_params ++ terrain.params;
 
 /// each generator's declared defaults, laid out the way the settings store them. a generator's
 /// parameters are not all zero by default (the cube starts blue, at 100% zoom), so a settings file
@@ -133,6 +135,7 @@ pub fn paramsFor(g: Generator) []const param.Param {
         .popsquares => &params_popsquares,
         .plasma => &params_plasma,
         .cube => &params_cube,
+        .terrain => &params_terrain,
     };
 }
 
@@ -143,6 +146,7 @@ pub const Art = struct {
     popsquares: popsquares.State,
     plasma: plasma.State,
     cube: cube.State,
+    terrain: terrain.State,
 
     pub fn init(g: Generator, seed: u32) Art {
         return .{
@@ -151,6 +155,7 @@ pub const Art = struct {
             .popsquares = popsquares.State.init(seed),
             .plasma = plasma.State.init(seed),
             .cube = cube.State.init(seed),
+            .terrain = terrain.State.init(seed),
         };
     }
 
@@ -162,6 +167,9 @@ pub const Art = struct {
         const kept = self.cube.values;
         self.cube = cube.State.init(seed);
         self.cube.values = kept;
+        const terrain_kept = self.terrain.values;
+        self.terrain = terrain.State.init(seed);
+        self.terrain.values = terrain_kept;
     }
 
     pub fn select(self: *Art, g: Generator) void {
@@ -190,6 +198,7 @@ pub const Art = struct {
             .popsquares => self.popsquares.getParam(i),
             .plasma => self.plasma.getParam(i),
             .cube => self.cube.getParam(i),
+            .terrain => self.terrain.getParam(i),
         };
     }
 
@@ -203,6 +212,7 @@ pub const Art = struct {
             .popsquares => self.popsquares.setParam(i, value),
             .plasma => self.plasma.setParam(i, value),
             .cube => self.cube.setParam(i, value),
+            .terrain => self.terrain.setParam(i, value),
         }
     }
 
@@ -216,6 +226,7 @@ pub const Art = struct {
             .popsquares => self.popsquares.step(dt_s),
             .plasma => self.plasma.step(dt_s),
             .cube => self.cube.step(dt_s),
+            .terrain => self.terrain.step(dt_s),
         }
     }
 
@@ -228,6 +239,7 @@ pub const Art = struct {
             .popsquares => self.popsquares.render(rgb),
             .plasma => self.plasma.render(rgb),
             .cube => self.cube.render(rgb),
+            .terrain => self.terrain.render(rgb),
         }
     }
 
@@ -263,4 +275,67 @@ test "the sine table turns once and comes back" {
     try std.testing.expectEqual(@as(i32, 1000), sin1000(64));
     try std.testing.expectEqual(@as(i32, 0), sin1000(128));
     try std.testing.expectEqual(@as(i32, -1000), sin1000(192));
+}
+
+test "terrain is seeded, animated, and fills the panel beneath a black sky" {
+    const g = std.meta.stringToEnum(Generator, "terrain") orelse return error.MissingTerrain;
+    var a = Art.init(g, 7);
+    var b = Art.init(g, 7);
+    var c = Art.init(g, 19);
+    var ra: geometry.Rgb = undefined;
+    var rb: geometry.Rgb = undefined;
+    var rc: geometry.Rgb = undefined;
+    a.render(&ra);
+    b.render(&rb);
+    c.render(&rc);
+    try std.testing.expectEqualSlices(u8, &ra, &rb);
+    try std.testing.expect(!std.mem.eql(u8, &ra, &rc));
+    try std.testing.expectEqualSlices(u8, geometry.black_rgb[0 .. geometry.width * 3], ra[0 .. geometry.width * 3]);
+    for (0..geometry.width) |x| {
+        const offset = geometry.pixelOffset(x, geometry.height - 1);
+        try std.testing.expect(ra[offset] != 0 or ra[offset + 1] != 0 or ra[offset + 2] != 0);
+    }
+    a.step(0.25);
+    a.render(&rb);
+    try std.testing.expect(!std.mem.eql(u8, &ra, &rb));
+    try std.testing.expectEqual(Cadence{ .continuous = frame_period_ns }, a.cadence());
+    a.select(.popsquares);
+    try std.testing.expectEqual(g, a.neighbour(false));
+    a.select(g);
+    try std.testing.expectEqual(Generator.popsquares, a.neighbour(true));
+}
+
+test "terrain controls change the frame and survive reseeding" {
+    const g = std.meta.stringToEnum(Generator, "terrain") orelse return error.MissingTerrain;
+    var a = Art.init(g, 42);
+    var before: geometry.Rgb = undefined;
+    var after: geometry.Rgb = undefined;
+    a.render(&before);
+    a.setParam(2, 160); // taller hills
+    a.render(&after);
+    try std.testing.expect(!std.mem.eql(u8, &before, &after));
+    a.setParam(1, 12);
+    a.setParam(3, 35);
+    a.reseed(99);
+    try std.testing.expectEqual(@as(u32, 12), a.getParam(1));
+    try std.testing.expectEqual(@as(u32, 160), a.getParam(2));
+    try std.testing.expectEqual(@as(u32, 35), a.getParam(3));
+    a.setParam(1, 0);
+    try std.testing.expectEqual(@as(u32, 1), a.getParam(1));
+    a.setParam(2, 10000);
+    try std.testing.expectEqual(@as(u32, 180), a.getParam(2));
+}
+
+test "terrain ignores negative time and accumulates small time steps" {
+    const g = std.meta.stringToEnum(Generator, "terrain") orelse return error.MissingTerrain;
+    var a = Art.init(g, 7);
+    var before: geometry.Rgb = undefined;
+    var after: geometry.Rgb = undefined;
+    a.render(&before);
+    a.step(-1);
+    a.render(&after);
+    try std.testing.expectEqualSlices(u8, &before, &after);
+    for (0..250) |_| a.step(0.001);
+    a.render(&after);
+    try std.testing.expect(!std.mem.eql(u8, &before, &after));
 }

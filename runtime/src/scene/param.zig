@@ -14,7 +14,7 @@ pub const Kind = enum(u8) { choice, number, colour, toggle };
 /// who owns a set of generic parameter slots. the clock and the ip scene are fixed parts of the
 /// runtime and have named settings of their own; generators are pluggable, so their parameters
 /// live in these slots instead. the order is the storage layout, so new generators go on the end.
-pub const Owner = enum(u8) { popsquares = 0, plasma = 1, cube = 2 };
+pub const Owner = enum(u8) { popsquares = 0, plasma = 1, cube = 2, terrain = 3 };
 
 pub const owner_count = @typeInfo(Owner).@"enum".fields.len;
 

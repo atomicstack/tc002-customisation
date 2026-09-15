@@ -424,7 +424,7 @@ the visible output is one **base** scene plus at most one temporary
 
 | base | what it shows | redraw cadence |
 |------|---------------|----------------|
-| `art` | a generator: `popsquares` (the same cell simulation as [`led/`](LED-SPI.md#led-native-popsquares-at-60-fps)) or `plasma` (integer sum-of-sines) | continuous, 60 hz |
+| `art` | a generator: `popsquares` (the same cell simulation as [`led/`](LED-SPI.md#led-native-popsquares-at-60-fps)), `plasma` (integer sum-of-sines), `cube` (shaded solid), or `terrain` (rolling rainbow hills) | continuous, 60 hz |
 | `clock` | local time from a posix tz rule (`AEST-10AEDT,M10.1.0,M4.1.0/3` style, with `Mm.w.d` transitions) or an iana zone name, in one of five fonts and a solid or gradient colour; see [clock styles](#clock-styles) and [time zones](#time-zones) | once per wall-second boundary |
 | `canvas` | a document of drawing primitives pushed by an integration, or a dim `canvas` when nothing has been pushed; see [the canvas](#the-canvas) | idle, unless an element declares an animation |
 
@@ -958,7 +958,28 @@ is `0x00RRGGBB`, a toggle is 0 or 1.
 | art | `scene` (the generator), then the showing generator's own |
 | popsquares | `pop ms`, `alive`, `dim chance`, `dim floor`, `dim ceiling`, `tint`, `tint colour`, `cell` |
 | cube | `palette`, `colour`, `hue drift`, `background`, `spin`, `speed`, `zoom` |
+| terrain | `speed`, `height`, `colour drift` |
 | ip | `layout` |
+
+`terrain` recreates the supplied pixoo rainbow-landscape gif as a seeded, scrolling
+height field, with a black sky and perspective fitted to the 52×16 panel. it generates
+new frames continuously rather than replaying the source's 45-frame loop. the two
+noise scales give broad hills with smaller ridges; directional shading and distance
+dimming make their shape visible. the same zig code renders the console preview.
+
+| terrain control | range | default | effect |
+|---|---|---|---|
+| `speed` | 1–20 | 6 | forward travel speed |
+| `height` | 40–180 | 100 | height of the hills, as a percentage |
+| `colour drift` | 0–60 | 15 | palette rotation in degrees per second; 0 holds the elevation colours |
+
+the dial pages to `terrain` after `cube`; holding the art button opens its controls.
+reseeding changes the landscape and retains these controls. api selection is
+`PUT /api/v1/scene` with `{"base":"art","generator":"terrain","seed":7}`.
+settings use the existing `generator_params` list, with `scene: "terrain"`.
+older saved files with three generator parameter arrays retain all three and get
+the declared terrain defaults. the config ipc gains another owner's slots, so all
+runtime binaries must be upgraded together.
 
 popsquares' table is the sliders of the `popsquares_tc002` processing sketch,
 which is where the generator came from. its other sliders — led gap, corner,
@@ -1350,7 +1371,7 @@ read-only storage; connection buffers stay the same size.
 |--------|------|-------|------|-------|
 | `GET` | `/status` | `status` | | the [status document](#the-status-document), including `build` — see [which build is running](#which-build-is-running) |
 | `GET` | `/scenes` | `status` | | the static catalogue: bases, generators, notification and frame bounds |
-| `PUT` | `/scene` | `display` | `{"base":"clock\|art\|canvas","generator":"popsquares\|plasma\|cube"?,"seed":u32?,"clock":{"font","colour_mode","colour","colour2","gradient","spread","digits","fade"}?,"request_id":hex?,"epoch":u32?}` | `{"status":"applied","revision":n,"epoch":n,"request_id":…}` |
+| `PUT` | `/scene` | `display` | `{"base":"clock\|art\|canvas","generator":"popsquares\|plasma\|cube\|terrain"?,"seed":u32?,"clock":{"font","colour_mode","colour","colour2","gradient","spread","digits","fade"}?,"request_id":hex?,"epoch":u32?}` | `{"status":"applied","revision":n,"epoch":n,"request_id":…}` |
 | `POST` | `/action` | `display` | `{"action":"brightness\|reseed\|arm_stream","brightness":1..100?,"seed":u32?,"request_id":hex?,"epoch":u32?}` | as above |
 | `POST` | `/notify` | `notify` | `{"text":"…","colour":"rrggbb"?,"duration_s":1..300?,"request_id":hex?,"epoch":u32?}` (`duration_s` optional, defaults to 5) | as above |
 | `POST` | `/frame?duration_s=` (`request_id`, `epoch` optional) | `display` | `application/octet-stream`, exactly 2,496 bytes | as above |
@@ -1588,7 +1609,7 @@ shows up as a revision gap, and the gap is the signal to resync.
 | `clock_font`, `clock_colour_mode`, `clock_colour`, `clock_colour2`, `clock_gradient`, `clock_spread`, `clock_digit`, `clock_fade` | `classic\|mini\|segment\|big\|block\|hires`; `solid\|gradient`; `rrggbb`; `rrggbb`; `horizontal\|vertical\|diagonal`; 0–255; `solid\|outline\|shadow`; bool | applied at once; reported as a `clock` object in `/config` |
 | `ip_mode` | `lines\|mini\|scroll\|big` | the layout of the device menu's ip page, applied at once; see [ip layouts](#ip-layouts) |
 | `base` | `clock`, `art`, `canvas` | applied at once |
-| `generator` | `popsquares`, `plasma`, `cube` | applied at once |
+| `generator` | `popsquares`, `plasma`, `cube`, `terrain` | applied at once |
 | `timezone` | a posix tz rule (`AEST-10AEDT,M10.1.0,M4.1.0/3`) or an iana zone name (`Europe/Amsterdam`, case-insensitive), ≤ 64 characters; anything else is rejected | applied at once; a zone name follows that zone's current daylight-saving law |
 | `ntp.server`, `ntp.interval_s` (patch as `ntp_server`, `ntp_interval_s`) | dotted ipv4 or null; 300 or 600 | the sntp client restarts at once and syncs promptly; null disables it |
 | `night`, `night_brightness`, `night_lead_min` | bool; 1–100; 0–120 minutes | the [night brightness schedule](#the-night-brightness-schedule); reported as a `night` object in `/config` |

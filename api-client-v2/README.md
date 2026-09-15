@@ -24,6 +24,7 @@ export TC002_SERVER=192.168.1.50
 export TC002_TOKEN_FILE="$HOME/.config/tc002/tokens"
 tc002 status
 tc002 scene art --generator plasma --seed 5
+tc002 scene art --generator terrain --seed 7
 tc002 scene clock --font mini --colour-mode gradient --colour 2060ff --colour2 60c0ff
 tc002 notify 'hello' --colour 00ff80 --duration 4 --transition swipe_in --direction left
 tc002 brightness 60

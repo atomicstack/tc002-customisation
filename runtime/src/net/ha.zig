@@ -82,7 +82,7 @@ pub const entities = [_]Entity{
     .{ .key = "clock_digit_control", .name = "clock digit style", .component = .select, .topic = "config", .template = "{{ value_json.clock.digits }}", .diagnostic = false, .command = "cmd/config", .command_template = "{{ {\\\"clock_digit\\\": value} | to_json }}", .options = "\"solid\",\"outline\",\"shadow\"" },
     .{ .key = "clock_spread_control", .name = "clock gradient spread", .component = .number, .topic = "config", .template = "{{ value_json.clock.spread }}", .diagnostic = false, .command = "cmd/config", .command_template = "{{ {\\\"clock_spread\\\": value | int} | to_json }}", .min = 0, .max = 255 },
     .{ .key = "ip_mode_control", .name = "ip layout", .component = .select, .topic = "config", .template = "{{ value_json.ip_mode }}", .diagnostic = false, .command = "cmd/config", .command_template = "{{ {\\\"ip_mode\\\": value} | to_json }}", .options = "\"lines\",\"mini\",\"scroll\",\"big\"" },
-    .{ .key = "generator_control", .name = "art generator", .component = .select, .topic = "state", .template = "{{ value_json.generator }}", .diagnostic = false, .command = "cmd/config", .command_template = "{{ {\\\"base\\\": \\\"art\\\", \\\"generator\\\": value} | to_json }}", .options = "\"popsquares\",\"plasma\",\"cube\"" },
+    .{ .key = "generator_control", .name = "art generator", .component = .select, .topic = "state", .template = "{{ value_json.generator }}", .diagnostic = false, .command = "cmd/config", .command_template = "{{ {\\\"base\\\": \\\"art\\\", \\\"generator\\\": value} | to_json }}", .options = "\"popsquares\",\"plasma\",\"cube\",\"terrain\"" },
     .{ .key = "timezone_control", .name = "timezone", .component = .text, .topic = "config", .template = "{{ value_json.timezone }}", .diagnostic = false, .command = "cmd/config", .command_template = "{{ {\\\"timezone\\\": value} | to_json }}" },
     .{ .key = "ntp_server_control", .name = "ntp server", .component = .text, .topic = "config", .template = "{{ value_json.ntp.server if value_json.ntp.server else '' }}", .diagnostic = false, .command = "cmd/config", .command_template = "{{ {\\\"ntp_server\\\": value} | to_json }}" },
     .{ .key = "ntp_interval_control", .name = "ntp interval", .component = .select, .topic = "config", .template = "{{ value_json.ntp.interval_s }}", .diagnostic = false, .command = "cmd/config", .command_template = "{{ {\\\"ntp_interval_s\\\": value | int} | to_json }}", .options = "\"300\",\"600\"" },
@@ -228,6 +228,7 @@ test "writable discovery includes valid id-free commands and preserves readonly 
         try std.testing.expect(std.mem.indexOf(u8, e.command_template, "epoch") == null);
         try std.testing.expect(std.mem.indexOf(u8, e.payload_on, "epoch") == null);
         if (std.mem.eql(u8, e.key, "brightness_control")) try std.testing.expectEqual(@as(i32, 1), e.min);
+        if (std.mem.eql(u8, e.key, "generator_control")) try std.testing.expect(std.mem.indexOf(u8, e.options, "\"terrain\"") != null);
         if (std.mem.eql(u8, e.key, "scene_control")) try std.testing.expectEqualStrings("\"clock\",\"art\",\"canvas\"", e.options);
     }
     try std.testing.expectEqual(@as(usize, 19), controls);

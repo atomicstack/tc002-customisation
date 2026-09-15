@@ -459,7 +459,7 @@ class EndToEndTests(unittest.TestCase):
     def test_scenes_publishes_a_parameter_table_for_every_scene(self):
         # the catalogue is what a client builds its forms from: name, kind, range or choices
         _, sc = self.call("GET", "scenes")
-        self.assertEqual([g["name"] for g in sc["generators"]], ["popsquares", "plasma", "cube"])
+        self.assertEqual([g["name"] for g in sc["generators"]], ["popsquares", "plasma", "cube", "terrain"])
         self.assertEqual([p["name"] for p in sc["parameters"]["art"]], ["scene"])
         self.assertEqual([p["name"] for p in sc["parameters"]["clock"]],
                          ["face", "colour", "shade", "colour 2", "gradient", "spread", "digits", "fade"])

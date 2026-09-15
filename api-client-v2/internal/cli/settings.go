@@ -7,7 +7,7 @@ import (
 )
 
 var configFields = []field{
-	numberField("brightness", 1, 100), enumField("base", "clock art canvas"), enumField("generator", "popsquares plasma cube"),
+	numberField("brightness", 1, 100), enumField("base", "clock art canvas"), enumField("generator", "popsquares plasma cube terrain"),
 	textField("timezone"), textField("ntp_server"), numberField("ntp_interval_s", 300, 600), numberField("frame_timeout_ms", 100, 2000),
 	numberField("metrics_interval_s", 0, 3600), boolField("discovery"), boolField("discovery_controls"), textField("discovery_prefix"), numberField("expected_revision", 0, 4294967295),
 	enumField("clock_font", "classic mini segment big block hires"), enumField("clock_colour_mode", "solid gradient"),

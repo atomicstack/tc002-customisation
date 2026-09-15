@@ -90,7 +90,7 @@ func addCommands(root *cobra.Command, o *options) {
 	addRaw(root, o)
 }
 func addControl(root *cobra.Command, o *options) {
-	sceneFields := slices.Concat(identityFields, transitionFields, []field{enumField("generator", "popsquares plasma cube"), numberField("seed", 0, 4294967295)})
+	sceneFields := slices.Concat(identityFields, transitionFields, []field{enumField("generator", "popsquares plasma cube terrain"), numberField("seed", 0, 4294967295)})
 	scene := o.command("scene <clock|art|canvas>", "select the base scene and transient style", 1, func(c *cobra.Command, args []string) (operation, error) {
 		if !slices.Contains([]string{"clock", "art", "canvas"}, args[0]) {
 			return operation{}, errors.New("base must be clock, art or canvas")

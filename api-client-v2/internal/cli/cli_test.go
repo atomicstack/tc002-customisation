@@ -36,6 +36,8 @@ func TestRuntimeRequests(t *testing.T) {
 		{[]string{"status"}, "GET", "/status", ""},
 		{[]string{"scenes"}, "GET", "/scenes", ""},
 		{[]string{"scene", "art", "--generator", "cube", "--seed", "0"}, "PUT", "/scene", `{"base":"art","generator":"cube","seed":0}`},
+		{[]string{"scene", "art", "--generator", "terrain", "--seed", "7"}, "PUT", "/scene", `{"base":"art","generator":"terrain","seed":7}`},
+		{[]string{"config", "set", "--generator", "terrain"}, "PATCH", "/config", `{"generator":"terrain"}`},
 		{[]string{"scene", "clock", "--font", "mini", "--digits", "outline", "--spread", "0"}, "PUT", "/scene", `{"base":"clock","clock":{"font":"mini","digits":"outline","spread":0}}`},
 		{[]string{"brightness", "50", "--epoch", "12", "--request-id", "ab"}, "POST", "/action", `{"action":"brightness","brightness":50,"epoch":12,"request_id":"ab"}`},
 		{[]string{"reseed", "0"}, "POST", "/action", `{"action":"reseed","seed":0}`},
