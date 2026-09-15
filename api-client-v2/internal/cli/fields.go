@@ -18,7 +18,9 @@ import (
 // fields keep validation and completion attached to the wire schema.
 type field struct {
 	name, kind, choices string
-	min, max            int64
+	// when set, the command-line flag differs from the json field: `--scope` fills `scopes`
+	flag     string
+	min, max int64
 }
 
 func textField(name string) field { return field{name: name, kind: "string"} }
@@ -28,7 +30,17 @@ func enumField(name, choices string) field {
 func numberField(name string, min, max int64) field {
 	return field{name: name, kind: "number", min: min, max: max}
 }
-func boolField(name string) field   { return field{name: name, kind: "bool"} }
+func boolField(name string) field { return field{name: name, kind: "bool"} }
+
+// the scopes a named client token may hold. `tokens` is deliberately absent: minting is the one
+// authority the runtime will not delegate (clients.zig `grantable`).
+var grantableScopes = []string{"status", "screen", "logs", "notify", "display", "sound", "input", "content", "scripts", "settings"}
+
+// a repeatable flag that becomes a json array. `--scope notify --scope display` -> ["notify","display"].
+// tokens hold a set of scopes rather than a rank, so this is the shape the api wants.
+func listField(flag, jsonName string) field {
+	return field{name: jsonName, kind: "list", choices: strings.Join(grantableScopes, " "), flag: flag}
+}
 func colourField(name string) field { return field{name: name, kind: "colour"} }
 func flagName(name string) string {
 	if name == "token" {
@@ -42,8 +54,10 @@ func flagName(name string) string {
 
 func addFields(c *cobra.Command, fields []field) {
 	for _, f := range fields {
-		name := flagName(f.name)
+		name := fieldFlag(f)
 		switch f.kind {
+		case "list":
+			c.Flags().StringSlice(name, nil, "add one "+f.name[:len(f.name)-1]+" (repeatable): "+strings.ReplaceAll(f.choices, " ", "|"))
 		case "bool":
 			c.Flags().Bool(name, false, "set "+f.name)
 		default:
@@ -82,15 +96,32 @@ func positional(c *cobra.Command, choices ...string) {
 		return matching(choices, prefix), cobra.ShellCompDirectiveNoFileComp
 	}
 }
+func fieldFlag(f field) string {
+	if f.flag != "" {
+		return f.flag
+	}
+	return flagName(f.name)
+}
+
 func collect(c *cobra.Command, fields []field) (map[string]any, error) {
 	out := map[string]any{}
 	for _, f := range fields {
-		name := flagName(f.name)
+		name := fieldFlag(f)
 		if !c.Flags().Changed(name) {
 			continue
 		}
 		if f.kind == "bool" {
 			v, _ := c.Flags().GetBool(name)
+			out[f.name] = v
+			continue
+		}
+		if f.kind == "list" {
+			v, _ := c.Flags().GetStringSlice(name)
+			for _, item := range v {
+				if !slices.Contains(strings.Fields(f.choices), item) {
+					return nil, fmt.Errorf("%s must be one of: %s", name, f.choices)
+				}
+			}
 			out[f.name] = v
 			continue
 		}

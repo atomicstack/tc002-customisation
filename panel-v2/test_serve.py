@@ -56,6 +56,31 @@ class PureTests(unittest.TestCase):
                 f.write(raw)
             self.assertEqual(serve.load_token_file(p), {"control": raw[:32].hex(), "admin": raw[32:].hex()})
 
+    def test_reading_a_script_back_needs_admin(self):
+        # regression: GET /berry/scripts/{name} moved to the `scripts` scope, which the control
+        # token does not hold, so the editor's "read source from the device" started 403ing.
+        # only PUT/DELETE/POST were being escalated.
+        self.assertEqual(serve.token_for("GET", "berry/scripts/alarm"), "admin")
+        self.assertEqual(serve.token_for("PUT", "berry/scripts/alarm"), "admin")
+        self.assertEqual(serve.token_for("DELETE", "berry/scripts/alarm"), "admin")
+        self.assertEqual(serve.token_for("POST", "berry/scripts/alarm/run"), "admin")
+        # listing is still control: GET /berry/scripts is `status`
+        self.assertEqual(serve.token_for("GET", "berry/scripts"), "control")
+
+    def test_deleting_a_sprite_needs_admin(self):
+        # regression: DELETE /sprites/{id} is `content`, not a control scope
+        self.assertEqual(serve.token_for("DELETE", "sprites/7"), "admin")
+        self.assertEqual(serve.token_for("PUT", "sprites/7"), "admin")
+
+    def test_named_client_rows_do_not_break_the_file(self):
+        # regression: the runtime writes `client=<name>,<scope|scope>,<64 hex>` rows once a named
+        # token is issued. this parser raised on any key it did not recognise, so a single issued
+        # token made start-panel.sh refuse to start at all.
+        text = ("control=" + "a" * 64 + "\n"
+                "admin=" + "b" * 64 + "\n"
+                "client=kitchen,notify|display," + "c" * 64 + "\n")
+        self.assertEqual(serve.parse_tokens(text.encode()), ("a" * 64, "b" * 64))
+
     def test_token_for(self):
         self.assertEqual(serve.token_for("PATCH", "config"), "admin")
         self.assertEqual(serve.token_for("POST", "config/save"), "admin")

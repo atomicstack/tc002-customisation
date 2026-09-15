@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"os"
+	"slices"
 	"strings"
 )
 
@@ -94,13 +95,20 @@ func validToken(token string) bool {
 	return err == nil
 }
 
+// every scope the runtime will write into a client row, plus the two legacy rank words. `tokens`
+// is absent because minting cannot be delegated (clients.zig `grantable`).
+var knownScopes = []string{
+	"status", "screen", "logs", "notify", "display", "sound", "input", "content", "scripts", "settings",
+	"read", "control",
+}
+
 // namedClient validates firmware client rows without selecting their credentials.
 func namedClient(value string) (string, bool) {
 	fields := strings.Split(value, ",")
 	if len(fields) != 3 {
 		return "", false
 	}
-	name, role, token := fields[0], fields[1], fields[2]
+	name, scopes, token := fields[0], fields[1], fields[2]
 	if len(name) == 0 || len(name) > 32 || name[0] == '.' {
 		return "", false
 	}
@@ -112,8 +120,13 @@ func namedClient(value string) (string, bool) {
 			return "", false
 		}
 	}
-	if role != "read" && role != "control" {
-		return "", false
+	// the middle field is a `|`-joined set of scope names -- a token holds a set, not a rank.
+	// `read` and `control` are still accepted so a credentials file written before b53f679 keeps
+	// working; refusing them would strand an older install.
+	for _, scope := range strings.Split(scopes, "|") {
+		if !slices.Contains(knownScopes, scope) {
+			return "", false
+		}
 	}
 	return name, validToken(token)
 }

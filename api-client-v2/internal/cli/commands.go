@@ -8,8 +8,8 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/spf13/cobra"
 	"github.com/atomicstack/tc002-customisation/api-client-v2/internal/client"
+	"github.com/spf13/cobra"
 )
 
 func jsonOperation(method, path string, body map[string]any, admin bool) (operation, error) {
@@ -232,7 +232,9 @@ func addTokens(root *cobra.Command, o *options) {
 	tokens := group(root, "tokens", "manage named client tokens (admin)")
 	o.simple(tokens, "list", "list named clients", "GET", "/tokens", true)
 	for _, verb := range []string{"create", "rotate", "revoke"} {
-		role := []field{enumField("role", "read control")}
+		// a token holds a set of scopes, not a rank. the runtime dropped roles in b53f679 and
+		// its parser refuses unknown fields, so sending `role` made create and rotate 400.
+		scopes := []field{listField("scope", "scopes")}
 		c := o.command(verb+" <name>", verb+" a client token (admin)", 1, func(c *cobra.Command, args []string) (operation, error) {
 			if err := validName(args[0], 32); err != nil {
 				return operation{}, err
@@ -240,7 +242,7 @@ func addTokens(root *cobra.Command, o *options) {
 			if verb == "revoke" {
 				return plainOperation("DELETE", "/tokens/"+args[0], true), nil
 			}
-			body, err := collect(c, role)
+			body, err := collect(c, scopes)
 			if err != nil {
 				return operation{}, err
 			}
@@ -248,14 +250,14 @@ func addTokens(root *cobra.Command, o *options) {
 			if verb == "create" {
 				path = "/tokens"
 				body["name"] = args[0]
-				if _, ok := body["role"]; !ok {
-					body["role"] = "control"
+				if _, ok := body["scopes"]; !ok {
+					return operation{}, fmt.Errorf("give at least one --scope: %s", strings.Join(grantableScopes, " "))
 				}
 			}
 			return jsonOperation("POST", path, body, true)
 		})
 		if verb != "revoke" {
-			addFields(c, role)
+			addFields(c, scopes)
 		}
 		tokens.AddCommand(c)
 	}

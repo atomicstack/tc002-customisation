@@ -69,7 +69,10 @@ func TestRuntimeRequests(t *testing.T) {
 		{[]string{"scripts", "run", "demo"}, "POST", "/berry/scripts/demo/run", ""},
 		{[]string{"scripts", "delete", "demo"}, "DELETE", "/berry/scripts/demo", ""},
 		{[]string{"tokens", "list"}, "GET", "/tokens", ""},
-		{[]string{"tokens", "create", "ha", "--role", "read"}, "POST", "/tokens", `{"name":"ha","role":"read"}`},
+		// a token holds scopes, not a rank: the runtime dropped roles in b53f679 and its parser
+		// refuses unknown fields, so the old `{"role":...}` body was a 400 on every create.
+		{[]string{"tokens", "create", "ha", "--scope", "notify", "--scope", "display"}, "POST", "/tokens", `{"name":"ha","scopes":["notify","display"]}`},
+		{[]string{"tokens", "rotate", "ha", "--scope", "status"}, "POST", "/tokens/ha/rotate", `{"scopes":["status"]}`},
 		{[]string{"tokens", "rotate", "ha"}, "POST", "/tokens/ha/rotate", `{}`},
 		{[]string{"tokens", "revoke", "ha"}, "DELETE", "/tokens/ha", ""},
 		{[]string{"screen", "--format", "raw"}, "GET", "/screen?format=raw", ""},
@@ -156,7 +159,7 @@ func TestCompletion(t *testing.T) {
 		{[]string{"scene", ""}, "canvas"},
 		{[]string{"input", "rotary", ""}, "cw"},
 		{[]string{"config", "set", "--clock-font", ""}, "segment"},
-		{[]string{"tokens", "create", "ha", "--role", ""}, "control"},
+		{[]string{"tokens", "create", "ha", "--scope", ""}, "status"},
 		{[]string{"notify", "hi", "--transition", ""}, "rain_random"},
 		{[]string{"screen", "--format", ""}, "raw"},
 		{[]string{"config", "set", "--"}, "--night"},

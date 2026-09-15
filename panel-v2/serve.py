@@ -54,6 +54,11 @@ def parse_tokens(data):
         if not line:
             continue
         key, sep, value = line.partition("=")
+        # `client=<name>,<scope|scope|...>,<64 hex>` rows appear once a named token is issued. this
+        # console only ever uses the two built-in secrets, but it must not choke on the others --
+        # raising here meant one issued token stopped start-panel.sh starting at all.
+        if key == "client":
+            continue
         if sep != "=" or key not in ("control", "admin") or key in found:
             raise ValueError(f"token file has an unexpected line: {key[:16]!r}")
         if len(value) != 64 or any(c not in "0123456789abcdefABCDEF" for c in value):
@@ -90,10 +95,13 @@ def adb_pull(serial=None):
 
 
 def token_for(method, endpoint):
-    if endpoint.startswith("berry/scripts/") and method in ("PUT", "DELETE", "POST"):
-        return "admin"   # storing, deleting and explicitly running a script all require admin
-    if method == "PUT" and endpoint.startswith("sprites/"):
-        return "admin"   # a sprite slot is a path family, so it cannot sit in the set above
+    if endpoint.startswith("berry/scripts/"):
+        # every per-script route is the `scripts` scope, **reading included** -- which the control
+        # token does not hold. this used to escalate only PUT/DELETE/POST, so the editor's "read
+        # source from the device" 403'd. listing (`berry/scripts`, no slash) is `status`.
+        return "admin"
+    if endpoint.startswith("sprites/") and method in ("PUT", "DELETE"):
+        return "admin"   # both are the `content` scope; a sprite slot is a path family
     if endpoint == "tokens" or endpoint.startswith("tokens/"):
         return "admin"   # every client-token route is admin, listing included
     return "admin" if (method, endpoint) in ADMIN_ROUTES else "control"

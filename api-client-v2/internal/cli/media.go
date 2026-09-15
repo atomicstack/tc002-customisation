@@ -36,7 +36,10 @@ func addMedia(root *cobra.Command, o *options) {
 				method = "POST"
 				path += "/run"
 			}
-			op := plainOperation(method, path, verb != "get")
+			// every per-script route is the `scripts` scope, reading included -- the control
+			// token does not hold it, so `scripts get` needs admin like the rest. this used to
+			// pass `verb != "get"` and 403'd on exactly the one read it offers.
+			op := plainOperation(method, path, true)
 			if verb == "put" {
 				b, err := readInput(c, args[1], 8000)
 				if err != nil {
@@ -68,7 +71,8 @@ func addMedia(root *cobra.Command, o *options) {
 			if strings.Contains(args[0], ".") {
 				return operation{}, errors.New("sprite id must use letters, digits, dash or underscore")
 			}
-			op := plainOperation("DELETE", "/sprites/"+args[0], false)
+			// DELETE /sprites/{id} is the `content` scope, not a control one
+			op := plainOperation("DELETE", "/sprites/"+args[0], true)
 			if verb == "put" {
 				b, err := readInput(c, args[1], 768)
 				if err != nil {
