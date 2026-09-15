@@ -279,9 +279,13 @@ fail on a flashed device.
 > runtime; with the counter forced to 3 the bootstrap wrote the stock
 > `/tmp/EasyUI.cfg`, exited, and **the vendor app came up instead of the runtime**
 > (`startupLibPath = /res/lib/libzkgui.so`, no tc002 processes); and a healthy boot
-> cleared a seeded count of 2. The other three items below — yielding to a pending
-> upgrade, cold-boot wifi, and the gpio-35 panel gate — are **not done**, so this
-> is still not a flashable tree.
+> cleared a seeded count of 2. ~~The other three items below — yielding to a
+> pending upgrade, cold-boot wifi, and the gpio-35 panel gate — are **not done**,
+> so this is still not a flashable tree.~~
+>
+> **✗ that last sentence was true when written and is false now:** all three
+> exist, the tree has been flashed, and the device boots from `res`. See
+> [Status](#status-flashed-and-persistent-2026-09-15).
 
 > **Adopted from aquarat's fork (`c069a48`) on 2026-09-15, and re-verified here
 > before it was taken.** Against the vendor `update.img` pulled from this unit's

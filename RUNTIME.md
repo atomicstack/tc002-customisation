@@ -2096,9 +2096,14 @@ all on a warm device that had been up for days, under the lock, on
   `frame_timeout_ms` as the deadman, measured at 60 fps sustained (see
   [scripting](#scripting-berry)). what is missing is an http or mqtt surface for a
   client that is not a script.
-- **network bring-up.** the runtime relies on the wifi and address the stock
-  stack established before it took over. dhcp renewal after the takeover and
-  the setup-ap flow are not handled and were not measured.
+- **network bring-up.** ~~the runtime relies on the wifi and address the stock
+  stack established before it took over. dhcp renewal after the takeover~~ — **✗
+  no longer true.** the runtime brings wifi up itself (`boot/tc002-netup.sh`
+  loads the aic8800 driver, starts the supplicant and runs `udhcpc` as a
+  renewing daemon tracked by pidfile) and re-runs it on carrier or address loss.
+  measured from a cold boot with the driver removed: everything back in 6 s.
+  **the setup-ap flow is still not handled** — a factory-fresh device still
+  needs the stock app or `tc002-adopt.py` to join wifi in the first place.
 - **the mcu.** the supervisor queries the version, battery and usb state
   (see [the pixel mcu link](runtime/README.md#the-pixel-mcu-link)), reports
   them, and uses the power-off command when the cell runs out — see
@@ -2108,9 +2113,12 @@ all on a warm device that had been up for days, under the lock, on
   has watched a real discharge cross them, and the power-off command has never
   been sent to this hardware.
 - **persistence.** settings and credentials are durable (`/data/tc002/state`),
-  but the **binaries are not**: they are pushed to `/tmp` and a power cycle
-  brings the stock app back, so the runtime is still started by hand. a
-  self-starting runtime means rewriting the `res` partition, since nothing in
+  ~~but the **binaries are not**: they are pushed to `/tmp` and a power cycle
+  brings the stock app back, so the runtime is still started by hand.~~ **✗ no
+  longer true:** the binaries are on the `res` partition and the runtime starts
+  itself from a cold boot. the `/tmp` path still works and is what
+  `tc002-run.sh` uses for development. a
+  self-starting runtime meant rewriting the `res` partition, since nothing in
   the boot chain reads a writable location; the design, the evidence and the
   risks are in the vault note `tc002-customisation/2026-09-09/boot-persistence`
   and, from 2026-09-12, in [`FIRMWARE.md`](FIRMWARE.md): the vendor image

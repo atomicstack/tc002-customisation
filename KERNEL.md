@@ -423,12 +423,27 @@ hid device** — the knob becomes a volume wheel, the three buttons become media
 keys. for a desk clock this is the most interesting unused capability in the
 kernel.
 
-untested, and it is genuinely untestable right now: `/sys/class/udc/soc:Sstar-udc/state`
-reads `powered` with speed `UNKNOWN` and the gadget state reads `DISCONNECTED`,
-because the pogo dock supplies vbus but no usb data host is attached. changing
-the function list is also mutative and would drop the adb function that the
-deploy path depends on, so it needs the device lock, a plan to recover over
-wi-fi, and the user's say-so.
+> **✗ INCORRECT — corrected 2026-09-15.** this paragraph used to say the hid
+> gadget was "genuinely untestable right now" because
+> `/sys/class/udc/soc:Sstar-udc/state` reads `powered` with speed `UNKNOWN` and
+> the gadget reads `DISCONNECTED`, **"because the pogo dock supplies vbus but no
+> usb data host is attached"**.
+>
+> that reading of the symptom was wrong, and it is wrong in a way that cost
+> hours later: the same `powered` + `DISCONNECTED` pair appeared with a laptop
+> plugged straight into the usb-c port, and it sent the investigation chasing
+> cables. the real cause is that the otg controller boots in **host** mode —
+> `/sys/bus/platform/devices/soc:usbotg/otg_role` reads `usb_host` — so the
+> device never presents itself to anything, dock or host. one write of
+> `usb_device` and a replug takes it to `CONFIGURED` at high speed.
+>
+> so the gadget is **not** untestable. adb over the cable is working and is
+> documented in [`DEVICE.md`](DEVICE.md#adb).
+
+hid itself is still untested, for a different and better reason: changing the
+function list is mutative and would drop the `adb` function the deploy path
+depends on, so it needs the device lock, a plan to recover over wi-fi, and the
+user's say-so.
 
 ### 4. ble via l2cap/hci
 
