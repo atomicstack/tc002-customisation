@@ -50,16 +50,56 @@ APPLETS_DEBUG="GREP SED AWK FIND XARGS HEAD TAIL WC LS PS TOP UPTIME DF DU FREE
                DD TAR GZIP GUNZIP ZCAT NOHUP TIMEOUT WATCH USLEEP LOGGER
                KILLALL PGREP PKILL PSTREE SETSID CHRT TASKSET NICE RENICE IONICE
                MODPROBE MODINFO DEVMEM NC WGET VI
-               FEATURE_FANCY_HEAD FEATURE_FANCY_TAIL FEATURE_PS_LONG FEATURE_PS_ADDITIONAL_COLUMNS
+               LSOF FUSER PMAP VMSTAT TIME ID WHOAMI PRINTENV RMDIR
+               MICROCOM STTY WATCHDOG BB_SYSCTL
+               FEATURE_FANCY_HEAD FEATURE_FANCY_TAIL FEATURE_PS_LONG
                FEATURE_DATE_ISOFMT FEATURE_HUMAN_READABLE FEATURE_GREP_CONTEXT
                FEATURE_LS_SORTFILES FEATURE_LS_TIMESTAMPS FEATURE_LS_USERNAME
                FEATURE_LS_FILETYPES FEATURE_LS_WIDTH FEATURE_LS_FOLLOWLINKS FEATURE_LS_RECURSIVE
                FEATURE_LS_COLOR FEATURE_LS_COLOR_IS_DEFAULT
-               FEATURE_FIND_TYPE FEATURE_FIND_NAME FEATURE_FIND_PRINT0 FEATURE_FIND_MAXDEPTH
+               FEATURE_FIND_TYPE FEATURE_FIND_PRINT0 FEATURE_FIND_MAXDEPTH
                FEATURE_TAR_CREATE FEATURE_TAR_GNU_EXTENSIONS FEATURE_SEAMLESS_GZ
                FEATURE_WGET_LONG_OPTIONS FEATURE_WGET_STATUSBAR FEATURE_WGET_TIMEOUT"
 
-# deliberately NOT here: `telnetd`. it would be a recovery channel that does not depend on adbd,
+# the persistent install: putting an image into flash, and trying one without flashing.
+# chosen against what `/proc/mtd` and `/proc/devices` actually say rather than by taste --
+# eight **nor** partitions (mtd3 is `res`, 8 mib, 64 k erase blocks, oobsize 0), and no loop
+# device at all. so `flashcp` (erase, write, then read back and verify) is the right way in, and
+# `chroot` is the only way to try an unpacked image tree on the device, since nothing can mount
+# one. `unxz` and `base64` are how a build gets there: the image is xz-compressed squashfs, and
+# `adb shell cat` corrupts binaries on this adbd, which has no `exec-out`.
+# these four flash symbols are `default n` even in busybox's own defconfig, so they have to be
+# asked for by name.
+APPLETS_IMAGE="FLASHCP FLASH_ERASEALL FLASH_LOCK FLASH_UNLOCK
+               CHROOT REBOOT POWEROFF UNXZ XZCAT BASE64"
+
+# the device brings its own wifi up now (tc002-netup.sh), and every remote thing it does -- sntp,
+# mqtt, ntfy -- starts with a name to resolve. the stock image has `ping` and nothing else: no
+# resolver, no way to see what is listening or connected, no arp table.
+# FEATURE_NETSTAT_PRG is the one that matters: without it `netstat` names ports but not the
+# process holding them, which on a device running six of our own binaries answers nothing.
+APPLETS_NET="PING FEATURE_FANCY_PING NSLOOKUP FEATURE_NSLOOKUP_BIG
+             NETSTAT FEATURE_NETSTAT_PRG FEATURE_NETSTAT_WIDE ARP ARPING HOSTNAME"
+
+# deliberately NOT here, and each for a measured reason rather than a guess:
+#  losetup            -- no loop device in /proc/devices, so an image cannot be mounted on-device
+#  hwclock, rtcwake   -- no /dev/rtc. there is no battery-backed clock here at all, which is why
+#                        the runtime's sntp is not a convenience
+#  i2cget/i2cset/...  -- no /dev/i2c-*
+#  nanddump/nandwrite,
+#  the ubi family     -- /sys/class/mtd/mtd3/type is `nor` and oobsize is 0; these are nand tools
+#  ping6, traceroute6,
+#  udhcpc6            -- no ipv6 in this kernel (KERNEL.md)
+#  ip                 -- ifconfig and route already cover what the boot path does, for a fraction
+#                        of the size
+#  httpd, ftpd, tftpd,
+#  inetd, dnsd, udhcpd -- more unauthenticated listeners on a device that cannot firewall itself
+#  crond, ntpd, syslogd -- the runtime already does its own scheduling, time and logging
+#  mdev               -- the vendor's init owns /dev
+#  hush               -- ash is the shell; a second one is pure size
+#  DESKTOP            -- a global switch that grows every applet to get a handful of extras
+#                        (it is what `ps -o rgroup,ruser,nice` hangs off, and not worth it)
+# and `telnetd`. it would be a recovery channel that does not depend on adbd,
 # which is tempting for a flashed device -- but this kernel has **no netfilter at all**
 # (see KERNEL.md), so the device cannot firewall itself, and an unauthenticated root shell on the
 # network is not a trade worth making for a clock. `tc` is out too: it fails to compile against
@@ -108,7 +148,7 @@ enable() {
         fi
     done
 }
-enable "$REQUIRED"; enable "$APPLETS_BOOT"; enable "$APPLETS_DEBUG"
+enable "$REQUIRED"; enable "$APPLETS_BOOT"; enable "$APPLETS_DEBUG"; enable "$APPLETS_IMAGE"; enable "$APPLETS_NET"
 # `|| true` is not sloppiness: `yes` is killed by SIGPIPE the moment oldconfig stops reading, so
 # under `set -o pipefail` the pipeline reports 141 and takes the script down with it. what actually
 # matters is checked immediately below.
@@ -125,7 +165,7 @@ done
 # thing you wanted -- `dd`, `df -h`, `busybox insmod`, `ls --color` have all been found that way,
 # each one by tripping over it on the device rather than here.
 dropped=""
-for k in $APPLETS_BOOT $APPLETS_DEBUG; do
+for k in $APPLETS_BOOT $APPLETS_DEBUG $APPLETS_IMAGE $APPLETS_NET; do
     grep -q "^CONFIG_$k=y" .config || dropped="$dropped $k"
 done
 if [ -n "$dropped" ]; then
@@ -150,7 +190,13 @@ chmod 0755 "$OUT"
 say "built $OUT"
 file "$OUT" 2>/dev/null || true
 echo "   $(wc -c < "$OUT" | tr -d ' ') bytes, $(grep -c '^CONFIG_.*=y' .config) config symbols"
-echo "   applets: $(sed -n 's/^CONFIG_\([A-Z0-9_]*\)=y$/\1/p' .config | wc -l | tr -d ' ') enabled"
+# the applet count comes from the table the build generated, not from the config: a `CONFIG_x=y`
+# may be a feature switch rather than an applet, and this line used to count both and call the
+# total "applets", which is exactly the kind of number that reads as verification and is not.
+# `applet_names` is what the multiplexer actually dispatches on -- if a name is not in here, the
+# binary answers "applet not found" no matter what the config says.
+echo "   applets: $(sed -n '/const char applet_names/,/;/p' include/applet_tables.h |
+    sed -n 's/^"\([a-z0-9_.[]*\)".*/\1/p' | wc -l | tr -d ' ') dispatchable"
 echo
 echo "this is not installed anywhere. the image build takes it as an input, and nothing here"
 echo "writes to the device or to /res."
