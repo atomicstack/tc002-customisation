@@ -12,14 +12,80 @@ with a rebuilt `res` partition delivered through the vendor's own update path.
 > byte-identical to the pre-flash baseline in both the payload region
 > (`fb69c9c096e7683cfe2e70c955e855fa`) and the 6 KB past it. Stock app running.
 >
-> **Two claims that were in this note are wrong. Corrected 2026-09-15.**
+## Status: flashed and persistent (2026-09-15)
+
+The custom runtime **is flashed to the `res` partition and boots on its own.**
+Binaries in `/res/bin`, bootstrap in `/res/lib`, the stock `libzkgui.so` kept
+for the fallback, `/res/etc/EasyUI.cfg` pointing `startupLibPath` at the
+bootstrap. Nothing outside `res` was touched.
+
+The cold boot, from the log, with nothing attached and nobody present:
+
+```
+04.9s  sys.zkapp.state=running accepted 71 ms after entry, exec'd by the bootstrap
+07.1s  usb role usb_device
+07.1s  netup started from /res/bin
+       netup: loading aic8800 driver
+       netup: wpa_supplicant not running; starting it
+       netup: carrier=1 after 0s
+       netup: udhcpc started
+07.5s  renderer ready 354 ms after spawn, panel open
+09.4s  device identity from wlan0 (late): tc002-ccc4b277a282
+16.1s  mqtt connected
+17.2s  wlan0 address 10.0.0.111
+       sntp: stepped
+```
+
+Each line is a piece of machinery that had to exist: claiming
+`sys.zkapp.state` fast enough that `zkdaemon` does not reflash the app
+partition; loading the wifi driver, which **nothing in the stock boot does**;
+starting the supplicant; waiting for `spidev0.0` and the gpio-35 latch before
+drawing; and stepping a clock that starts at 1970 because this device has no
+RTC. The MAC arrives late — the interface does not exist until the driver
+loads — so `pollMac` picks it up 2.3 s later and the mqtt identity is the
+stable MAC-derived one rather than the boot id.
+
+**adb over usb works from this boot**, because the supervisor sets the otg role
+at startup (`--usb-role`, default `device`). That is a way in that does not
+depend on wifi, which matters because wifi bring-up is the thing most likely to
+fail on a flashed device.
+
+---
+
+> **Corrections, and one question left genuinely open. 2026-09-15.**
 >
-> It said step 1 below was "unsound", on the reasoning that
-> `libzkupgrade.so`'s `check dev md5` string means the flasher compares the
-> partition's md5 to the image's and skips a match, so a no-op image can never
-> be written. **That was inferred from a strings dump and never tested, and
-> aquarat's fork contradicts it**: their step 3 is a byte-identical repack of
-> the running `res`, and it flashed. The plan is fine; the attempts were not.
+> This note first claimed, from a `check dev md5` string in `libzkupgrade.so`,
+> that the flasher skips an image whose md5 matches the partition — so a no-op
+> can never be written — and on that basis called step 1 below "unsound". That
+> was asserted from a strings dump without a test, which is not good enough,
+> and it was then retracted because aquarat's fork says their no-op rehearsal
+> flashed.
+>
+> **Both of those moves were too confident.** The evidence since is a near
+> controlled comparison, and it points back the other way:
+>
+> | attempt | staging | property order | image | result |
+> |---|---|---|---|---|
+> | 4 | `/data` | dir, then flag | byte-identical no-op | nothing written |
+> | 5 | `/data` | dir, then flag | the real runtime image | **flashed** |
+>
+> The only variable between those two was image content. Four attempts with a
+> byte-identical image wrote nothing; the first attempt with a differing image
+> worked. That is consistent with a skip-if-identical check, and `check dev md5`
+> is consistent with it too.
+>
+> Against that: aquarat reports a no-op rehearsal working. Their wording is "a
+> byte-identical repack of the current `res`", and a *repack* through
+> `mksquashfs` is not byte-identical — it carries a fresh mkfs timestamp — so it
+> is not clear the two of us tested the same thing.
+>
+> **Unresolved.** Do not plan around either answer. The practical advice is the
+> same either way: if you rehearse, use an image that differs from what is
+> installed, so that "nothing changed" and "it worked" cannot look alike. Note
+> also that a block-level erase-and-write of identical content leaves the
+> partition identical, so a byte-comparison cannot tell a successful no-op flash
+> from no flash at all — which is why four attempts were called failures with
+> more certainty than the evidence supported.
 >
 > It also called `/data/.zkupgraderec` "the real oracle" for whether a run
 > happened. It is not: `zk_upgrade_check` **removes** it on entry, so it is
@@ -176,14 +242,14 @@ with a rebuilt `res` partition delivered through the vendor's own update path.
 > and the gpio value file are both openable (20 s, then it spawns anyway and
 > says so).
 >
-> Verified what can be: the gate runs on every start and the renderer comes up
-> in 8 ms with no warning — on a warm path gpio 35 is already exported, so it is
-> correctly a no-op — and both scripts parse under the ash we build. **Not
-> verified: the bring-up actually running.** It restarts `wpa_supplicant` and
-> replaces the dhcp client, and on this device adb *is* that link, so exercising
-> it on a live system risks stranding the clock. Its real test is the cold boot
-> it exists for. That makes this the one piece of the four resting on reasoning
-> rather than a measurement.
+> **Superseded by the flashed boot above — both are now measured.** Two things
+> this note originally said were wrong. The bring-up does **not** restart a
+> running `wpa_supplicant`: it starts one only when init reports the service is
+> not running, so the risk of "exercising it strands the clock" was overstated
+> (the dhcp client it does always replace). And it is no longer unverified — it
+> was exercised first by a cold-boot simulation on the volatile path (driver
+> removed with `rmmod`, supplicant stopped, address cleared; everything back in
+> 6 s) and then for real on the flashed cold boot.
 
 > **Boot machinery, part two, 2026-09-15: yielding to the flasher.** The
 > supervisor now checks `sys.zkupgrade.flag` and the image at
@@ -671,30 +737,63 @@ The wasm preview and the host tools are not part of the image.
 
 ## First-flash plan
 
-1. **Rehearse with a no-op image** — a byte-identical repack of the current
-   `res`, which is what aquarat's procedure does and what worked on their unit.
-   Be aware that a successful no-op flash and no flash at all leave the
-   partition identical, so plan how you will tell them apart before you start.
-   Flash it with the vendor recipe over adb:
+This is what actually worked on 2026-09-15, not a proposal.
+`runtime/tools/tc002-flash.sh` automates all of it.
+
+1. **Take a verified backup first.** Dump `mtd3` and confirm it unpacks and
+   holds `lib/libzkgui.so`. After the first flash the original `res` is gone
+   from the device and this dump is the only way back. **Do not dump with
+   `adb shell cat`** — it corrupts binaries on this adbd, silently; see
+   [`FINGERPRINTS.md`](FINGERPRINTS.md). `dd` to a file and `adb pull` it.
+   Dump the other partitions too while you are there; `mtd6` holds the wifi psk
+   and must not be published.
+
+2. **Prefer usb for the flash itself.** The sequence stops `zkswe` and the
+   device reboots partway through, and wifi on this device is brought up by
+   whatever owns the panel — so the lan transport can vanish exactly when the
+   write is happening. The otg controller boots in *host* mode and nothing in
+   the stock boot changes it, so enable the gadget first:
+   `echo usb_device > /sys/bus/platform/devices/soc:usbotg/otg_role`. If the
+   cable was already plugged in, unplug and replug it: the role write takes,
+   but the gadget only re-attaches on a fresh connect.
+
+3. **Flash:**
 
    ```bash
-   adb push UPDATE.img /tmp/update.img
+   adb push UPDATE.img /data/update.img
+   adb shell setprop persist.zkupgrade.dir /data
+   adb shell setprop sys.zkupgrade.dir /data
    adb shell setprop sys.zkupgrade.flag 255
-   adb shell setprop sys.zkupgrade.dir /tmp
    adb shell "setprop ctl.stop zkswe; setprop ctl.start zkswe"
    ```
 
-   The panel should show the progress animation and the device reboots
-   itself. This exercises the header, the md5, the mtd write and the
-   read-back with content that cannot change behaviour, and it proves the
-   `ctl.stop`/`ctl.start` sequence reaches `checkUpgrade`. Confirm with
-   `adb shell cat /proc/version` and `getprop ro.build.date` afterwards, and
-   `md5sum` of `/dev/block/mtdblock3` against the padded squashfs.
-2. **Then the runtime image**, dev profile (adbd stays on), stock
-   `libzkgui.so` kept, after items 1 and 2 above exist and the cold-boot
-   simulation on the volatile path has passed.
-3. Keep the vendor `update.img` and the mtd3 dump somewhere safe; they are
-   the way back and they are not in this repository (they are Ulanzi's).
+   Three details, each of which cost an attempt here:
+
+   - **Stage on `/data`, not `/tmp`.** The flasher's first pass restarts the
+     app and this device reboots during it. `/tmp` is a tmpfs, so an image
+     staged there is gone before the write happens. `persist.zkupgrade.dir`
+     matters for the same reason: the volatile `sys.` properties do not survive
+     that reboot.
+   - **`dir` before `flag`.** The flag is the trigger, so the directory has to
+     be in place when it lands.
+   - **Never leave the directory at its default.** It is `/mnt/storage`, which
+     on this unit holds an *older* vendor image, so a triggered upgrade there
+     silently downgrades the device.
+
+4. **Expect no progress animation.** The claim elsewhere in this file that the
+   panel shows one came from reading `zk_upgrade_perform`, which copies
+   `zkupgradetipbin` to `/tmp` and runs it. On this unit the panel went dark and
+   the device rebooted, about 15 s in, and was back about three minutes later.
+   Do not read the missing animation as failure.
+
+5. **Confirm by listing `/res/bin`.** If `tc002-supervisor` is there, it worked.
+   `/data/.zkupgraderec` is **not** a usable check: `zk_upgrade_check` removes it
+   on entry, so it is absent again after the next boot whatever happened. A
+   byte-comparison of the partition is not a usable check either when the image
+   is a no-op, since an erase-and-write of identical content leaves it identical.
+
+6. Keep the vendor `update.img` and your `mtd3` dump somewhere durable outside
+   the repository — they are Ulanzi's, not ours, and they are the way home.
 
 ---
 

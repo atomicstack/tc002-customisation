@@ -4,6 +4,13 @@ Checksums taken from one real device on 2026-09-15, so anyone doing the same
 work can answer the question that actually matters before flashing anything:
 **is my device the same as the one these notes were written against?**
 
+> **These are the *stock* values, recorded before that device was flashed.**
+> Its `mtd3` now holds the custom runtime, so re-reading `res` on it today will
+> not reproduce anything in this file. The stock partition is preserved in the
+> backup taken beforehand. That is the whole reason to take one: dump `mtd3`
+> **before** your first flash, because afterwards the original is gone from the
+> device and no amount of checking can bring it back.
+
 It is worth checking. The unit these were taken from does **not** match the
 `update.img` that ships on its own UDISK partition — that image is an older
 firmware revision. Two TC002s bought at different times are not necessarily

@@ -4,15 +4,15 @@
 #   runtime/tools/tc002-mkimage.sh <stock update.img|res.sqsh> <out UPDATE.img> [workdir]
 #
 # ############################################################################################
-# # WHAT THIS PRODUCES HAS NEVER BEEN FLASHED. it assembles and validates; it does not         #
-# # install, and nothing in this repo writes to /res.                                          #
-# #                                                                                            #
-# # the four pieces of boot machinery a flashed runtime needs all exist now, and the runtime   #
-# # in the image is built for /res/bin rather than /tmp/tc002 (see below). what is still       #
-# # missing is the only thing that cannot be built: a device that has come up from this image  #
-# # and been recovered from it. of the four, wifi bring-up is the one resting on reasoning     #
-# # rather than a measurement, because exercising it live restarts wpa_supplicant and adb is   #
-# # that link. see FIRMWARE.md for what was verified and how.                                  #
+# # THIS IMAGE FORMAT HAS BEEN FLASHED AND BOOTS. an image built by this script was flashed   #
+# # to a real device on 2026-09-15 and came up unattended from cold: driver loaded, wifi up,  #
+# # panel drawing, api serving, clock synced. see FIRMWARE.md "Status: flashed and            #
+# # persistent" for the boot log and what each line of it depended on.                        #
+# #                                                                                           #
+# # it still writes to flash, and the partition it replaces is the one holding the vendor     #
+# # application. before flashing anything, dump mtd3 and check that the dump unpacks and      #
+# # contains lib/libzkgui.so -- after the first flash the original is gone from the device.   #
+# # runtime/tools/tc002-flash.sh does that for you and refuses to continue without it.        #
 # ############################################################################################
 set -euo pipefail
 HERE=$(cd "$(dirname "$0")" && pwd)
@@ -110,12 +110,8 @@ say "wrap in the container and check it"
 echo "   $OUT -- $(wc -c < "$OUT" | tr -d ' ') bytes, $((100 * SZ / LIMIT))% of the res partition"
 cat <<'WARN'
 
-  NEVER FLASHED. this image is assembled and validated, not installed.
-  the boot machinery it depends on exists and is described in FIRMWARE.md --
-  the boot-failure counter and stock fallback, yielding to a pending upgrade
-  so the reset button still works, wifi bring-up at cold boot, and the gpio-35
-  panel gate -- and the runtime in it is built for /res/bin. what no build can
-  supply is a device that has come up from an image like this one and been
-  recovered from it. the wifi bring-up in particular has never been run: adb is
-  over the link it restarts.
+  this image is assembled and validated, not installed. flash it with
+  runtime/tools/tc002-flash.sh, which backs up mtd3 first, verifies the backup
+  unpacks, and prefers the usb transport -- the flash reboots the device and
+  wifi may not come back on its own.
 WARN
