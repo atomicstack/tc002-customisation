@@ -16,7 +16,7 @@ turned it on.
 | the interpreter | [berry](https://github.com/berry-lang/berry), vendored at `runtime/vendor/berry/` (upstream `6e6e621`, mit, `coc` output committed) |
 | the process | `tc002-berryd`, uid 1001, spawned by the supervisor only while `berry.enabled` |
 | where scripts live | `config/scripts.bin` on `/data`, so they survive a power cycle |
-| what it costs | 256 kb of heap by default, one process, and the only `link_libc = true` binary in the runtime |
+| what it costs | 256 kb of heap by default, one process, and one of the two `link_libc = true` binaries (the other is `tc002-audiod`) |
 
 ## quick start
 
@@ -307,7 +307,7 @@ been handed the whole set. that is what makes a script survive a power cycle.
 |---|---|---|---|
 | `GET` | `/api/v1/berry` | control | — `{"state","heap_bytes","heap_used","heap_high_water","alloc_failures","stops"}` |
 | `GET` | `/api/v1/berry/scripts` | control | — `{"used","budget","scripts":[{"name","bytes","compiled"}…]}` |
-| `GET` | `/api/v1/berry/scripts/{name}` | control | — the source as `text/plain`, or 404 |
+| `GET` | `/api/v1/berry/scripts/{name}` | **scripts** (admin) | — the source as `text/plain`, or 404 |
 | `PUT` | `/api/v1/berry/scripts/{name}` | **admin** | `text/plain`, at most 8,000 bytes |
 | `DELETE` | `/api/v1/berry/scripts/{name}` | **admin** | — |
 | `POST` | `/api/v1/berry/scripts/{name}/run` | **admin** | **no body** — runs the stored script |
@@ -424,7 +424,7 @@ messages recorded rather than sent:
 `zig build check-scripts` is the same harness pointed at `runtime/scripts/berry/` with `--exercise`,
 which fires the events the device really produces at whatever each script registered — every button
 edge, the dial both ways, an mqtt arrival on each filter a script subscribed to with nineteen
-payloads that are as often wrong as right, the same as ntfy messages, and two minutes of timer ticks
+payloads that are as often wrong as right, the same as ntfy messages, and about seven seconds of timer ticks
 followed by an hour in one jump. a handler that raises is caught by the prelude and printed rather
 than thrown, so the check reads the output: silence is the pass.
 

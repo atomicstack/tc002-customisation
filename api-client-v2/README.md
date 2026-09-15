@@ -40,7 +40,7 @@ https is useful with a trusted tls proxy. environment proxies are not used.
 use `--token`, `--token-file`, `TC002_TOKEN`, or `TC002_TOKEN_FILE`.
 credentials files support the runtime's labelled `control=` and `admin=` lines,
 a single 64-character hex token, and the legacy 64-byte binary pair. named
-`client=` rows in runtime credential files coexist with the built-in tokens.
+`client=<name>,<scope|scope|...>,<64 hex>` rows in runtime credential files coexist with the built-in tokens; the older `read`/`control` rank spelling is still accepted when reading, so a file written before scopes keeps working.
 a 64-character hex file is interpreted as one token before considering the
 legacy binary form.
 
@@ -71,9 +71,9 @@ the new secret once; use `--out` to save the response when appropriate.
 | `mqtt get`, `mqtt set`, `mqtt status` | broker settings and connection state | admin; read for status |
 | `ntfy get`, `ntfy set` | subscription settings and status | admin |
 | `canvas get`, `canvas put`, `canvas patch`, `canvas clear` | canvas documents and values | read; admin for put; control for patch/clear |
-| `sprites list`, `sprites put`, `sprites delete` | rgb888 sprites | read; admin for put; control for delete |
+| `sprites list`, `sprites put`, `sprites delete` | rgb888 sprites | `status` to list; **`content` (admin) for put and delete** |
 | `sounds list`, `sounds upload`, `sounds delete`, `sounds play`, `sounds stop` | stored sounds and playback | read; admin for upload/delete; control for playback |
-| `berry`, `scripts list`, `scripts get`, `scripts put`, `scripts run`, `scripts delete` | berry interpreter and script store | control; admin for put/run/delete |
+| `berry`, `scripts list`, `scripts get`, `scripts put`, `scripts run`, `scripts delete` | berry interpreter and script store | control for `berry` and `scripts list`; **`scripts` (admin) for get, put, run and delete** — reading a script back is not a control route |
 | `tokens list`, `tokens create`, `tokens rotate`, `tokens revoke` | named tokens | admin |
 | `request <method> <path>` | direct request beneath `/api/v1` | route-dependent; use `--admin` when needed |
 | `completion <bash\|zsh>` | print completion script | offline |
@@ -92,8 +92,8 @@ tc002 mqtt set --enabled=true --host 192.168.1.2 --port 1883
 tc002 ntfy set --url https://ntfy.sh --topic clock
 # --token authenticates to the device; --subscription-token configures ntfy:
 tc002 ntfy set --subscription-token '<ntfy-token>'
-tc002 tokens create dashboard --role read
-tc002 tokens rotate dashboard  # preserves the existing role unless --role is supplied
+tc002 tokens create dashboard --scope status --scope screen
+tc002 tokens rotate dashboard  # keeps the existing scopes unless --scope is supplied
 ```
 
 settings and canvas commands accept `--data` with a json object, `@file`, or `-`

@@ -10,7 +10,7 @@ you store one on a device.
 ## putting one on the device
 
 ```bash
-ADMIN=$(cut -d' ' -f2 tokens)        # the admin token; see RUNTIME.md
+ADMIN=$(awk -F= '/^admin=/{print $2}' tokens)        # the admin token; see RUNTIME.md
 DEV=10.0.0.111
 
 # store it under its own name and run it by hand
@@ -27,7 +27,7 @@ curl -X PUT --data-binary @night-mode.be -H "authorization: Bearer $ADMIN" \
 local drafts. either way the script is compiled before it is stored, so a typo is refused with
 berry's own message and never reaches flash.
 
-there is no import and no require: berryd has no filesystem and one script cannot call another. to
+there is no way to import **another script**: berryd has no filesystem and one script cannot call another. berry's own built-in modules (`string`, `json`, `math`, `time`) do import normally. to
 run several of these at once, concatenate them — every script prefixes its globals with its own
 initials so that nothing collides.
 
@@ -111,7 +111,7 @@ that runs every script in this directory through the same interpreter the device
 and then fires the events the device really produces at whatever the script registered: presses, holds and
 releases on all four buttons, the dial in both directions, an mqtt
 arrival on each filter the script subscribed to with nineteen different payloads — most of them
-deliberately wrong — every one of those as an ntfy message, and two minutes of timer ticks followed
+deliberately wrong — every one of those as an ntfy message, and about seven seconds of timer ticks followed
 by an hour in one jump.
 
 a handler that raises is caught by the prelude and logged rather than thrown, so the check looks for

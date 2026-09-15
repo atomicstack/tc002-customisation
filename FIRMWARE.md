@@ -296,7 +296,7 @@ fail on a flashed device.
 > an independently written reader extracted here, which is what settled that the
 > container layout below is right rather than merely self-consistent — the first
 > 16 bytes of the `res` squashfs really are moved into the header and replaced
-> by the md5 of the whole payload. Still nothing flashed.
+> by the md5 of the whole payload. ~~Still nothing flashed.~~ (true when written; the runtime has been flashed since — see [Status](#status-flashed-and-persistent-2026-09-15).)
 
 Everything here was established on 2026-09-12 against the unit described in
 [`DEVICE.md`](DEVICE.md) (`Zkswe_SSD21X_SPINOR`, app 1.1.1, kernel 4.9.84
@@ -304,7 +304,7 @@ build #1624) by pulling the binaries over adb and disassembling them with
 radare2, then recomputing every checksum against the vendor's own image. The
 device was only read from; the one thing run on it was a static busybox
 telnetd in `/tmp`, removed afterwards. Nothing was flashed. **A custom image
-has not been flashed yet**; the [first-flash plan](#first-flash-plan) says how
+~~has not been flashed yet~~ **✗ it has**; the [first-flash plan](#first-flash-plan) records how
 to do it with the least risk.
 
 The tool that goes with this document is
@@ -346,12 +346,17 @@ Two things the existing docs got slightly wrong, corrected here:
   not depend on wifi, verified with the link torn down to no carrier and no
   address. See [`DEVICE.md`](DEVICE.md#adb).
 
-The vendor image on the udisk is a **newer build (8 June 2026) than the
-flashed `res` (5 June 2026)**: `lib/libzkgui.so` and `ui/web/uclockSocial.html`
-differ, everything else is identical. The stock app's ota code downloads to
-`/tmp/update.img` and copies `zkupgradetipbin` to `/tmp` (strings
-`otaPendingAppMd5`, `OTA: resume pending app update`), so the udisk copy is
-probably a staged or factory image rather than what the ota flow uses.
+~~The vendor image on the udisk is a **newer build (8 June 2026) than the
+flashed res (5 June 2026)**: lib/libzkgui.so and ui/web/uclockSocial.html
+differ, everything else is identical.~~
+
+**✗ every part of that is wrong, and it is backwards.** Measured by unpacking
+both: the device's `res` is `mkfs 0x6a882f3d` = **2026-08-21**, the udisk image
+`0x6a3f2ed7` = **2026-06-27** — the device is about 55 days *newer*. Neither
+"8 June" nor "5 June" matches anything. And the diff is four changed files
+(`lib/libzkgui.so`, `ui/web/uclockMqtt.html`, `uclockSocial.html`,
+`uclockTools.html`) plus three that exist on one side only, not one. See
+[the vendor image we hold is not what is on the device](#the-vendor-image-we-hold-is-not-what-is-on-the-device).
 
 ---
 
@@ -414,7 +419,7 @@ read-back verify `fcn.000050f0`, crc-32 `fcn.00008fd8`, model table at
 `0x1c958`.
 
 The squashfs itself: 4.0, xz, 128 KiB blocks, exportable, one uid/gid
-(1000). The `res` tree is owned by uid 1000 with mode `0770`; keep that when
+(1000). The stock `res` tree is owned by uid 1000 with mode `0770`. **Do not keep that mode for the files you add**: netd and ntfy run as uid 1001 and cannot traverse or exec through it, so `tc002-mkimage.sh` sets the added files and the `bin`/`lib`/`etc` directories to 0755. The original advice was to keep it when
 repacking (`mksquashfs … -comp xz -b 128K -noappend`).
 
 ---
@@ -526,7 +531,7 @@ client, both as threads inside this process**), then calls
 The custom bootstrap's constructor `execve`s the supervisor **during step 1**.
 Consequences once that is in flash:
 
-- steps 2 and 3 never run, so **every vendor reflash route is dead**: the
+- ~~steps 2 and 3 never run, so **every vendor reflash route is dead**~~ — **✗ not since the upgrade-yield shipped**: the supervisor checks `sys.zkupgrade.flag` before it takes anything and stands aside, so the loader reaches `checkUpgrade`. what follows describes the hazard the yield exists to remove: the
   reset key, the boot check, the `flag=255` recipe and the udisk/usb/sd
   routes all restart `zkswe`, which hands over to the runtime again before
   it looks for an image.
@@ -543,7 +548,7 @@ everything); both must be fixed before anything is flashed.
 
 ## What a persistent runtime needs
 
-### 1. The bootstrap must yield to a pending upgrade
+### 1. The bootstrap must yield to a pending upgrade — **done**
 
 Before exec'ing, the bootstrap (or the supervisor, before it does anything
 else) must check whether an upgrade is pending: `sys.zkupgrade.flag` set and
@@ -560,7 +565,7 @@ pipe, which the supervisor already does for `setprop`. Keeping the stock
 one-line config change over adb instead of a reflash. Recommended for the
 first images.
 
-### 2. Network bring-up at cold boot
+### 2. Network bring-up at cold boot — **done**
 
 The supervisor has to own the address. `wpa_supplicant` is an init service
 (`disabled, oneshot`) that the loader starts with `ctl.start`; by the time
@@ -633,12 +638,15 @@ so the dev profile keeps root adb. In addition:
 | serial console on `ttyS0` | pads not located; case not opened |
 | adb over the usb cable | **works**, and is independent of wifi — verified with the lan transport down. needs `otg_role` set to `usb_device`, which the supervisor now does at startup; nothing in the stock boot does |
 
-The takeaway: until items 1 and 2 are done, the only recovery from a bad
-`res` image is the reset key **plus** a working loader, which the bad image
-itself may have taken away. Do not flash a runtime image before those two
-changes exist and have been exercised from a cold boot on the volatile path
-(kill `wpa_supplicant` and `ifconfig wlan0 down` first to simulate it; a
-power cycle is the way back if it fails).
+~~The takeaway: until items 1 and 2 are done, the only recovery from a bad
+`res` image is the reset key **plus** a working loader … Do not flash a runtime
+image before those two changes exist.~~
+
+**✗ superseded.** Items 1 and 2 shipped, the cold-boot simulation passed, and the
+image has been flashed. The takeaway now: the reset key is **not** the only
+recovery — adb over the usb cable works and does not depend on wifi (the table
+above) — and the reset key reflashes from `/mnt/storage`, which on this unit
+holds an **older** firmware, so it recovers you to a downgrade.
 
 > **2026-09-15.** Items 1 and 2 exist, and **the cold-boot simulation has now
 > been run and passed** on the volatile path — driver, supplicant and address
@@ -702,7 +710,7 @@ Two consequences, both of which matter more than they look:
 
 ## The build (the planned Dockerfile)
 
-Nothing here has been run yet; it is the plan the findings support. The
+~~Nothing here has been run yet~~ — **✗ the build has been run**: `runtime/tools/tc002-mkimage.sh` does exactly this and produced the image that was flashed. Only the *Dockerfile* is still hypothetical. The
 inputs are the repository, a vendor `update.img` (or a dump of mtd3: `cat
 /dev/block/mtdblock3 > /tmp/m.bin` on the device, `adb pull`), and nothing
 else. Steps:
@@ -713,7 +721,7 @@ else. Steps:
    version): `https://ziglang.org/download/0.16.0/zig-<arch>-linux-0.16.0.tar.xz`,
    sha256 `ea4b09bf…534f17` for aarch64, `70e49664…ba3d00` for x86_64 (the
    index at `ziglang.org/download/index.json` is authoritative).
-3. `zig build -Dsupervisor_path=/res/bin/tc002-supervisor -Doptimize=ReleaseSafe`
+3. `zig build -Dbin_dir=/res/bin -Dnetup=true`
    in `runtime/`; `zig build check` for the bootstrap's elf sanity.
 4. Unpack the vendor image: `tc002-update-img.py unpack update.img res.sqsh`,
    `unsquashfs -d res res.sqsh` (as root, to keep uid 1000 and the modes).
@@ -725,14 +733,15 @@ else. Steps:
    `init.rc` points at `/res/bin/hciattach` and would fail harmlessly if it
    goes; leave it in the first images).
 6. `mksquashfs res res-new.sqsh -comp xz -b 128K -noappend`, run as root so
-   the stock ownership (uid/gid 1000, mode 0770) is kept. The loader runs as
+   the stock ownership (uid/gid 1000) is kept — but **not mode 0770 for what you
+   add**, see above; `tc002-mkimage.sh` uses `-force-uid`/`-force-gid` and 0755. The loader runs as
    root, so `-all-root` would work too, but stay identical to stock until
    there is a reason not to.
 7. `tc002-update-img.py pack res-new.sqsh UPDATE.img --template update.img`
    then `tc002-update-img.py inspect UPDATE.img` as the build's own check.
 
 Size budget (compressed, xz): stock `res` 2.7 mb, of which `libzkgui.so` is
-about 2.5 mb; runtime binaries about 2.3 mb uncompressed (ReleaseSafe; the
+about 2.5 mb; the six runtime binaries about 4.98 mb uncompressed (ReleaseSafe; the
 ntfy client is half of it) and roughly half that compressed; busybox 1 mb
 uncompressed. Everything, stock app included, fits the 8 mib partition with
 room to spare; `pack` refuses an image larger than the partition.

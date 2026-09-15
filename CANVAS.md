@@ -54,9 +54,9 @@ colon only**, for a number you read across a room.
 | face | size | characters | a full line |
 |---|---|---|---|
 | `small` | 5 × 7 | all printable ascii | 8 characters |
-| `mini` | 3 × 5 | letters and digits | 13 characters |
+| `mini` | 3 × 5 | letters, digits and `: / . % ? -` | 13 characters |
 | `block` | 6 × 10 | digits and `:` | 7 characters |
-| `big` | 10 × 14 | digits and `:` | 4 characters |
+| `big` | 10 × 14 | digits and `:` are what it is *for*, but it falls back to the 5 × 7 face doubled, so letters do render | 4 characters |
 
 a character costs its width plus one pixel of gap (two for `big`), so "a full line" above is how
 many fit across 52 pixels. anything longer is clipped — or [scrolled](#scroll).

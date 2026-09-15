@@ -18,7 +18,7 @@ These are properties of the device, not of anything installed on the Mac:
    `password` fields and `/getSocial` returns OAuth `token` values in clear
    text over unencrypted HTTP.
 3. **No TLS.** Everything is plain HTTP on port 80.
-4. **adb is open on 5555** with no pairing step, and `adbd` runs as **root** —
+4. **adb is open on 5555, and over the usb cable** with no pairing step, and `adbd` runs as **root** —
    everything on the device runs as uid 0 with no privilege separation.
 5. **The wifi PSK is stored in cleartext** in `/data/setting.ini` at mode `0666`
    (world readable and writable), alongside the device serial and social tokens,
@@ -64,7 +64,9 @@ the stock app and its unauthenticated api are not, and the picture changes:
 
 - **every api route needs a bearer token**, including reads. two random
   256-bit tokens (control and admin) are generated per runtime directory,
-  compared in constant time, stored at mode 0600 under `/tmp/tc002/credentials/`,
+  compared in constant time, stored at mode 0600 under `/data/tc002/state/credentials/`
+  (directory 0700) — **on the jffs2 partition, not tmpfs**, so they survive a power cycle and are
+  cleared only by a factory reset,
   and never logged or returned. durable settings and the mqtt password need
   the admin token; the password is never returned by the api. the file is
   labelled text (`control=<64 hex>` / `admin=<64 hex>`) so that choosing a
@@ -120,4 +122,6 @@ the stock app and its unauthenticated api are not, and the picture changes:
   you configure, which is unauthenticated — see `RUNTIME.md`.
 
 the mqtt password, when set, is written in clear to the runtime's settings
-file (`/tmp/tc002/config/config.json`, mode 0600, root only, tmpfs).
+file (`/data/tc002/state/config/config.json`, mode 0600, root only). ~~tmpfs~~ — **✗ it is the
+persistent jffs2 partition**, so a plaintext broker password now survives reboots in flash rather
+than vanishing with tmpfs. that is a change in exposure, not just in path.
