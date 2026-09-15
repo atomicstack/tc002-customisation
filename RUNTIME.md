@@ -8,37 +8,45 @@ buttons and the knob, and expose an authenticated http and mqtt api of their own
 library; the rest are static with `link_libc = false`. while it runs, the stock `zkgui` app (and with it the stock
 http api on port 80, the cloud client, the built-in apps) is not running.
 
-the **code** here is volatile: binaries, logs and the panel lock live under
-`/tmp/tc002/`, the boot hook is `/tmp/EasyUI.cfg`, and a power cycle always
-comes back stock. the **settings and credentials are not**: they live under
-`/data/tc002/state/` on the persistent jffs2 partition and survive a reboot, so
-a restarted runtime comes back configured. nothing else is written to flash, and
-no partition is ever rewritten. this document is the reference for what the code
+the runtime is **flashed to the `res` partition** and boots itself: binaries in
+`/res/bin`, the bootstrap in `/res/lib`, the boot hook `/res/etc/EasyUI.cfg`.
+settings and credentials live under `/data/tc002/state/` on the jffs2 partition.
+logs, the panel lock and udhcpc's pidfile stay in `/tmp/tc002/`, which is the one
+directory that has to be writable.
+
+the `/tmp` install still exists and is what development uses: push the binaries
+there, write `/tmp/EasyUI.cfg` (the loader reads it before `/res/etc`), and a
+power cycle comes back to whatever is in flash. that is also the shape of the
+recovery hand-back. ~~a power cycle always comes back stock … no partition is
+ever rewritten~~ — **✗ that was true until 2026-09-15 and is not now.** this document is the reference for what the code
 does; how to build and run it is in [`runtime/README.md`](runtime/README.md).
 
 ## processes
 
 | binary | runs as | size¹ | role |
 |--------|---------|------:|------|
-| `libtc002-bootstrap.so` | inside the vendor loader | 1.8 kb | the "startup library" the loader `dlopen`s. its constructor `execve`s the supervisor in place, passing `--from-bootstrap` and the loader's environment. no libc, no `DT_NEEDED`. if the exec fails it prints one line and exits 1; it never touches the anti-brick property |
-| `tc002-supervisor` | root | 384 kb | sets `sys.zkapp.state=running` first, then owns everything privileged: spawns and watches the renderer, binds port 80, generates the api tokens, keeps the settings file, reads the maintenance gesture, polls `wlan0`, relays api commands, samples `/proc` |
-| `tc002d` | root | 255 kb | the renderer. the only process that opens `/dev/spidev0.0` and the latch gpio. scenes, overlays, physical input, paced presentation, heartbeats |
-| `tc002-netd` | uid 1001 | 396 kb | the network daemon: an http/1.1 server for `/api/v1` and an mqtt 3.1.1 client. holds no authoritative state; every command is relayed through the supervisor to the live renderer |
-| `tc002-ntfy` | uid 1001 | 1.1 mb | the ntfy subscriber: dns, tcp, tls 1.3 with the standard library (that is the size), the json stream; sends `notify` to the supervisor. only runs while `ntfy.enabled` |
-| `tc002-berryd` | uid 1001 | 721 kb | the [script interpreter](#scripting-berry): one berry vm on a fixed heap. the only binary that links libc. no network descriptor at all. only runs while `berry.enabled` |
-| `tc002-audiod` | root | the speaker: one sound at a time from the store, decoded and handed to the audio-out. root because `/dev/mi_ao` is `crw-------`, the same trade the renderer makes for spidev. only runs while `sound.enabled` |
-| `tc002-memdump` | root, by hand | 171 kb | a maintenance tool that streams a sparse memory snapshot of one process over adb ([memory audits](#memory-audits)) |
+| `libtc002-bootstrap.so` | inside the vendor loader | 4.3 kb | the "startup library" the loader `dlopen`s. its constructor `execve`s the supervisor in place, passing `--from-bootstrap` and the loader's environment. no libc, no `DT_NEEDED`. if the exec fails it prints one line and exits 1; it never touches the anti-brick property |
+| `tc002-supervisor` | root | 1,078 kb | sets `sys.zkapp.state=running` first, then owns everything privileged: spawns and watches the renderer, binds port 80, generates the api tokens, keeps the settings file, reads the maintenance gesture, polls `wlan0`, relays api commands, samples `/proc` |
+| `tc002d` | root | 534 kb | the renderer. the only process that opens `/dev/spidev0.0` and the latch gpio. scenes, overlays, physical input, paced presentation, heartbeats |
+| `tc002-netd` | uid 1001 | 873 kb | the network daemon: an http/1.1 server for `/api/v1` and an mqtt 3.1.1 client. holds no authoritative state; every command is relayed through the supervisor to the live renderer |
+| `tc002-ntfy` | uid 1001 | 1,231 kb | the ntfy subscriber: dns, tcp, tls 1.3 with the standard library (that is the size), the json stream; sends `notify` to the supervisor. only runs while `ntfy.enabled` |
+| `tc002-berryd` | uid 1001 | 749 kb | the [script interpreter](#scripting-berry): one berry vm on a fixed heap. the only binary that links libc. no network descriptor at all. only runs while `berry.enabled` |
+| `tc002-audiod` | root | 397 kb | the speaker: one sound at a time from the store, decoded and handed to the audio-out. root because `/dev/mi_ao` is `crw-------`, the same trade the renderer makes for spidev. only runs while `sound.enabled` |
+| `tc002-memdump` | root, by hand | 167 kb | a maintenance tool that streams a sparse memory snapshot of one process over adb ([memory audits](#memory-audits)) |
 
-¹ ReleaseSafe, stripped, as built on 2026-09-06. `-Doptimize=ReleaseSmall` gives
-roughly 66 / 147 / 170 kb for the three daemons. on the volatile path the
-binaries sit in tmpfs, so their size is ram.
+¹ ReleaseSafe, stripped, measured at `v0.1.0-87` on 2026-09-15. ~~as built on
+2026-09-06 … roughly 66 / 147 / 170 kb for the three daemons~~ — **✗ those
+figures were two to three times too small and are gone.** the six runtime
+binaries total about 5.0 mb; in the flashed image, squashfs-compressed, the whole
+`res` comes to 4.45 mb of the 8 mib partition. on the `/tmp` path the binaries
+sit in tmpfs, so their size is ram.
 
 the split follows one rule: the supervisor is the only privileged process that
 parses nothing from the network, the renderer is the only process that touches
 the panel, and the network daemon can be killed and restarted at any time
 without the display noticing. all three are single-threaded epoll loops with
 static buffers and no steady-state allocation; every state machine, codec and
-scene is a pure module with host tests (102 of them pass under `zig build
+scene is a pure module with host tests (461 of them pass under `zig build
 test` on macos).
 
 ## how it gets started
@@ -246,8 +254,11 @@ from the renderer's `presented` counter over windows of at least 2 s. the
 and its usage appears nowhere in `/proc`. every used figure is reported with
 the total it is a fraction of (`memory_total_kb`, `tmpfs_total_kb`,
 `flash_total_kb`), because a bar needs a denominator. that snapshot is what `/api/v1/status` and the mqtt `state` and `metrics`
-topics report. two honesty notes: this 4.9 kernel reports `VmRSS` = 4 kb for
-every static process (it is wrong; use `tc002-memdump`), and the values are
+topics report. two honesty notes: ~~this 4.9 kernel reports `VmRSS` = 4 kb for
+every static process~~ — **✗ not every one:** the supervisor reports 1,112 kb and
+netd 972 kb, with `statm` agreeing, while `tc002d` reports 4 kb while actively
+drawing. no cause has been established; use `tc002-memdump` where a real figure
+matters. and the values are
 reported as-is with a `sample_age_ms`. `wlan0`'s address is polled every
 `--ip-poll` seconds through `SIOCGIFADDR` and pushed to the renderer on change.
 
@@ -791,7 +802,7 @@ the `timezone` setting (and the supervisor's `--tz`) takes either a posix
 rule or an iana zone name such as `Europe/Amsterdam` or `Australia/Melbourne`.
 the supervisor carries a table of 597 zone names with the posix rule each
 zone follows from now on, generated by `tools/gen-zones.py` from the footers
-of a tzdata directory (`runtime/src/zones.zig`, about 22 kb, in the
+of a tzdata directory (`runtime/src/scene/zones.zig`, about 22 kb, in the
 supervisor only: the renderer still receives a plain rule). daylight saving
 therefore follows each zone's current law with no database on the device;
 historical rule changes are not modelled, and the two african zones on
@@ -1092,8 +1103,10 @@ the 64-bit space so they never collide with a client's.
 ## the http api (`/api/v1`)
 
 plain http/1.1 on port 80, no tls (see [what is not there](#what-is-not-there-yet)).
-the protocol surface is deliberately narrow so the whole daemon fits in about
-60 kb of static buffers:
+the protocol surface is deliberately narrow. ~~the whole daemon fits in about
+60 kb of static buffers~~ — **✗ it is nearer 250 kb**: 8 connections × (12,288 in
++ 13,312 out) is 200 kb on its own, plus a 16 kb json arena, a 12 kb json buffer
+and two 8 kb ipc packets:
 
 | limit | value |
 |-------|-------|
@@ -1465,7 +1478,7 @@ shows up as a revision gap, and the gap is the signal to resync.
 
 `revision` counts accepted patches (and mqtt setting changes) since the
 supervisor started with the loaded file; `saved_revision` is what is on disk.
-`PUT /config`, `PUT /mqtt` and `PUT /ntfy` write the file before they answer,
+`PATCH /config` (there is no `PUT /config`), `PUT /mqtt` and `PUT /ntfy` write the file before they answer,
 so the two match in the reply unless the write itself failed, which is the
 signal that it did: the settings are live but not on disk, and the log says
 why. nothing needs an explicit save, and nothing is lost by forgetting one.
@@ -1879,7 +1892,7 @@ scene, brightness, fps, frames presented, time sync state), one
 `binary_sensor` for display power that reads the retained `state` topic, and
 five `event` entities (left, middle and right buttons, the knob, the rotary)
 fed by the momentary `input/<control>` topics with `event_types`
-press/release/long for all four buttons and `cw`/`ccw` for the rotary. forty-nine entities at
+press/release/long for the three face buttons and the knob's press and `cw`/`ccw` for the rotary. forty-nine entities at
 one per second means a full pass takes about that many seconds. they are grouped into
 one device, linked to the `availability` topic, and the metrics sensors expire
 after three metrics intervals. a home-assistant birth message
@@ -2098,7 +2111,7 @@ all on a warm device that had been up for days, under the lock, on
   client that is not a script.
 - **network bring-up.** ~~the runtime relies on the wifi and address the stock
   stack established before it took over. dhcp renewal after the takeover~~ — **✗
-  no longer true.** the runtime brings wifi up itself (`boot/tc002-netup.sh`
+  no longer true.** the runtime brings wifi up itself (`runtime/boot/tc002-netup.sh`
   loads the aic8800 driver, starts the supplicant and runs `udhcpc` as a
   renewing daemon tracked by pidfile) and re-runs it on carrier or address loss.
   measured from a cold boot with the driver removed: everything back in 6 s.

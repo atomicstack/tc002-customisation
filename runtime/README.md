@@ -7,10 +7,10 @@ zig-built replacement for the stock application on the ulanzi tc002, following t
 what is here: a no-libc bootstrap shared object that the vendor loader dlopens and whose
 constructor execs the supervisor; `tc002-supervisor`, which raises the anti-brick property first and
 then supervises the renderer and the network daemon; `tc002d`, the renderer, with a hardware-free
-presentation model, pure scenes (popsquares, plasma, clock, ip), overlays, evdev input and a
+presentation model, pure scenes (three bases — clock, art and canvas — with popsquares, plasma and cube as the art generators), overlays, evdev input and a
 bounded ipc channel; `tc002-netd`, the unprivileged http `/api/v1` server and mqtt client; and
-`tc002-memdump`, a memory-audit tool. nothing here writes flash or `/data`; every device run is
-volatile under `/tmp/tc002/`. **the architecture, the api and the measured results are documented
+`tc002-memdump`, a memory-audit tool. ~~nothing here writes flash or `/data`; every device run is
+volatile under `/tmp/tc002/`~~ — **✗ no longer true:** settings and credentials live on `/data/tc002/state`, and the runtime is flashed to `/res`; `tools/tc002-flash.sh` is the one script here that writes flash. **the architecture, the api and the measured results are documented
 in [`../RUNTIME.md`](../RUNTIME.md); this file is the build-and-run reference.**
 
 ## build and test
@@ -19,7 +19,7 @@ only zig 0.16.0 is required (`brew install zig`); the build refuses other versio
 
 ```bash
 cd runtime
-zig build            # all six binaries into zig-out/bin plus zig-out/lib/libtc002-bootstrap.so
+zig build            # all seven binaries into zig-out/bin plus zig-out/lib/libtc002-bootstrap.so
                      # (arm; static and no-libc except tc002-berryd and tc002-audiod)
 zig build test       # host unit tests of every pure module
 zig build check      # elf sanity of the bootstrap: arm et_dyn, no dt_needed, has init_array
@@ -67,7 +67,7 @@ opens spidev/gpio, writing `/tmp`, setprop) happens under the lock; read-only ad
 no tls in this build, see the tradeoffs below) and runs an mqtt 3.1.1 client. it runs as uid 1001 with
 two inherited descriptors: the supervisor's channel and a listener that root bound for it. bearer
 tokens (control and admin, 32 random bytes each) are generated once by the supervisor into
-`<dir>/credentials/tokens` (mode 0600) and handed over the channel; nothing on disk is readable by netd.
+`<state>/credentials/tokens` (default `/data/tc002/state`) (mode 0600) and handed over the channel; nothing on disk is readable by netd.
 
 ```bash
 adb pull /data/tc002/state/credentials/tokens tokens   # root over adb; keep the file private
@@ -120,7 +120,7 @@ controls. the full reference is [`RUNTIME.md`](../RUNTIME.md).
 - **relay through the supervisor** instead of a netd→renderer channel: one fewer descriptor to pass
   across renderer restarts; the supervisor forwards typed messages and parses no http or mqtt.
 - **`std.json` for bodies** (validated utf-8, strict fields) rather than a hand parser: costs code
-  size, keeps correctness; bodies are capped at 4 kb and parsed into an 8 kb fixed arena.
+  size, keeps correctness; bodies are capped at 8 kb (`json.max_body`) and parsed into a 16 kb fixed arena (`json.arena_size`); 4 kb is `http.max_head`.
 - **ReleaseSafe by default** (bounds checks on) at 255–411 kb per binary versus 66–170 kb for
   ReleaseSmall; on the volatile path that is about 0.7 mb of tmpfs ram. `-Doptimize=ReleaseSmall`
   is available; a simple panic handler and no segfault handler already keep the dwarf unwinder out.
@@ -173,7 +173,7 @@ controls. the full reference is [`RUNTIME.md`](../RUNTIME.md).
 
 ## running it on the device (volatile)
 
-after a reboot the stock app is back and nothing of the runtime is left on the device. one
+~~after a reboot the stock app is back and nothing of the runtime is left on the device.~~ **✗ that is the `/tmp` path only**; a flashed runtime comes back as itself. one
 command brings it up again, with the settings applied and the console's tokens pulled:
 
 > making that survive a reboot means flashing the runtime into the `res` partition, which is
@@ -226,8 +226,9 @@ readable mapping's *present* pages, and the raw `pagemap` entries, hex-encoded s
 `adb shell` (this adbd has no `exec-out`). nothing is written to the device and the process keeps
 running. `zig build -Dstrip=false --prefix <dir>` produces the same code with symbols kept for
 attribution of `.data`/`.bss` objects (the section start differs by a constant per binary; subtract
-it). this kernel reports `VmRSS` = 4 kB for the static processes; the pagemap present bits are the
-trustworthy residency signal.
+it). this kernel reports `VmRSS` = 4 kB for **some** of the static processes (`tc002d`, but not the
+supervisor or netd — see the tradeoffs above); the pagemap present bits are the trustworthy
+residency signal either way.
 
 ```bash
 adb push zig-out/bin/tc002-memdump /tmp/tc002-memdump
@@ -236,7 +237,7 @@ adb shell "/tmp/tc002-memdump $(pid) hex" | tr -d '\r\n' | xxd -r -p > snapshot.
 
 ## telemetry for home assistant and grafana
 
-with mqtt enabled and `discovery=true`, netd advertises 24 read-only diagnostic sensors, a display-power
+with mqtt enabled and `discovery=true`, netd advertises 43 read-only diagnostic sensors, a display-power
 binary sensor and five event entities for the physical controls, grouped under
 one device whose identity is the wlan0 mac (`tc002-<mac>`), so entities survive reboots and never
 depend on the ip. every sensor reads a field of the `metrics` json (default every 30 s, `metrics_interval_s`
@@ -345,7 +346,7 @@ it needs `squashfs-tools` (`brew install squashfs-tools`) and builds busybox its
 isn't one already.
 
 **the size question is answered.** the stock `res` is 2,781,184 bytes compressed; the four
-binaries, the bootstrap and busybox add **1.23 mb**, landing at about **4.0 mb of the 8 mib
+binaries, the bootstrap, busybox and the boot scripts land at **4.45 mb of the 8 mib
 partition — 47% used, 4.4 mb spare**. a persistent install fits comfortably.
 
 the pipeline is also verified in both directions: the reader reproduces the vendor image byte for
@@ -354,20 +355,31 @@ differs only in the superblock's `mkfs_time` and `flags` — the timestamp, and 
 defaults against whatever version the vendor used. content-identical, not byte-identical, and
 byte-identity is not something a repack needs.
 
-### what it is not
+### what it was not, until 2026-09-15
 
-the image it writes would be **accepted by the flasher and must not be given to one**. four things
-have to exist first, and each turns a bad boot into a device with no way back in — the recovery
-routes are in [`FIRMWARE.md`](../FIRMWARE.md), and the only verified one is adb over the device's
-own wifi:
+> **✗ this section described a tree that could not safely be flashed. it has
+> been flashed since, and every prerequisite below exists.** kept because the
+> four items are still the right checklist for anyone porting this to another
+> unit — see [`FIRMWARE.md`](../FIRMWARE.md) for the boot log and the sequence
+> that worked, and `tools/tc002-flash.sh` for the install itself.
 
-1. the boot-failure counter and stock-config fallback, so three bad boots hand the panel back to
-   the vendor app unattended;
-2. yielding to a pending upgrade, or the reset button's reflash stops working — that is the last
-   recovery route, and a bad image is exactly when it is needed;
-3. wifi bring-up at cold boot, because the loader being replaced is what starts it today;
-4. exporting gpio 35 and waiting for `spidev0.0`, or the renderer cannot open the panel at all.
+~~the image it writes would be **accepted by the flasher and must not be given
+to one**. four things have to exist first~~ — all four now do:
 
-the runtime in the image is also built with this tree's default paths (`/tmp/tc002`) rather than
-`/res/bin`, so its binaries would not find each other. that is a build option this tree does not
-have yet.
+1. the boot-failure counter and stock-config fallback → `src/sys/recovery.zig`,
+   three bad boots hand the panel back, cleared after 60 healthy seconds;
+2. yielding to a pending upgrade → `recovery.upgradePending` /
+   `writeUpgradeYieldCfg`, so the reset button's reflash still runs;
+3. wifi bring-up at cold boot → `boot/tc002-netup.sh` + `Supervisor.spawnNetup`,
+   which loads the driver the stock boot never loads;
+4. exporting gpio 35 and waiting for `spidev0.0` → `Supervisor.panelReady`,
+   `panel_wait_ns = 45 s`.
+
+a fifth was added after the fact: a 120 s no-network hand-back, because a
+runtime that comes up healthy and never gets an address is unreachable and
+nothing else caught that.
+
+~~the runtime in the image is also built with this tree's default paths (`/tmp/tc002`) rather than
+`/res/bin` … that is a build option this tree does not have yet.~~ **✗ `-Dbin_dir` exists**
+(`build.zig`), and `tools/tc002-mkimage.sh` builds with `-Dbin_dir=/res/bin -Dnetup=true`. this
+contradicted the "where the binaries live" section 300 lines above it.

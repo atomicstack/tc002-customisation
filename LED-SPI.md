@@ -18,7 +18,7 @@ around 30 fps because the app parses and renders every frame.
 | per frame | gpio35 ← 0, wait 1 ms, `write()` the 3072 bytes, wait 1 ms, gpio35 ← 1 |
 | level curve | the app maps every byte before sending: 0 → 0, otherwise `50 + (v−1)·205/254` (so 1 → 50 and 255 → 255): the driver has a floor of 50 |
 | brightness | applied before the curve: `byte × brightness / 100` |
-| rate | the stock app allows one frame per 15 ms at most (~66 fps). ~~the bus itself needs ~2.5 ms per frame~~ — **✗ that is the arithmetic, not the measurement.** a `write()` of 3,072 bytes takes **5 ms** on this device, timed inside the custom runtime's renderer. where the other 2.5 ms goes has not been found. see [`KERNEL.md`](KERNEL.md) |
+| rate | the stock app allows one frame per 15 ms at most (~66 fps). ~~the bus itself needs ~2.5 ms per frame~~ — **✗ that is the arithmetic, not the measurement.** the **whole latch-write-latch sequence in the row above takes 5 ms**, timed inside the custom runtime's renderer — and 2 ms of that is the two 1 ms waits this table prescribes, leaving ~2.5 ms of actual bus time. an earlier note here called the difference unexplained; it never was. see [`KERNEL.md`](KERNEL.md) |
 
 established on a live device (2026-09-03):
 
@@ -52,7 +52,7 @@ setprop ctl.start zkswe    # clock and api are back within ~3 s
 ```
 
 nothing persists: no kernel changes, no files outside `/tmp`. a reboot always
-comes up stock. from the device shell (mksh, no `sleep`) a single frame can be
+comes up stock — ~~though not on the reference device any more, which boots the custom runtime from `res`~~. from the device shell (mksh, no `sleep`) a single frame can be
 shown with:
 
 ```
@@ -109,7 +109,7 @@ measured on the device: 60.0 fps sustained with real spi writes, no short or
 failed writes, the stock app back within 3 s of `stop`.
 
 limits: the binary lives in the device's tmpfs and there is no autostart hook
-without reflashing, so a reboot returns the device to stock; run `start` again.
+without reflashing, so a reboot returns the device to whatever is in flash — stock, or the custom runtime if it has been installed; run `start` again.
 while it runs the http api is down (`zkswe` is stopped). brightness is a cli
 option rather than read from the device's settings.
 

@@ -397,15 +397,26 @@ no difference at all. timing the two halves of a frame separately says why:
 | per frame, plasma at 60 fps | mean | worst |
 |---|---|---|
 | drawing it | **95 µs** | 252 µs |
-| writing it to `spidev0.0` | **4,999 µs** | 5,229 µs |
+| handing it to the panel (latch, write, latch) | **4,999 µs** | 5,229 µs |
 
 the renderer is not waiting for a cpu it could be given sooner — it is sitting
 in one `write`, for **5 ms of every 16.7 ms frame period**. no scheduling
 policy can help with that, which is exactly what the table above shows.
 
-that is also twice what this repo assumed: the readme and LED-SPI.md both put a
-3,072-byte frame at "~2.5 ms on the bus" at 10 mhz, which is the right
-arithmetic for the bytes. both now carry the measured figure instead.
+~~that is also twice what this repo assumed … where the other 2.5 ms goes has
+not been looked at, and it is the single biggest lever on this device's frame
+budget.~~
+
+**✗ that was wrong, and it was wrong because the counter measures more than it
+claimed.** `write_ns` wraps the whole of `spidev.writeFrame`, which is *gpio low
+→ `nanosleep(1 ms)` → `write()` → `nanosleep(1 ms)` → gpio high*. so **2 ms of
+the 5 ms is two deliberate sleeps** — the latch pulse LED-SPI.md prescribes — and
+2.46 ms is the bus at 10 mhz. 2.0 + 2.46 + hrtimer wake overhead lands on the
+5 ms measured. nothing is unaccounted for.
+
+the lever is therefore not a mysterious driver cost. it is the question of
+whether the panel mcu really needs a full millisecond on each edge of the latch,
+which nobody has tested. that is a smaller and much better-defined target.
 where the other 2.5 ms goes has not been looked at, and it is the single
 biggest lever on this device's frame budget.
 
@@ -516,7 +527,8 @@ not attempted, and the bar is high. what is known:
   sigmastar 4.9.84 source, the same `.config`, and openwrt gcc 9.1.0 — a
   mismatch in any of the four fields is rejected at load.
 - the kernel itself lives in `mtd1` (`KERNEL`, 1.9 mib). replacing it means
-  flashing, and `zkdaemon` reflashes the app partition if `sys.zkapp.state` is
+  flashing, and `zkdaemon` restarts `zkswe` (it does **not** reflash anything
+  itself — FIRMWARE.md) if `sys.zkapp.state` is
   not `running` within ~15 s of boot — see the boot chain in
   [`RUNTIME.md`](RUNTIME.md) before touching anything in flash.
 - `/data` has 7.7 mib free and is the only writable place a module could live.
