@@ -73,6 +73,45 @@ pub const stock_easyui_cfg =
     "\"languagePath\":\"/res/tr/\",\"uart\":\"ttyS1\",\"startupTouchCalib\":false," ++
     "\"zkdebug\":false,\"resPath\":\"/res/ui/\"}\n";
 
+/// where the vendor flasher looks for an image when `sys.zkupgrade.dir` is not set.
+pub const default_upgrade_dir = "/mnt/storage";
+pub const upgrade_image_name = "update.img";
+
+/// the loader config that yields the panel to the flasher: the stock keys with **no
+/// `startupLibPath`**.
+///
+/// `zkgui` reads `EasyUI.cfg`, dlopens the startup library, and only *then* runs
+/// `UpgradeMonitor::checkUpgrade()`. our bootstrap execs during that dlopen, so a flashed runtime
+/// would never let step two happen -- and every vendor reflash route ends in restarting `zkswe`,
+/// which would hand straight back to us. the reset button, the boot check and the `flag=255`
+/// recipe would all be dead, which is to say the last recovery route would be gone exactly when a
+/// bad image made it necessary.
+///
+/// writing a config with no app library and exiting is what `zk_upgrade_ready` does for itself:
+/// init restarts `zkswe` about a second later, the loader finds nothing to dlopen, falls through
+/// to `checkUpgrade`, and the flasher takes it from there.
+pub const upgrade_yield_cfg =
+    "{\"baud\":\"115200\",\"rotateTouch\":0,\"rotateScreen\":0," ++
+    "\"languageCode\":\"zh_CN\"," ++
+    "\"defBrightness\":-1,\"screensaverTimeOut\":-1,\"touchDev\":\"/dev/input/event0\"," ++
+    "\"languagePath\":\"/res/tr/\",\"uart\":\"ttyS1\",\"startupTouchCalib\":false," ++
+    "\"zkdebug\":false,\"resPath\":\"/res/ui/\"}\n";
+
+/// is a vendor upgrade pending, given the property and whether the image is really there?
+///
+/// both halves matter. the flag alone is not enough: set with no image to flash, yielding would
+/// hand the panel to a loader that finds nothing to do, and we would do the same again on the next
+/// boot -- a blank panel that never recovers. the image alone is not enough either, because
+/// `update.img` simply lives on the udisk partition on a device that has never been upgraded.
+pub fn upgradePending(flag: []const u8, image_present: bool) bool {
+    if (!image_present) return false;
+    const f = std.mem.trim(u8, flag, " \t\r\n");
+    if (f.len == 0) return false;
+    // getprop prints nothing for an unset property, but a cleared one is often literally "0"
+    if (std.mem.eql(u8, f, "0")) return false;
+    return true;
+}
+
 // -- the io. raw syscalls, no allocator, so the no-libc bootstrap can use this as it is.
 
 fn isErr(rc: usize) bool {
@@ -123,6 +162,44 @@ pub fn writeFailCount(v: u8) void {
     var buf: [8]u8 = undefined;
     const text = std.fmt.bufPrint(&buf, "{d}\n", .{v}) catch return;
     _ = writeAll(fd, text);
+}
+
+/// hand the next `zkswe` start to the flasher rather than to any app.
+pub fn writeUpgradeYieldCfg() bool {
+    const fd = openZ(easyui_cfg_path, .{ .ACCMODE = .WRONLY, .CREAT = true, .TRUNC = true }, 0o644) orelse return false;
+    defer _ = linux.close(fd);
+    return writeAll(fd, upgrade_yield_cfg);
+}
+
+pub fn fileExists(path: [*:0]const u8) bool {
+    const fd = openZ(path, .{ .ACCMODE = .RDONLY }, 0) orelse return false;
+    _ = linux.close(fd);
+    return true;
+}
+
+test "yielding needs a flag and an image, not either on its own" {
+    try std.testing.expect(upgradePending("255", true));
+    try std.testing.expect(upgradePending("1", true));
+    // a flag with nothing to flash would hand the panel to a loader with nothing to do
+    try std.testing.expect(!upgradePending("255", false));
+    // an image with no flag is just the udisk having one, which every device does
+    try std.testing.expect(!upgradePending("", true));
+    try std.testing.expect(!upgradePending("0", true));
+    try std.testing.expect(!upgradePending("  \n", true));
+    try std.testing.expect(!upgradePending("", false));
+    // getprop's output arrives with a newline on it
+    try std.testing.expect(upgradePending("255\n", true));
+}
+
+test "the yield config gives the loader no app to start" {
+    // the whole mechanism is that the loader finds no startup library and falls through to
+    // checkUpgrade, so this key must not be there at all
+    try std.testing.expect(std.mem.indexOf(u8, upgrade_yield_cfg, "startupLibPath") == null);
+    try std.testing.expect(std.mem.indexOf(u8, upgrade_yield_cfg, "tc002") == null);
+    // and it must still be the config the loader expects, not an empty document
+    try std.testing.expect(std.mem.indexOf(u8, upgrade_yield_cfg, "\"resPath\":\"/res/ui/\"") != null);
+    // the boot-failure fallback is a different document: that one DOES start the vendor app
+    try std.testing.expect(std.mem.indexOf(u8, stock_easyui_cfg, "startupLibPath") != null);
 }
 
 test "the counter runs out, and only then" {

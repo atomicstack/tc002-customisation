@@ -2909,6 +2909,57 @@ fn redirectLog(cfg: cli.Config) void {
     sys.close(fd);
 }
 
+/// is the vendor flasher waiting for the device, and if so, get out of its way.
+///
+/// returns true when the caller should exit: `/tmp/EasyUI.cfg` has been rewritten with no startup
+/// library, so init's restart of `zkswe` about a second later reaches `checkUpgrade` and the
+/// flasher runs. returns false -- and says nothing -- in the ordinary case where nothing is
+/// pending, which is every boot but the one that matters.
+fn yieldToUpgrade(environ: anytype) bool {
+    // getprop reads the property area through this, and says nothing at all without it
+    var workspace: ?[*:0]const u8 = null;
+    for (environ) |maybe| {
+        const entry = maybe orelse break;
+        const text = std.mem.span(entry);
+        if (std.mem.startsWith(u8, text, props.workspace_var ++ "=")) {
+            workspace = entry;
+            break;
+        }
+    }
+    if (workspace == null) log.warn("{s} is not in the environment; property reads will come back empty", .{props.workspace_var});
+
+    var flag_buf: [64]u8 = undefined;
+    const flag = props.get("sys.zkupgrade.flag", &flag_buf, property_timeout_ns, workspace) catch |e| {
+        // /bin/getprop missing or wedged. carrying on is the right failure: refusing to boot over
+        // an unreadable property would be a worse outcome than missing one upgrade.
+        log.warn("could not read sys.zkupgrade.flag ({s}); assuming no upgrade is pending", .{@errorName(e)});
+        return false;
+    };
+    if (flag.len == 0 or std.mem.eql(u8, flag, "0")) return false;
+
+    var dir_buf: [128]u8 = undefined;
+    const dir = props.get("sys.zkupgrade.dir", &dir_buf, property_timeout_ns, workspace) catch "";
+    var path_buf: [256]u8 = undefined;
+    const path = std.fmt.bufPrintZ(&path_buf, "{s}/{s}", .{
+        if (dir.len > 0) dir else recovery.default_upgrade_dir,
+        recovery.upgrade_image_name,
+    }) catch {
+        log.warn("sys.zkupgrade.dir is too long to use; assuming no upgrade is pending", .{});
+        return false;
+    };
+    const present = recovery.fileExists(path.ptr);
+    if (!recovery.upgradePending(flag, present)) {
+        log.warn("sys.zkupgrade.flag={s} but no image at {s}; taking the panel anyway", .{ flag, path });
+        return false;
+    }
+    if (!recovery.writeUpgradeYieldCfg()) {
+        log.err("upgrade pending but {s} could not be written; taking the panel, and the flasher will not run", .{recovery.easyui_cfg_path});
+        return false;
+    }
+    log.info("upgrade pending ({s} at {s}); standing aside so the vendor flasher can run", .{ flag, path });
+    return true;
+}
+
 fn run(cfg_in: cli.Config, environ: anytype, args: []const [:0]const u8) !u8 {
     const t0 = sys.monotonicNs();
     log.sink = ringSink;
@@ -2923,6 +2974,14 @@ fn run(cfg_in: cli.Config, environ: anytype, args: []const [:0]const u8) !u8 {
     if (tz.resolve(cfg.tz_rule)) |rule| {
         if (!std.mem.eql(u8, rule, cfg.tz_rule)) cfg.tz_rule = std.fmt.bufPrintZ(&tz_buf, "{s}", .{rule}) catch cfg.tz_rule;
     } else log.warn("--tz {s} is neither a posix rule nor a zone name; the renderer will refuse it", .{cfg.tz_rule});
+    // 0. a pending vendor upgrade outranks us entirely.
+    //
+    // every reflash route the device has -- the reset key, the boot check, the flag=255 recipe --
+    // ends in restarting `zkswe`, and a flashed runtime would take that restart and hand nothing
+    // back. the loader only reaches `checkUpgrade` after the dlopen our bootstrap execs during. so
+    // when an upgrade really is pending, stand aside and let the flasher have the device.
+    if (!cfg.no_property and yieldToUpgrade(environ)) return 0;
+
     // 1. the anti-brick flag, before anything that could block or fail
     var property_ms: ?u64 = null;
     if (!cfg.no_property) {

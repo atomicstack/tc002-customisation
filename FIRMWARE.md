@@ -6,6 +6,25 @@ runtime before it can be baked into flash. This is the groundwork for
 replacing the volatile `/tmp` install described in [`RUNTIME.md`](RUNTIME.md)
 with a rebuilt `res` partition delivered through the vendor's own update path.
 
+> **Boot machinery, part two, 2026-09-15: yielding to the flasher.** The
+> supervisor now checks `sys.zkupgrade.flag` and the image at
+> `sys.zkupgrade.dir` (default `/mnt/storage`) before it takes anything, and
+> when an upgrade really is pending it writes a `/tmp/EasyUI.cfg` with **no**
+> `startupLibPath` and exits, so init's restart of `zkswe` reaches
+> `checkUpgrade` and the vendor flasher runs. Verified on the device both ways,
+> with a deliberately invalid image so nothing could be flashed: flag set with
+> no image → `taking the panel anyway` and the runtime started; flag set with an
+> image present → `standing aside so the vendor flasher can run`, the supervisor
+> exited, and the config it left behind had no app library in it.
+>
+> One device fact this turned up, which cost an hour: **`getprop` finds the
+> property area through `ANDROID_PROPERTY_WORKSPACE`** (`8,32768` here, an
+> already-open fd onto `/dev/__properties__`). Run with an empty environment it
+> prints nothing and **exits 0**, which is indistinguishable from a property
+> that is not set. `setprop` is unaffected — it uses the property-service
+> socket. Also worth knowing: the **stock app consumes a pending upgrade flag**,
+> so any test that lets it run first will find the flag already cleared.
+
 > **Boot machinery, part one, landed 2026-09-15: the recovery net.** The
 > boot-failure counter and the stock-config fallback are implemented in
 > `runtime/src/sys/recovery.zig`, armed by the bootstrap and cleared by the
