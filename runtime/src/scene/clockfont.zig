@@ -112,7 +112,7 @@ const mini_letters = [26]Glyph{
     fromArt(3, 5, .{ "#.#", "#.#", "##.", "#.#", "#.#" }), // k
     fromArt(3, 5, .{ "#..", "#..", "#..", "#..", "###" }), // l
     fromArt(3, 5, .{ "#.#", "###", "###", "#.#", "#.#" }), // m
-    fromArt(3, 5, .{ "#.#", "##.", "###", ".##", "#.#" }), // n
+    fromArt(3, 5, .{ ".##", "#.#", "#.#", "#.#", "#.#" }), // n
     fromArt(3, 5, .{ ".#.", "#.#", "#.#", "#.#", ".#." }), // o
     fromArt(3, 5, .{ "##.", "#.#", "##.", "#..", "#.." }), // p
     fromArt(3, 5, .{ ".#.", "#.#", "#.#", "###", ".##" }), // q
@@ -487,6 +487,17 @@ test "the styles draw differently, and a shadow sits behind the digit" {
     blitStyled(&m1, 4, 2, .mini, "8", white, .solid);
     blitStyled(&m2, 4, 2, .mini, "8", white, .shadow);
     try std.testing.expectEqualSlices(u8, &m1, &m2);
+}
+
+test "mini n is u upside down" {
+    // the shape everything else in this face is built on: n and u are the same arch, one inverted.
+    // two earlier attempts at an n were drawn freehand and both read badly on the panel -- a solid
+    // blob, then a diagonal -- so the rule is now the mirror rather than anyone's eye.
+    const n = glyph(.mini, 'n');
+    const u = glyph(.mini, 'u');
+    for (0..5) |r| {
+        for (0..3) |c| try std.testing.expectEqual(u.a[4 - r][c] != 0, n.a[r][c] != 0);
+    }
 }
 
 test "mini n is not a blob, and is not m with a extra row" {
