@@ -120,3 +120,43 @@ pub fn get(name: [:0]const u8, out: []u8, timeout_ns: u64, workspace: ?[*:0]cons
     if (!exited_normally or code != 0) return error.GetpropFailed;
     return std.mem.trim(u8, out[0..n], " \t\r\n");
 }
+
+/// find the caller's own `ANDROID_PROPERTY_WORKSPACE=...` entry in an environment block, to hand to
+/// a child that has to read a property.
+///
+/// the supervisor spawns every child with an empty environment on purpose, and for five of the six
+/// that is right: they read properties through the supervisor or not at all. the bring-up script is
+/// the exception -- it asks init whether `wpa_supplicant` is running -- and an empty environment
+/// makes that question return **empty and exit 0**, which reads exactly like "not running".
+/// a null entry ends the block rather than being skipped: this is a NULL-terminated environment
+/// vector, and scanning past the terminator reads whatever the slice happens to cover.
+pub fn findWorkspace(environ: anytype) ?[*:0]const u8 {
+    for (environ) |maybe| {
+        const entry = maybe orelse return null;
+        const text = std.mem.span(entry);
+        if (std.mem.startsWith(u8, text, workspace_var ++ "=")) return entry;
+    }
+    return null;
+}
+
+test "the property workspace is found by name, not by position" {
+    const a: [:0]const u8 = "PATH=/bin";
+    const b: [:0]const u8 = "ANDROID_PROPERTY_WORKSPACE=8,32768";
+    const c: [:0]const u8 = "HOME=/";
+    // a name that merely starts the same must not match: the entry is handed to a child verbatim
+    const d: [:0]const u8 = "ANDROID_PROPERTY_WORKSPACE_EXTRA=no";
+
+    const with = [_]?[*:0]const u8{ a.ptr, d.ptr, b.ptr, c.ptr };
+    const found = findWorkspace(&with) orelse return error.TestExpectedWorkspace;
+    try std.testing.expectEqualStrings(b, std.mem.span(found));
+
+    const without = [_]?[*:0]const u8{ a.ptr, d.ptr, c.ptr };
+    try std.testing.expect(findWorkspace(&without) == null);
+
+    // the terminator ends the scan: anything past it is not part of the environment
+    const past_end = [_]?[*:0]const u8{ a.ptr, null, b.ptr };
+    try std.testing.expect(findWorkspace(&past_end) == null);
+
+    const empty = [_]?[*:0]const u8{};
+    try std.testing.expect(findWorkspace(&empty) == null);
+}

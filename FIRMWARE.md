@@ -6,6 +6,35 @@ runtime before it can be baked into flash. This is the groundwork for
 replacing the volatile `/tmp` install described in [`RUNTIME.md`](RUNTIME.md)
 with a rebuilt `res` partition delivered through the vendor's own update path.
 
+> **Cold boot, simulated and passed, 2026-09-15.** The test this document has
+> prescribed all along has now been run, and the wifi bring-up is no longer the
+> one piece resting on reasoning.
+>
+> It matters more than it looked: **nothing in `/etc/init.rc` loads the aic8800
+> driver** — the stock app does, and `wpa_supplicant` is a `disabled` init
+> service. So a flashed runtime boots with no driver, no supplicant and no
+> address, and netup's `insmod` step is not the no-op its comment allows for.
+>
+> The simulation tore the device down to exactly that state: udhcpc killed,
+> `ctl.stop wpa_supplicant`, `ifconfig wlan0 0.0.0.0 down`, then `rmmod
+> aic8800_fdrv` and `aic8800_bsp`, confirmed by `wlan0_exists=no`,
+> `aic_modules=0`, no address. The supervisor was then started with
+> `--netup-dir` and recovered **all of it in 6 seconds** — driver loaded,
+> carrier up, DHCP lease from 10.0.0.1, default route — with the renderer ready
+> 11 ms after spawn. From the host, exactly one ping was lost. The two further
+> rungs of the safety net (a direct re-run, then handing back to the stock app)
+> were never reached.
+>
+> The hand-back was verified in the same run: on `stop`, the supervisor killed
+> the udhcpc daemon by its pidfile, which is the path that exists because
+> busybox runs it under the process name "busybox".
+>
+> A first attempt did not test anything and is worth recording. Its success
+> condition was "wlan0 has an address" — but an address **survives `ifconfig
+> down`**, so the wait loop exited at zero seconds and declared victory while
+> the link was still torn down. The condition is now address **and** carrier
+> **and** a default route.
+
 > **Paths, 2026-09-15: the last build-side gap closed.** `-Dbin_dir` sets the
 > directory the runtime's binaries live in at runtime, and
 > `tools/tc002-mkimage.sh` now builds the image with
@@ -428,11 +457,11 @@ changes exist and have been exercised from a cold boot on the volatile path
 (kill `wpa_supplicant` and `ifconfig wlan0 down` first to simulate it; a
 power cycle is the way back if it fails).
 
-> **2026-09-15.** Items 1 and 2 exist. **The cold-boot simulation has not been
-> run**, so the condition in that paragraph is not yet met. It is the cheapest
-> remaining test and the only one that turns the wifi bring-up from reasoning
-> into a measurement, and on the volatile path a power cycle is a guaranteed
-> way back, because nothing of ours is in flash.
+> **2026-09-15.** Items 1 and 2 exist, and **the cold-boot simulation has now
+> been run and passed** on the volatile path — driver, supplicant and address
+> all removed, everything back in 6 s. The condition in that paragraph is met.
+> See the note at the top of this file for what was torn down and what came
+> back.
 
 ### The mtd nodes do not exist in `/dev`
 

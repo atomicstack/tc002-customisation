@@ -26,6 +26,10 @@ fi
 "$BB" ifconfig $IF up 2>/dev/null
 
 # 2. wpa_supplicant (an init service) reads the persistent /data/misc/wifi/wpa_supplicant.conf.
+#    NOTE: this branch needs ANDROID_PROPERTY_WORKSPACE in the environment. `getprop` maps the
+#    property area through it, and without it prints nothing and **exits 0** -- which reads exactly
+#    like "not running", so the guard below never guards. the supervisor passes that one variable
+#    and nothing else; measured on the device, an empty environment takes this branch every time.
 #    only start it if it is NOT already running: a running supplicant reassociates on its own, and
 #    killing it mid-associate (which is the normal state for the first seconds of a cold boot, and
 #    on every retry while a slow AP is still associating) only delays the link. restart it only

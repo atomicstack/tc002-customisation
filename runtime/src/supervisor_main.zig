@@ -476,6 +476,8 @@ const Supervisor = struct {
     /// every path that hangs off the binary directory, resolved once at startup. `cfg_cli` holds
     /// what was typed; this holds what it means.
     paths: cli.Paths = undefined,
+    /// our own `ANDROID_PROPERTY_WORKSPACE` entry, for the one child that has to read a property.
+    workspace: ?[*:0]const u8 = null,
     creds: api.Credentials = undefined,
     /// named client tokens; the supervisor owns the file and is the only writer
     clients: clients.Store = .{},
@@ -2173,8 +2175,17 @@ const Supervisor = struct {
             // the second argument is a writable directory for udhcpc's pidfile: `dir` itself is
             // read-only on a flashed image
             const argv = [_:null]?[*:0]const u8{ bb.ptr, "sh", sh.ptr, dir.ptr, self.cfg_cli.dir.ptr };
-            const envp = [_:null]?[*:0]const u8{};
-            sys.execve(bb.ptr, &argv, &envp) catch {};
+            // the one child that does NOT get an empty environment. the script asks init whether
+            // `wpa_supplicant` is running, and `getprop` finds the property area through this one
+            // variable: without it the answer comes back empty and exits 0, which reads exactly
+            // like "not running", so the guard never guards. one entry, nothing else inherited.
+            if (self.workspace) |w| {
+                const envp = [_:null]?[*:0]const u8{w};
+                sys.execve(bb.ptr, &argv, &envp) catch {};
+            } else {
+                const envp = [_:null]?[*:0]const u8{};
+                sys.execve(bb.ptr, &argv, &envp) catch {};
+            }
             sys.exit(127);
         }
         self.netup_pid = pid;
@@ -3048,15 +3059,7 @@ fn redirectLog(cfg: cli.Config) void {
 /// pending, which is every boot but the one that matters.
 fn yieldToUpgrade(environ: anytype) bool {
     // getprop reads the property area through this, and says nothing at all without it
-    var workspace: ?[*:0]const u8 = null;
-    for (environ) |maybe| {
-        const entry = maybe orelse break;
-        const text = std.mem.span(entry);
-        if (std.mem.startsWith(u8, text, props.workspace_var ++ "=")) {
-            workspace = entry;
-            break;
-        }
-    }
+    const workspace = props.findWorkspace(environ);
     if (workspace == null) log.warn("{s} is not in the environment; property reads will come back empty", .{props.workspace_var});
 
     var flag_buf: [64]u8 = undefined;
@@ -3219,6 +3222,10 @@ fn run(cfg_in: cli.Config, environ: anytype, args: []const [:0]const u8) !u8 {
     s.boot_id = std.mem.readInt(u32, &boot, .little);
     s.snapshot.boot_id = s.boot_id;
     s.applyRtBudget();
+    s.workspace = props.findWorkspace(environ);
+    if (s.workspace == null and s.paths.netup_dir.len != 0) {
+        log.warn("{s} is not in the environment; the bring-up cannot tell whether wpa_supplicant is running", .{props.workspace_var});
+    }
     s.spawnNetup(s.paths.netup_dir);
     s.readMac();
     if (s.snapshot.mac_present != 0) {

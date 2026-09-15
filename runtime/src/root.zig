@@ -50,6 +50,7 @@ test {
     _ = @import("net/clients.zig");
     _ = @import("net/mqtt.zig");
     _ = @import("net/identity.zig");
+    _ = @import("sys/props.zig");
     _ = @import("sys/recovery.zig");
     _ = @import("supervisor/config.zig");
     _ = @import("supervisor/mcu.zig");
