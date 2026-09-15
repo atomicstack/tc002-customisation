@@ -17,20 +17,20 @@ docs, one topic each:
 
 | doc | what it covers |
 |-----|----------------|
-| [`HTTP-API.md`](HTTP-API.md) | the local http api on port 80: conventions, cors behaviour, and every endpoint with its request fields, response shape, error messages and how it was established |
-| [`DEVICE.md`](DEVICE.md) | living with the device: the stripped busybox, root adb, flashing and recovery, and how it keeps time. the hardware inventory itself is in this readme under [hardware](#hardware) |
-| [`KERNEL.md`](KERNEL.md) | what the 4.9.84 kernel was built with and what it was built without: filesystems, the network stack, which syscalls are real and which return `ENOSYS`, the drivers that are bound and the ones that are not, and the kernel services worth using that nothing uses yet |
-| [`SETUP.md`](SETUP.md) | the setup-ap, discovery and adoption flow that replaces ulanzi studio |
+| [`CANVAS.md`](CANVAS.md) | canvas mode, in pictures: every font, numeral, icon and drawing primitive the runtime offers, and the animations as recordings — each one a photograph of the panel rather than a drawing of it |
 | [`CLOUD.md`](CLOUD.md) | what the device sends to ulanzi's cloud, how it authenticates, and why that's a problem |
-| [`MQTT.md`](MQTT.md) | driving the 52×16 display over a broker you control |
 | [`CUSTOM-APP.md`](CUSTOM-APP.md) | the custom-app frame payload shared by http and mqtt: text, draw primitives, bitmaps, gifs, lifecycle |
+| [`DEVICE.md`](DEVICE.md) | living with the device: the stripped busybox, root adb, flashing and recovery, and how it keeps time. the hardware inventory itself is in this readme under [hardware](#hardware) |
+| [`FINGERPRINTS.md`](FINGERPRINTS.md) | checksums from a real unit — every partition, the `res` squashfs superblock, and the files a flash depends on — so you can tell whether your device matches the one these notes were written against before you write to flash. it will not always match: the unit here shipped with an `update.img` on its own udisk that is an older revision than the `res` it runs |
+| [`FIRMWARE.md`](FIRMWARE.md) | the `update.img` container (decoded, no signature), the vendor flasher and what it checks, `zkdaemon`'s boot check and reset key, the loader's order of operations, and how the runtime came to be **flashed and booting from `res`**: the boot machinery it needed, the first-flash sequence that actually worked, the recovery routes, and the corrections to earlier guesses that cost real time |
+| [`HTTP-API.md`](HTTP-API.md) | the local http api on port 80: conventions, cors behaviour, and every endpoint with its request fields, response shape, error messages and how it was established |
+| [`KERNEL.md`](KERNEL.md) | what the 4.9.84 kernel was built with and what it was built without: filesystems, the network stack, which syscalls are real and which return `ENOSYS`, the drivers that are bound and the ones that are not, and the kernel services worth using that nothing uses yet |
 | [`LED-SPI.md`](LED-SPI.md) | how the led matrix is really driven (spidev0.0 + a gpio latch, 3072-byte frames), how to take it over, and the native 60 fps renderer in `led/` |
+| [`MQTT.md`](MQTT.md) | driving the 52×16 display over a broker you control |
 | [`RUNTIME.md`](RUNTIME.md) | the custom runtime in `runtime/` that replaces the stock app while it runs: how it hooks the boot chain, the supervisor / renderer / network daemon split, scenes and controls, its own authenticated http and mqtt api, what has been measured and what is still missing |
 | [`SCRIPTING.md`](SCRIPTING.md) | running berry scripts on the device: the `tc002` and `panel` api, events from the buttons, mqtt and ntfy, drawing and the sixty-frame-a-second stream, the script store, and what a script is not allowed to do |
-| [`CANVAS.md`](CANVAS.md) | canvas mode, in pictures: every font, numeral, icon and drawing primitive the runtime offers, and the animations as recordings — each one a photograph of the panel rather than a drawing of it |
-| [`FIRMWARE.md`](FIRMWARE.md) | the `update.img` container (decoded, no signature), the vendor flasher and what it checks, `zkdaemon`'s boot check and reset key, the loader's order of operations, and how the runtime came to be **flashed and booting from `res`**: the boot machinery it needed, the first-flash sequence that actually worked, the recovery routes, and the corrections to earlier guesses that cost real time |
-| [`FINGERPRINTS.md`](FINGERPRINTS.md) | checksums from a real unit — every partition, the `res` squashfs superblock, and the files a flash depends on — so you can tell whether your device matches the one these notes were written against before you write to flash. it will not always match: the unit here shipped with an `update.img` on its own udisk that is an older revision than the `res` it runs |
 | [`SECURITY.md`](SECURITY.md) | every security observation in one place, with mitigations |
+| [`SETUP.md`](SETUP.md) | the setup-ap, discovery and adoption flow that replaces ulanzi studio |
 
 tools:
 
