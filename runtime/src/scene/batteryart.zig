@@ -11,18 +11,22 @@ const std = @import("std");
 const geometry = @import("../panel/geometry.zig");
 const icons = @import("icons.zig");
 
+// the whole drawing is `body_x0 .. cap_x1` wide and has to sit centred on a 52-wide panel, so the
+// span must be even: 46 here, leaving 3 clear either side. it used to span 1..47, which is 1 clear
+// on the left and 4 on the right -- visibly off, and reported from a real panel. the case and the
+// fill keep their old sizes; the nub gave up the pixel, because it is the part that can spare one.
 /// the case: a one-pixel outline with a gap inside it before the fill starts
-pub const body_x0 = 1;
+pub const body_x0 = 3;
 pub const body_y0 = 1;
-pub const body_x1 = 44; // inclusive
+pub const body_x1 = 46; // inclusive
 pub const body_y1 = 14; // inclusive
 /// the nub on the positive end
-pub const cap_x0 = 45;
-pub const cap_x1 = 47;
+pub const cap_x0 = 47;
+pub const cap_x1 = 48;
 pub const cap_y0 = 5;
 pub const cap_y1 = 10;
 /// where the charge is drawn, one pixel clear of the outline all round
-pub const fill_x0 = 3;
+pub const fill_x0 = 5;
 pub const fill_y0 = 3;
 pub const fill_w = 40;
 pub const fill_h = 10;
@@ -191,4 +195,21 @@ test "the plug fades in rather than appearing, mixing with whatever is under it"
     var full = geometry.black_rgb;
     draw(&full, 100, amber, 255);
     try testing.expectEqual([3]u8{ 0xff, 0xff, 0xff }, [3]u8{ full[o], full[o + 1], full[o + 2] });
+}
+
+test "the battery sits centred on the panel" {
+    // reported from the device: the icon looked off-centre. it was -- the drawing spanned x=1..47,
+    // one pixel clear on the left and four on the right, which at 52 wide is visible. the vertical
+    // was always right. this asserts the margins rather than the constants, so it keeps holding if
+    // the artwork is redrawn.
+    const left = body_x0;
+    const right = geometry.width - 1 - cap_x1;
+    try testing.expectEqual(left, right);
+
+    const top = body_y0;
+    const bottom = geometry.height - 1 - body_y1;
+    try testing.expectEqual(top, bottom);
+
+    // and the fill stays centred inside the case it lives in
+    try testing.expectEqual(fill_x0 - body_x0, body_x1 - (fill_x0 + fill_w - 1));
 }
