@@ -8,8 +8,71 @@ http api on port 80 plus root `adbd` on port 5555. everything here talks to
 those directly, so you can set the device up, control it, and drive the display
 without installing anything from ulanzi.
 
+**the repo is two projects about one device, and it is worth knowing which one
+you are reading.** the first controls the clock as it ships. the second replaces
+the software on it entirely — and, since 2026-09-15, is flashed to the device's
+`res` partition and boots on its own. while the replacement runs, the stock app
+is not running, so the stock http api, the built-in apps and the ulanzi cloud
+client are all gone. nothing here is a modification of ulanzi's application:
+it is a different program using the same hardware.
+
+everything was arrived at by reverse engineering a retail unit — no vendor
+documentation, no source, no sdk. where a claim here is a measurement it says
+so, and where something was inferred and later turned out to be wrong, the wrong
+version is struck through rather than deleted, so anyone who read it can find
+out they were misled.
+
 note: this is beta software and changes to APIs / logic / file formats have the
 potential to break between commits. patches welcome 🫠
+
+### for the stock firmware
+
+what ulanzi ships, driven from your own machine instead of ulanzi studio:
+
+- **the http api on port 80**, decoded endpoint by endpoint — scenes, the nine
+  built-in apps, custom app frames, brightness, wifi, the lot. unauthenticated,
+  so anything on the network can drive it.
+- **mqtt**, for the same display control through a broker you run.
+- **`tc002-adopt.py`**, which finds a factory-fresh clock on its setup ap and
+  joins it to your wifi, replacing ulanzi studio's onboarding.
+- **`panel/`**, a browser console for the stock app (the stock ui is
+  chinese-only).
+- **`tc002-ntp-patch.py`**, which makes the clock sync from your own ntp server
+  as often as you like, by patching the vendor library in tmpfs — nothing in
+  flash, gone on a power cycle.
+- **`mqtt-check.py`** for broker credentials, and **`tc002-update-img.py`**,
+  which inspects, unpacks and rebuilds the vendor's `update.img` container.
+- the write-up of **what the device sends to ulanzi's cloud**, in plain http,
+  and how to stop it.
+
+### for the replacement runtime
+
+`runtime/` is a from-scratch replacement for the vendor application: seven
+armv7 binaries in zig — six static, and the audio daemon dynamic because it
+dlopens the vendor's own `libmi_ao.so` — with no libc at all in five of them,
+running as a supervisor
+plus a renderer, a network daemon, an ntfy subscriber, an audio daemon and a
+berry script vm. it owns the panel, the buttons and the knob, and serves an
+authenticated api of its own. around it:
+
+- **`tc002-flash.sh`**, which installs it: backs up the `res` partition, refuses
+  to continue unless the backup unpacks, prefers the usb cable to wifi, and puts
+  a notice on the panel while the flash runs. the only thing here that writes to
+  flash.
+- **`tc002-mkimage.sh`** and **`tc002-mkbusybox.sh`**, which build the image and
+  the static busybox it needs (the vendor's own has no `udhcpc`).
+- **`panel-v2/`**, a browser console for the runtime, including a canvas builder
+  and a berry script editor, with the device's own renderer compiled to wasm so
+  the preview draws the device's pixels rather than an approximation of them.
+- **`api-client-v2/`**, a go command-line client for the runtime's `/api/v1`.
+- **`tc002ctl.py`** for driving the api by hand, and **`tc002-run.sh`** /
+  **`tc002-up.sh`** for volatile development installs over adb.
+- **`led/`** and **`led-zig/`**, standalone generative-art renderers that talk
+  to the panel over spi directly — the experiments the runtime's renderer grew
+  out of.
+- **`FINGERPRINTS.md`**, checksums from a real unit, so you can tell whether
+  your device matches the one all of this was measured on before you flash
+  anything. it will not always match.
 
 ## what's here
 
