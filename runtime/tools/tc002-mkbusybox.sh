@@ -27,13 +27,43 @@ TARGET=arm-linux-musleabihf
 # (tc002-netup.sh and the udhcpc callback); the second is the handful of things that make the
 # device debuggable at all, because the stock busybox resolves almost nothing -- there is no grep,
 # sed, head, tail or wc on this device, which is a real tax on every investigation.
+# the shell needs more than `allnoconfig` gives it. ASH_TEST especially: without it `[` is not a
+# builtin, and a boot script full of `[ -d /sys/class/net/wlan0 ]` would be forking to find one.
 APPLETS_BOOT="SH_IS_ASH ASH ASH_OPTIMIZE_FOR_SIZE FEATURE_SH_MATH
+              ASH_TEST ASH_ECHO ASH_PRINTF ASH_CMDCMD ASH_GETOPTS ASH_INTERNAL_GLOB
+              ASH_ALIAS ASH_BASH_COMPAT
               UDHCPC INSMOD RMMOD LSMOD IFCONFIG FEATURE_IFCONFIG_STATUS FEATURE_IFCONFIG_HW
               ROUTE SLEEP CAT KILL ECHO TEST PIDOF"
-APPLETS_DEBUG="GREP SED HEAD TAIL WC LS PS DF FREE MKDIR RM CP MV LN CHMOD SYNC DMESG
-               MOUNT UMOUNT TR CUT SORT UNIQ TOUCH DATE HEXDUMP MD5SUM SHA256SUM
-               FEATURE_FANCY_HEAD FEATURE_FANCY_TAIL FEATURE_PS_LONG FEATURE_DATE_ISOFMT
-               FEATURE_HUMAN_READABLE"
+# `allnoconfig` is the right starting point but it means every omission is silent: the binary
+# builds and runs and simply answers "applet not found", or "unrecognized option" for a flag that
+# is a sub-option rather than an applet. both have happened here -- `busybox insmod` (the
+# multiplexer), `df -h` (human-readable), `dd` (never enabled at all). so this list is deliberately
+# wider than the boot path: on a device whose own busybox resolves almost nothing, the cost of one
+# more applet is a few kb of a partition with megabytes spare, and the cost of a missing one is
+# noticing halfway through an investigation.
+APPLETS_DEBUG="GREP SED AWK FIND XARGS HEAD TAIL WC LS PS TOP UPTIME DF DU FREE
+               MKDIR RM CP MV LN CHMOD CHOWN SYNC DMESG STAT READLINK REALPATH
+               DIRNAME BASENAME MKTEMP MKNOD MKFIFO MOUNT UMOUNT MOUNTPOINT
+               TR CUT SORT UNIQ TAC NL SPLIT COMM CMP DIFF TEE EXPR SEQ YES TRUE FALSE
+               TOUCH DATE UNAME TTY WHICH ENV PRINTF ECHO LESS
+               HEXDUMP OD STRINGS MD5SUM SHA1SUM SHA256SUM CRC32
+               DD TAR GZIP GUNZIP ZCAT NOHUP TIMEOUT WATCH USLEEP LOGGER
+               KILLALL PGREP PKILL PSTREE SETSID CHRT TASKSET NICE RENICE IONICE
+               MODPROBE MODINFO DEVMEM NC WGET VI
+               FEATURE_FANCY_HEAD FEATURE_FANCY_TAIL FEATURE_PS_LONG FEATURE_PS_ADDITIONAL_COLUMNS
+               FEATURE_DATE_ISOFMT FEATURE_HUMAN_READABLE FEATURE_GREP_CONTEXT
+               FEATURE_LS_SORTFILES FEATURE_LS_TIMESTAMPS FEATURE_LS_USERNAME
+               FEATURE_LS_FILETYPES FEATURE_LS_WIDTH FEATURE_LS_FOLLOWLINKS FEATURE_LS_RECURSIVE
+               FEATURE_LS_COLOR FEATURE_LS_COLOR_IS_DEFAULT
+               FEATURE_FIND_TYPE FEATURE_FIND_NAME FEATURE_FIND_PRINT0 FEATURE_FIND_MAXDEPTH
+               FEATURE_TAR_CREATE FEATURE_TAR_GNU_EXTENSIONS FEATURE_SEAMLESS_GZ
+               FEATURE_WGET_LONG_OPTIONS FEATURE_WGET_STATUSBAR FEATURE_WGET_TIMEOUT"
+
+# deliberately NOT here: `telnetd`. it would be a recovery channel that does not depend on adbd,
+# which is tempting for a flashed device -- but this kernel has **no netfilter at all**
+# (see KERNEL.md), so the device cannot firewall itself, and an unauthenticated root shell on the
+# network is not a trade worth making for a clock. `tc` is out too: it fails to compile against
+# modern headers (CBQ was removed from the kernel) and this kernel has no traffic control anyway.
 # non-applet switches that are not optional:
 #  BUSYBOX -- the multiplexer itself. `allnoconfig` turns it off, and without it the binary only
 #             works through argv[0] symlinks: `busybox insmod ...`, which is how every boot script
@@ -41,7 +71,10 @@ APPLETS_DEBUG="GREP SED HEAD TAIL WC LS PS DF FREE MKDIR RM CP MV LN CHMOD SYNC 
 #  STATIC  -- /res carries no libc for it.
 #  LFS     -- musl's off_t is 64-bit on 32-bit arm, and busybox static-asserts that its own uoff_t
 #             matches. without this the build stops at "BUG_off_t_size_is_misdetected".
-REQUIRED="BUSYBOX STATIC LFS"
+#  LONG_OPTS -- --long-style options. a surprising number of features hang off it (ls colour among
+#             them, which is `depends on LS && LONG_OPTS`), and without it they are silently
+#             dropped by oldconfig rather than refused.
+REQUIRED="BUSYBOX STATIC LFS LONG_OPTS"
 
 say() { echo "== $*"; }
 mkdir -p "$WORK"; cd "$WORK"
@@ -84,6 +117,20 @@ yes "" | make oldconfig HOSTCC="$ZIG cc" HOSTCFLAGS="$HOSTFLAGS" >/dev/null 2>&1
 for k in $REQUIRED; do
     grep -q "^CONFIG_$k=y" .config || { echo "CONFIG_$k did not stick" >&2; exit 1; }
 done
+
+# everything else we asked for is checked too, and reported rather than assumed.
+#
+# this is the failure this build keeps having: `oldconfig` silently drops any symbol whose
+# dependencies are not met, and the result is a binary that builds, links, runs, and is missing the
+# thing you wanted -- `dd`, `df -h`, `busybox insmod`, `ls --color` have all been found that way,
+# each one by tripping over it on the device rather than here.
+dropped=""
+for k in $APPLETS_BOOT $APPLETS_DEBUG; do
+    grep -q "^CONFIG_$k=y" .config || dropped="$dropped $k"
+done
+if [ -n "$dropped" ]; then
+    echo "   note: asked for but not enabled (unmet dependencies):$dropped"
+fi
 
 # AR/LD: busybox wants gnu-style `ar rcs` (with no members, for an empty dir) and a relocatable
 # `ld -r`. macos ships bsd ar and a linker that does neither, so use zig's llvm-ar and drive the

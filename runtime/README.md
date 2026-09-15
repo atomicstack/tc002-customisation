@@ -281,7 +281,7 @@ so the image needs a busybox of its own. `runtime/tools/tc002-mkbusybox.sh` buil
 rather than taking a prebuilt binary from anywhere:
 
 ```bash
-runtime/tools/tc002-mkbusybox.sh [workdir] [out]   # -> a static armv7 busybox, ~300 kb, 42 applets
+runtime/tools/tc002-mkbusybox.sh [workdir] [out]   # -> a static armv7 busybox, ~450 kb, 106 applets
 ```
 
 it fetches a pinned busybox tarball, **checks it against a recorded sha256**, configures from
@@ -301,9 +301,20 @@ four things about that build are not obvious, and each one cost a round:
 | `busybox: applet not found`, for every applet | `allnoconfig` turns off `CONFIG_BUSYBOX`, the multiplexer. without it the binary works only through argv[0] symlinks, and `busybox insmod …` — which is how every boot script calls it — fails. it builds and runs, so nothing catches this but trying it |
 | `strip: unrecognized option --remove-section` | busybox strips with gnu options. `SKIP_STRIP=y`; lld has already stripped the output |
 
-the binary was pushed to the device's `/tmp` and run: 42 applets, `udhcpc`/`insmod`/`ifconfig`/
-`route`/`ash` all present, `ifconfig wlan0` reporting the real interface. then removed.
-**nothing here writes to `/res`.**
+the binary was pushed to the device's `/tmp` and run: `udhcpc`, `insmod`, `ifconfig`, `route` and
+`ash` for the boot path, and `uname`, `dd`, `find`, `stat`, `pstree`, `awk`, `top`, `tar` and the
+rest for the investigations this device otherwise makes painful — its own busybox resolves almost
+nothing. **nothing here writes to `/res`.**
+
+**the script now reports what it asked for and did not get.** `oldconfig` silently drops any
+symbol whose dependencies are unmet, which is how `dd`, `df -h`, `busybox insmod` and `ls --color`
+were each found missing *on the device* rather than at build time. `ls --color` needs
+`LONG_OPTS`, which `allnoconfig` leaves off; the multiplexer and the rest had their own reasons.
+the check costs nothing and turns that whole class from silent to noisy.
+
+`telnetd` is deliberately absent. it would be a recovery channel independent of adbd, which is
+tempting for a flashed device — but this kernel has **no netfilter at all**, so the device cannot
+firewall itself, and an unauthenticated root shell on the network is not a trade worth making.
 
 
 ## assembling an image (not flashing one)
