@@ -99,6 +99,7 @@ usage: tc002-supervisor [options]
   --close-inherited       close every inherited descriptor above stderr after the audit
   --stats                 ask the renderer for periodic statistics
   --rt-priority N         run the renderer at SCHED_FIFO N (1..99); 0 leaves it normal
+  --usb-role device|host|keep  put the usb port in device mode so adb works over the cable (device)
   --netup-dir DIR         bring wifi up ourselves, using busybox and the scripts in DIR
                           (the build's -Dnetup picks the default; empty means do not)
   --from-bootstrap        set by the bootstrap shared object; logged only

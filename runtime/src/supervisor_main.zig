@@ -86,6 +86,9 @@ const netup_retry_ns: u64 = 30 * ns_per_s;
 const sample_period_ns: u64 = 5 * ns_per_s;
 const netd_uid: u32 = 1001;
 const netd_gid: u32 = 1001;
+/// the vendor's otg role control. `usb_device`, `usb_host` or `null`.
+const otg_role_path: [*:0]const u8 = "/sys/bus/platform/devices/soc:usbotg/otg_role";
+
 const http_port: u16 = 80;
 
 var lifecycle = child.Lifecycle{};
@@ -2139,6 +2142,42 @@ const Supervisor = struct {
         _ = sys.write(fd, text) catch {};
     }
 
+    /// put the usb controller into device mode, so a cable is a way in.
+    ///
+    /// `/etc/init.rc` sets the gadget up (ids, the adb function, enable=1) and never touches the
+    /// controller's role, which boots `usb_host`. the result is a fully configured adb gadget that
+    /// no host can ever see. measured: with the role at `usb_host` the gadget sits at
+    /// `DISCONNECTED` and the controller at `powered` -- vbus present, never enumerated -- and one
+    /// write of `usb_device` takes it to `CONFIGURED` at high speed within a second.
+    ///
+    /// this is a recovery route that does not depend on wifi, which is exactly the route a flashed
+    /// device needs when its network bring-up is the thing that failed. it is not persistent: the
+    /// role resets every boot, and nothing in the stock boot sets it, so this write is the only
+    /// thing that turns it on.
+    ///
+    /// the three files next to `otg_role` named `usb_device`, `usb_host` and `usb_null` are
+    /// **actions, not values**: reading one performs that switch. never read them to find out the
+    /// current role -- read `otg_role`. finding that out cost a role change nobody asked for.
+    fn applyUsbRole(self: *Supervisor) void {
+        const want = switch (self.cfg_cli.usb_role) {
+            .keep => return,
+            .device => "usb_device",
+            .host => "usb_host",
+        };
+        writeSysfs(otg_role_path, want);
+        var buf: [32]u8 = undefined;
+        const got = sys.readFile(otg_role_path, &buf) catch {
+            log.warn("usb: cannot read back {s}; the role is unknown", .{otg_role_path});
+            return;
+        };
+        const trimmed = std.mem.trim(u8, got, " \t\r\n");
+        if (std.mem.eql(u8, trimmed, want)) {
+            log.info("usb role {s}: a cable is a way in that does not need wifi", .{trimmed});
+        } else {
+            log.warn("usb role is {s}, wanted {s}; adb over the cable will not work", .{ trimmed, want });
+        }
+    }
+
     /// the panel is ready when the spi node and the latch gpio's value file are both openable.
     ///
     /// on a cold boot the stock app is not there to have exported gpio 35 -- the frame latch -- or
@@ -3222,6 +3261,7 @@ fn run(cfg_in: cli.Config, environ: anytype, args: []const [:0]const u8) !u8 {
     s.boot_id = std.mem.readInt(u32, &boot, .little);
     s.snapshot.boot_id = s.boot_id;
     s.applyRtBudget();
+    s.applyUsbRole();
     s.workspace = props.findWorkspace(environ);
     if (s.workspace == null and s.paths.netup_dir.len != 0) {
         log.warn("{s} is not in the environment; the bring-up cannot tell whether wpa_supplicant is running", .{props.workspace_var});

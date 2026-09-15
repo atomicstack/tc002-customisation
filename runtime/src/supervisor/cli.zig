@@ -23,6 +23,7 @@ pub const usage =
     \\  --close-inherited       close every inherited descriptor above stderr after the audit
     \\  --stats                 ask the renderer for periodic statistics
     \\  --rt-priority N         run the renderer at SCHED_FIFO N (1..99); 0 leaves it normal
+    \\  --usb-role device|host|keep  put the usb port in device mode so adb works over the cable (device)
     \\  --netup-dir DIR         bring wifi up ourselves, using busybox and the scripts in DIR
     \\                          (the build's -Dnetup picks the default; empty means do not)
     \\  --from-bootstrap        set by the bootstrap shared object; logged only
@@ -31,6 +32,19 @@ pub const usage =
 ;
 
 pub const Profile = enum { dev, hardened };
+
+/// what to do with the usb controller's otg role at startup.
+///
+/// the vendor's `/etc/init.rc` configures the usb **gadget** -- vendor and product ids, the adb
+/// function, enable=1 -- and then never sets the controller's role, which boots as `usb_host`. so
+/// the gadget sits there fully configured and permanently unreachable: a host plugged in sees
+/// nothing, because the device is trying to be a host too.
+///
+/// one write fixes it, and it is worth doing by default: with the role in device mode, a cable is a
+/// root shell that does not depend on wifi, which is the difference between a bad flash being
+/// recoverable and being a trip to the bin. it costs physical-access root -- the same root the dev
+/// profile already hands to anyone on the lan -- and `keep` opts out.
+pub const UsbRole = enum { device, host, keep };
 
 pub const Config = struct {
     profile: Profile = .dev,
@@ -64,6 +78,7 @@ pub const Config = struct {
     stats: bool = false,
     /// SCHED_FIFO priority for the renderer, 0 to leave it on the normal scheduler.
     rt_priority: u8 = 0,
+    usb_role: UsbRole = .device,
     /// where busybox and the boot scripts live, for a runtime that has to bring wifi up itself.
     /// empty means the loader already did it, which is true of every /tmp install. null defers to
     /// the build (-Dnetup), which is how a flashed image turns it on without an argument.
@@ -163,7 +178,7 @@ pub fn parse(args: []const [:0]const u8) ParseError!Outcome {
             c.from_bootstrap = true;
             continue;
         }
-        const known = [_][]const u8{ "--profile", "--bin-dir", "--renderer", "--fallback", "--dir", "--state", "--lock", "--tz", "--keymap", "--keys", "--knob", "--ip-poll", "--mcu", "--mcu-baud", "--mcu-poll", "--netup-dir" };
+        const known = [_][]const u8{ "--profile", "--usb-role", "--bin-dir", "--renderer", "--fallback", "--dir", "--state", "--lock", "--tz", "--keymap", "--keys", "--knob", "--ip-poll", "--mcu", "--mcu-baud", "--mcu-poll", "--netup-dir" };
         var is_known = false;
         for (known) |k| is_known = is_known or std.mem.eql(u8, a, k);
         if (!is_known) return error.UnknownOption;
@@ -172,6 +187,8 @@ pub fn parse(args: []const [:0]const u8) ParseError!Outcome {
         const v = args[i];
         if (std.mem.eql(u8, a, "--profile")) {
             c.profile = if (std.mem.eql(u8, v, "dev")) .dev else if (std.mem.eql(u8, v, "hardened")) .hardened else return error.BadValue;
+        } else if (std.mem.eql(u8, a, "--usb-role")) {
+            c.usb_role = if (std.mem.eql(u8, v, "device")) .device else if (std.mem.eql(u8, v, "host")) .host else if (std.mem.eql(u8, v, "keep")) .keep else return error.BadValue;
         } else if (std.mem.eql(u8, a, "--bin-dir")) {
             c.bin_dir = v;
         } else if (std.mem.eql(u8, a, "--renderer")) {
@@ -260,6 +277,12 @@ test "defaults and fallback path" {
     try std.testing.expectError(error.BadValue, parse(&.{ "--ip-poll", "0" }));
     try std.testing.expectError(error.UnknownOption, parse(&.{"--renderer-path"}));
     try std.testing.expectError(error.MissingValue, parse(&.{"--tz"}));
+    // the usb role defaults to device: the vendor leaves the controller in host mode, which makes
+    // the adb gadget it configured unreachable over a cable
+    try std.testing.expectEqual(UsbRole.device, o.run.usb_role);
+    try std.testing.expectEqual(UsbRole.keep, (try parse(&.{ "--usb-role", "keep" })).run.usb_role);
+    try std.testing.expectEqual(UsbRole.host, (try parse(&.{ "--usb-role", "host" })).run.usb_role);
+    try std.testing.expectError(error.BadValue, parse(&.{ "--usb-role", "peripheral" }));
     const m = try parse(&.{ "--mcu-baud", "115200", "--mcu-poll", "10", "--no-mcu" });
     try std.testing.expectEqual(@as(u32, 115200), m.run.mcu_baud);
     try std.testing.expectEqual(@as(u32, 10), m.run.mcu_poll_s);

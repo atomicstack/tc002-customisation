@@ -6,6 +6,47 @@ runtime before it can be baked into flash. This is the groundwork for
 replacing the volatile `/tmp` install described in [`RUNTIME.md`](RUNTIME.md)
 with a rebuilt `res` partition delivered through the vendor's own update path.
 
+> **adb over the usb cable works, 2026-09-15 — and it is the recovery route
+> this whole effort needed.** It was an open question at the bottom of this
+> file. The answer is yes, after one sysfs write.
+>
+> The vendor's `/etc/init.rc` (lines 124-128) configures the usb **gadget**
+> fully — `idVendor 18d1`, `idProduct D002`, `functions` from `sys.usb.config`
+> (`adb`), `enable 1` — and then never sets the **controller's** role, which
+> boots `usb_host`. So the device sat there with a correctly configured adb
+> gadget that no host could ever see: it was trying to be a host too. The
+> symptom pair is worth remembering — `/sys/class/zkswe_usb/zkswe0/state` at
+> `DISCONNECTED` while `/sys/class/udc/soc:Sstar-udc/state` says `powered`,
+> which reads as "the cable is delivering power and no data session has ever
+> started", and looks exactly like a charge-only cable.
+>
+> ```sh
+> echo usb_device > /sys/bus/platform/devices/soc:usbotg/otg_role
+> ```
+>
+> Within a second: gadget `CONFIGURED`, controller `configured`, high-speed, and
+> the device appears on the host as `18d1:d002` "Zkswe", serial
+> `0123456789ABCDEF`, alongside the network transport. macOS asks to approve
+> the accessory once.
+>
+> **Verified as a recovery route**, which is the point: with `wpa_supplicant`
+> stopped and `wlan0` down to no carrier and no address — the LAN transport
+> gone, confirmed unreachable from the host — the usb shell stayed up, and the
+> wifi was brought back *through it* with `tc002-netup.sh`.
+>
+> The supervisor now does this write at startup (`--usb-role`, default
+> `device`). It has to, because the role is not persistent and nothing in the
+> stock boot sets it. That means a flashed device whose network bring-up fails
+> is still reachable with a cable.
+>
+> **A trap, paid for once.** The three files beside `otg_role` named
+> `usb_device`, `usb_host` and `usb_null` are **actions, not values**: reading
+> one performs that role switch. Reading all three to find out the current role
+> left the port in `null` mode. Read `otg_role`; never read its neighbours.
+> Note also that a write is accepted (exit 0) but ignored while a host is
+> attached and the gadget is `CONFIGURED` — the driver will not tear down a
+> live session.
+
 > **Cold boot, simulated and passed, 2026-09-15.** The test this document has
 > prescribed all along has now been run, and the wifi bring-up is no longer the
 > one piece resting on reasoning.
@@ -448,7 +489,7 @@ so the dev profile keeps root adb. In addition:
 | an `update.img` on the udisk read through `zkdaemon` (`persist.zkupgrade.dir` defaults to `/mnt/storage`) | same condition; and the udisk is mounted read-only from linux, so the image gets there over usb from a pc (if the gadget is switched to mass storage by something) or by `mount -o remount,rw` as root. neither was tried |
 | u-boot flashing from the udisk (`reboot /Zk2Updi`, `uboot:BOOT:BOOT0`) | **not tested**; only seen in strings. would be the one route independent of linux |
 | serial console on `ttyS0` | pads not located; case not opened |
-| adb over the usb cable | gadget says `adb`; **not tested** |
+| adb over the usb cable | **works**, and is independent of wifi — verified with the lan transport down. needs `otg_role` set to `usb_device`, which the supervisor now does at startup; nothing in the stock boot does |
 
 The takeaway: until items 1 and 2 are done, the only recovery from a bad
 `res` image is the reset key **plus** a working loader, which the bad image
@@ -613,7 +654,6 @@ The wasm preview and the host tools are not part of the image.
 - Whether u-boot flashes `update.img` from the udisk on its own, and how the
   udisk is written from a pc on this unit (the gadget is `adb`, not mass
   storage, as configured today).
-- Whether adb over the usb cable works.
 - The exact partition entry flag that routes an image to u-boot rather than
   the mtd writer; only `res` (index 3, direct) and `rootfs` (index 2, u-boot)
   were traced.
