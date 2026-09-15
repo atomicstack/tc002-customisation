@@ -12,38 +12,55 @@ with a rebuilt `res` partition delivered through the vendor's own update path.
 > byte-identical to the pre-flash baseline in both the payload region
 > (`fb69c9c096e7683cfe2e70c955e855fa`) and the 6 KB past it. Stock app running.
 >
-> **The plan's step 1 below is unsound as written, and this is why.**
-> `libzkupgrade.so` carries `check dev md5 could not read %s` beside
-> `check img md5` — it compares the partition's current md5 against the
-> image's. **An image byte-identical to what is installed is skipped**, which
-> is exactly what a no-op image is. The rehearsal cannot be a true no-op and
-> still prove anything.
+> **Two claims that were in this note are wrong. Corrected 2026-09-15.**
 >
-> It is also unobservable as specified: the plan's verification (md5 of
-> `mtdblock3` against the padded squashfs) reads the same whether the flash
-> succeeded or never happened. The real oracle is **`/data/.zkupgraderec`**,
-> which `zk_upgrade_check` removes on entry and the run recreates. It was never
-> created, in either attempt — the strongest evidence nothing ran.
+> It said step 1 below was "unsound", on the reasoning that
+> `libzkupgrade.so`'s `check dev md5` string means the flasher compares the
+> partition's md5 to the image's and skips a match, so a no-op image can never
+> be written. **That was inferred from a strings dump and never tested, and
+> aquarat's fork contradicts it**: their step 3 is a byte-identical repack of
+> the running `res`, and it flashed. The plan is fine; the attempts were not.
 >
-> What was learned, all of it new:
+> It also called `/data/.zkupgraderec` "the real oracle" for whether a run
+> happened. It is not: `zk_upgrade_check` **removes** it on entry, so it is
+> gone again after the next boot regardless of what happened in between. Its
+> absence afterwards proves nothing.
+>
+> What actually went wrong is duller. Neither attempt ran the documented
+> recipe. Aquarat's step 4 sets `sys.zkupgrade.dir` **before**
+> `sys.zkupgrade.flag` — the flag is the trigger, so the directory has to be in
+> place when it lands. Attempt one had the image in the right place and set the
+> flag first; attempt two fixed the order but had moved the image into
+> `zkimg/`. A third attempt with the order right and the image at
+> `<dir>/update.img` still did not write, and by then the more likely
+> explanation was staging: the flasher's first pass restarts the app, this
+> device reboots during that, and `/tmp` is a tmpfs — so an image staged there
+> is gone before the second pass looks for it. Staging on `/data` and using
+> `persist.zkupgrade.dir` is what `runtime/tools/tc002-flash.sh` now does.
+>
+> The byte-comparison used to declare those attempts failures was also weak: a
+> block-level erase-and-write of identical content leaves the partition
+> identical, so "unchanged" does not distinguish a successful no-op flash from
+> no flash at all. Only an image that differs can tell you.
+>
+> What the attempts did establish:
 >
 > - The app **does** read the trigger: `sys.zkupgrade.flag` went 255 -> 0 and
 >   `sys.zkupgrade.dir` was cleared. So the recipe reaches the check; the check
 >   declines.
 > - The image location was not the blocker. `zk_upgrade_check` scans both
 >   `<dir>/update.img` and `<dir>/zkimg/update.img`; both were tried.
-> - Attempt one rebooted the device, attempt two did not. Unexplained;
->   `zkdaemon`'s 15 s check is the likely cause of the first, not the flasher.
+> - Attempt one rebooted the device, attempt two did not. Still unexplained.
+>   `zkdaemon`'s check is a guess, not a finding — its window is 15 s from
+>   **boot**, and these were app restarts.
 > - **No progress animation appeared.** The claim that it would came from
 >   reading the code, not from watching a device. It is consistent with nothing
 >   having run: `zkupgradetipbin` is copied to `/tmp` and started by
 >   `zk_upgrade_perform`, which was never reached.
 >
-> **The next rehearsal must carry a deliberate difference**, which also makes
-> success observable: the device's own `res` plus one marker file (say
-> `/res/etc/rehearsal-marker.txt`). That is still safe — an extra file changes
-> nothing for the vendor app — and it is recoverable, since
-> `~/tc002-firmware/res-live-20260915.sqsh` is the exact original.
+> Either rehearse with an image that carries a deliberate difference so success
+> is observable, or skip the rehearsal and flash the real runtime image, which
+> differs by definition. Both are recoverable from a verified `mtd3` dump.
 
 > **A live hazard on the udisk, found while doing this.** `/mnt/storage` (the
 > UDISK partition, mtd7, vfat, mounted read-only) already contains
@@ -654,12 +671,11 @@ The wasm preview and the host tools are not part of the image.
 
 ## First-flash plan
 
-1. **Rehearse with a near-no-op image.** ~~A no-op~~ — see the note at the top
-   of this file: the flasher compares the partition's md5 against the image's
-   and skips a match, so a byte-identical image is never written and proves
-   nothing. Use the device's **own** `res` dump plus one marker file, so the
-   flash has something to do and success is visible. Flash it with the vendor
-   recipe over adb:
+1. **Rehearse with a no-op image** — a byte-identical repack of the current
+   `res`, which is what aquarat's procedure does and what worked on their unit.
+   Be aware that a successful no-op flash and no flash at all leave the
+   partition identical, so plan how you will tell them apart before you start.
+   Flash it with the vendor recipe over adb:
 
    ```bash
    adb push UPDATE.img /tmp/update.img

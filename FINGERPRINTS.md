@@ -127,6 +127,14 @@ actually running (234 / 0x6a882f3d / 2787758, above). Unpacked, the two differ
 by four changed files (`lib/libzkgui.so` and three `ui/web/*.html`) and three
 that exist on one side only.
 
+**A second unit, for comparison.** aquarat's fork records the same file on
+their device as **2,773,564 bytes, md5 `f318f036651d6ab95ce05b25a7211c7e`,
+sha256 `4a5db0fe78d1be91c101e6aee7766a59d60136cd68dde2540e99a7b6fb87fc82`** —
+different size, different content, different unit. Their notes suggest pulling
+it to "confirm you have the same base this work was built on"; that check fails
+against the device here. Two TC002s are not necessarily carrying the same
+factory image, which is the whole reason this file exists.
+
 `/mnt/storage` is the **default** `sys.zkupgrade.dir`. So an upgrade triggered
 without overriding the directory — the reset-button reflash, a `flag=255` recipe
 that forgets `dir` — installs that stale image and **downgrades the device**,
@@ -137,6 +145,13 @@ safety net: it recovers, but to an older firmware than you were running.
 
 Do this **before** flashing anything. The mtd nodes do not exist in `/dev` on
 this device, and nothing in the stock boot creates them.
+
+> **Do not dump with `adb shell cat /dev/mtdblockN > out.bin`.** It is the
+> obvious command and it silently corrupts the result on this adbd, which has
+> no `exec-out` and mangles LF to CRLF on the way out. Measured here on a
+> 9,600-byte ELF: `adb shell cat` returned 9,628 bytes with a different hash
+> from the same file fetched by `adb pull`. A backup taken that way looks fine
+> and fails when you need it. Use `dd` to a file and `adb pull` it, as below.
 
 ```sh
 adb shell "busybox mknod /dev/mtdblock3 b 31 3"
