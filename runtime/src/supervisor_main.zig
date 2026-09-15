@@ -80,7 +80,14 @@ const relay_max = 32;
 const netd_restart_ns: u64 = 1 * ns_per_s;
 /// how long to wait for the panel before spawning the renderer anyway. a cold boot has nobody to
 /// have exported the latch gpio or let the spi controller settle.
-const panel_wait_ns: u64 = 20 * ns_per_s;
+/// on a cold boot the spi controller may still be probing when we start. 45 s rather than the 20 s
+/// this used to be: aquarat measured the probe race on a real flashed boot, and a renderer that
+/// loses it is halted rather than retried.
+const panel_wait_ns: u64 = 45 * ns_per_s;
+/// flashed boot path only: hand the panel back to the stock app if wlan0 never gets an address
+/// this long after we started. a runtime that took the network and could not bring it up has made
+/// the device unreachable, and the vendor app can do what we evidently cannot.
+const no_network_handback_ns: u64 = 120 * ns_per_s;
 /// a fresh wifi bring-up is not launched more often than this.
 const netup_retry_ns: u64 = 30 * ns_per_s;
 const sample_period_ns: u64 = 5 * ns_per_s;
@@ -481,6 +488,8 @@ const Supervisor = struct {
     paths: cli.Paths = undefined,
     /// our own `ANDROID_PROPERTY_WORKSPACE` entry, for the one child that has to read a property.
     workspace: ?[*:0]const u8 = null,
+    /// set once the no-network hand-back has fired, so it cannot fire twice.
+    handing_back: bool = false,
     creds: api.Credentials = undefined,
     /// named client tokens; the supervisor owns the file and is the only writer
     clients: clients.Store = .{},
@@ -2120,11 +2129,42 @@ const Supervisor = struct {
     fn pollBootHealth(self: *Supervisor, now: u64) void {
         if (self.boot_health_done) return;
         if (now -| self.started_ns < recovery.healthy_after_ns) return;
+        // a boot with no address is not a healthy boot. without this the counter is cleared by a
+        // runtime that came up, took the network and never brought it back, which is exactly the
+        // boot that most needs the hand-back still counting against it.
+        if (self.netup_requested and self.last_ip == null) return;
         self.boot_health_done = true;
         const fails = recovery.readFailCount();
         if (fails == 0) return;
         recovery.writeFailCount(0);
         log.info("boot healthy after {d} s; cleared {d} recorded boot failure(s)", .{ recovery.healthy_after_ns / ns_per_s, fails });
+    }
+
+    /// step aside when our own network bring-up has failed for good.
+    ///
+    /// only on the flashed path (`--from-bootstrap`), and only when we are the ones who took the
+    /// network: on a /tmp run the loader brought wifi up and this would be handing back a link we
+    /// never touched. if wlan0 still has no address two minutes in, the vendor app gets the panel:
+    /// it can bring wifi up, and a device that is reachable running stock beats a device that is
+    /// unreachable running ours. `pollNetwork` has already retried every 30 s by this point.
+    fn pollNoNetworkHandback(self: *Supervisor, now: u64) void {
+        if (self.shutting_down or self.handing_back) return;
+        if (!self.cfg_cli.from_bootstrap or !self.netup_requested) return;
+        if (self.last_ip != null) return;
+        if (now -| self.started_ns < no_network_handback_ns) return;
+        self.handing_back = true;
+        log.err("no wlan0 address {d} s after boot; handing the panel back to the stock app", .{no_network_handback_ns / ns_per_s});
+        // stop our bring-up first, or an orphaned netup can stop the supplicant or start a second
+        // udhcpc once the stock app owns the network again
+        if (self.netup_pid) |pid| {
+            sys.kill(pid, .KILL);
+            self.netup_pid = null;
+        }
+        self.killNetClients();
+        if (!recovery.writeStockCfg()) log.err("could not write the stock EasyUI.cfg; the hand-back may not stick", .{});
+        self.shutting_down = true;
+        lifecycle.requestStop(now);
+        if (lifecycle.state == .stopping) self.send(.stop);
     }
 
     fn applyRtBudget(self: *Supervisor) void {
@@ -3311,6 +3351,7 @@ fn run(cfg_in: cli.Config, environ: anytype, args: []const [:0]const u8) !u8 {
         s.pollIp(now);
         s.pollMac(now);
         s.pollBootHealth(now);
+        s.pollNoNetworkHandback(now);
         s.reapNetup();
         s.pollNetwork(now);
         s.pushDeviceStatus(now);
