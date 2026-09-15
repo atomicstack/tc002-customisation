@@ -40,11 +40,14 @@ tools:
 | [`panel/`](panel/) | an english web control panel for the device (the stock ui is chinese-only) |
 | [`mqtt-check.py`](mqtt-check.py) | verify mosquitto broker credentials from the raw mqtt connack code |
 | [`tc002-ntp-patch.py`](tc002-ntp-patch.py) | make the clock sync every n minutes instead of every 2 h, and/or from your own ntp server — patches the app library in tmpfs, nothing in flash |
+| [`runtime/tools/tc002-flash.sh`](runtime/tools/tc002-flash.sh) | flash an `UPDATE.img` to the `res` partition: backs up `mtd3` first, refuses to continue unless the backup unpacks, prefers usb, and puts a notice on the panel. the only thing here that writes to flash |
+| [`runtime/tools/tc002-mkimage.sh`](runtime/tools/tc002-mkimage.sh) | assemble that image from your device's own `res` plus the runtime, the bootstrap, busybox and the boot scripts |
+| [`runtime/tools/tc002-mkbusybox.sh`](runtime/tools/tc002-mkbusybox.sh) | build the static armv7 busybox the image needs, from a pinned upstream tarball — the vendor's own has no `udhcpc` |
 | [`tc002-update-img.py`](tc002-update-img.py) | inspect, unpack and build the device's `update.img` (the `res` partition squashfs in the vendor's `ZKSWEV1.0` container): `inspect` runs the same checks the flasher does, `pack` rebuilds the vendor image byte for byte. see [`FIRMWARE.md`](FIRMWARE.md) |
 | [`api-client-v2/`](api-client-v2/README.md) | `tc002`, a go command-line client for the custom runtime's `/api/v1` — the scriptable counterpart to `panel-v2/`. not for the stock firmware |
 | [`led/`](led/) | popsquares generative art running on the device at 60 fps, straight to the panel over spi — static armv7 binary built with zig, plus an adb start/stop wrapper |
 | [`led-zig/`](led-zig/) | full-parity idiomatic zig renderer with typed modules, colocated tests, native dry-run, static armv7 build, and adb wrapper |
-| [`runtime/`](runtime/) | the custom runtime: a supervisor, a renderer (three bases — clock, art and canvas — with popsquares, plasma and cube as the art generators, plus notifications, raw frames, transitions, the on-panel menu, the buttons and the knob), an unprivileged network daemon with a bearer-authenticated `/api/v1` and an mqtt client with home-assistant discovery, a sandboxed berry script interpreter ([`SCRIPTING.md`](SCRIPTING.md)), and a speaker daemon, plus the bootstrap the vendor loader runs and a memory-audit tool. zig 0.16, static armv7, volatile under `/tmp`, and no libc in anything but the script interpreter. reference in [`RUNTIME.md`](RUNTIME.md) |
+| [`runtime/`](runtime/) | the custom runtime: a supervisor, a renderer (three bases — clock, art and canvas — with popsquares, plasma and cube as the art generators, plus notifications, raw frames, transitions, the on-panel menu, the buttons and the knob), an unprivileged network daemon with a bearer-authenticated `/api/v1` and an mqtt client with home-assistant discovery, a sandboxed berry script interpreter ([`SCRIPTING.md`](SCRIPTING.md)), and a speaker daemon, plus the bootstrap the vendor loader runs and a memory-audit tool. zig 0.16, static armv7, flashed to the `res` partition (and runnable from `/tmp` for development), and no libc in anything but the script interpreter. reference in [`RUNTIME.md`](RUNTIME.md) |
 | [`panel-v2/`](panel-v2/) | the same idea for the custom runtime in [`RUNTIME.md`](RUNTIME.md): a local proxy that holds the api tokens and a page that drives scenes, clock fonts and colours, notifications, frames, settings, mqtt, remote presses, display power and the log ring, with a live 52×16 preview that runs the runtime's own scene code, cross-compiled to webassembly by `zig build wasm` (so the preview cannot drift from the device) |
 
 related: [pixdeck](https://github.com/cailurus/PixDeck) is a working stock-firmware
@@ -144,8 +147,8 @@ is a "check against the panel" button. the javascript port this replaced was
 deleted in `451f32e`. the controls card drives the physical buttons, knob and
 rotary remotely through `/input`; the scene card's power switch fades the
 display through `/action`. the page is a fixed hero, the preview with the
-readings and the controls that act on the device now, above four tabs: scene,
-send, device and logs. the scene tab shows the controls of the scene that is
+readings and the controls that act on the device now, above six tabs: scene,
+send, canvas, scripts, device and logs. the scene tab shows the controls of the scene that is
 showing, so a clock face is not in the way while art runs, and a generator's
 own parameters are built from the table it declares in `/scenes`, which means a
 new generator arrives with working controls. `mock-device.py` is a stand-in for
@@ -259,7 +262,7 @@ the case was not opened.
 | soc | sigmastar **ssd21x** ("pioneer3" family, chip id `0xf5` rev 1, board string `PIONEER3 SSC021A-S01A-S`). the firmware calls it `ssd21x_ulanzi_I008` |
 | cpu | **2 × arm cortex-a7** (armv7-a, part `0xc07` r0p5), neon, vfpv4, lpae, smp |
 | clock | **1.0 ghz fixed**: the device tree has a single operating point (1 000 000 khz @ 1.0 v) and no cpufreq driver is bound. core vid selects 0.9 v / 1.0 v |
-| dram | **64 mb in-package**, 62 mib mapped to the kernel. of that, 24 mib is reserved for sigmastar's media heap (`mma_heap`) and 3 mib for a framebuffer, leaving **~35 mib for linux** (`MemTotal` 36 240 kb). ~14 mib is free with the stock app running |
+| dram | **64 mb in-package**, 62 mib mapped to the kernel. of that, 24 mib is reserved for sigmastar's media heap (`mma_heap`) and 3 mib for a framebuffer, leaving **~35 mib for linux** (`MemTotal` 36 240 kb). ~~~14 mib is free~~ **measured `MemAvailable` is 12,552 kb** with the stock app running, 16,084 kb with the custom runtime ([`RUNTIME.md`](RUNTIME.md)) |
 | load | the stock app keeps the two cores at a load average of about 3 while idle, so there is little headroom for anything running alongside it |
 | thermal | no thermal zone or temperature sensor is exposed |
 | kernel | linux 4.9.84 smp preempt, build #1624, compiled 2026-05-27 with openwrt gcc 9.1.0. console on `ttyS0` at 115200 (whether pads are reachable was not checked) |
@@ -283,7 +286,7 @@ flythings sdk docs refers to zkswe's dev boards, not this device; the empty
 | 4 | `config` | 704 kib | squashfs, read-only | `/config` (kernel modules, board ini) |
 | 5 | `MISC` | 256 kib | raw | — (pq/fbdev config read at boot) |
 | 6 | `data` | 8 mib | **jffs2, read-write** | `/data` (340 kib used; the only persistent writable space) |
-| 7 | `UDISK` | 8.5 mib | vfat, read-only from linux | `/mnt/storage` (holds `update.img`; this is what the usb-c port exposes as a drive) |
+| 7 | `UDISK` | 8.5 mib | vfat, read-only from linux | `/mnt/storage` (holds `update.img`, and on this unit that copy is an **older** firmware than the `res` it shipped running — see [`FINGERPRINTS.md`](FINGERPRINTS.md)). ~~this is what the usb-c port exposes as a drive~~ **✗ wrong: the usb gadget is adb, not mass storage** |
 
 everything else (`/tmp`, `/dev`, `/mnt`, `/misc`) is tmpfs, 16 mib max each.
 

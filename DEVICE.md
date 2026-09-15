@@ -12,7 +12,7 @@ Device under test: `appVer 1.1.1`, `mcuVer V1.0.17`.
 
 ## Device summary
 
-The TC002 runs **Linux on a Z21-series SoC** — not Android, and not the ESP32
+The TC002 runs **Linux on a SigmaStar SSD21x SoC** (`ro.product.model` is `Zkswe_SSD21X_SPINOR`, which is where the "Z21" in earlier drafts came from) — not Android, and not the ESP32
 of the TC001. Development is via the FlyThings IDE (C++, Windows-only).
 
 It exposes two useful local interfaces with **no authentication**:
@@ -215,8 +215,8 @@ adb devices -l
 adb shell
 
 adb shell logcat -v time         # timestamped logs
-adb shell df                     # data partition is only a few hundred KB
-adb shell cat /proc/meminfo
+adb shell df                     # /data is 8 MiB, a few hundred KB of it used
+adb shell cat /proc/meminfo      # text only: `adb shell cat` corrupts binaries, see FINGERPRINTS.md
 adb shell busybox top
 ```
 

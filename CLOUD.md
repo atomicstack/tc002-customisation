@@ -5,7 +5,7 @@ why that matters.
 
 Besides the local API (`HTTP-API.md`), the firmware talks
 **outbound** to Ulanzi's cloud (and, separately, to seven NTP servers — see
-[DEVICE.md](DEVICE.md#time)), and three keys in `/data/setting.ini` exist only
+[DEVICE.md](DEVICE.md#time)), and five keys in `/data/setting.ini` exist only
 for the cloud:
 
 | `setting.ini` key | What it is |

@@ -166,8 +166,8 @@ fi
 # ---------------------------------------------------------------- the notice
 # put a pulsing "Updating..." on the panel before the flash starts.
 #
-# the device goes dark-ish for a minute and a half and then reappears, with no indication that
-# anything is happening. the panel holds its last latched frame while nothing is driving it, so
+# the panel freezes for ten to fifteen seconds and the device is unreachable for about twenty,
+# with nothing on screen to say why. it holds its last latched frame while nothing drives it, so
 # whatever is on screen when the runtime dies is what stays there for the whole write. that makes
 # the message free: draw it, then trigger.
 #

@@ -403,8 +403,9 @@ the renderer is not waiting for a cpu it could be given sooner — it is sitting
 in one `write`, for **5 ms of every 16.7 ms frame period**. no scheduling
 policy can help with that, which is exactly what the table above shows.
 
-that is also twice what this repo assumed: the readme puts a 3,072-byte frame
-at "~2.5 ms on the bus" at 10 mhz, which is the right arithmetic for the bytes.
+that is also twice what this repo assumed: the readme and LED-SPI.md both put a
+3,072-byte frame at "~2.5 ms on the bus" at 10 mhz, which is the right
+arithmetic for the bytes. both now carry the measured figure instead.
 where the other 2.5 ms goes has not been looked at, and it is the single
 biggest lever on this device's frame budget.
 
