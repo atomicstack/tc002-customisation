@@ -164,7 +164,7 @@ fi
 
 
 # ---------------------------------------------------------------- the notice
-# put "Updating... / Do not unplug" on the panel before the flash starts.
+# put a pulsing "Updating..." on the panel before the flash starts.
 #
 # the device goes dark-ish for a minute and a half and then reappears, with no indication that
 # anything is happening. the panel holds its last latched frame while nothing is driving it, so
@@ -176,10 +176,14 @@ fi
 # one is captured first and restored at the end -- otherwise the device comes back from the reboot
 # still showing "DO NOT UNPLUG" and never returns to the clock.
 #
-# the `mini` face is 3x5 and fits 13 characters, which is exactly "Do not unplug". it has one set
-# of letterforms for both cases, so the capitals here are for the reader of this script rather than
-# the panel, and it does carry `.` -- verified on the device, rightmost lit column 50 of 51, so
-# neither line clips.
+# the `mini` face is 3x5 and fits 13 characters; "Updating..." is 11. it has one set of
+# letterforms for both cases, so the capital here is for the reader of this script rather than the
+# panel, and it does carry `.`, so the ellipsis survives.
+#
+# it pulses. a frozen panel and a dead one look identical, and the pulse is the difference -- while
+# the runtime is still alive it is visibly breathing, which is what says "working, wait" rather than
+# "crashed". the moment the renderer dies it stops on whatever brightness it had, and that frozen
+# frame carries the word for the rest of the write.
 API_PORT=18099
 api_ready=0
 saved_base=""
@@ -218,10 +222,10 @@ show_notice() {
     [ -n "$saved_base" ] || { warn "could not read the current scene; skipping the notice"; return 0; }
 
     api PUT /canvas "$admin" '{"elements":[
-        {"id":"l1","type":"text","at":[0,2],"size":[52,5],"font":"mini","align":"centre","colour":"ff8000","text":"Updating..."},
-        {"id":"l2","type":"text","at":[0,9],"size":[52,5],"font":"mini","align":"centre","colour":"ffffff","text":"Do not unplug"}]}' >/dev/null
+        {"id":"l1","type":"text","at":[0,5],"size":[52,5],"font":"mini","align":"centre","colour":"ff8000",
+         "text":"Updating...","animate":{"kind":"pulse","ms":1600}}]}' >/dev/null
     api PUT /scene "$admin" '{"base":"canvas"}' >/dev/null
-    say "panel now reads Updating... / Do not unplug (was: $saved_base)"
+    say "panel now reads Updating... (was: $saved_base)"
     sleep 1   # let it be drawn and latched before anything kills the renderer
 }
 
@@ -240,7 +244,7 @@ restore_scene() {
         fi
         sleep 3
     done
-    warn "could not put the panel back to $saved_base -- it may still read Do not unplug."
+    warn "could not put the panel back to $saved_base -- it may still read Updating..."
     warn "fix with: tools/tc002ctl.py -s <ip> --token-file $TOKENS scene $saved_base"
 }
 # the restore has to happen even if the wait loop gives up or the script is interrupted, or the
