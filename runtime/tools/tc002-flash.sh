@@ -272,18 +272,43 @@ say "restart zkswe so the loader runs its upgrade check"
 adb -s "$DEV" shell "setprop ctl.stop zkswe; setprop ctl.start zkswe" >/dev/null 2>&1 || true
 
 # ------------------------------------------------------------------ settle
+# watch **both** transports, not just the one we flashed over.
+#
+# the usb gadget does not come back on its own if the cable stayed plugged in across the reboot:
+# the role resets to host, the runtime sets it back to device, but the host's view of the port never
+# changed and nothing re-enumerates until someone unplugs it. waiting only on usb therefore measures
+# how long until a human walks over, not how long the flash took -- which is how an earlier run got
+# recorded as "back after 85s" when the device had been up and serving on the lan the whole time.
+# the write plus reboot is about twenty seconds.
+answering() {
+    if adb -s "$DEV" shell true >/dev/null 2>&1; then echo "$DEV"; return 0; fi
+    if [ "$DEV" != "$LAN" ]; then
+        adb connect "$LAN" >/dev/null 2>&1 || true
+        if adb -s "$LAN" shell true >/dev/null 2>&1; then echo "$LAN"; return 0; fi
+    fi
+    return 1
+}
+
 say "waiting for the device to settle (up to 4 minutes)"
 gone=0
+BACK=""
 for i in $(seq 1 48); do
     sleep 5
-    if adb -s "$DEV" shell true >/dev/null 2>&1; then
-        [ "$gone" -eq 1 ] && { say "back after about $((i * 5))s"; break; }
+    if t=$(answering); then
+        if [ "$gone" -eq 1 ]; then
+            BACK=$t
+            say "back after about $((i * 5))s, on $t"
+            break
+        fi
     else
         [ "$gone" -eq 0 ] && say "device went away at about $((i * 5))s (expected: it reboots)"
         gone=1
-        adb connect "$LAN" >/dev/null 2>&1 || true
     fi
 done
+if [ -n "$BACK" ] && [ "$BACK" != "$DEV" ] && [ "$DEV" != "$LAN" ]; then
+    warn "it came back on $BACK, not usb. the otg role resets on boot and the runtime sets it"
+    warn "again, but a cable left plugged in does not re-enumerate -- unplug and replug for usb."
+fi
 
 echo
 say "what is running now"

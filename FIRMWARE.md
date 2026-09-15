@@ -780,11 +780,19 @@ This is what actually worked on 2026-09-15, not a proposal.
      on this unit holds an *older* vendor image, so a triggered upgrade there
      silently downgrades the device.
 
-4. **Expect no progress animation.** The claim elsewhere in this file that the
-   panel shows one came from reading `zk_upgrade_perform`, which copies
-   `zkupgradetipbin` to `/tmp` and runs it. On this unit the panel went dark and
-   the device rebooted, about 15 s in, and was back about three minutes later.
-   Do not read the missing animation as failure.
+4. **The vendor shows no progress animation, so show your own.** The claim
+   elsewhere in this file that the panel shows one came from reading
+   `zk_upgrade_perform`, which copies `zkupgradetipbin` to `/tmp` and runs it.
+   On this unit the panel simply freezes. `tc002-flash.sh` puts a pulsing
+   "Updating..." up first: the panel holds its last latched frame while nothing
+   drives it, so whatever is on screen when the runtime dies stays there for the
+   whole write.
+
+   **The write plus reboot takes about 20 seconds.** Earlier runs here were
+   recorded as 85 s and three minutes; both were wrong. The script was waiting
+   on the usb transport, which does not re-enumerate after the reboot until the
+   cable is physically replugged, while the device had been up and serving on
+   the lan the whole time. It now watches both and says which one answered.
 
 5. **Confirm by listing `/res/bin`.** If `tc002-supervisor` is there, it worked.
    `/data/.zkupgraderec` is **not** a usable check: `zk_upgrade_check` removes it
