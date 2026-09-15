@@ -6,6 +6,59 @@ runtime before it can be baked into flash. This is the groundwork for
 replacing the volatile `/tmp` install described in [`RUNTIME.md`](RUNTIME.md)
 with a rebuilt `res` partition delivered through the vendor's own update path.
 
+> **The no-op rehearsal was attempted twice and wrote nothing, 2026-09-15.**
+> The device is untouched — `/res` still hashes to
+> `41296ccc5acce7b0a4314d14d6145ea7` over 222 files, and the raw partition is
+> byte-identical to the pre-flash baseline in both the payload region
+> (`fb69c9c096e7683cfe2e70c955e855fa`) and the 6 KB past it. Stock app running.
+>
+> **The plan's step 1 below is unsound as written, and this is why.**
+> `libzkupgrade.so` carries `check dev md5 could not read %s` beside
+> `check img md5` — it compares the partition's current md5 against the
+> image's. **An image byte-identical to what is installed is skipped**, which
+> is exactly what a no-op image is. The rehearsal cannot be a true no-op and
+> still prove anything.
+>
+> It is also unobservable as specified: the plan's verification (md5 of
+> `mtdblock3` against the padded squashfs) reads the same whether the flash
+> succeeded or never happened. The real oracle is **`/data/.zkupgraderec`**,
+> which `zk_upgrade_check` removes on entry and the run recreates. It was never
+> created, in either attempt — the strongest evidence nothing ran.
+>
+> What was learned, all of it new:
+>
+> - The app **does** read the trigger: `sys.zkupgrade.flag` went 255 -> 0 and
+>   `sys.zkupgrade.dir` was cleared. So the recipe reaches the check; the check
+>   declines.
+> - The image location was not the blocker. `zk_upgrade_check` scans both
+>   `<dir>/update.img` and `<dir>/zkimg/update.img`; both were tried.
+> - Attempt one rebooted the device, attempt two did not. Unexplained;
+>   `zkdaemon`'s 15 s check is the likely cause of the first, not the flasher.
+> - **No progress animation appeared.** The claim that it would came from
+>   reading the code, not from watching a device. It is consistent with nothing
+>   having run: `zkupgradetipbin` is copied to `/tmp` and started by
+>   `zk_upgrade_perform`, which was never reached.
+>
+> **The next rehearsal must carry a deliberate difference**, which also makes
+> success observable: the device's own `res` plus one marker file (say
+> `/res/etc/rehearsal-marker.txt`). That is still safe — an extra file changes
+> nothing for the vendor app — and it is recoverable, since
+> `~/tc002-firmware/res-live-20260915.sqsh` is the exact original.
+
+> **A live hazard on the udisk, found while doing this.** `/mnt/storage` (the
+> UDISK partition, mtd7, vfat, mounted read-only) already contains
+> `update.img`, md5 `ba255466c14445be32f5732fb27e5d20` — and that is the
+> **older** vendor firmware, the same release as the downloaded image, older
+> than the `res` this device runs.
+>
+> `/mnt/storage` is the default `sys.zkupgrade.dir`. So any upgrade triggered
+> without overriding the directory — the reset key, a `flag=255` recipe that
+> forgets `dir` — installs that stale image and **downgrades the device**,
+> `lib/libzkgui.so` included. That is the very file the recovery net hands back
+> to after three bad boots. The "reset key plus a working loader" route in the
+> table below therefore recovers to an older firmware than the one on the unit,
+> which is worth knowing before relying on it.
+
 > **adb over the usb cable works, 2026-09-15 — and it is the recovery route
 > this whole effort needed.** It was an open question at the bottom of this
 > file. The answer is yes, after one sysfs write.
@@ -601,10 +654,12 @@ The wasm preview and the host tools are not part of the image.
 
 ## First-flash plan
 
-1. **Rehearse with a no-op image.** Pack the flashed partition's own
-   squashfs (mtd3 dump, first 2 771 146 bytes; or the vendor image's payload)
-   into a new `update.img` with `pack` and no template. Flash it with the
-   vendor recipe over adb:
+1. **Rehearse with a near-no-op image.** ~~A no-op~~ — see the note at the top
+   of this file: the flasher compares the partition's md5 against the image's
+   and skips a match, so a byte-identical image is never written and proves
+   nothing. Use the device's **own** `res` dump plus one marker file, so the
+   flash has something to do and success is visible. Flash it with the vendor
+   recipe over adb:
 
    ```bash
    adb push UPDATE.img /tmp/update.img
