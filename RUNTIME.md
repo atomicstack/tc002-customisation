@@ -105,6 +105,25 @@ usage: tc002-supervisor [options]
   --from-bootstrap        set by the bootstrap shared object; logged only
 ```
 
+#### `--usb-role`, and the replug that catches everyone
+
+The usb otg controller boots in **host** mode and nothing in the stock boot
+changes it, so the adb gadget the vendor already configured is unreachable over
+a cable. The supervisor writes `usb_device` to
+`/sys/bus/platform/devices/soc:usbotg/otg_role` at startup — it has to be us,
+because the role resets on every boot.
+
+**A cable left plugged in across a reboot will not re-enumerate.** The write
+lands, but the host's view of the port never changed, so nothing attaches until
+someone unplugs and replugs it. Expect that after every reboot, including after
+a flash. [`DEVICE.md`](DEVICE.md#adb) has the diagnosis, the symptom pair that
+impersonates a bad cable, and the sysfs files that are actions rather than
+values.
+
+`--usb-role keep` opts out. The default costs physical-access root over usb,
+which is the same root the dev profile already hands to anyone on the lan, and
+the hardened profile turns adbd off entirely.
+
 #### where the binaries are, and why it is not `--dir`
 
 `--bin-dir` and `--dir` used to be one option, and they cannot be. `--dir` is

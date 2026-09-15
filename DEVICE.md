@@ -20,7 +20,7 @@ It exposes two useful local interfaces with **no authentication**:
 | Port | Service | Notes |
 |-----:|---------|-------|
 | 80   | HTTP settings API | unauthenticated read/write of all config — see `HTTP-API.md` |
-| 5555 | `adbd` | wifi adb; USB is mass-storage only |
+| 5555 | `adbd` | wifi adb. adb over the **usb cable** also works, after one sysfs write — see [adb](#adb) |
 
 It also phones home to `api.ulanzistudio.com` over **plain HTTP** for weather,
 social counts, calendars and the update check — see `CLOUD.md`.
@@ -164,8 +164,49 @@ run `apply` again. `status` says which library the running app has mapped.
 
 ## adb
 
-Wifi only — the USB-C port is mass storage plus force-recovery. Ulanzi's docs
-are explicit: for wifi-equipped models, USB adb does not work.
+Over wifi, and **over the usb cable too** — Ulanzi's docs say USB adb does not
+work on wifi-equipped models, and on this unit that is wrong. It takes one write
+and a replug.
+
+The vendor's `/etc/init.rc` configures the usb **gadget** completely: vendor id
+`18d1`, product `d002`, the `adb` function, `enable 1`. What it never sets is the
+**controller's role**, which boots as `usb_host`. So the device carries a fully
+configured adb gadget that no host can ever see, because it is trying to be a
+host itself.
+
+```sh
+echo usb_device > /sys/bus/platform/devices/soc:usbotg/otg_role
+```
+
+**Then unplug the cable and plug it back in.** The write takes effect, but the
+gadget only re-attaches when the port sees a fresh connect; a cable that was
+already plugged in leaves the host's view of the port unchanged and nothing
+enumerates. This catches you after every reboot, because the role resets and the
+cable is usually still in.
+
+The symptom pair, when it is not working, impersonates a bad cable exactly:
+
+```sh
+cat /sys/class/zkswe_usb/zkswe0/state   # DISCONNECTED
+cat /sys/class/udc/soc:Sstar-udc/state  # powered  <- vbus is there, no data session
+```
+
+**Do not read the three files beside `otg_role`** named `usb_device`, `usb_host`
+and `usb_null` to find out the current role: they are *actions*, and reading one
+performs that switch. Read `otg_role`. A write to it is also accepted and
+silently ignored while a host is attached and the gadget is `CONFIGURED` — the
+driver will not tear down a live session.
+
+Once it is up the device appears as `18d1:d002` "Zkswe", serial
+`0123456789ABCDEF`, alongside any network transport, and macOS asks to approve
+the accessory once. It is a way in that does not depend on wifi: verified with
+`wpa_supplicant` stopped and `wlan0` down to no carrier and no address, the usb
+shell stayed up and the wifi was brought back through it.
+
+The custom runtime sets the role itself at startup (`--usb-role`, default
+`device`), because nothing in the stock boot does and it resets every time.
+That is what makes usb a recovery route on a flashed device whose network
+bring-up is the thing that failed.
 
 ```bash
 brew install --cask android-platform-tools
@@ -215,5 +256,5 @@ image must respect are in [`FIRMWARE.md`](FIRMWARE.md);
 [`tc002-update-img.py`](tc002-update-img.py) inspects and builds them.
 
 Note that on this unit the USB gadget is configured as `adb`
-(`/sys/class/zkswe_usb/zkswe0/functions`), not mass storage; adb over the
-cable was not tried.
+(`/sys/class/zkswe_usb/zkswe0/functions`), not mass storage, and adb over the
+cable **works** — see [adb](#adb) for the one write and the replug it needs.
