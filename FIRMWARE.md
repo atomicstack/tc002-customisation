@@ -375,13 +375,17 @@ its five children by absolute path. **A flashed runtime never sees a
 command-line argument in its life**, so every path it uses is the one compiled
 in.
 
-### 4. Battery
+### 4. Battery — **done**, and this section was stale
 
-The stock app polls the mcu and powers the device off below 3550 mv. The
-runtime reads the battery but never powers off, so a flashed device left on
-battery runs the pack down until the mcu or the pack's protection acts. Add
-the shutdown (the mcu `powerOff` command, `0x10`, is known) before relying on
-battery operation.
+The stock app polls the mcu and powers the device off below 3550 mv. This said
+the runtime never powers off; it has since `supervisor/power.zig`, which uses
+the stock firmware's own numbers — `battery.shutdown` (default on),
+`battery.shutdown_mv` (default 3550), `battery.grace_s` (default 30), with the
+warning band at `shutdown_mv + 50`. See
+[the low-battery shutdown](RUNTIME.md#the-low-battery-shutdown).
+
+What is still true is the caveat in `RUNTIME.md`: the behaviour has not been
+watched through a real discharge.
 
 ### 5. A shell that survives the stock app's absence
 
@@ -423,6 +427,64 @@ itself may have taken away. Do not flash a runtime image before those two
 changes exist and have been exercised from a cold boot on the volatile path
 (kill `wpa_supplicant` and `ifconfig wlan0 down` first to simulate it; a
 power cycle is the way back if it fails).
+
+> **2026-09-15.** Items 1 and 2 exist. **The cold-boot simulation has not been
+> run**, so the condition in that paragraph is not yet met. It is the cheapest
+> remaining test and the only one that turns the wifi bring-up from reasoning
+> into a measurement, and on the volatile path a power cycle is a guaranteed
+> way back, because nothing of ours is in flash.
+
+### The mtd nodes do not exist in `/dev`
+
+`/proc/mtd` lists all eight partitions and `/proc/devices` has `mtd` (char 90)
+and `mtdblock` (block 31), but **there are no `/dev/mtd*` or `/dev/mtdblock*`
+nodes**. Nothing on the device can read or write a partition until they are
+made:
+
+```sh
+busybox mknod /dev/mtdblock3 b 31 3     # block, for reading a partition out
+busybox mknod /dev/mtd3      c 90 6     # char, minor 2*N, what flashcp wants
+```
+
+They live in a tmpfs `/dev` and do not survive a reboot. This is why `flashcp`
+being in our busybox is necessary but not sufficient, and it is worth knowing
+before a flash rather than during one.
+
+Taking a verified backup of the running device is then:
+
+```sh
+busybox dd if=/dev/mtdblock3 of=/tmp/res-live.sqsh bs=1024 count=2730
+adb pull /tmp/res-live.sqsh && adb shell busybox rm -f /tmp/res-live.sqsh
+unsquashfs -d live-res res-live.sqsh    # it must unpack, and hold lib/libzkgui.so
+```
+
+### The vendor image we hold is **not** what is on the device
+
+Compared on 2026-09-15. The `res` on the unit and the payload of the
+`update.img` in hand are different vendor releases:
+
+| | on the device | our `update.img` |
+|---|---|---|
+| squashfs inodes | 234 | 233 |
+| mkfs timestamp | `0x6a882f3d` | `0x6a3f2ed7` (≈ 55 days older) |
+| bytes used | 2,787,758 | 2,779,578 |
+
+`lib/libzkgui.so` and three `ui/web/*.html` pages differ in content; the device
+additionally has `ui/app_icons/tools_focus_clock.png` and
+`ui/font_image/t_9_L.png`, and lacks `ui/font_image/t_10_L.png`. That is a
+vendor revision, not a modification by anything in this repository — nothing
+here writes to `/res`, and nothing here would add a focus-clock icon.
+
+Two consequences, both of which matter more than they look:
+
+1. **Feed `tc002-mkimage.sh` the device's own dump, not the downloaded image.**
+   The script takes either (an mtd3 dump reads the same way). Built from the
+   older `update.img`, the result would quietly downgrade the vendor app and
+   the UI resources — including the `libzkgui.so` that the recovery net hands
+   back to, which is the one file that has to be right when everything else has
+   gone wrong.
+2. **The way back has to be the device's own partition.** A downloaded image of
+   a different release restores a working clock, but not *this* clock.
 
 ---
 
