@@ -217,17 +217,55 @@ own parameters are built from the table it declares in `/scenes`, which means a
 new generator arrives with working controls. `mock-device.py` is a stand-in for
 developing without a device.
 
-![the panel-v2 console: the preview, the remote controls and the readings with bars for brightness, memory, flash and cpu, above the scene tab showing the cube generator's own parameters](panel-v2/screenshots/console.png)
+![the panel-v2 console: the preview, the remote controls and the readings with bars for brightness, memory, flash and cpu, above the scene tab holding the clock face's own controls](panel-v2/screenshots/console.png)
+
+the caption under the preview is the honest one: it names the revision it is
+following, how far behind it is, and how many of the 832 pixels differ from the
+frame the device last returned.
+
+the send tab puts a notification or a single frame on the panel — a colour, or
+an image scaled to 52×16 — each with its own duration, transition, direction
+and exit:
+
+![the send tab: a notification form beside a frame form, with duration, transition, direction and exit on each](panel-v2/screenshots/console-send.png)
+
+the canvas tab builds a canvas document element by element and draws the draft
+with the runtime's own renderer, so the preview is what the panel would show;
+the list is front to back, like a layer list, and nothing reaches the device
+until send is pressed:
+
+![the canvas tab: a three-element draft, the layer list of sparkline, bar and text, and the selected element's fields](panel-v2/screenshots/console-canvas.png)
+
+the scripts tab is the berry editor, with the device's byte budget, the scripts
+already stored on it, and the shared device log as the output pane. it is shown
+here the way a device with no scripts on it looks:
+
+![the scripts tab: an empty editor, 0 of 65536 bytes on the device, and the log below it showing the supervisor's sntp lines](panel-v2/screenshots/console-scripts.png)
 
 the device tab holds the durable settings, the night dimming schedule with
-the place it follows the sun from, the broker and ntfy:
+the place it follows the sun from, the broker, ntfy and the client tokens:
 
-![the device tab: settings, mqtt and ntfy, each with its apply button and the settings revision](panel-v2/screenshots/console-device.png)
+![the device tab: settings, mqtt, ntfy and client tokens, each with its apply button and the settings revision](panel-v2/screenshots/console-device.png)
 
-<img src="panel-v2/screenshots/console-narrow.png" width="330" alt="the panel-v2 console at phone width, stacked into a single column">
+and the logs tab is the device's log ring, followed live:
 
-(screenshots are against `mock-device.py` in the art scene with the cube
-showing, not a real device.)
+![the logs tab: numbered log lines from the supervisor, with a follow switch and a clear button](panel-v2/screenshots/console-logs.png)
+
+(these are a real device. the address, the broker, the ntp server, the mqtt
+username and the token name are replaced in the pictures; the timezone, the sun
+times and the readings are not.)
+
+they went stale once because nothing regenerated them, so there is a tool:
+
+```bash
+/opt/homebrew/bin/node --no-warnings panel-v2/screenshot.mjs <device-ip> --token-file tokens
+```
+
+it drives the same headless chrome the layout tests use, against the same
+proxy, redacts each tab immediately before it shoots and puts the real address
+back afterwards. it refuses to run without a token rather than photograph a
+dead console. `--mock` points it at `mock-device.py` for a shape check, and
+`--no-redact` turns the substitutions off for a local look.
 
 **adopt a factory-fresh device**
 
