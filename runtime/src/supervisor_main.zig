@@ -473,13 +473,16 @@ const Supervisor = struct {
     shutting_down: bool = false,
     // network daemon
     cfg: config.Config = .{},
+    /// every path that hangs off the binary directory, resolved once at startup. `cfg_cli` holds
+    /// what was typed; this holds what it means.
+    paths: cli.Paths = undefined,
     creds: api.Credentials = undefined,
     /// named client tokens; the supervisor owns the file and is the only writer
     clients: clients.Store = .{},
     listener: ?sys.Fd = null,
     netd_pid: ?sys.Pid = null,
     netd_fd: ?sys.Fd = null,
-    netd_path: [:0]const u8 = "/tmp/tc002/tc002-netd",
+    netd_path: [:0]const u8 = undefined,
     netd_restart_at: u64 = 0,
     netd_exits: child.NetdExits = .{},
     // the ntfy subscriber: a child like netd, restarted with backoff, replaced on a settings change
@@ -488,7 +491,7 @@ const Supervisor = struct {
     ntfy_restart_at: u64 = 0,
     ntfy_backoff_ns: u64 = ntfy_backoff_min_ns,
     ntfy_spawned_ns: u64 = 0,
-    ntfy_path: [:0]const u8 = "/tmp/tc002/tc002-ntfy",
+    ntfy_path: [:0]const u8 = undefined,
     ntfy_ca: [api.max_ca]u8 = undefined,
     ntfy_ca_len: u16 = 0,
     ntfy_seq: u64 = 0,
@@ -502,11 +505,11 @@ const Supervisor = struct {
     audio_backoff_ns: u64 = berry_backoff_min_ns,
     audio_heard_ns: u64 = 0,
     audio_replacing: bool = false,
-    audio_path: [:0]const u8 = "/tmp/tc002/tc002-audiod",
+    audio_path: [:0]const u8 = undefined,
     berry_backoff_ns: u64 = berry_backoff_min_ns,
     berry_spawned_ns: u64 = 0,
     berry_heard_ns: u64 = 0,
-    berry_path: [:0]const u8 = "/tmp/tc002/tc002-berryd",
+    berry_path: [:0]const u8 = undefined,
     berry_replacing: bool = false,
     berry_seq: u64 = 0,
     /// the topics scripts have asked for. the supervisor holds them rather than netd, because netd
@@ -2203,7 +2206,7 @@ const Supervisor = struct {
             if (self.last_ip == null) "none" else "present",
             if (carrier_down) "down" else "up",
         });
-        self.spawnNetup(self.cfg_cli.netup_dir);
+        self.spawnNetup(self.paths.netup_dir);
     }
 
     fn reapNetup(self: *Supervisor) void {
@@ -2441,12 +2444,12 @@ const Supervisor = struct {
             log.warn("panel lock still held; not starting a renderer", .{});
             return;
         }
-        const path = if (lifecycle.slot == .candidate) self.cfg_cli.renderer else self.cfg_cli.fallbackPath();
+        const path = if (lifecycle.slot == .candidate) self.paths.renderer else self.paths.fallback;
         const epoch = lifecycle.epoch + 1;
         var epoch_buf: [16]u8 = undefined;
         const epoch_text = std.fmt.bufPrintZ(&epoch_buf, "{d}", .{epoch}) catch unreachable;
         var argv: cli.Argv = undefined;
-        _ = cli.spawnArgv(self.cfg_cli, path, epoch_text, &argv);
+        _ = cli.spawnArgv(self.cfg_cli, path, self.paths.renderer, epoch_text, &argv);
 
         const fds = sys.socketpairSeqpacket() catch |e| {
             log.err("socketpair failed: {s}", .{sys.errText(e)});
@@ -3102,6 +3105,16 @@ fn run(cfg_in: cli.Config, environ: anytype, args: []const [:0]const u8) !u8 {
     if (tz.resolve(cfg.tz_rule)) |rule| {
         if (!std.mem.eql(u8, rule, cfg.tz_rule)) cfg.tz_rule = std.fmt.bufPrintZ(&tz_buf, "{s}", .{rule}) catch cfg.tz_rule;
     } else log.warn("--tz {s} is neither a posix rule nor a zone name; the renderer will refuse it", .{cfg.tz_rule});
+    // every path that hangs off the binary directory, worked out once and before anything is
+    // spawned. the buffers are locals of `run`, which does not return while the device is up.
+    var path_bufs: cli.Buffers = .{};
+    const paths = cli.resolve(cfg, .{
+        .bin_dir = build_options.bin_dir ++ "",
+        .netup_dir = build_options.netup_dir ++ "",
+    }, &path_bufs) catch {
+        log.err("the binary directory is too long to hold this runtime's names", .{});
+        return 2;
+    };
     // 0. a pending vendor upgrade outranks us entirely.
     //
     // every reflash route the device has -- the reset key, the boot check, the flag=255 recipe --
@@ -3178,7 +3191,7 @@ fn run(cfg_in: cli.Config, environ: anytype, args: []const [:0]const u8) !u8 {
         const n = @min(id.len, messages.build_id_max);
         @memcpy(snapshot_build[0..n], id[0..n]);
     }
-    var s = Supervisor{ .started_ns = now0, .cfg_cli = cfg, .cfg_dir_text = cfg.dir, .state_dir_text = cfg.state, .cfg_stats = cfg.stats, .ep = ep, .timer = timer, .sigfd = sigfd, .keys = keys, .self_pid = sys.getpid() };
+    var s = Supervisor{ .started_ns = now0, .cfg_cli = cfg, .paths = paths, .cfg_dir_text = cfg.dir, .state_dir_text = cfg.state, .cfg_stats = cfg.stats, .ep = ep, .timer = timer, .sigfd = sigfd, .keys = keys, .self_pid = sys.getpid() };
     s.snapshot.build = snapshot_build;
     // settings and credentials belong on the persistent partition; if it cannot be used the
     // runtime still comes up, on the volatile directory, and says so rather than failing to start
@@ -3194,18 +3207,19 @@ fn run(cfg_in: cli.Config, environ: anytype, args: []const [:0]const u8) !u8 {
         s.log_pipe = lp;
         try sys.epollAdd(ep, lp[0], linux.EPOLL.IN, @intFromEnum(Tag.logs));
     } else |e| log.warn("no log pipe ({s}); the log ring holds only the supervisor's lines", .{sys.errText(e)});
-    log.info("supervising {s} (fallback {s}) profile {s} pid {d}", .{ cfg.renderer, cfg.fallbackPath(), @tagName(cfg.profile), s.self_pid });
-    var netd_path_buf: [160]u8 = undefined;
-    s.netd_path = std.fmt.bufPrintZ(&netd_path_buf, "{s}/tc002-netd", .{cfg.dir}) catch unreachable;
-    var ntfy_path_buf: [160]u8 = undefined;
-    s.ntfy_path = std.fmt.bufPrintZ(&ntfy_path_buf, "{s}/tc002-ntfy", .{cfg.dir}) catch unreachable;
+    log.info("supervising {s} (fallback {s}) profile {s} pid {d}", .{ s.paths.renderer, s.paths.fallback, @tagName(cfg.profile), s.self_pid });
+    log.info("binaries in {s}", .{s.paths.bin_dir});
+    s.netd_path = s.paths.netd;
+    s.ntfy_path = s.paths.ntfy;
+    s.audio_path = s.paths.audiod;
+    s.berry_path = s.paths.berryd;
     s.loadNtfyCa();
     var boot: [4]u8 = undefined;
     sys.getrandom(&boot) catch {};
     s.boot_id = std.mem.readInt(u32, &boot, .little);
     s.snapshot.boot_id = s.boot_id;
     s.applyRtBudget();
-    s.spawnNetup(cfg.netup_dir);
+    s.spawnNetup(s.paths.netup_dir);
     s.readMac();
     if (s.snapshot.mac_present != 0) {
         const m = s.snapshot.mac;

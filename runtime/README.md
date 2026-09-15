@@ -29,8 +29,23 @@ zig build berry-check # links the vendored interpreter for the device; not insta
 zig build check-scripts # the shipped scripts in scripts/berry/, run and then fired real events at
 ```
 
-`-Dsupervisor_path=/res/bin/tc002-supervisor` selects the production exec path; the default is the
-volatile `/tmp/tc002/tc002-supervisor`.
+### where the binaries live
+
+`-Dbin_dir` is the directory the runtime's binaries are in **at runtime**. it defaults to
+`/tmp/tc002`, the volatile install, and `tools/tc002-mkimage.sh` builds the flashable image with
+`-Dbin_dir=/res/bin -Dnetup=true`.
+
+this is not cosmetic. the bootstrap execs the supervisor at a compiled-in path with only
+`--from-bootstrap`, and the supervisor spawns its five children by absolute path, so a flashed
+runtime never sees a command-line argument: every path it uses is the one compiled in. built with
+the default and put on `/res`, the binaries would not find each other.
+
+`-Dnetup=true` turns on the wifi bring-up a flashed install has to do for itself — the vendor
+loader we replace is what used to do it. leave it off for `/tmp`: bringing wifi up again restarts
+`wpa_supplicant`, and adb is over that link.
+
+`-Dsupervisor_path` still overrides the bootstrap's exec path on its own, for the loader
+experiments; it defaults to `<bin_dir>/tc002-supervisor`.
 
 ## sharing the device with another agent
 

@@ -63,9 +63,22 @@ fn buildId(b: *std.Build) []const u8 {
 pub fn build(b: *std.Build) void {
     if (!std.mem.eql(u8, builtin.zig_version_string, "0.16.0")) @panic("this project pins zig 0.16.0");
 
-    const supervisor_path = b.option([]const u8, "supervisor_path", "path the bootstrap execs") orelse "/tmp/tc002/tc002-supervisor";
+    // where the runtime's binaries live **at runtime**: `/tmp/tc002` for the pushed install,
+    // `/res/bin` for a flashed one. this is not cosmetic. the bootstrap execs the supervisor with
+    // only `--from-bootstrap`, and the supervisor spawns five children by absolute path, so a
+    // flashed runtime never sees a command-line argument in its life -- every path it uses is the
+    // one compiled in here. built with the default and put on /res, the binaries would not find
+    // each other.
+    const bin_dir = b.option([]const u8, "bin_dir", "directory the binaries live in at runtime (/tmp/tc002; /res/bin for a flashed image)") orelse "/tmp/tc002";
+    // whether this build brings wifi up itself at boot. a flashed install must -- the loader we
+    // replace is what used to do it -- and a /tmp install must not, because bringing it up again
+    // restarts wpa_supplicant and adb is over that link.
+    const netup = b.option(bool, "netup", "bring wifi up from bin_dir at boot (a flashed image must; a /tmp install must not)") orelse false;
+    const supervisor_path = b.option([]const u8, "supervisor_path", "path the bootstrap execs (<bin_dir>/tc002-supervisor)") orelse b.fmt("{s}/tc002-supervisor", .{bin_dir});
     const options = b.addOptions();
     options.addOption([]const u8, "supervisor_path", supervisor_path);
+    options.addOption([]const u8, "bin_dir", bin_dir);
+    options.addOption([]const u8, "netup_dir", if (netup) bin_dir else "");
     options.addOption([]const u8, "build_id", buildId(b));
 
     const device = b.resolveTargetQuery(.{

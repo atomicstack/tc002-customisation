@@ -85,10 +85,11 @@ still worth staying on usb power.
 ```
 usage: tc002-supervisor [options]
   --profile dev|hardened  dev leaves adbd alone; hardened resets persist.sys.zkdebug=0 at boot (dev)
-  --renderer PATH         candidate renderer (/tmp/tc002/tc002d)
+  --bin-dir PATH          where this runtime's own binaries are (the build's -Dbin_dir)
+  --renderer PATH         candidate renderer (<bin-dir>/tc002d)
   --fallback PATH         fallback renderer after three failures in sixty seconds (same as --renderer)
-  --dir PATH              runtime directory (/tmp/tc002)
-  --lock PATH             panel lock file (/tmp/tc002/panel.lock)
+  --dir PATH              writable runtime directory: log, lock, pidfiles (/tmp/tc002)
+  --lock PATH             panel lock file (<dir>/panel.lock)
   --tz RULE               posix tz rule handed to the renderer (UTC0)
   --keymap L,M,R,K        keycodes for left, middle, right, knob (108,105,106,103)
   --keys PATH             button evdev node (/dev/input/event67)
@@ -97,8 +98,39 @@ usage: tc002-supervisor [options]
   --no-property           do not set sys.zkapp.state (host-less experiments only)
   --close-inherited       close every inherited descriptor above stderr after the audit
   --stats                 ask the renderer for periodic statistics
+  --rt-priority N         run the renderer at SCHED_FIFO N (1..99); 0 leaves it normal
+  --netup-dir DIR         bring wifi up ourselves, using busybox and the scripts in DIR
+                          (the build's -Dnetup picks the default; empty means do not)
   --from-bootstrap        set by the bootstrap shared object; logged only
 ```
+
+#### where the binaries are, and why it is not `--dir`
+
+`--bin-dir` and `--dir` used to be one option, and they cannot be. `--dir` is
+the **writable** directory — the log, the panel lock, udhcpc's pidfile — while
+the binaries on a flashed install sit on a read-only squashfs. while the two
+were one, a runtime on `/res` would have tried to write its log into flash.
+
+both have compiled-in defaults, and for a flashed runtime those defaults are all
+it will ever have: the bootstrap execs the supervisor with only
+`--from-bootstrap`, and the supervisor spawns its five children by absolute
+path, so **a flashed runtime never sees a command-line argument in its life**.
+`zig build -Dbin_dir=/res/bin -Dnetup=true` is what `tools/tc002-mkimage.sh`
+uses; the default build stays on `/tmp/tc002` with bring-up off, because on a
+pushed install the vendor loader has already brought wifi up and restarting
+`wpa_supplicant` would drop the adb link underneath you.
+
+| built with | binaries | writable | wifi bring-up |
+|---|---|---|---|
+| `zig build` | `/tmp/tc002` | `/tmp/tc002` | the loader already did it |
+| `-Dbin_dir=/res/bin -Dnetup=true` | `/res/bin` | `/tmp/tc002` | ours, at boot |
+
+all five child paths come from one place (`supervisor/cli.zig:resolve`). they
+did not always: `netd` and `ntfy` were rebuilt from `--dir` at startup while
+`audiod` and `berryd` kept their compiled-in defaults, so moving the directory
+moved two of the four and silently left the other two behind — a failure with no
+symptom until `sound.enabled` or `berry.enabled` was turned on and the exec
+failed.
 
 ### renderer lifecycle
 

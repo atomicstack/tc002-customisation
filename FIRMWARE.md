@@ -6,6 +6,27 @@ runtime before it can be baked into flash. This is the groundwork for
 replacing the volatile `/tmp` install described in [`RUNTIME.md`](RUNTIME.md)
 with a rebuilt `res` partition delivered through the vendor's own update path.
 
+> **Paths, 2026-09-15: the last build-side gap closed.** `-Dbin_dir` sets the
+> directory the runtime's binaries live in at runtime, and
+> `tools/tc002-mkimage.sh` now builds the image with
+> `-Dbin_dir=/res/bin -Dnetup=true`. The write side stays on `/tmp/tc002`,
+> which is the point of the split: `/res` is a read-only squashfs, and while
+> `--dir` meant both a runtime on flash would have tried to write its log into
+> it.
+>
+> Two defects came out with it. All five child paths now resolve in one pure,
+> tested place (`supervisor/cli.zig:resolve`); before, `netd` and `ntfy` were
+> rebuilt from `--dir` at startup while `audiod` and `berryd` kept their
+> compiled-in defaults, so moving the directory moved two of the four. And the
+> image was being assembled without `tc002-audiod`, `tc002-berryd` or the two
+> boot scripts at all — a flashed device would have failed at the exec the
+> first time anyone enabled sound or scripting, and the bring-up would have had
+> no script to run.
+>
+> The image is 4,444,160 bytes, 52% of the `res` partition, up from 47.8%
+> before the two binaries, the scripts and the wider busybox. Still never
+> flashed.
+
 > **Boot machinery, parts three and four, 2026-09-15: the network and the panel.**
 > `runtime/boot/tc002-netup.sh` and `tc002-udhcpc.script` are taken from
 > aquarat's `5912865` unchanged; the supervisor gained `--netup-dir`, a
@@ -340,14 +361,19 @@ no `route`; the static one has both). Renewal is then busybox's problem. The set
 `dnsmasq`) is not reproduced and a device with no stored credentials would
 need the stock image again.
 
-### 3. Paths
+### 3. Paths — **done** (2026-09-15)
 
-The supervisor's defaults for the renderer, netd and ntfy binaries, the
-runtime directory and the lock are all under `/tmp/tc002`
-(`supervisor/cli.zig`, `supervisor_main.zig`). `-Dsupervisor_path` already
-moves the bootstrap's exec target; the rest needs either build options or
-flags the bootstrap passes. `/tmp/tc002` should stay the volatile directory
-for logs and the lock; the binaries live in `/res/bin` and `/res/lib`.
+`-Dbin_dir` sets where the binaries are; `-Dnetup` says whether this build
+brings wifi up itself. The bootstrap's exec target follows `bin_dir`, and
+`--bin-dir` overrides it at runtime for experiments. `/tmp/tc002` stays the
+writable directory for the log, the lock and udhcpc's pidfile; the binaries
+live in `/res/bin` and the bootstrap in `/res/lib`.
+
+The reason this had to be a build option rather than a flag: the bootstrap
+execs the supervisor with only `--from-bootstrap`, and the supervisor spawns
+its five children by absolute path. **A flashed runtime never sees a
+command-line argument in its life**, so every path it uses is the one compiled
+in.
 
 ### 4. Battery
 

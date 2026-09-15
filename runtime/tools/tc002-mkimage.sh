@@ -4,22 +4,15 @@
 #   runtime/tools/tc002-mkimage.sh <stock update.img|res.sqsh> <out UPDATE.img> [workdir]
 #
 # ############################################################################################
-# # WHAT THIS PRODUCES IS NOT SAFE TO FLASH YET. it assembles and validates; it does not      #
-# # install, and nothing in this repo writes to /res.                                         #
-# #                                                                                           #
-# # a flashed runtime needs four things that are NOT in this tree yet, each of which turns a   #
-# # bad boot into a device with no way back in (see FIRMWARE.md):                              #
-# #   1. the boot-failure counter and stock-config fallback, so three bad boots hand the panel #
-# #      back to the vendor app on their own;                                                  #
-# #   2. yielding to a pending upgrade, or the reset button's reflash -- the last recovery     #
-# #      route -- stops working;                                                               #
-# #   3. wifi bring-up at cold boot, because the loader we replace is what starts it, and adb  #
-# #      over wifi is the only verified way back in;                                           #
-# #   4. exporting gpio 35 and waiting for spidev, or the renderer cannot open the panel.      #
-# #                                                                                           #
-# # it also builds the runtime with this tree's default paths (/tmp/tc002), not /res/bin, so   #
-# # the binaries inside would not find each other. use this for the size budget and to         #
-# # rehearse the pipeline, not for a device.                                                   #
+# # WHAT THIS PRODUCES HAS NEVER BEEN FLASHED. it assembles and validates; it does not         #
+# # install, and nothing in this repo writes to /res.                                          #
+# #                                                                                            #
+# # the four pieces of boot machinery a flashed runtime needs all exist now, and the runtime   #
+# # in the image is built for /res/bin rather than /tmp/tc002 (see below). what is still       #
+# # missing is the only thing that cannot be built: a device that has come up from this image  #
+# # and been recovered from it. of the four, wifi bring-up is the one resting on reasoning     #
+# # rather than a measurement, because exercising it live restarts wpa_supplicant and adb is   #
+# # that link. see FIRMWARE.md for what was verified and how.                                  #
 # ############################################################################################
 set -euo pipefail
 HERE=$(cd "$(dirname "$0")" && pwd)
@@ -51,25 +44,44 @@ unsquashfs -d "$RES" "$SQSH" >/dev/null
 # app hands back to nothing. this is the check that matters most in the whole script.
 [ -f "$RES/lib/libzkgui.so" ] || { echo "the stock libzkgui.so is not in this res -- wrong input image" >&2; exit 1; }
 
-say "build the runtime"
-( cd "$RUNTIME" && "$ZIG" build && "$ZIG" build check )
+# -Dbin_dir is what makes these binaries work from flash. the bootstrap execs the supervisor with
+# only `--from-bootstrap`, and the supervisor spawns five children by absolute path, so a flashed
+# runtime never sees a command-line argument: every path it uses is compiled in here. -Dnetup turns
+# on the bring-up a flashed install has to do for itself, the loader we replace being what used to.
+say "build the runtime for /res/bin"
+( cd "$RUNTIME" && "$ZIG" build -Dbin_dir=/res/bin -Dnetup=true && "$ZIG" build -Dbin_dir=/res/bin -Dnetup=true check )
 
 say "build busybox from source"
 BB="$WORK/busybox/busybox-armv7"
 [ -f "$BB" ] || "$HERE/tc002-mkbusybox.sh" "$WORK/busybox" "$BB" >/dev/null
 
-say "add the runtime, the bootstrap and busybox"
+# all six, not four: audiod and berryd are spawned by absolute path like the rest, and an image
+# missing them is one where `sound.enabled` and `berry.enabled` fail at the exec with no other sign.
+# the boot scripts go in beside busybox because that is the single directory the supervisor hands
+# the bring-up -- `busybox sh <dir>/tc002-netup.sh <dir> <writable dir>`.
+say "add the runtime, the bootstrap, busybox and the boot scripts"
 cp "$RUNTIME"/zig-out/bin/tc002-supervisor "$RUNTIME"/zig-out/bin/tc002d \
-   "$RUNTIME"/zig-out/bin/tc002-netd "$RUNTIME"/zig-out/bin/tc002-ntfy "$RES/bin/"
+   "$RUNTIME"/zig-out/bin/tc002-netd "$RUNTIME"/zig-out/bin/tc002-ntfy \
+   "$RUNTIME"/zig-out/bin/tc002-audiod "$RUNTIME"/zig-out/bin/tc002-berryd "$RES/bin/"
 cp "$BB" "$RES/bin/busybox"
+cp "$RUNTIME"/boot/tc002-netup.sh "$RUNTIME"/boot/tc002-udhcpc.script "$RES/bin/"
 cp "$RUNTIME"/zig-out/lib/libtc002-bootstrap.so "$RES/lib/"
+
+# a syntax check under the host's /bin/sh. it is not the ash that will run them -- that binary is
+# armv7 and cannot execute here -- so it catches a typo, not a busybox-specific incompatibility.
+# the real check is `busybox sh -n` on the device, which is how these two were cleared.
+for f in tc002-netup.sh tc002-udhcpc.script; do
+    /bin/sh -n "$RES/bin/$f" || { echo "$f does not parse" >&2; exit 1; }
+done
 
 # 0755 on the files AND the directories holding them: netd and ntfy run as uid 1001 and cannot
 # traverse or exec through the stock 0770 owned by 1000:1000. root is unaffected either way, which
 # is why this only shows up once something unprivileged has to start.
 say "permissions: 0755 on what we added and on the directories above it"
 chmod 0755 "$RES"/bin/tc002-supervisor "$RES"/bin/tc002d "$RES"/bin/tc002-netd \
-           "$RES"/bin/tc002-ntfy "$RES"/bin/busybox "$RES"/lib/libtc002-bootstrap.so
+           "$RES"/bin/tc002-ntfy "$RES"/bin/tc002-audiod "$RES"/bin/tc002-berryd \
+           "$RES"/bin/busybox "$RES"/bin/tc002-netup.sh "$RES"/bin/tc002-udhcpc.script \
+           "$RES"/lib/libtc002-bootstrap.so
 chmod 0755 "$RES" "$RES/bin" "$RES/lib" "$RES/etc"
 
 say "point the loader at our bootstrap"
@@ -98,10 +110,12 @@ say "wrap in the container and check it"
 echo "   $OUT -- $(wc -c < "$OUT" | tr -d ' ') bytes, $((100 * SZ / LIMIT))% of the res partition"
 cat <<'WARN'
 
-  NOT SAFE TO FLASH. this image is assembled and validated, not installed.
-  before any device sees it, the boot machinery in FIRMWARE.md has to exist:
+  NEVER FLASHED. this image is assembled and validated, not installed.
+  the boot machinery it depends on exists and is described in FIRMWARE.md --
   the boot-failure counter and stock fallback, yielding to a pending upgrade
-  so the reset button still works, wifi bring-up at cold boot (adb over wifi
-  is the only verified way back in), and the gpio-35 panel gate. the runtime
-  in it is also built for /tmp/tc002 rather than /res/bin.
+  so the reset button still works, wifi bring-up at cold boot, and the gpio-35
+  panel gate -- and the runtime in it is built for /res/bin. what no build can
+  supply is a device that has come up from an image like this one and been
+  recovered from it. the wifi bring-up in particular has never been run: adb is
+  over the link it restarts.
 WARN
