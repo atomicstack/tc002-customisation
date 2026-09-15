@@ -213,7 +213,9 @@ the device:
   itself via `api/custom` / `api/customList`, and remote navigation via
   `switchApp` / `switchDiyApp` / `keyEvent` — no broker needed.
   ([`HTTP-API.md`](HTTP-API.md))
-- **adb (port 5555)** — wifi only (usb is mass-storage); gives a **root** shell,
+- **adb (port 5555)** — over wifi, and ~~usb is mass-storage~~ **✗ that was
+  wrong: adb over the usb cable works too**, after one write to the otg role and
+  a replug ([`DEVICE.md`](DEVICE.md#adb)). gives a **root** shell,
   though busybox is stripped to almost nothing and `/data` is the only
   persistent writable mount. ([`DEVICE.md`](DEVICE.md))
 - **mqtt** — the other way to drive the 52×16 display without ulanzi studio;
@@ -291,7 +293,7 @@ everything else (`/tmp`, `/dev`, `/mnt`, `/misc`) is tmpfs, 16 mib max each.
 |---|---|
 | panel | **52 × 16 = 832 rgb leds**, square pixels, white-balanced by a per-channel current-gain register (`0x16`, 0–63, default 30) in the led driver |
 | controller | a **separate pixel mcu** (firmware `V1.0.17`, protocol class `PixelMcuProto`) sits between the soc and the leds. the soc never touches the leds directly |
-| frame path | soc → **spi0** (`sstar,mspi`, dma, `/dev/spidev0.0`, mode 0, 10 mhz) → mcu, with **`GPIO_35`** as a frame latch. a frame is 3072 bytes (16 rows × 192), ~2.5 ms on the bus; the stock app caps at one frame per 15 ms (~66 fps). the mcu double-buffers, so the panel lags one frame. full detail in [`LED-SPI.md`](LED-SPI.md) |
+| frame path | soc → **spi0** (`sstar,mspi`, dma, `/dev/spidev0.0`, mode 0, 10 mhz) → mcu, with **`GPIO_35`** as a frame latch. a frame is 3072 bytes (16 rows × 192), ~~~2.5 ms on the bus~~ **measured at 5 ms** (the 2.5 is the byte arithmetic; the rest is unaccounted for); the stock app caps at one frame per 15 ms (~66 fps). the mcu double-buffers, so the panel lags one frame. full detail in [`LED-SPI.md`](LED-SPI.md) |
 | control path | soc ↔ mcu over **uart1** (`/dev/ttyS1`, 115200 / 9600). commands seen in the app: `queryMcuVersion`, `queryBatteryPower`, `queryUsbState`, `queryMicValue`, `setAutoMicReport`, `powerOff`, `queryLedRegister`, `setLedRegister`, plus a handshake + crc32 block-upload path (`updateMcu`) for reflashing the mcu |
 | gain read-back | the mcu supports `queryLedRegister`; only the http layer lacks a read endpoint |
 | unused | the soc's own display pipeline is still alive from the flythings sdk: `/dev/fb0` (640 × 480, 32 bpp, "spilcd"), an hdmi-tx node, a pwm backlight node and a vsync interrupt firing constantly, all driving nothing |
@@ -329,7 +331,7 @@ sigmastar mi api is used instead.
 | charging | **usb-c, 5 v ⎓ 3 a** (*spec*), or the pogo-pin charging dock. *measured 2026-09-14:* the dock registers on the same `vin` the mcu reports for usb-c, so undocking reads as loss of usb power |
 | monitoring | done by the mcu: the app polls pack millivolts and `vin` (usb present). firmware thresholds: **low battery below 3600 mv**, **emergency below 3550 mv** → 30 s countdown → shutdown (skipped while on usb power) |
 | shutdown | the custom runtime reproduces those thresholds — see [`RUNTIME.md`](RUNTIME.md#the-low-battery-shutdown) — and powers off through the mcu's own `powerOff` command rather than halting the soc, which would leave the rails up |
-| usb | the soc has both an ehci **host** (with `vold` ready to mount a stick at `/mnt/usb1`, used for factory-test configs) and a device controller (`Sstar-udc`, msb250x). in normal use the port presents the `UDISK` partition as mass storage, not adb |
+| usb | the soc has both an ehci **host** (with `vold` ready to mount a stick at `/mnt/usb1`, used for factory-test configs) and a device controller (`Sstar-udc`, msb250x). the gadget is configured as **adb** (`18d1:d002`), not mass storage — but the otg controller boots in `usb_host` mode, so nothing enumerates until `usb_device` is written to `/sys/bus/platform/devices/soc:usbotg/otg_role` and the cable is replugged. the custom runtime does that at startup |
 | rtc | **none usable**: the soc's rtc block is enabled in the device tree but no driver is bound, so there is no `/dev/rtc` and the clock is set purely by sntp ([`DEVICE.md`](DEVICE.md#time)) |
 
 ### also on the soc, unused
@@ -376,21 +378,20 @@ open "x-apple.systempreferences:com.apple.preference.security?Privacy_LocalNetwo
 - the `adopt` / `setWifiConfig` write path is documented from the firmware's own
   setup page but **not executed** here, since it would drop the test device off
   the network. confirm it against a factory-fresh unit before relying on it.
-- the custom runtime in `runtime/` has been run on the device **volatile only**
-  (everything under `/tmp`, stock after a power cycle) and measured on a warm
-  system; there is no persistent install and no tls. the clock is synced by an
-  sntp client with the caveats listed in
-  [`RUNTIME.md`](RUNTIME.md#what-is-not-there-yet), which is also where the rest
-  of the gap list lives.
-- the path to a persistent install is mapped: the `update.img` format is
-  decoded and reproduced by [`tc002-update-img.py`](tc002-update-img.py), the
-  flasher writes the `res` partition from linux with no signature check, and
-  the two things that block flashing the runtime today (the bootstrap defeats
-  the vendor's recovery, and dhcp lives in the loader it replaces) are
-  documented with their fixes in [`FIRMWARE.md`](FIRMWARE.md). the busybox such
-  an image needs is built from source by
-  [`tc002-mkbusybox.sh`](runtime/tools/tc002-mkbusybox.sh). **no custom image
-  has been flashed yet.**
+- the custom runtime in `runtime/` is **flashed to the `res` partition and boots
+  on its own**, unattended from cold: it loads the wifi driver, brings the
+  network up, exports the panel latch and draws, with no stock app involved.
+  the `/tmp` path still exists and is what development uses. still no tls; the
+  gap list is in [`RUNTIME.md`](RUNTIME.md#what-is-not-there-yet).
+- flashing is done by [`tc002-flash.sh`](runtime/tools/tc002-flash.sh), which
+  backs up `mtd3` first and refuses to continue unless the backup unpacks.
+  **before flashing anything, check your unit against
+  [`FINGERPRINTS.md`](FINGERPRINTS.md)** — devices differ, and the one here
+  shipped with an `update.img` on its own udisk that is *older* than the `res`
+  it was running, which means the reset button recovers to a downgrade.
+  [`FIRMWARE.md`](FIRMWARE.md) has the sequence that worked, the boot machinery
+  it needed, and corrections to several claims made along the way that turned
+  out to be wrong.
 
 ## disclaimer
 

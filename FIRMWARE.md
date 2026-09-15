@@ -324,7 +324,7 @@ It reproduces the vendor's `update.img` byte for byte from its own payload.
 | `/lib/libzknet.so` | wifi and **the dhcp client**, as threads inside the loader process | 141 kb |
 | `/bin/zkdaemon` | init service (`class main`, oneshot): the boot watchdog and the reset key | 14 kb |
 | `/mnt/storage/update.img` | a vendor image on the `UDISK` vfat partition (mtd7) | 2.7 mb |
-| `/mnt/storage/zkupgradetipbin` | the upgrade progress animation; opens `/dev/spidev0.0` and the latch gpio, so it draws on the panel | 9.6 kb |
+| `/mnt/storage/zkupgradetipbin` | an armv7 elf that opens `/dev/spidev0.0` and the latch gpio, so it *can* draw on the panel, and `zk_upgrade_perform` copies it to `/tmp` and runs it. **no animation has ever been observed on this unit during a flash** — the panel simply freezes — so what it actually draws is unconfirmed | 9.6 kb |
 | `/res` (mtd3) | the squashfs the image replaces: `etc/EasyUI.cfg`, `lib/libzkgui.so` (7.4 mb uncompressed), bt tools, web ui, fonts | 2.7 mb compressed of 8 mib |
 
 There is no `/bin/zkupgradebin`, no `zkupgrade` init service and no
@@ -339,10 +339,12 @@ Two things the existing docs got slightly wrong, corrected here:
   present (details [below](#zkdaemon-the-boot-check-and-the-reset-key)).
 - The usb gadget on this unit is configured as **adb**
   (`/sys/class/zkswe_usb/zkswe0/functions` = `adb`, `persist.sys.usb.config=adb`,
-  vid:pid `18d1:d002`), not mass storage. Whether adb over the usb cable
-  actually works was not tried; the vendor docs say it does not for wifi
-  models, but the gadget configuration says otherwise. Worth testing, because
-  it would be a recovery channel that does not depend on wifi.
+  vid:pid `18d1:d002`), not mass storage. ~~Whether adb over the usb cable
+  actually works was not tried~~ — **it was, and it works.** The gadget
+  configuration was right and the vendor docs wrong; what stops it is the otg
+  controller booting in `usb_host` mode. It is the recovery channel that does
+  not depend on wifi, verified with the link torn down to no carrier and no
+  address. See [`DEVICE.md`](DEVICE.md#adb).
 
 The vendor image on the udisk is a **newer build (8 June 2026) than the
 flashed `res` (5 June 2026)**: `lib/libzkgui.so` and `ui/web/uclockSocial.html`

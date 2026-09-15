@@ -18,7 +18,7 @@ around 30 fps because the app parses and renders every frame.
 | per frame | gpio35 ← 0, wait 1 ms, `write()` the 3072 bytes, wait 1 ms, gpio35 ← 1 |
 | level curve | the app maps every byte before sending: 0 → 0, otherwise `50 + (v−1)·205/254` (so 1 → 50 and 255 → 255): the driver has a floor of 50 |
 | brightness | applied before the curve: `byte × brightness / 100` |
-| rate | the stock app allows one frame per 15 ms at most (~66 fps); the bus itself needs ~2.5 ms per frame |
+| rate | the stock app allows one frame per 15 ms at most (~66 fps). ~~the bus itself needs ~2.5 ms per frame~~ — **✗ that is the arithmetic, not the measurement.** a `write()` of 3,072 bytes takes **5 ms** on this device, timed inside the custom runtime's renderer. where the other 2.5 ms goes has not been found. see [`KERNEL.md`](KERNEL.md) |
 
 established on a live device (2026-09-03):
 
