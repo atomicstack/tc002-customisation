@@ -2,6 +2,7 @@
 # tc002-flash.sh: flash an UPDATE.img to the device's `res` partition, over usb where possible.
 #
 #   runtime/tools/tc002-flash.sh <UPDATE.img> [--lan] [--no-backup] [--yes]
+#                                [--tokens=FILE] [--no-notice]
 #
 # this writes to flash. it is the only script in this repo that does.
 #
@@ -31,9 +32,11 @@ say()  { echo "== $*"; }
 warn() { echo "   warning: $*" >&2; }
 die()  { echo "error: $*" >&2; exit 1; }
 
-IMG=""; FORCE_LAN=0; SKIP_BACKUP=0; ASSUME_YES=0
+IMG=""; FORCE_LAN=0; SKIP_BACKUP=0; ASSUME_YES=0; TOKENS=${TC002_TOKENS:-tokens}; NOTICE=1
 for a in "$@"; do
     case "$a" in
+        --no-notice)  NOTICE=0 ;;
+        --tokens=*)   TOKENS=${a#--tokens=} ;;
         --lan)        FORCE_LAN=1 ;;
         --no-backup)  SKIP_BACKUP=1 ;;
         --yes|-y)     ASSUME_YES=1 ;;
@@ -159,6 +162,91 @@ if [ "$ASSUME_YES" -eq 0 ]; then
     [ "$reply" = "flash" ] || { echo "   nothing was written."; exit 1; }
 fi
 
+
+# ---------------------------------------------------------------- the notice
+# put "Updating... / Do not unplug" on the panel before the flash starts.
+#
+# the device goes dark-ish for a minute and a half and then reappears, with no indication that
+# anything is happening. the panel holds its last latched frame while nothing is driving it, so
+# whatever is on screen when the runtime dies is what stays there for the whole write. that makes
+# the message free: draw it, then trigger.
+#
+# it is drawn as the **canvas base**, not a notification: a notification expires on its own timer
+# and this has to last as long as the flash does. the base is a persisted setting, so the previous
+# one is captured first and restored at the end -- otherwise the device comes back from the reboot
+# still showing "DO NOT UNPLUG" and never returns to the clock.
+#
+# the `mini` face is 3x5 and fits 13 characters, which is exactly "Do not unplug". it has one set
+# of letterforms for both cases, so the capitals here are for the reader of this script rather than
+# the panel, and it does carry `.` -- verified on the device, rightmost lit column 50 of 51, so
+# neither line clips.
+API_PORT=18099
+api_ready=0
+saved_base=""
+saved_generator=""
+
+api() { # api <method> <path> <token> [body]
+    local m=$1 path=$2 tok=$3 body=${4:-}
+    if [ -n "$body" ]; then
+        /usr/bin/curl -s -m 5 -X "$m" "http://127.0.0.1:$API_PORT/api/v1$path" \
+            -H "Authorization: Bearer $tok" -H "Content-Type: application/json" -d "$body"
+    else
+        /usr/bin/curl -s -m 5 -X "$m" "http://127.0.0.1:$API_PORT/api/v1$path" \
+            -H "Authorization: Bearer $tok"
+    fi
+}
+
+token_of() { # token_of control|admin -- never echoed anywhere but into a header
+    [ -f "$TOKENS" ] || return 1
+    sed -n "s/^$1=\([0-9a-fA-F]\{64\}\)$/\1/p" "$TOKENS" | head -1
+}
+
+show_notice() {
+    [ "$NOTICE" -eq 1 ] || return 0
+    local admin; admin=$(token_of admin || true)
+    if [ -z "$admin" ]; then
+        warn "no admin token in $TOKENS; the panel will freeze with no explanation on it."
+        warn "pass --tokens=FILE, or --no-notice to stop being told."
+        return 0
+    fi
+    adb -s "$DEV" forward "tcp:$API_PORT" tcp:80 >/dev/null 2>&1 || {
+        warn "could not forward the api port; skipping the on-panel notice"; return 0; }
+    api_ready=1
+    local status; status=$(api GET /status "$admin" || true)
+    saved_base=$(printf '%s' "$status" | sed -n 's/.*"base":"\([a-z]*\)".*/\1/p')
+    saved_generator=$(printf '%s' "$status" | sed -n 's/.*"generator":"\([a-z]*\)".*/\1/p')
+    [ -n "$saved_base" ] || { warn "could not read the current scene; skipping the notice"; return 0; }
+
+    api PUT /canvas "$admin" '{"elements":[
+        {"id":"l1","type":"text","at":[0,2],"size":[52,5],"font":"mini","align":"centre","colour":"ff8000","text":"Updating..."},
+        {"id":"l2","type":"text","at":[0,9],"size":[52,5],"font":"mini","align":"centre","colour":"ffffff","text":"Do not unplug"}]}' >/dev/null
+    api PUT /scene "$admin" '{"base":"canvas"}' >/dev/null
+    say "panel now reads Updating... / Do not unplug (was: $saved_base)"
+    sleep 1   # let it be drawn and latched before anything kills the renderer
+}
+
+restore_scene() {
+    [ "$api_ready" -eq 1 ] && [ -n "$saved_base" ] || return 0
+    local admin; admin=$(token_of admin || true)
+    [ -n "$admin" ] || return 0
+    local body="{\"base\":\"$saved_base\""
+    [ -n "$saved_generator" ] && [ "$saved_base" = art ] && body="$body,\"generator\":\"$saved_generator\""
+    body="$body}"
+    for _ in $(seq 1 10); do
+        adb -s "$DEV" forward "tcp:$API_PORT" tcp:80 >/dev/null 2>&1 || true
+        if api PUT /scene "$admin" "$body" 2>/dev/null | grep -q applied; then
+            say "panel back to $saved_base"
+            return 0
+        fi
+        sleep 3
+    done
+    warn "could not put the panel back to $saved_base -- it may still read Do not unplug."
+    warn "fix with: tools/tc002ctl.py -s <ip> --token-file $TOKENS scene $saved_base"
+}
+# the restore has to happen even if the wait loop gives up or the script is interrupted, or the
+# device is left permanently telling its owner not to unplug it.
+trap restore_scene EXIT
+
 # ------------------------------------------------------------------- flash
 say "stage the image on /data (it has to survive the reboot the flasher causes)"
 adb -s "$DEV" shell "rm -f /data/update.img" >/dev/null 2>&1
@@ -167,6 +255,8 @@ WANT=$(( $(wc -c < "$IMG" | tr -d ' ') ))
 GOT=$(sh_ "ls -l /data/update.img" | awk '{print $5}')
 [ "$WANT" = "$GOT" ] || die "the staged image is $GOT bytes, expected $WANT"
 say "staged $GOT bytes"
+
+show_notice
 
 say "arm the flasher (dir before flag: the flag is the trigger and the dir must already be set)"
 adb -s "$DEV" shell "setprop persist.zkupgrade.dir /data" >/dev/null 2>&1
