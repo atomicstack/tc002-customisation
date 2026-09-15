@@ -78,6 +78,11 @@ const ipc_packets_per_iteration = 32;
 const relay_timeout_ns: u64 = 2 * ns_per_s;
 const relay_max = 32;
 const netd_restart_ns: u64 = 1 * ns_per_s;
+/// how long to wait for the panel before spawning the renderer anyway. a cold boot has nobody to
+/// have exported the latch gpio or let the spi controller settle.
+const panel_wait_ns: u64 = 20 * ns_per_s;
+/// a fresh wifi bring-up is not launched more often than this.
+const netup_retry_ns: u64 = 30 * ns_per_s;
 const sample_period_ns: u64 = 5 * ns_per_s;
 const netd_uid: u32 = 1001;
 const netd_gid: u32 = 1001;
@@ -451,6 +456,13 @@ const Supervisor = struct {
     /// when this supervisor started, and whether the boot has been declared good yet
     started_ns: u64 = 0,
     boot_health_done: bool = false,
+    /// the wifi bring-up helper, when the runtime owns the network rather than the loader
+    netup_pid: ?sys.Pid = null,
+    netup_requested: bool = false,
+    last_netup_ns: u64 = 0,
+    next_net_check_ns: u64 = 0,
+    /// the panel is only checked until it is first seen ready
+    panel_seen_ready: bool = false,
     heartbeats: u64 = 0,
     restarts: u32 = 0,
     request_id: u64 = 1,
@@ -2116,6 +2128,110 @@ const Supervisor = struct {
         log.info("renderer will run at sched_fifo {d}; rt budget {s} us in every period", .{ self.cfg_cli.rt_priority, rt_runtime_us });
     }
 
+    fn writeSysfs(path: [*:0]const u8, text: []const u8) void {
+        const fd = sys.open(path, .{ .ACCMODE = .WRONLY, .CLOEXEC = true }, 0) catch return;
+        defer sys.close(fd);
+        _ = sys.write(fd, text) catch {};
+    }
+
+    /// the panel is ready when the spi node and the latch gpio's value file are both openable.
+    ///
+    /// on a cold boot the stock app is not there to have exported gpio 35 -- the frame latch -- or
+    /// to have let the spi controller settle, so the renderer's first spawn would fail to open the
+    /// panel and be halted. exporting is idempotent; EBUSY for an already-exported pin is what the
+    /// ignored error is.
+    fn panelReady(self: *Supervisor) bool {
+        _ = self;
+        writeSysfs("/sys/class/gpio/export", "35");
+        writeSysfs("/sys/class/gpio/gpio35/direction", "out");
+        const spi = sys.open("/dev/spidev0.0", .{ .ACCMODE = .RDWR, .CLOEXEC = true }, 0) catch return false;
+        sys.close(spi);
+        const gpio = sys.open("/sys/class/gpio/gpio35/value", .{ .ACCMODE = .WRONLY, .CLOEXEC = true }, 0) catch return false;
+        sys.close(gpio);
+        return true;
+    }
+
+    /// run the shipped bring-up script through busybox: load the aic8800 driver if nothing did,
+    /// start wpa_supplicant, wait for association, and leave udhcpc running as a renewing daemon.
+    /// fire and forget -- it exits once udhcpc has backgrounded, and `pollIp` reports the address.
+    fn spawnNetup(self: *Supervisor, dir: [:0]const u8) void {
+        if (dir.len == 0) return;
+        const pid = sys.fork() catch |e| {
+            log.err("netup fork failed: {s}", .{sys.errText(e)});
+            return;
+        };
+        if (pid == 0) {
+            sys.unblockAllSignals();
+            sys.setSignalDisposition(.TERM, linux.SIG.DFL);
+            var bb_buf: [192]u8 = undefined;
+            var sh_buf: [192]u8 = undefined;
+            const bb = std.fmt.bufPrintZ(&bb_buf, "{s}/busybox", .{dir}) catch sys.exit(127);
+            const sh = std.fmt.bufPrintZ(&sh_buf, "{s}/tc002-netup.sh", .{dir}) catch sys.exit(127);
+            // the second argument is a writable directory for udhcpc's pidfile: `dir` itself is
+            // read-only on a flashed image
+            const argv = [_:null]?[*:0]const u8{ bb.ptr, "sh", sh.ptr, dir.ptr, self.cfg_cli.dir.ptr };
+            const envp = [_:null]?[*:0]const u8{};
+            sys.execve(bb.ptr, &argv, &envp) catch {};
+            sys.exit(127);
+        }
+        self.netup_pid = pid;
+        self.netup_requested = true;
+        self.last_netup_ns = sys.monotonicNs();
+        log.info("netup started (pid {d}) from {s}", .{ pid, dir });
+    }
+
+    /// wlan0 not carrying a link. a dead supplicant leaves the stale address in place, so the
+    /// carrier catches a disassociation that the address alone would miss.
+    fn carrierDown(self: *Supervisor) bool {
+        _ = self;
+        var buf: [8]u8 = undefined;
+        const text = sys.readFile("/sys/class/net/wlan0/carrier", &buf) catch return true;
+        return std.mem.indexOfScalar(u8, text, '1') == null;
+    }
+
+    /// while we own the network, re-run the bring-up whenever the link is down, so a transient
+    /// wifi loss recovers without anyone present. on this device adb is over that link, so this is
+    /// also the thing that decides whether a bad night is recoverable.
+    fn pollNetwork(self: *Supervisor, now: u64) void {
+        if (!self.netup_requested or self.netup_pid != null) return;
+        if (now < self.next_net_check_ns) return;
+        self.next_net_check_ns = now + 5 * ns_per_s;
+        const carrier_down = self.carrierDown();
+        if (self.last_ip != null and !carrier_down) return;
+        if (now -| self.last_netup_ns < netup_retry_ns) return;
+        log.warn("network down (address {s}, carrier {s}); re-running the bring-up", .{
+            if (self.last_ip == null) "none" else "present",
+            if (carrier_down) "down" else "up",
+        });
+        self.spawnNetup(self.cfg_cli.netup_dir);
+    }
+
+    fn reapNetup(self: *Supervisor) void {
+        const pid = self.netup_pid orelse return;
+        _ = (sys.waitNoHang(pid) catch |e| switch (e) {
+            error.NoChild => @as(?u32, 0),
+            else => return,
+        }) orelse return;
+        self.netup_pid = null;
+        log.info("netup finished", .{});
+    }
+
+    /// stop the udhcpc daemon the bring-up left behind, so it does not fight the stock app's own
+    /// dhcp after we hand the panel back. busybox runs udhcpc under the process name "busybox", so
+    /// the pidfile is the only reliable handle -- killing by name would match the wrong thing.
+    fn killNetClients(self: *Supervisor) void {
+        if (!self.netup_requested) return;
+        var path_buf: [192]u8 = undefined;
+        const path = std.fmt.bufPrintZ(&path_buf, "{s}/udhcpc.pid", .{self.cfg_cli.dir}) catch return;
+        var buf: [16]u8 = undefined;
+        const text = sys.readFile(path, &buf) catch return;
+        const pid = std.fmt.parseInt(i32, std.mem.trim(u8, text, " \t\r\n"), 10) catch return;
+        if (pid > 1) {
+            sys.kill(pid, .TERM);
+            log.info("stopped the udhcpc daemon (pid {d})", .{pid});
+        }
+    }
+
     fn readMac(self: *Supervisor) void {
         var buf: [32]u8 = undefined;
         const text = sys.readFile("/sys/class/net/wlan0/address", &buf) catch return;
@@ -2579,6 +2695,18 @@ const Supervisor = struct {
     }
 
     fn pollLifecycle(self: *Supervisor, now: u64) void {
+        // hold the first spawn until the panel is openable, or the grace period runs out. only the
+        // initial bring-up waits; the network and netd carry on meanwhile.
+        if (!self.panel_seen_ready) {
+            if (self.panelReady()) {
+                self.panel_seen_ready = true;
+            } else if (now -| self.started_ns < panel_wait_ns) {
+                return;
+            } else {
+                self.panel_seen_ready = true;
+                log.warn("/dev/spidev0.0 still not openable after {d}s; spawning the renderer anyway", .{panel_wait_ns / ns_per_s});
+            }
+        }
         switch (lifecycle.poll(now)) {
             .none => {},
             .spawn => if (!self.shutting_down) self.spawn(now),
@@ -3077,6 +3205,7 @@ fn run(cfg_in: cli.Config, environ: anytype, args: []const [:0]const u8) !u8 {
     s.boot_id = std.mem.readInt(u32, &boot, .little);
     s.snapshot.boot_id = s.boot_id;
     s.applyRtBudget();
+    s.spawnNetup(cfg.netup_dir);
     s.readMac();
     if (s.snapshot.mac_present != 0) {
         const m = s.snapshot.mac;
@@ -3121,6 +3250,8 @@ fn run(cfg_in: cli.Config, environ: anytype, args: []const [:0]const u8) !u8 {
         s.pollIp(now);
         s.pollMac(now);
         s.pollBootHealth(now);
+        s.reapNetup();
+        s.pollNetwork(now);
         s.pushDeviceStatus(now);
         s.pollNight(now);
         s.pollPower(now);
@@ -3160,6 +3291,7 @@ fn run(cfg_in: cli.Config, environ: anytype, args: []const [:0]const u8) !u8 {
             if (ev.data.u64 == @intFromEnum(Tag.sntp)) s.sntp_link.readable(&s, sys.monotonicNs()); // sntp
         }
     }
+    s.killNetClients();
     log.info("exit: {d} heartbeats, {d} renderer restarts, {d} netd restarts, mcu replies {d} timeouts {d} unsolicited {d}, sntp ok {d} failed {d}, final state {s}", .{ s.heartbeats, s.restarts, s.netd_exits.restarts, s.mcu_link.replies, s.mcu_link.timeouts, s.mcu_link.unsolicited, s.sntp_link.client.successes, s.sntp_link.client.failures, @tagName(lifecycle.state) });
     return 0;
 }

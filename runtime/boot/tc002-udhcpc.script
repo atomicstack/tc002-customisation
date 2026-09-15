@@ -1,0 +1,21 @@
+#!/bin/sh
+# udhcpc callback for the tc002 runtime: configure wlan0 from the lease.
+# BB is the busybox path, exported by tc002-netup.sh; falls back to the image path.
+: "${BB:=/res/bin/busybox}"
+IF="${interface:-wlan0}"
+case "$1" in
+  deconfig)
+    "$BB" ifconfig "$IF" 0.0.0.0
+    ;;
+  bound|renew)
+    "$BB" ifconfig "$IF" "$ip" netmask "${subnet:-255.255.255.0}" ${broadcast:+broadcast "$broadcast"}
+    if [ -n "$router" ]; then
+      while "$BB" route del default dev "$IF" 2>/dev/null; do :; done
+      for r in $router; do "$BB" route add default gw "$r" dev "$IF"; done
+    fi
+    # dns is only needed by the ntfy client; /etc/resolv.conf is read-only, so publish
+    # the property the vendor stack uses and drop a copy where a client can find it.
+    i=1; for d in $dns; do /bin/setprop net.dns$i "$d" 2>/dev/null; i=$((i+1)); done
+    [ -n "$dns" ] && { : > /tmp/resolv.conf 2>/dev/null; for d in $dns; do echo "nameserver $d" >> /tmp/resolv.conf 2>/dev/null; done; }
+    ;;
+esac

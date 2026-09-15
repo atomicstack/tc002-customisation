@@ -6,6 +6,24 @@ runtime before it can be baked into flash. This is the groundwork for
 replacing the volatile `/tmp` install described in [`RUNTIME.md`](RUNTIME.md)
 with a rebuilt `res` partition delivered through the vendor's own update path.
 
+> **Boot machinery, parts three and four, 2026-09-15: the network and the panel.**
+> `runtime/boot/tc002-netup.sh` and `tc002-udhcpc.script` are taken from
+> aquarat's `5912865` unchanged; the supervisor gained `--netup-dir`, a
+> re-run of the bring-up whenever the link is down, a pidfile-based stop for
+> the udhcpc daemon on hand-back, and a **panel-ready gate** that exports gpio
+> 35, sets it output and holds the first renderer spawn until `/dev/spidev0.0`
+> and the gpio value file are both openable (20 s, then it spawns anyway and
+> says so).
+>
+> Verified what can be: the gate runs on every start and the renderer comes up
+> in 8 ms with no warning — on a warm path gpio 35 is already exported, so it is
+> correctly a no-op — and both scripts parse under the ash we build. **Not
+> verified: the bring-up actually running.** It restarts `wpa_supplicant` and
+> replaces the dhcp client, and on this device adb *is* that link, so exercising
+> it on a live system risks stranding the clock. Its real test is the cold boot
+> it exists for. That makes this the one piece of the four resting on reasoning
+> rather than a measurement.
+
 > **Boot machinery, part two, 2026-09-15: yielding to the flasher.** The
 > supervisor now checks `sys.zkupgrade.flag` and the image at
 > `sys.zkupgrade.dir` (default `/mnt/storage`) before it takes anything, and

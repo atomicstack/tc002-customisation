@@ -22,6 +22,7 @@ pub const usage =
     \\  --close-inherited       close every inherited descriptor above stderr after the audit
     \\  --stats                 ask the renderer for periodic statistics
     \\  --rt-priority N         run the renderer at SCHED_FIFO N (1..99); 0 leaves it normal
+    \\  --netup-dir DIR         bring wifi up ourselves, using busybox and the scripts in DIR
     \\  --from-bootstrap        set by the bootstrap shared object; logged only
     \\  --help
     \\
@@ -53,6 +54,9 @@ pub const Config = struct {
     stats: bool = false,
     /// SCHED_FIFO priority for the renderer, 0 to leave it on the normal scheduler.
     rt_priority: u8 = 0,
+    /// where busybox and the boot scripts live, for a runtime that has to bring wifi up itself.
+    /// empty means the loader already did it, which is true of every /tmp install.
+    netup_dir: [:0]const u8 = "",
     from_bootstrap: bool = false,
 
     pub fn fallbackPath(self: Config) [:0]const u8 {
@@ -96,7 +100,7 @@ pub fn parse(args: []const [:0]const u8) ParseError!Outcome {
             c.from_bootstrap = true;
             continue;
         }
-        const known = [_][]const u8{ "--profile", "--renderer", "--fallback", "--dir", "--state", "--lock", "--tz", "--keymap", "--keys", "--knob", "--ip-poll", "--mcu", "--mcu-baud", "--mcu-poll" };
+        const known = [_][]const u8{ "--profile", "--renderer", "--fallback", "--dir", "--state", "--lock", "--tz", "--keymap", "--keys", "--knob", "--ip-poll", "--mcu", "--mcu-baud", "--mcu-poll", "--netup-dir" };
         var is_known = false;
         for (known) |k| is_known = is_known or std.mem.eql(u8, a, k);
         if (!is_known) return error.UnknownOption;
@@ -111,6 +115,8 @@ pub fn parse(args: []const [:0]const u8) ParseError!Outcome {
             c.fallback = v;
         } else if (std.mem.eql(u8, a, "--dir")) {
             c.dir = v;
+        } else if (std.mem.eql(u8, a, "--netup-dir")) {
+            c.netup_dir = v;
         } else if (std.mem.eql(u8, a, "--state")) {
             c.state = v;
         } else if (std.mem.eql(u8, a, "--lock")) {
