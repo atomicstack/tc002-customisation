@@ -123,6 +123,27 @@ sh_() { adb -s "$DEV" shell "$@" 2>/dev/null | tr -d '\r'; }
 
 BB=$(sh_ "ls /tmp/busybox 2>/dev/null" || true)   # optional; only used for nicer output
 
+# **find a dd.** the backup reads the partition with it, and this device's PATH is
+# `/sbin:/bin:/tmp:` -- none of which holds one. the stock /bin has no dd at all, and a busybox
+# pushed to /tmp is gone after any reboot. the 2026-09-15 backup only worked because an earlier
+# step that session had pushed one there.
+#
+# it failed silently, which is the part worth fixing: `dd` wrote "not found" into a 2>/dev/null,
+# the pull then had nothing to fetch, and `cat` of the missing chunk exited the script under
+# `set -e` with no message at all -- the log just stopped after "backing up the res partition".
+# so: resolve it explicitly, and say so when there is none.
+find_dd() {
+    local c
+    for c in /res/bin/dd "/res/bin/busybox dd" "/tmp/busybox dd" dd; do
+        # `dd </dev/null of=/dev/null count=0` is a no-op that still fails loudly if the applet is
+        # missing, so it is a probe rather than a write
+        if sh_ "$c if=/dev/null of=/dev/null count=0 >/dev/null 2>&1 && echo yes" | grep -q yes; then
+            echo "$c"; return 0
+        fi
+    done
+    return 1
+}
+
 # ------------------------------------------------------------------ backup
 RES_BACKUP="$BACKUP_DIR/mtd3-res.bin"
 if [ "$SKIP_BACKUP" -eq 1 ]; then
@@ -131,6 +152,11 @@ elif [ -s "$RES_BACKUP" ]; then
     say "res backup already present: $RES_BACKUP"
 else
     say "backing up the res partition to $RES_BACKUP"
+    DD=$(find_dd) || die "no dd on the device: tried /res/bin/dd, /res/bin/busybox, /tmp/busybox and PATH.
+   the stock /bin has none and /tmp is empty after a reboot. push one first:
+     adb -s $DEV push runtime/zig-out/bin/busybox /tmp/busybox && adb -s $DEV shell chmod 755 /tmp/busybox
+   or pass --no-backup, which means having no way back from a bad flash."
+    say "reading the partition with '$DD'"
     mkdir -p "$BACKUP_DIR"
     # the mtd nodes do not exist in /dev on this device; make the one we need.
     adb -s "$DEV" shell "mknod /dev/mtdblock3 b 31 3 2>/dev/null; true" >/dev/null 2>&1
@@ -139,14 +165,19 @@ else
     # 2 mib at a time: never stage a partition-sized file in the device's 16 mib tmpfs
     while [ "$off" -lt 8192 ]; do
         n=2048; [ $((off + n)) -gt 8192 ] && n=$((8192 - off))
-        adb -s "$DEV" shell "dd if=/dev/mtdblock3 of=/tmp/.flashchunk bs=1024 skip=$off count=$n 2>/dev/null" >/dev/null 2>&1 </dev/null
+        adb -s "$DEV" shell "$DD if=/dev/mtdblock3 of=/tmp/.flashchunk bs=1024 skip=$off count=$n 2>/dev/null" >/dev/null 2>&1 </dev/null
         adb -s "$DEV" pull /tmp/.flashchunk "$BACKUP_DIR/.chunk" >/dev/null 2>&1 </dev/null
+        # each chunk is checked as it lands: an empty or missing one used to take the script out
+        # through `cat` with no message, having written a truncated backup that looked like a file.
+        [ -s "$BACKUP_DIR/.chunk" ] || die "chunk at offset ${off}k came back empty -- the backup would be truncated, so nothing was written"
         cat "$BACKUP_DIR/.chunk" >> "$RES_BACKUP"
         off=$((off + n))
     done
     adb -s "$DEV" shell "rm -f /tmp/.flashchunk" >/dev/null 2>&1 </dev/null
     rm -f "$BACKUP_DIR/.chunk"
-    say "backed up $(wc -c < "$RES_BACKUP" | tr -d ' ') bytes"
+    got=$(wc -c < "$RES_BACKUP" | tr -d ' ')
+    [ "$got" -eq 8388608 ] || die "the backup is $got bytes, not the partition's 8388608 -- refusing to flash"
+    say "backed up $got bytes"
     if command -v unsquashfs >/dev/null 2>&1; then
         tmpd=$(mktemp -d)
         if unsquashfs -d "$tmpd/res" "$RES_BACKUP" >/dev/null 2>&1 && [ -f "$tmpd/res/lib/libzkgui.so" ]; then
