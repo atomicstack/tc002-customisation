@@ -362,6 +362,25 @@ for t in "$(usb_serial || true)" "$LAN"; do
     adb -s "$t" shell "cat /proc/uptime; ls /res/bin 2>/dev/null; getprop init.svc.zkswe" 2>/dev/null | tr -d '\r' | sed 's/^/     /'
     break
 done
+# ------------------------------------------------------- clear the staging file
+# /data is 8 mib of jffs2 and it is where everything durable lives -- settings, client tokens, the
+# ntfy ca, the canvas. a 4.4 mb image left in it takes 55% of that and stays there for good; the
+# first flash left the partition at 60% used when it should sit near 7%.
+#
+# `persist.zkupgrade.dir` is deliberately **left** pointing at /data. reverting it would restore the
+# vendor default of /mnt/storage, which on this unit holds an *older* vendor image -- so a flag set
+# by anything later would silently downgrade the device. pointing at a directory with no image in it
+# is the safer of the two, and it is why this removes the file rather than the property.
+if [ -n "$BACK" ]; then
+    say "remove the staged image from /data"
+    adb -s "$BACK" shell "rm -f /data/update.img" >/dev/null 2>&1 </dev/null || true
+    left=$(adb -s "$BACK" shell "ls /data/update.img 2>/dev/null" 2>/dev/null | tr -d '\r')
+    if [ -n "$left" ]; then
+        warn "could not remove /data/update.img -- it is 4.4 mb of an 8 mib partition."
+        warn "clear it by hand: adb -s $BACK shell rm -f /data/update.img"
+    fi
+fi
+
 echo
 echo "   if /res/bin lists tc002-supervisor, the runtime is flashed and this worked."
 echo "   if it does not, the image did not take; nothing else changed and the device"

@@ -802,6 +802,14 @@ This is what actually worked on 2026-09-15, not a proposal.
    - **Never leave the directory at its default.** It is `/mnt/storage`, which
      on this unit holds an *older* vendor image, so a triggered upgrade there
      silently downgrades the device.
+   - **Delete the staged image afterwards, and leave `persist.zkupgrade.dir`
+     alone.** `/data` is 8 MiB of jffs2 and holds everything durable — settings,
+     client tokens, the ntfy CA, the canvas. A 4.4 MB image left there takes 55%
+     of the partition permanently; the first flash here left it at 60% used when
+     it should sit near 7%. Reverting the *property* is the wrong cleanup: it
+     would restore the `/mnt/storage` default and re-arm the downgrade above.
+     Pointing at a directory with no image in it is the safer of the two.
+     `tc002-flash.sh` now removes the file and keeps the property.
 
 4. **The vendor shows no progress animation, so show your own.** The claim
    elsewhere in this file that the panel shows one came from reading
