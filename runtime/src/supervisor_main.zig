@@ -2232,18 +2232,26 @@ const Supervisor = struct {
     /// **corrected 2026-09-16.** this comment used to say the role boots at `usb_host`, that the
     /// gadget therefore sits at `DISCONNECTED`/`powered` until we write, and that "this write is
     /// the only thing that turns it on". measured on two boots of the flashed runtime: the
-    /// controller comes up in *device* mode and the gadget enumerates on its own at t~2.7s;
-    /// `/bin/zkgui` flips the port to host at t~3.7s to scan for a firmware stick and flips it
-    /// back at t~6.8s -- 200 ms before this function runs at t~7.0s and reads back a role that is
-    /// already `usb_device`. so this confirms rather than causes. it is kept because it costs one
-    /// write and it is the guarantee; it is not the thing that makes adb work.
+    /// controller comes up in *device* mode and the gadget enumerates on its own at t~2.7s; the
+    /// port flips to host at t~3.7s and back at t~6.8s -- 200 ms before this function runs at
+    /// t~7.0s and reads back a role that is already `usb_device`. so this confirms rather than
+    /// causes. it is kept because it costs one write and it is the guarantee; it is not the thing
+    /// that makes adb work.
+    ///
+    /// **corrected again 2026-09-16**, from the disassembly rather than the log: the flip to host
+    /// is *not* `/bin/zkgui` scanning for a firmware stick. it is the built-in kernel driver
+    /// `zkswe,sstar-otg`, whose `usb-scan` kthread sleeps 3500 ms after probe and then walks the
+    /// port device -> null -> host whenever the device-tree property `type` is `1`, which it is.
+    /// the t~6.8s return is `libzkhardware.so`'s "switch" thread, reached from zkgui's one import
+    /// `HardwareManager::getInstance()`. no userspace code exists at t~3.7s that could prevent it.
     ///
     /// it also cannot rescue a cable that stayed plugged in across a reboot. the host enumerates
     /// the one-second gadget session that ends at t~3.7s, the host-mode excursion hides the
     /// disconnect, and the host never looks at the port again. cycling `zkswe_usb/enable`,
     /// re-initialising the controller through the role action files, and the udc's own
     /// `soft_connect` were each measured against that state and the host logged none of them.
-    /// only a physical replug clears it. see DEVICE.md, "what happens to usb across a reboot".
+    /// only a physical replug clears it -- or two bytes of patched kernel, which is the only
+    /// thing that would. see DEVICE.md, "what happens to usb across a reboot".
     ///
     /// the three files next to `otg_role` named `usb_device`, `usb_host` and `usb_null` are
     /// **actions, not values**: reading one performs that switch. never read them to find out the

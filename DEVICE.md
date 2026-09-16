@@ -190,9 +190,10 @@ performs that switch. Read `otg_role`.
 
 ### what happens to usb across a reboot
 
-Short version: **a cable left plugged in does not come back, and no amount of
-work on the device will change that.** Replug it, or use wifi, which returns on
-its own in about sixteen seconds.
+Short version: **a cable left plugged in does not come back, and nothing running
+on the device can change that.** Replug it, or use wifi, which returns on its own
+in about sixteen seconds. The cause is two bytes of kernel, so it is fixable, but
+only by reflashing the kernel partition — see "what a fix would take" below.
 
 > **corrected 2026-09-16.** This section used to say the controller *"boots as
 > `usb_host`"*, that one write of `usb_device` plus a replug was what turned adb
@@ -200,6 +201,13 @@ its own in about sixteen seconds.
 > nothing enumerates"*. ~~All three were wrong~~, and the third was wrong in the
 > direction that makes the real fault harder to find: the host **does**
 > re-enumerate, promptly, and still cannot talk to the device.
+
+> **corrected again 2026-09-16**, by disassembling the binaries rather than
+> reasoning from the log. This section then said *"the excursion belongs to
+> `/bin/zkgui`"* and that `libzkhardware.so` *"runs the scan before it `dlopen`s
+> our bootstrap"*. ~~Both were wrong~~. The excursion is in the **kernel**, it
+> has nothing to do with scanning for a firmware stick, and `libzkhardware.so` is
+> the thing that switches the port back afterwards.
 
 The measured sequence, from the device's kernel log and the mac's
 `IOUSBHostFamily` log on the same reboot, two boots running:
@@ -209,9 +217,9 @@ The measured sequence, from the device's kernel log and the mac's
 | 0.15 s | `PULL_UP(OFF)` then `PULL_UP(ON)` — the controller comes up in **device** mode | `terminateDevice: hardware connection lost` at reset |
 | 2.1 s | `init.rc`'s `sys.usb.config=adb` block binds the `adb` function | two `enumeration failed` for `18d1/0001` |
 | 2.7 s | `USB_STATE=CONFIGURED` | `enumerated 0x18d1/d002 at 480 Mbps` — about 5 s after the reset |
-| 3.7 s | `PULL_UP(OFF)`, ehci registers: **the vendor loader flips the port to host** to scan for a firmware stick | nothing — the disconnect is hidden behind the host-mode bus |
-| 4.4 s | `usb scan usb_id thread exit!!!` | |
-| 6.8 s | ehci removed, `PULL_UP(ON)` — back to device mode | nothing |
+| 3.7 s | `PULL_UP(OFF)`, ehci registers: **the kernel's `usb-scan` kthread flips the port to host**, 3500 ms after it was created at driver probe | nothing — the disconnect is hidden behind the host-mode bus |
+| 4.4 s | `usb scan usb_id thread exit!!!` — the same kthread, done, having moved the port and nothing else | |
+| 6.8 s | ehci removed, `PULL_UP(ON)` — **`libzkhardware.so`'s "switch" thread** puts it back to device mode | nothing |
 | 7.0 s | the supervisor writes `usb_device`, reads back `usb_device` | nothing |
 
 So the host enumerates the **one-second gadget session that lives between 2.7 s
@@ -222,10 +230,70 @@ answer nothing: `AppleUSBIORequest::complete: ... endpoint 0x00: status
 re-cycled. `system_profiler SPUSBDataType` still lists the clock the whole time,
 which is what makes this look like a working cable.
 
-The excursion belongs to `/bin/zkgui`. `libzkhardware.so`, which only zkgui
-links, is the one binary on the device that holds the four role paths, and it
-runs the scan **before** it `dlopen`s our bootstrap. There is no point in the
-boot at which our code exists and the damage has not already been done.
+#### who moves the port, and when
+
+The excursion is in the built-in kernel driver `zkswe,sstar-otg`. At probe it
+creates a kthread called `usb-scan`; the thread sleeps 3500 ms and then, when the
+device-tree property `type` is `1`, walks the port **device → null → host** and
+exits. Disassembled at `0xc01abf8c` in the decompressed kernel:
+
+```c
+usb_scan_thread(priv) {
+    msleep(3500);
+    if (priv->type == 1) {
+        if (priv->role == 0 /*device*/) device_to_null(priv);  /* gadget unregister */
+        if (priv->role == 2 /*null*/)   null_to_host(priv);    /* ehci_hcd register */
+    }
+    /* priv->type != 2, so the id-pin polling loop never runs: */
+    printk("usb scan usb_id thread exit!!!");
+    return 0;
+}
+```
+
+and the device tree, which is built into the kernel image — u-boot's `bootcmd` is
+`sf probe 0; sf read 0x22000000 KERNEL; dcache on; bootm 0x22000000`, with no dtb
+argument, so the embedded one is the live one:
+
+```dts
+usbotg {
+    compatible = "zkswe,sstar-otg";
+    type = <0x1>;
+    status = "ok";
+};
+```
+
+`type = <1>` is exactly the value that parks the port in host mode. No userspace
+process is consulted, and none exists yet that could be. This is presumably how
+the vendor lets a firmware stick enumerate at boot; `libzkupgrade.so` then looks
+for an already-mounted `/mnt/usb1`, so it never touches the role itself.
+
+The port comes back because of `libzkhardware.so`, which only `/bin/zkgui` and
+`/res/lib/libzkgui.so` link, and which is the one binary on the device holding
+the four role paths:
+
+```
+HardwareManager::HardwareManager()            @0x52ec
+  └─ 0x5320: bl UsbSwitchHelper::getInstance()
+       └─ UsbSwitchHelper::UsbSwitchHelper()   @0x8aac
+            v = StoragePreferences::getInt("sys_usb_mode_key", -1)
+            if (v != -1) setUsbMode(v)         @0x8a70 → Thread::run("switch")
+                 └─ SwitchThread::threadLoop() @0x88dc
+                      fwrite("22") → otg_role
+                      usleep(1 500 000)
+                      read .../usb_null              ← the action files
+                      read .../usb_device | usb_host
+```
+
+`zkgui` imports exactly one symbol from that library, `HardwareManager::getInstance()`,
+and the 1.5 s sleep in the switch thread is the gap between zkgui starting and the
+6.8 s restore. Nothing else in the firmware reaches `UsbSwitchHelper`
+(`libinternalapp.so` does, but nothing links or `dlopen`s it). So patching that
+library can only move the *recovery*; the library is not mapped into any process
+at 3.7 s, when the session the mac is holding is destroyed.
+
+One trap if you read either side: the driver's role encoding is
+`0 = usb_device, 1 = usb_host, 2 = null`, which is **not** what
+`UsbSwitchHelper::getUsbMode()` returns (`1 = device, 2 = host, 0 = unknown`).
 
 Three device-side ways to re-advertise were tried against a wedged port. All
 three reach the hardware, and the mac logs **nothing** for any of them:
@@ -258,10 +326,40 @@ cat /sys/class/udc/soc:Sstar-udc/state  # powered  <- vbus is there, no data ses
 ```
 
 The custom runtime still writes the role at startup (`--usb-role`, default
-`device`). On the flashed path that write lands 200 ms after the loader has
-already restored device mode, so it confirms rather than causes — but it costs
-nothing and it is the guarantee that matters on a device whose network bring-up
-is the thing that failed.
+`device`). On the flashed path that write lands 200 ms after `libzkhardware.so`'s
+switch thread has already restored device mode, so it confirms rather than causes
+— but it costs nothing and it is the guarantee that matters on a device whose
+network bring-up is the thing that failed.
+
+#### what a fix would take
+
+Not tried; recorded so nobody has to re-derive it. The robust change is two bytes
+of kernel text: at file offset `0x1a3f9c` in the decompressed kernel (va
+`0xc01abf9c`), `0a d1` — the `bne` that guards the `type == 1` block — becomes
+`0a e0`, an unconditional `b` to the same target. The kthread still runs and still
+sets the flag `otg_role` needs, but it moves nothing.
+
+The one-byte device-tree change `type = <1>` → `<3>` looks cheaper and is worse:
+`type > 2` makes probe skip `wake_up_process`, so the thread never runs, `priv+0x40`
+is never set, and `otg_role` then reads `unkown` forever — which `applyUsbRole`
+reads back.
+
+Either way it means repacking the uImage (xz payload, uImage header CRCs, then the
+`ZKSWEV1.0` container) and flashing **mtd1 (`KERNEL`)**, which has no anti-brick
+fallback: `zkdaemon` only reflashes mtd3. A bad kernel is not a hard brick — u-boot
+lives in `BOOT0` and still runs — but recovery is `sf write` over the UART pads.
+
+Two lighter alternatives, both unproven:
+
+- **rootfs.** Drop `sys.usb.config=adb` from `/etc/default.prop` and set it from a
+  delayed oneshot, so the doomed gadget session never enumerates in the first place.
+  Flashes mtd2, same risk class.
+- **res only.** `LD_LIBRARY_PATH` is `/tmp:/res/lib:/lib`, so a shadow copy of one
+  of `/bin/zkdisplay`'s libraries in `/res/lib` would give us root code at boot from
+  the partition we already flash and that *does* have the three-bad-boots fallback.
+  It would have to put the port in host mode before 3.5 s, so that the kthread's
+  `role == 0` test fails — which means winning a race against `init.rc`'s 2.1 s
+  gadget bind. Whether it can has not been measured.
 
 ```bash
 brew install --cask android-platform-tools

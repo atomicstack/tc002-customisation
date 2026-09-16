@@ -18,16 +18,18 @@
 #
 # **do not expect usb back after the reboot this script causes.** measured 2026-09-16 on both sides
 # at once: the host re-enumerates within about five seconds, but what it gets is the one-second
-# gadget session that lives between t=2.7s and t=3.7s of the boot. the vendor loader then flips the
-# port to host for ~3 s to scan for a firmware stick, which hides the disconnect, and the host is
+# gadget session that lives between t=2.7s and t=3.7s of the boot. the kernel's own usb-scan kthread
+# then flips the port to host for ~3 s, which hides the disconnect, and the host is
 # left holding a device object whose endpoints answer nothing. cycling the gadget, re-initialising
 # the controller and the udc's own soft_connect were all tried from the device and the host logs
 # nothing for any of them. the lan comes back on its own in about sixteen seconds, which is why this
 # script watches both. see DEVICE.md, "what happens to usb across a reboot".
 #
 # (an earlier version of this comment said the role boots at `usb_host` and that the runtime's write
-# is what turns the gadget on. both were wrong -- the loader has already restored device mode 200 ms
-# before the supervisor writes.)
+# is what turns the gadget on. both were wrong -- libzkhardware.so has already restored device mode
+# 200 ms before the supervisor writes. a later version blamed the host-mode flip on /bin/zkgui
+# scanning for a firmware stick; that was wrong too. it is the kernel driver, gated on a device-tree
+# property, and nothing in userspace can stop it.)
 #
 # staging goes to /data, not /tmp: the flasher's first pass restarts the app and this device reboots
 # partway through, and /tmp is a tmpfs, so an image staged there is gone before the write happens.

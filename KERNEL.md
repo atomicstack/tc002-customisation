@@ -450,10 +450,17 @@ kernel.
 > (2026-09-16).** it said *"the otg controller boots in **host** mode ... one
 > write of `usb_device` and a replug takes it to `CONFIGURED`"*. measured on two
 > boots: the controller comes up in **device** mode and the gadget enumerates by
-> itself at t≈2.7 s. it is `/bin/zkgui` that flips the port to host at t≈3.7 s,
-> to scan for a firmware stick, and back at t≈6.8 s. that excursion — not the
-> boot role — is what leaves a host holding a dead device object, and it happens
-> before our bootstrap is loaded, so it cannot be prevented from here.
+> itself at t≈2.7 s. the port then flips to host at t≈3.7 s and back at t≈6.8 s.
+> that excursion — not the boot role — is what leaves a host holding a dead
+> device object, and it happens before any of our code is loaded.
+>
+> **the "it is `/bin/zkgui` scanning for a firmware stick" half of that was in
+> turn wrong, corrected 2026-09-16 from the disassembly.** the flip to host is
+> this kernel's own `zkswe,sstar-otg` driver: its `usb-scan` kthread sleeps
+> 3500 ms after probe and then walks the port device → null → host whenever the
+> device-tree property `type` is `1`, which this board's built-in dtb sets. the
+> return at t≈6.8 s is `libzkhardware.so`. so it cannot be prevented from
+> userspace at all — only by patching the kernel.
 >
 > so the gadget is **not** untestable. adb over the cable is working and is
 > documented in [`DEVICE.md`](DEVICE.md#adb), with the full timeline in

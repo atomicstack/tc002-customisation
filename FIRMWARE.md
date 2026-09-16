@@ -773,9 +773,9 @@ This is what actually worked on 2026-09-15, not a proposal.
 
    > ~~The otg controller boots in *host* mode and nothing in the stock boot
    > changes it~~ **✗ corrected 2026-09-16: it boots in device mode and
-   > enumerates by itself; the vendor loader flips the port to host for about
-   > three seconds early in the boot to scan for a firmware stick, and that is
-   > what strands the host.** The role write is still worth doing — it is cheap
+   > enumerates by itself; the kernel's own `usb-scan` kthread flips the port to
+   > host for about three seconds early in the boot, and that is what strands the
+   > host.** The role write is still worth doing — it is cheap
    > and it is the guarantee — but it is not what turns the gadget on, and no
    > write can substitute for the replug. See
    > [`DEVICE.md`](DEVICE.md#what-happens-to-usb-across-a-reboot).
