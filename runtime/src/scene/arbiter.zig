@@ -1211,7 +1211,11 @@ pub const Arbiter = struct {
                 self.power = false;
             },
             .reseed => self.art.reseed(self.art.seed *% 1664525 +% 1013904223),
-            .reboot => {},
+            // the menu has done its job, and it has to get out of the way: `render` gives the menu
+            // the panel ahead of every overlay, so leaving it open painted over the supervisor's
+            // "rebooting..." frame on every frame of the way down. the answer was yes; the device
+            // is going.
+            .reboot => self.menu_state = null,
         }
         _ = now_ns;
         // only the two actions travel up from here; a value waits until it has settled
@@ -1378,4 +1382,38 @@ test "a hold opens that base's settings, and the dial's click belongs to the sce
     a.action(.knob_long, 0);
     try std.testing.expect(a.menuOpen());
     try std.testing.expectEqual(menu.Kind.device, a.menu_state.?.kind);
+}
+
+test "confirming a reboot closes the menu, so the notice that follows is not drawn under it" {
+    // the menu outranks every overlay in `render`, and a reboot is confirmed *from* the menu. so
+    // while the menu stayed open the supervisor's "rebooting..." frame went out, was accepted, and
+    // was painted over by the menu on every frame. matt watched the panel through a reboot and saw
+    // no banner; /screen returned the menu frame for the whole window.
+    var a = fresh();
+    a.openMenu(0);
+    a.menu_state.?.item = .reboot;
+    a.action(.knob_short, 0); // opens the "reboot?" dialogue, defaulting to no
+    try std.testing.expect(a.menu_state != null);
+    a.action(.rotate_cw, 10 * std.time.ns_per_ms); // no -> yes
+    a.action(.knob_short, 20 * std.time.ns_per_ms); // confirm
+    try std.testing.expect(a.takeMenuRequest().? == .reboot);
+    try std.testing.expect(a.menu_state == null); // and the menu is gone
+
+    // so a frame pushed after it is what the panel shows
+    var frame = geometry.black_rgb;
+    frame[0] = 200;
+    try std.testing.expect(a.apply(.{ .raw = .{ .rgb = &frame, .duration_s = 3 } }, 30 * std.time.ns_per_ms) == .applied);
+    var rgb: geometry.Rgb = undefined;
+    a.render(30 * std.time.ns_per_ms, &rgb);
+    try std.testing.expectEqualSlices(u8, &frame, &rgb);
+}
+
+test "answering no to a reboot leaves the menu open, and asks for nothing" {
+    var a = fresh();
+    a.openMenu(0);
+    a.menu_state.?.item = .reboot;
+    a.action(.knob_short, 0);
+    a.action(.knob_short, 10 * std.time.ns_per_ms); // the dialogue defaults to no
+    try std.testing.expect(a.takeMenuRequest() == null);
+    try std.testing.expect(a.menu_state != null);
 }
