@@ -297,7 +297,7 @@ so the image needs a busybox of its own. `runtime/tools/tc002-mkbusybox.sh` buil
 rather than taking a prebuilt binary from anywhere:
 
 ```bash
-runtime/tools/tc002-mkbusybox.sh [workdir] [out]   # -> a static armv7 busybox, ~450 kb, 106 applets
+runtime/tools/tc002-mkbusybox.sh [workdir] [out]   # -> a static armv7 busybox, 508 kb, 135 applets
 ```
 
 it fetches a pinned busybox tarball, **checks it against a recorded sha256**, configures from
@@ -322,6 +322,28 @@ the binary was pushed to the device's `/tmp` and run: `udhcpc`, `insmod`, `ifcon
 rest for the investigations this device otherwise makes painful — its own busybox resolves almost
 nothing. **nothing here writes to `/res`.**
 
+### every applet is a symlink beside it
+
+`/res/bin` holds one symlink per applet, pointing at `busybox`, so an applet is
+`/res/bin/head` rather than `/res/bin/busybox head`. busybox dispatches on `argv[0]`, which is what
+makes that work; the image build creates them.
+
+the list comes from **that build**, not from a list kept by hand: `tc002-mkbusybox.sh` writes
+`<binary>.applets` out of the generated `include/applet_tables.h` — the table the multiplexer
+actually dispatches on — and `tc002-mkimage.sh` reads it and refuses to build without it. a symlink
+for an applet the binary does not carry would be a name that answers `applet not found`, which is a
+worse failure than the name not being there.
+
+**they shadow nothing.** the device's `PATH` is `/sbin:/bin:/tmp:` and `/res/bin` is not on it, so
+`reboot` still finds `/bin/reboot`. to have the applets by name, put `/res/bin` **last**:
+
+```sh
+export PATH=$PATH:/res/bin
+```
+
+busybox carries its own `reboot`, `mount`, `sh` and `ps`, and on this device the stock ones are
+what the system expects — putting `/res/bin` first would quietly swap them.
+
 **the script now reports what it asked for and did not get.** `oldconfig` silently drops any
 symbol whose dependencies are unmet, which is how `dd`, `df -h`, `busybox insmod` and `ls --color`
 were each found missing *on the device* rather than at build time. `ls --color` needs
@@ -345,9 +367,11 @@ runtime/tools/tc002-mkimage.sh /path/to/stock-update.img OUT.img
 it needs `squashfs-tools` (`brew install squashfs-tools`) and builds busybox itself if there
 isn't one already.
 
-**the size question is answered.** the stock `res` is 2,781,184 bytes compressed; the four
-binaries, the bootstrap, busybox and the boot scripts land at **4.45 mb of the 8 mib
-partition — 47% used, 4.4 mb spare**. a persistent install fits comfortably.
+**the size question is answered.** the stock `res` is 2,781,184 bytes compressed; the six
+binaries, the bootstrap, busybox with a symlink per applet, and the boot scripts land at
+**4,456,448 bytes of the 8 mib partition — 53% used, 3.93 mb spare**. a persistent install fits
+comfortably. (this used to read "47% used, 4.4 mb spare", which had used and spare the wrong way
+round, and counted four binaries when there are six.)
 
 the pipeline is also verified in both directions: the reader reproduces the vendor image byte for
 byte from an untouched payload, and a repack of the *unmodified* tree comes back the same size and

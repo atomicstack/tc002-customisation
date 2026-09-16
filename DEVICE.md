@@ -59,9 +59,18 @@ holds the device's cloud credentials (`secretKey`, `authToken`,
 
 `adb shell` gives a **root shell**, but the environment is heavily stripped:
 
-- **busybox is nearly empty** — only `top` and `ifconfig` resolve. There is no
-  `grep`, `sed`, `awk`, `find`, `vi`, `head` or `tail`. Filter on the host side by
-  piping `adb shell` output instead.
+- **the stock busybox is nearly empty** — only `top` and `ifconfig` resolve. There
+  is no `grep`, `sed`, `awk`, `find`, `vi`, `head` or `tail`. Filter on the host
+  side by piping `adb shell` output instead.
+- **a device running the custom runtime has a full one** at `/res/bin/busybox`,
+  with a symlink per applet beside it, so `/res/bin/head` works directly. it is
+  not on `PATH` (which is `/sbin:/bin:/tmp:`); add it **last** if you want the
+  names — busybox has its own `reboot`, `mount`, `sh` and `ps` and the stock ones
+  are what the system expects:
+
+  ```sh
+  export PATH=$PATH:/res/bin
+  ```
 - `/bin` holds: `cat ls cp mv rm mkdir chmod chown date df ps kill ping mount sync
   touch ln getprop setprop logcat reboot mksh sh`, plus `wpa_supplicant hostapd
   dnsmasq`, `vold`, `test_fb` and the `zk*` app stack.

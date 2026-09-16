@@ -187,6 +187,19 @@ make -j"$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 4)" \
 cp busybox_unstripped "$OUT"
 chmod 0755 "$OUT"
 
+# the dispatch list, written beside the binary as `<out>.applets`, one name per line.
+#
+# the image build turns each of these into a symlink next to busybox in /res/bin, so that `head`
+# is `/res/bin/head` rather than `/res/bin/busybox head`. it has to come from this build, not from
+# a list kept by hand: an applet that is in the symlink set but not in the binary is a name that
+# answers "applet not found", which is a worse failure than not being there at all.
+#
+# `applet_names` is a blob of consecutive c string literals in the generated header, and is what
+# the multiplexer actually dispatches on.
+sed -n '/const char applet_names/,/;/p' include/applet_tables.h |
+    sed -n 's/^"\([a-z0-9_.[]*\)".*/\1/p' | sort -u > "$OUT.applets"
+[ -s "$OUT.applets" ] || { echo "could not read the applet list out of include/applet_tables.h" >&2; exit 1; }
+
 say "built $OUT"
 file "$OUT" 2>/dev/null || true
 echo "   $(wc -c < "$OUT" | tr -d ' ') bytes, $(grep -c '^CONFIG_.*=y' .config) config symbols"
@@ -195,8 +208,7 @@ echo "   $(wc -c < "$OUT" | tr -d ' ') bytes, $(grep -c '^CONFIG_.*=y' .config) 
 # total "applets", which is exactly the kind of number that reads as verification and is not.
 # `applet_names` is what the multiplexer actually dispatches on -- if a name is not in here, the
 # binary answers "applet not found" no matter what the config says.
-echo "   applets: $(sed -n '/const char applet_names/,/;/p' include/applet_tables.h |
-    sed -n 's/^"\([a-z0-9_.[]*\)".*/\1/p' | wc -l | tr -d ' ') dispatchable"
+echo "   applets: $(wc -l < "$OUT.applets" | tr -d ' ') dispatchable, listed in $(basename "$OUT").applets"
 echo
 echo "this is not installed anywhere. the image build takes it as an input, and nothing here"
 echo "writes to the device or to /res."

@@ -65,6 +65,35 @@ cp "$RUNTIME"/zig-out/bin/tc002-supervisor "$RUNTIME"/zig-out/bin/tc002d \
    "$RUNTIME"/zig-out/bin/tc002-audiod "$RUNTIME"/zig-out/bin/tc002-berryd "$RES/bin/"
 cp "$BB" "$RES/bin/busybox"
 cp "$RUNTIME"/boot/tc002-netup.sh "$RUNTIME"/boot/tc002-udhcpc.script "$RES/bin/"
+
+# one symlink per applet, beside busybox, so that `head` is /res/bin/head rather than
+# `/res/bin/busybox head`. busybox dispatches on argv[0], which is what makes this work at all.
+#
+# the list comes from the build (`<binary>.applets`, written out of the generated applet_tables.h)
+# and never from a list kept here: a symlink for an applet the binary does not carry is a name that
+# answers "applet not found", which is worse than the name not being there.
+#
+# they are relative links, so they resolve inside the squashfs wherever it is mounted, and squashfs
+# stores each as an inode plus the target string -- the whole set costs a few kilobytes.
+#
+# **these do not shadow anything.** the device's PATH is `/sbin:/bin:/tmp:` and /res/bin is not on
+# it, so `reboot` still finds /bin/reboot. if you put /res/bin on PATH, put it last: busybox has
+# its own reboot, mount, sh and ps, and the stock ones are the ones the system expects.
+APPLETS="$BB.applets"
+if [ ! -s "$APPLETS" ]; then
+    echo "no applet list at $APPLETS -- rebuild busybox with tc002-mkbusybox.sh" >&2
+    exit 1
+fi
+say "symlink each busybox applet beside it"
+n=0
+while read -r ap; do
+    [ -n "$ap" ] || continue
+    [ "$ap" = busybox ] && continue
+    case $ap in */*|.|..) echo "refusing odd applet name: $ap" >&2; exit 1 ;; esac
+    ln -sf busybox "$RES/bin/$ap"
+    n=$((n + 1))
+done < "$APPLETS"
+echo "   $n applets linked to busybox in /res/bin"
 cp "$RUNTIME"/zig-out/lib/libtc002-bootstrap.so "$RES/lib/"
 
 # a syntax check under the host's /bin/sh. it is not the ash that will run them -- that binary is
