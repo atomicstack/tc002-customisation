@@ -401,7 +401,15 @@ to one**. four things have to exist first~~ — all four now do:
 
 a fifth was added after the fact: a 120 s no-network hand-back, because a
 runtime that comes up healthy and never gets an address is unreachable and
-nothing else caught that.
+nothing else caught that. it is a **boot** check, and saying so is the whole of
+it: the first version tested "no address, and more than 120 s since we started",
+which after the first two minutes is true of every moment the link is down. a
+power cut on 2026-09-16 took the user's router at 4 h 20 m of uptime and the
+supervisor handed the panel to the vendor app 35 s later — which came up in
+setup-ap mode, so the hand-back made the device *less* reachable, which is the
+opposite of the thing it exists for. `recovery.NoNetwork` now carries whether
+wlan0 has ever had an address in this boot, and a link lost after that is
+`pollNetwork`'s problem, which retries for as long as it takes.
 
 ~~the runtime in the image is also built with this tree's default paths (`/tmp/tc002`) rather than
 `/res/bin` … that is a build option this tree does not have yet.~~ **✗ `-Dbin_dir` exists**

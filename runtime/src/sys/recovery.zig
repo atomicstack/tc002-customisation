@@ -1,4 +1,4 @@
-//! the two mechanisms that stop a flashed runtime from taking the device away with it.
+//! the three mechanisms that stop a flashed runtime from taking the device away with it.
 //!
 //! a runtime that boots from `/res` replaces the vendor app, so a bad one has nobody to hand the
 //! panel back to and no network to be reached over. the only recovery route this project has ever
@@ -15,6 +15,11 @@
 //!   the supervisor clears it once it has stayed up long enough to be called working. three bad
 //!   boots in a row and the bootstrap writes the stock config and stands aside, with nobody
 //!   touching the device.
+//!
+//! - **the no-network hand-back.** a boot whose bring-up never reaches an address has taken the
+//!   recovery route away just as surely, so after two minutes it writes the same stock config and
+//!   stops. it is a *boot* check: `NoNetwork` below says why losing an address later must not
+//!   trigger it.
 //!
 //! the policy is separated from the syscalls deliberately. the bootstrap links no libc and runs as
 //! a shared-object constructor, so none of the io here can run on a host; the decisions can, and
@@ -57,6 +62,39 @@ pub fn parseCount(text: []const u8) u8 {
     const trimmed = std.mem.trim(u8, text, " \t\r\n");
     return std.fmt.parseInt(u8, trimmed, 10) catch 0;
 }
+
+/// how long our own bring-up gets to reach an address before the panel goes back to the vendor
+/// app. the supervisor re-runs the bring-up every 30 s, so this is four attempts' worth.
+pub const no_network_grace_ns: u64 = 120 * std.time.ns_per_s;
+
+/// the third mechanism: stepping aside when our own wifi bring-up never gets anywhere.
+///
+/// a flashed runtime that cannot reach an address has taken away the only recovery route this
+/// project has verified, so after `no_network_grace_ns` it writes the stock config and stops. the
+/// whole of that sentence is about **this boot's bring-up never having worked**: once wlan0 has
+/// carried an address, losing it later is a router rebooting, and the answer to that is
+/// `pollNetwork` retrying, not a hand-back. handing back then is worse than doing nothing -- the
+/// vendor app comes up with `persist.wifi.on=0` and hosts its setup ap, so the device ends up less
+/// reachable, not more.
+pub const NoNetwork = struct {
+    /// set the first time wlan0 is seen with an address in this boot, and never cleared
+    seen_address: bool = false,
+    /// so the hand-back is asked for once and not on every loop after it
+    decided: bool = false,
+
+    /// call once per loop with the time since the supervisor started and whether wlan0 has an
+    /// address right now.
+    pub fn poll(self: *NoNetwork, since_start_ns: u64, address_present: bool) Decision {
+        if (address_present) self.seen_address = true;
+        if (self.decided) return .go;
+        // the one that was missing. without it the grace is a lower bound and nothing else, and
+        // every moment after the first two minutes qualifies as "no address 120 s after boot"
+        if (self.seen_address) return .go;
+        if (since_start_ns < no_network_grace_ns) return .go;
+        self.decided = true;
+        return .hand_back;
+    }
+};
 
 /// the stock loader configuration: the same keys as this device's `/res/etc/EasyUI.cfg`, with
 /// `startupLibPath` pointing back at the vendor library. the loader parses it with jsoncpp, so
@@ -234,4 +272,41 @@ test "the fallback config starts the vendor app and nothing else" {
     // the whole point is that it must NOT point at us
     try std.testing.expect(std.mem.indexOf(u8, stock_easyui_cfg, "tc002") == null);
     try std.testing.expect(std.mem.endsWith(u8, stock_easyui_cfg, "}\n"));
+}
+
+test "a bring-up that never reaches an address hands the panel back, once" {
+    var n = NoNetwork{};
+    try std.testing.expectEqual(Decision.go, n.poll(0, false));
+    try std.testing.expectEqual(Decision.go, n.poll(no_network_grace_ns - 1, false));
+    try std.testing.expectEqual(Decision.hand_back, n.poll(no_network_grace_ns, false));
+    // and it asks once: the supervisor is already stopping by the next loop, and a second
+    // hand-back would write the stock config over a shutdown that is already under way
+    try std.testing.expectEqual(Decision.go, n.poll(no_network_grace_ns + 1, false));
+}
+
+test "an address that arrives and is lost hours later never hands the panel back" {
+    // 2026-09-16: this is what actually happened. the runtime ran for four hours and twenty
+    // minutes, a power cut took the user's router with it, and the supervisor gave the panel to
+    // the vendor app 35 s later -- which then hosted its setup ap, so the clock was neither ours
+    // nor reachable. the grace was a lower bound and nothing else, so every second after the first
+    // two minutes was "120 s after boot with no address".
+    var n = NoNetwork{};
+    try std.testing.expectEqual(Decision.go, n.poll(20 * std.time.ns_per_s, true));
+    var t: u64 = 30 * std.time.ns_per_s;
+    const four_hours: u64 = 4 * 3600 * std.time.ns_per_s;
+    while (t < four_hours) : (t += 60 * std.time.ns_per_s) {
+        try std.testing.expectEqual(Decision.go, n.poll(t, true));
+    }
+    // the router goes away, and stays away
+    try std.testing.expectEqual(Decision.go, n.poll(t, false));
+    try std.testing.expectEqual(Decision.go, n.poll(t + 35 * std.time.ns_per_s, false));
+    try std.testing.expectEqual(Decision.go, n.poll(t + 3600 * std.time.ns_per_s, false));
+}
+
+test "an address inside the grace window disarms the hand-back for good" {
+    var n = NoNetwork{};
+    // dhcp lands with a second to spare, then the lease is lost immediately afterwards
+    try std.testing.expectEqual(Decision.go, n.poll(no_network_grace_ns - 1, true));
+    try std.testing.expectEqual(Decision.go, n.poll(no_network_grace_ns, false));
+    try std.testing.expectEqual(Decision.go, n.poll(no_network_grace_ns + 1, false));
 }

@@ -94,10 +94,6 @@ const reboot_notice_colour = [3]u8{ 58, 110, 165 };
 const reboot_notice_ns: u64 = 1200 * std.time.ns_per_ms;
 /// how long the renderer holds it. only reached if the exec fails, in which case the clock returns.
 const reboot_notice_hold_ms: u16 = 10_000;
-/// flashed boot path only: hand the panel back to the stock app if wlan0 never gets an address
-/// this long after we started. a runtime that took the network and could not bring it up has made
-/// the device unreachable, and the vendor app can do what we evidently cannot.
-const no_network_handback_ns: u64 = 120 * ns_per_s;
 /// a fresh wifi bring-up is not launched more often than this.
 const netup_retry_ns: u64 = 30 * ns_per_s;
 const sample_period_ns: u64 = 5 * ns_per_s;
@@ -500,6 +496,9 @@ const Supervisor = struct {
     workspace: ?[*:0]const u8 = null,
     /// set once the no-network hand-back has fired, so it cannot fire twice.
     handing_back: bool = false,
+    /// the boot-time no-network hand-back. it carries the one bit the condition cannot be written
+    /// without: whether wlan0 has ever had an address in this boot.
+    no_network: recovery.NoNetwork = .{},
     creds: api.Credentials = undefined,
     /// named client tokens; the supervisor owns the file and is the only writer
     clients: clients.Store = .{},
@@ -2184,16 +2183,21 @@ const Supervisor = struct {
     ///
     /// only on the flashed path (`--from-bootstrap`), and only when we are the ones who took the
     /// network: on a /tmp run the loader brought wifi up and this would be handing back a link we
-    /// never touched. if wlan0 still has no address two minutes in, the vendor app gets the panel:
-    /// it can bring wifi up, and a device that is reachable running stock beats a device that is
-    /// unreachable running ours. `pollNetwork` has already retried every 30 s by this point.
+    /// never touched. if wlan0 has *never* had an address two minutes in, the vendor app gets the
+    /// panel: it can bring wifi up, and a device that is reachable running stock beats a device
+    /// that is unreachable running ours. `pollNetwork` has already retried every 30 s by then.
+    ///
+    /// **corrected 2026-09-16.** the condition used to be `last_ip == null` and `two minutes since
+    /// we started`, which is a lower bound and nothing else: after the first two minutes, any
+    /// moment without an address qualified. a power cut took the user's router at 4 h 20 m of
+    /// uptime and the supervisor handed the panel over 35 s later. `recovery.NoNetwork` keeps the
+    /// bit that makes the sentence say what it always meant.
     fn pollNoNetworkHandback(self: *Supervisor, now: u64) void {
         if (self.shutting_down or self.handing_back) return;
         if (!self.cfg_cli.from_bootstrap or !self.netup_requested) return;
-        if (self.last_ip != null) return;
-        if (now -| self.started_ns < no_network_handback_ns) return;
+        if (self.no_network.poll(now -| self.started_ns, self.last_ip != null) == .go) return;
         self.handing_back = true;
-        log.err("no wlan0 address {d} s after boot; handing the panel back to the stock app", .{no_network_handback_ns / ns_per_s});
+        log.err("no wlan0 address in the {d} s since boot; handing the panel back to the stock app", .{recovery.no_network_grace_ns / ns_per_s});
         // stop our bring-up first, or an orphaned netup can stop the supplicant or start a second
         // udhcpc once the stock app owns the network again
         if (self.netup_pid) |pid| {
