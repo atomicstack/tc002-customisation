@@ -107,6 +107,48 @@ pub fn nextBoundaryWallNs(wall_ns: u64) u64 {
     return (wall_ns / std.time.ns_per_s + 1) * std.time.ns_per_s;
 }
 
+// --- the clock that has not been set yet ---------------------------------------------------------
+//
+// this device has no usable rtc, so it boots at the unix epoch and stays there until the first sntp
+// reply lands. in Europe/Amsterdam that reads `01:00:00`, which is a plausible-looking lie: it is a
+// time, it ticks, and someone glancing at the panel has no way to tell it is wrong.
+//
+// so until the clock has been set, the digits are not drawn at all -- only the separators, pulsing
+// once a second. that says "waiting" in a way a wrong time cannot, and it needs nothing pushed from
+// the supervisor: a wall clock still down at the epoch *is* the signal, and the moment sntp steps
+// it the clock appears by itself.
+
+/// any wall time before this has never been set: 2020-01-01T00:00:00Z, chosen because it is long
+/// after any plausible build and long before any plausible clock.
+pub const unset_before_utc_s: i64 = 1_577_836_800;
+
+/// has this clock never been told what time it is?
+pub fn isUnset(wall_ns: u64) bool {
+    return @as(i64, @intCast(wall_ns / std.time.ns_per_s)) < unset_before_utc_s;
+}
+
+/// replace every digit with a space, in place, leaving `:` and `/` where they are. the faces are
+/// proportional, so a space is not a digit's width and the separators shuffle inward -- which is
+/// wanted: what is left should look like a placeholder, not like a clock with its numbers stolen.
+pub fn blankDigits(text: []u8) void {
+    for (text) |*c| {
+        if (c.* >= '0' and c.* <= '9') c.* = ' ';
+    }
+}
+
+/// the pulse the separators breathe at while the clock is unset: one turn a second, 0..255.
+///
+/// deeper than the canvas `pulse` (which floors at 65%) because this is the only thing on the
+/// panel and has to read as a heartbeat from across a room, but it still never reaches zero -- a
+/// pulse that vanishes reads as a fault rather than as waiting.
+pub fn unsetAlpha(wall_ns: u64) u8 {
+    const ms: u64 = (wall_ns / std.time.ns_per_ms) % 1000;
+    const turn: u8 = @truncate((ms * 256) / 1000);
+    const s = scene.sin1000(turn); // -1000..1000
+    const scale: i32 = 575 + @divTrunc(s * 425, 1000); // 150..1000 in thousandths
+    return @intCast(@divTrunc(@as(i32, 255) * scale, 1000));
+}
+
 /// local seconds since the epoch -> "hh:mm:ss".
 pub fn formatTime(local_s: i64, buf: *[8]u8) []const u8 {
     const sod: u32 = @intCast(@mod(local_s, 86400));
@@ -215,11 +257,26 @@ pub const State = struct {
         const ms: u32 = @intCast((wall_ns % std.time.ns_per_s) / std.time.ns_per_ms);
         var mbuf: [3]u8 = undefined;
         const ms_text = std.fmt.bufPrint(&mbuf, "{d:0>3}", .{ms}) catch unreachable;
+        const unset = isUnset(wall_ns);
+        if (unset) {
+            blankDigits(tbuf[0..time_text.len]);
+            blankDigits(dbuf[0..date_text.len]);
+            blankDigits(mbuf[0..ms_text.len]);
+        }
         var storage: [2]Line = undefined;
         const lines = layout(style, time_text, date_text, ms_text, &storage);
         rgb.* = geometry.black_rgb;
         const hires = style.font == .hires;
-        const bar: ?i32 = if (hires) @intCast(ms * geometry.width / 1000) else null;
+        // the hires bar is the current second drawn as a sweep; with no second worth drawing it is
+        // just a bright line implying progress that is not happening.
+        const bar: ?i32 = if (hires and !unset) @intCast(ms * geometry.width / 1000) else null;
+        if (unset) {
+            // one flat colour for both modes: a gradient across two colons is not a gradient, and
+            // the pulse is the only thing the eye should be reading here.
+            const dim = clockfont.scaled(style.colour, unsetAlpha(wall_ns));
+            paint(rgb, lines, bar, clockfont.Solid{ .colour = dim }, style.digit);
+            return;
+        }
         switch (style.mode) {
             .solid => paint(rgb, lines, bar, clockfont.Solid{ .colour = style.colour }, style.digit),
             .gradient => {
@@ -237,9 +294,10 @@ pub const State = struct {
         }
     }
 
-    /// the clock redraws at the next whole second; the hires layout wants every frame
+    /// the clock redraws at the next whole second; the hires layout wants every frame, and so does
+    /// an unset clock, whose separators are breathing rather than ticking
     pub fn cadence(self: *const State, wall_ns: u64) scene.Cadence {
-        if (self.style.font == .hires) return .{ .continuous = scene.frame_period_ns };
+        if (self.style.font == .hires or isUnset(wall_ns)) return .{ .continuous = scene.frame_period_ns };
         return .{ .at_wall_ns = nextBoundaryWallNs(wall_ns) };
     }
 };
@@ -264,14 +322,19 @@ test "time of day is formatted as hh:mm:ss in local time, the date as dd/mm" {
 test "the classic solid render equals a direct blit of the formatted local time; cadence is the next boundary" {
     const rule = try tz.parse("JST-9");
     const c = State.init(rule);
-    const wall_ns: u64 = (4 * 3600 + 5 * 60 + 6) * std.time.ns_per_s + 700_000_000;
+    const wall_ns: u64 = test_wall_base + (4 * 3600 + 5 * 60 + 6) * std.time.ns_per_s + 700_000_000;
     var rgb = geometry.black_rgb;
     c.render(wall_ns, &rgb);
     var expected = geometry.black_rgb;
     font.blit(&expected, text_x, text_y, "13:05:06", c.style.colour);
     try std.testing.expectEqualSlices(u8, &expected, &rgb);
-    try std.testing.expectEqual(scene.Cadence{ .at_wall_ns = (4 * 3600 + 5 * 60 + 7) * std.time.ns_per_s }, c.cadence(wall_ns));
+    try std.testing.expectEqual(scene.Cadence{ .at_wall_ns = test_wall_base + (4 * 3600 + 5 * 60 + 7) * std.time.ns_per_s }, c.cadence(wall_ns));
 }
+
+/// midnight utc on 2026-09-07, and a whole number of days, so a time-of-day added to it renders
+/// exactly as it would have on its own. the render tests used to use a bare time-of-day, which is
+/// 1970 and now draws as a clock that has never been set -- see `isUnset`.
+const test_wall_base: u64 = 1788739200 * std.time.ns_per_s;
 
 fn litBox(rgb: *const geometry.Rgb) Box {
     var b = Box{ .x0 = geometry.width, .y0 = geometry.height, .x1 = -1, .y1 = -1 };
@@ -311,7 +374,7 @@ test "hires shows the time, a bar through the second and the milliseconds, every
     const rule = try tz.parse("JST-9");
     var c = State.init(rule);
     c.style.font = .hires;
-    const wall_ns: u64 = (4 * 3600 + 5 * 60 + 6) * std.time.ns_per_s + 417_000_000;
+    const wall_ns: u64 = test_wall_base + (4 * 3600 + 5 * 60 + 6) * std.time.ns_per_s + 417_000_000;
     var rgb = geometry.black_rgb;
     c.render(wall_ns, &rgb);
     var expected = geometry.black_rgb;
@@ -335,7 +398,7 @@ test "a gradient runs from the start colour to the clamped end colour across the
     try std.testing.expectEqual([3]u8{ 0, 255, 0 }, c.style.effectiveColour2()); // the default spread shows the whole ramp
     c.style.spread = 96;
     try std.testing.expectEqual([3]u8{ 104, 96, 0 }, c.style.effectiveColour2());
-    const wall_ns: u64 = (8 * 3600 + 8 * 60 + 8) * std.time.ns_per_s;
+    const wall_ns: u64 = test_wall_base + (8 * 3600 + 8 * 60 + 8) * std.time.ns_per_s;
     var rgb = geometry.black_rgb;
     c.render(wall_ns, &rgb);
     const left = rgb[geometry.pixelOffset(6, 4)..][0..3].*; // the first 0's left bar
@@ -373,9 +436,78 @@ test "style patches merge field by field" {
 test "the block font fills 47 of the 52 columns and ten of the rows, centred" {
     var c = State.init(tz.utc);
     c.style.font = .block;
-    const wall_ns: u64 = (8 * 3600 + 8 * 60 + 8) * std.time.ns_per_s;
+    const wall_ns: u64 = test_wall_base + (8 * 3600 + 8 * 60 + 8) * std.time.ns_per_s;
     var rgb = geometry.black_rgb;
     c.render(wall_ns, &rgb);
     const b = litBox(&rgb);
     try std.testing.expectEqual(Box{ .x0 = 2, .y0 = 3, .x1 = 48, .y1 = 12 }, b);
+}
+
+test "a clock that has never been set is recognised by its own wall time" {
+    // the device comes up at the unix epoch -- the supervisor's own first log lines are stamped
+    // 1970-01-01 -- so a wall clock still down there has never been told what time it is.
+    try std.testing.expect(isUnset(0));
+    try std.testing.expect(isUnset(1_000 * std.time.ns_per_s));
+    try std.testing.expect(!isUnset(@as(u64, 1_789_000_000) * std.time.ns_per_s)); // 2026
+}
+
+test "an unset clock blanks its digits and keeps its separators" {
+    var buf: [8]u8 = undefined;
+    const text = formatTime(3661, &buf); // 01:01:01
+    try std.testing.expectEqualStrings("01:01:01", text);
+    blankDigits(buf[0..text.len]);
+    try std.testing.expectEqualStrings("  :  :  ", buf[0..text.len]);
+}
+
+test "blanking leaves the date's slash and empties the milliseconds outright" {
+    var d: [5]u8 = undefined;
+    const date = formatDate(0, &d);
+    blankDigits(d[0..date.len]);
+    try std.testing.expectEqualStrings("  /  ", d[0..date.len]);
+    var m = [_]u8{ '0', '4', '2' };
+    blankDigits(&m);
+    try std.testing.expectEqualStrings("   ", &m);
+}
+
+test "the unset pulse turns once a second and never goes fully dark" {
+    var lowest: u16 = 1000;
+    var highest: u16 = 0;
+    var ms: u64 = 0;
+    while (ms < 1000) : (ms += 10) {
+        const a = unsetAlpha(ms * std.time.ns_per_ms);
+        lowest = @min(lowest, a);
+        highest = @max(highest, a);
+    }
+    try std.testing.expect(lowest > 0); // a pulse that vanishes reads as a fault
+    try std.testing.expect(highest >= 250);
+    try std.testing.expect(highest - lowest > 150); // but it is clearly a pulse
+
+    // one turn per second: the same point in the next second is the same brightness
+    try std.testing.expectEqual(unsetAlpha(250 * std.time.ns_per_ms), unsetAlpha(1250 * std.time.ns_per_ms));
+    try std.testing.expectEqual(unsetAlpha(0), unsetAlpha(std.time.ns_per_s));
+}
+
+test "an unset clock lights only its separators, and far fewer pixels than a set one" {
+    var unset_rgb: geometry.Rgb = geometry.black_rgb;
+    var set_rgb: geometry.Rgb = geometry.black_rgb;
+    const s = State.init(tz.utc);
+    // brightest point of the pulse, so the comparison is not measuring the envelope
+    s.render(250 * std.time.ns_per_ms, &unset_rgb);
+    s.render(@as(u64, 1_789_000_000) * std.time.ns_per_s + 250 * std.time.ns_per_ms, &set_rgb);
+    var unset_lit: usize = 0;
+    var set_lit: usize = 0;
+    var i: usize = 0;
+    while (i < unset_rgb.len) : (i += 3) {
+        if (unset_rgb[i] != 0 or unset_rgb[i + 1] != 0 or unset_rgb[i + 2] != 0) unset_lit += 1;
+        if (set_rgb[i] != 0 or set_rgb[i + 1] != 0 or set_rgb[i + 2] != 0) set_lit += 1;
+    }
+    try std.testing.expect(unset_lit > 0); // the separators are there
+    try std.testing.expect(set_lit > unset_lit * 3); // and nothing else is
+}
+
+test "an unset clock redraws every frame so the pulse moves; a set one waits for the second" {
+    const s = State.init(tz.utc);
+    try std.testing.expectEqual(scene.Cadence{ .continuous = scene.frame_period_ns }, s.cadence(0));
+    const synced = @as(u64, 1_789_000_000) * std.time.ns_per_s;
+    try std.testing.expectEqual(scene.Cadence{ .at_wall_ns = nextBoundaryWallNs(synced) }, s.cadence(synced));
 }

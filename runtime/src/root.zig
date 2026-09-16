@@ -22,6 +22,7 @@ test {
     _ = @import("scene/canvas.zig");
     _ = @import("scene/icons.zig");
     _ = @import("scene/batteryart.zig");
+    _ = @import("scene/banner.zig");
     _ = @import("scene/menu.zig");
     _ = @import("scene/pages.zig");
     _ = @import("scene/param.zig");

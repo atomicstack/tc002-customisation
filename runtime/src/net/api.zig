@@ -45,7 +45,8 @@ pub const Credentials = struct { control: Token, admin: Token };
 ///
 /// it does carry `input`, and `input` is worth knowing about: injecting button events reaches the
 /// device menu, and the menu can change brightness, the night schedule, the ip layout, mqtt and
-/// ntfy on or off, and reboot -- all of which `settings` gates over http. that is not new and
+/// ntfy on or off -- `display` and `settings` over http -- and reboot, which `ActionKind` does not
+/// offer at all. so `input` reaches past `settings`, not merely as far. that is not new and
 /// holding this secret always implied it. what is new is that a *named* token can now be issued
 /// without `input`, which is the only way that reach was ever going to be refusable.
 pub const admin_scopes: clients.Set = clients.all;

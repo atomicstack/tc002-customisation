@@ -31,8 +31,9 @@ pub const Scope = enum(u4) {
     /// the speaker. a sound in a bedroom is a different kind of consent from a pixel
     sound = 5,
     /// `POST /input`. **this reaches the device menu**, and through it brightness, the night
-    /// schedule, the ip layout, mqtt and ntfy on or off, and a reboot -- all of which are
-    /// `settings` over http. granting it grants those too; see SECURITY.md
+    /// schedule, the ip layout, mqtt and ntfy on or off -- `display` and `settings` over http --
+    /// and a **reboot, which has no http route at all**. granting it grants those and more; see
+    /// SECURITY.md
     input = 6,
     /// stored assets: sprites, sounds and a whole canvas document. durable, but not dangerous
     content = 7,

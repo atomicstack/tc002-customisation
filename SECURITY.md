@@ -81,9 +81,12 @@ the stock app and its unauthenticated api are not, and the picture changes:
   from one is named in the log ring, and the secret is returned exactly once.
   **`input` is the scope to grant deliberately**: injecting button events drives
   the physical ui, and the knob's hold opens the device menu, which reaches
-  brightness, the night schedule, the ip layout, mqtt and ntfy on or off, and a
-  reboot — settings that `settings` gates over http. that was always true of any
-  token that could post to `/input`; scopes are what make it refusable.
+  brightness, the night schedule, the ip layout, mqtt and ntfy on or off — which
+  `display` and `settings` gate over http — **and a reboot, which has no http
+  route at all**: `ActionKind` is `brightness reseed arm_stream power`. so
+  `/input` reaches *past* `settings` here rather than merely as far. that was
+  always true of any token that could post to `/input`; scopes are what make it
+  refusable.
   gap: the two built-in tokens still have no rotation — changing either means
   deleting the file and restarting, which invalidates every client at once.
 - **browser writes are refused.** a request carrying an `Origin` header is

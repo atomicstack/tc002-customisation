@@ -330,22 +330,9 @@ pub const Document = struct {
 
 // --- motion -------------------------------------------------------------------------------------
 
-/// a quarter-turn of sine, scaled to 0..255 and built at compile time: `@sin` lowers to a libm call
-/// this binary cannot link, and the cube learned the same lesson.
-const sine = blk: {
-    @setEvalBranchQuota(20000);
-    var table: [256]i16 = undefined;
-    for (&table, 0..) |*v, i| {
-        const a = @as(f64, @floatFromInt(i)) * std.math.tau / 256.0;
-        v.* = @intFromFloat(@round(@sin(a) * 1000.0));
-    }
-    break :blk table;
-};
-
-/// sin(turns) in thousandths, turns being 0..255 around the circle
-fn sin1000(turn: u8) i32 {
-    return sine[turn];
-}
+/// sin(turns) in thousandths. the table moved to `scene.zig` when the clock's unsynced pulse
+/// needed the same curve; this alias keeps the call sites here reading as they did.
+const sin1000 = scene.sin1000;
 
 /// where this element is in its period, 0..255, including its phase offset
 fn turnOf(a: Animation, elapsed_ms: u64) u8 {

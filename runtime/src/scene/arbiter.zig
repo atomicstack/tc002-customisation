@@ -218,7 +218,7 @@ test "raw frames validate duration, replace a notification, and a base selection
     try std.testing.expectEqual(Result{ .applied = 3 }, a.apply(.{ .set_base = .clock }, 0));
     try std.testing.expect(a.overlay == .none);
     try std.testing.expect(a.base == .clock);
-    try std.testing.expect(a.cadence(5 * s_ns) == .at_wall_ns);
+    try std.testing.expect(a.cadence(1788739200 * s_ns + 5 * s_ns) == .at_wall_ns); // a set clock: 5 s past the epoch is one that has never been set
 }
 
 test "stream arming is an overlay that expires after two seconds" {

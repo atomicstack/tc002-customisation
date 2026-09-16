@@ -236,3 +236,31 @@ pub const Art = struct {
         return .{ .continuous = frame_period_ns };
     }
 };
+
+// --- shared motion ------------------------------------------------------------------------------
+
+/// a full turn of sine, scaled to thousandths and built at compile time: `@sin` lowers to a libm
+/// call this binary cannot link, and the cube learned the same lesson. it lives here rather than in
+/// `canvas.zig` because the clock's unsynced pulse wants the same curve, and two tables would be
+/// two curves the moment one of them was tuned.
+const sine = blk: {
+    @setEvalBranchQuota(20000);
+    var table: [256]i16 = undefined;
+    for (&table, 0..) |*v, i| {
+        const a = @as(f64, @floatFromInt(i)) * std.math.tau / 256.0;
+        v.* = @intFromFloat(@round(@sin(a) * 1000.0));
+    }
+    break :blk table;
+};
+
+/// sin(turns) in thousandths, turns being 0..255 around the circle
+pub fn sin1000(turn: u8) i32 {
+    return sine[turn];
+}
+
+test "the sine table turns once and comes back" {
+    try std.testing.expectEqual(@as(i32, 0), sin1000(0));
+    try std.testing.expectEqual(@as(i32, 1000), sin1000(64));
+    try std.testing.expectEqual(@as(i32, 0), sin1000(128));
+    try std.testing.expectEqual(@as(i32, -1000), sin1000(192));
+}

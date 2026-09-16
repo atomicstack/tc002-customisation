@@ -32,6 +32,7 @@ const power = @import("supervisor/power.zig");
 const battery_notice = @import("supervisor/battery_notice.zig");
 const icons = @import("scene/icons.zig");
 const batteryart = @import("scene/batteryart.zig");
+const banner = @import("scene/banner.zig");
 const geometry = @import("panel/geometry.zig");
 const canvas = @import("scene/canvas.zig");
 const berry_store = @import("berry/store.zig");
@@ -84,6 +85,15 @@ const netd_restart_ns: u64 = 1 * ns_per_s;
 /// this used to be: aquarat measured the probe race on a real flashed boot, and a renderer that
 /// loses it is halted rather than retried.
 const panel_wait_ns: u64 = 45 * ns_per_s;
+/// what the panel says on its way down, and for the twenty-odd seconds it is dark afterwards
+const reboot_notice_text = "rebooting...";
+/// matt picked it: rgb 58 110 165
+const reboot_notice_colour = [3]u8{ 58, 110, 165 };
+/// how long the notice gets before /bin/reboot runs. the renderer paces at 60 fps and the panel
+/// latches a frame in well under a tenth of a second; the rest is slack for a busy renderer.
+const reboot_notice_ns: u64 = 1200 * std.time.ns_per_ms;
+/// how long the renderer holds it. only reached if the exec fails, in which case the clock returns.
+const reboot_notice_hold_ms: u16 = 10_000;
 /// flashed boot path only: hand the panel back to the stock app if wlan0 never gets an address
 /// this long after we started. a runtime that took the network and could not bring it up has made
 /// the device unreachable, and the vendor app can do what we evidently cannot.
@@ -574,7 +584,9 @@ const Supervisor = struct {
     next_power_poll: u64 = 0,
     /// the battery icon shown on the panel when the cell is worth mentioning
     battery_notices: battery_notice.Notices = .{},
-    battery_stream_seq: u32 = 0,
+    notice_stream_seq: u32 = 0,
+    /// set when the reboot notice goes up; the exec waits until it has been latched
+    reboot_at_ns: ?u64 = null,
 
     fn send(self: *Supervisor, msg: messages.Message) void {
         self.request_id += 1;
@@ -779,11 +791,39 @@ const Supervisor = struct {
         return .applied;
     }
 
-    /// reboot, asked for on the panel and confirmed there. the display goes dark first so the
-    /// device does not sit showing a frozen clock, then the vendor's own reboot runs.
+    /// reboot, asked for on the panel and confirmed there.
+    ///
+    /// this used to blank the display, on the reasoning that a frozen clock is worse than a dark
+    /// panel. both are worse than a word: the device is unreachable for about twenty seconds and a
+    /// dark panel is indistinguishable from a dead one. the panel holds its last latched frame
+    /// while nothing drives it, so the notice put up here is still on the glass for the whole dark
+    /// stretch, which costs nothing and answers the only question anyone has.
+    ///
+    /// the exec is deferred rather than run here. the renderer has to receive the frame, draw it
+    /// and latch it, and killing the process that does that in the same breath would leave the
+    /// panel on whatever was there before. `pollReboot` runs it once the notice has had its moment.
     fn rebootNow(self: *Supervisor) void {
-        self.send(.{ .power = .{ .on = 0 } });
-        self.snapshot.power = 0;
+        if (self.reboot_at_ns != null) return; // already on the way down; do not restart the clock
+        const now = sys.monotonicNs();
+        var frame: geometry.Rgb = geometry.black_rgb;
+        banner.draw(&frame, reboot_notice_text, reboot_notice_colour);
+        self.notice_stream_seq +%= 1;
+        _ = self.sendRenderer(.{ .stream_frame = .{
+            .seq = self.notice_stream_seq,
+            // outlast the delay by a wide margin: if the exec fails the notice expires on its own
+            // and the clock comes back, rather than the device sitting on a lie.
+            .timeout_ms = reboot_notice_hold_ms,
+            .rgb = frame,
+        } }, 0, lifecycle.epoch);
+        self.reboot_at_ns = now + reboot_notice_ns;
+        log.info("reboot: panel reads \"{s}\"; /bin/reboot in {d} ms", .{ reboot_notice_text, reboot_notice_ns / std.time.ns_per_ms });
+    }
+
+    /// run the reboot once the notice has been on the panel long enough to have been latched
+    fn pollReboot(self: *Supervisor, now: u64) void {
+        const due = self.reboot_at_ns orelse return;
+        if (now < due) return;
+        self.reboot_at_ns = null;
         const pid = sys.fork() catch {
             log.err("reboot: fork failed", .{});
             return;
@@ -2929,6 +2969,9 @@ const Supervisor = struct {
         }
         if (!self.battery_notices.active(now)) return;
         if (self.snapshot.renderer_state != 2) return;
+        // the reboot notice has the panel and is saying something the owner needs more than a
+        // charge level. it runs after this in the loop, so without this it would be overdrawn.
+        if (self.reboot_at_ns != null) return;
         // the shutdown countdown has the panel and is saying something more urgent
         if (self.power_policy.phase == .critical) return;
 
@@ -2942,9 +2985,9 @@ const Supervisor = struct {
             );
         }
         const left_ms = (self.battery_notices.until_ns -| now) / std.time.ns_per_ms;
-        self.battery_stream_seq +%= 1;
+        self.notice_stream_seq +%= 1;
         _ = self.sendRenderer(.{ .stream_frame = .{
-            .seq = self.battery_stream_seq,
+            .seq = self.notice_stream_seq,
             .timeout_ms = @intCast(@max(100, @min(left_ms, 2000))),
             .rgb = frame,
         } }, 0, lifecycle.epoch);
@@ -3368,6 +3411,7 @@ fn run(cfg_in: cli.Config, environ: anytype, args: []const [:0]const u8) !u8 {
         s.pollNight(now);
         s.pollPower(now);
         s.pollBatteryNotice(now);
+        s.pollReboot(now);
         s.drainNetd(now);
         s.pollNetd(now);
         s.drainNtfy(now);

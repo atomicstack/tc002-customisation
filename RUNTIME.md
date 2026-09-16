@@ -311,6 +311,27 @@ out at the next exchange. measured on 2026-09-07 against the home assistant
 host's chrony (stratum 3): first exchange −187 ms offset at 25 ms round trip,
 stepped; the following exchanges within ±10 ms at 2 ms round trip, slewed.
 
+#### the clock does not show a time it does not have
+
+There is no usable rtc, so the device boots at the unix epoch and the clock
+scene would draw `01:00:00` — in Europe/Amsterdam — until the first reply
+lands. That is a plausible-looking lie: it is a time, it ticks, and nothing on
+the panel says it is wrong.
+
+So until the clock has been set, **the digits are not drawn at all.** What is
+left is the separators — `:` between the fields, `/` in the `mini` date line —
+pulsing once a second, deeper than the canvas `pulse` because they are the only
+thing on the glass, and never quite to black, because a pulse that vanishes
+reads as a fault rather than as waiting. The `hires` sweep bar is dropped too:
+it implies progress through a second that is not worth drawing. The moment sntp
+steps the clock, the time appears.
+
+The renderer works this out for itself, from `clock.isUnset`: a wall clock
+still below 2020-01-01 has never been told what time it is. Nothing is pushed
+from the supervisor and no ipc field was added, which also means the console's
+preview shows the same thing without being taught about it — it is the same
+scene code compiled to wasm, reading the same wall time.
+
 ### the night brightness schedule
 
 with `night` on, the supervisor dims the panel in the evening and brightens it
@@ -996,7 +1017,7 @@ the current item lit.
 | `mqtt` | the broker connection on or off | yes |
 | `ntfy` | the subscriber on or off | yes |
 | `info` | wifi, battery, time sync and uptime | read only |
-| `reboot` | asks first, defaulting to no | n/a |
+| `reboot` | asks first, defaulting to no; the panel then reads [`rebooting...`](#the-reboot-notice) | n/a |
 | `exit` | closes the menu | n/a |
 
 `exit` is last, so it is one counter-clockwise click from the item the menu
@@ -1012,6 +1033,41 @@ and are now parameters of their own scenes, reached by the short press.
   when nothing is open for editing.
 - **fifteen seconds** with nothing touched closes the menu, keeping whatever is
   on the panel. in the reboot dialogue a timeout answers no.
+
+#### the reboot notice
+
+A reboot takes the device away for about twenty seconds. This used to blank the
+display on the way out, on the reasoning that a dark panel beats a frozen clock.
+Both are worse than a word, because a dark panel and a dead one look identical.
+
+So the supervisor draws `rebooting...` across the panel first — the `mini` face,
+centred, in rgb 58 110 165 — waits 1.2 s, and only then runs `/bin/reboot`. The
+wait is the point: the renderer has to receive the frame, draw it and latch it,
+and killing the process that does that in the same breath would leave whatever
+was there before. The panel holds its last latched frame while nothing is
+driving it, so the word stays on the glass for the whole dark stretch and
+costs nothing to keep there.
+
+It goes out as a stream frame, so it touches no persisted state — unlike the
+flasher's `Updating...`, which is the canvas base and has to be captured and put
+back. It is held for ten seconds, far longer than the wait, so that **if the
+exec fails the notice expires by itself** and the clock returns rather than the
+device sitting on a lie. A battery notice due in the same window stands aside.
+
+`scene/banner.zig` draws it, and is a pure module with pixel tests like
+`batteryart.zig`. A string too wide for the panel is refused rather than drawn
+off the edge: half a word is worse than none.
+
+There is no reboot route on the http api — `ActionKind` is
+`brightness reseed arm_stream power` — so this is reached from the device menu,
+or over `/input` by driving that menu. To put the same word up before a reboot
+you are causing from outside, send a notification first and then reboot however
+you were going to:
+
+```bash
+runtime/tools/tc002ctl.py -s <ip> --token-file tokens notify "rebooting..." --colour 3a6ea5 --duration 30
+adb -s <ip>:5555 reboot
+```
 
 a value is applied at once as a preview but is only **written** once it has
 settled, 700 ms after the last change, so a knob spin sends one request and
@@ -1187,11 +1243,13 @@ operate the device and watch it, but do not store, reconfigure or mint.
 
 **`input` reaches further than it looks.** injecting button events drives the
 physical ui, and the knob's hold opens the device menu, which can change
-brightness, the night schedule, the ip layout, mqtt and ntfy on or off, and
-reboot — all of which `settings` gates over http. that has always been true of
-any token that could post to `/input`; what is new is that a named token can now
-be issued **without** `input`, which is the only way that reach was ever going
-to be refusable. treat granting `input` as granting `settings`.
+brightness, the night schedule, the ip layout, mqtt and ntfy on or off — gated
+over http by `display` and `settings` — and **reboot**, which has no http route
+at all. so `/input` reaches past `settings` rather than merely as far as it.
+that has always been true of any token that could post to `/input`; what is new
+is that a named token can now be issued **without** `input`, which is the only
+way that reach was ever going to be refusable. treat granting `input` as
+granting `settings`, and then some.
 
 a named token is never granted `tokens`, and asking for it is refused by name
 rather than quietly dropped.
