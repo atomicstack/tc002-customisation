@@ -2185,15 +2185,25 @@ const Supervisor = struct {
     /// put the usb controller into device mode, so a cable is a way in.
     ///
     /// `/etc/init.rc` sets the gadget up (ids, the adb function, enable=1) and never touches the
-    /// controller's role, which boots `usb_host`. the result is a fully configured adb gadget that
-    /// no host can ever see. measured: with the role at `usb_host` the gadget sits at
-    /// `DISCONNECTED` and the controller at `powered` -- vbus present, never enumerated -- and one
-    /// write of `usb_device` takes it to `CONFIGURED` at high speed within a second.
+    /// controller's role. this writes the role, which is a recovery route that does not depend on
+    /// wifi -- exactly the route a flashed device needs when its network bring-up is the thing
+    /// that failed.
     ///
-    /// this is a recovery route that does not depend on wifi, which is exactly the route a flashed
-    /// device needs when its network bring-up is the thing that failed. it is not persistent: the
-    /// role resets every boot, and nothing in the stock boot sets it, so this write is the only
-    /// thing that turns it on.
+    /// **corrected 2026-09-16.** this comment used to say the role boots at `usb_host`, that the
+    /// gadget therefore sits at `DISCONNECTED`/`powered` until we write, and that "this write is
+    /// the only thing that turns it on". measured on two boots of the flashed runtime: the
+    /// controller comes up in *device* mode and the gadget enumerates on its own at t~2.7s;
+    /// `/bin/zkgui` flips the port to host at t~3.7s to scan for a firmware stick and flips it
+    /// back at t~6.8s -- 200 ms before this function runs at t~7.0s and reads back a role that is
+    /// already `usb_device`. so this confirms rather than causes. it is kept because it costs one
+    /// write and it is the guarantee; it is not the thing that makes adb work.
+    ///
+    /// it also cannot rescue a cable that stayed plugged in across a reboot. the host enumerates
+    /// the one-second gadget session that ends at t~3.7s, the host-mode excursion hides the
+    /// disconnect, and the host never looks at the port again. cycling `zkswe_usb/enable`,
+    /// re-initialising the controller through the role action files, and the udc's own
+    /// `soft_connect` were each measured against that state and the host logged none of them.
+    /// only a physical replug clears it. see DEVICE.md, "what happens to usb across a reboot".
     ///
     /// the three files next to `otg_role` named `usb_device`, `usb_host` and `usb_null` are
     /// **actions, not values**: reading one performs that switch. never read them to find out the

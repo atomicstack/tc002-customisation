@@ -12,11 +12,22 @@
 # half-finished flash with no way in is the one outcome worth engineering against. usb does not
 # depend on the network, the panel owner, or the supplicant.
 #
-# the catch is that the usb otg controller boots in **host** mode on this device and nothing in the
-# stock boot changes it, so the adb gadget the vendor configured is unreachable until something
-# writes `usb_device` to otg_role. this script does that over the lan first, waits for the gadget to
-# enumerate, and then uses usb for the flash itself. (a flashed runtime sets the role itself at
-# startup -- `--usb-role`, default `device` -- so after this succeeds usb comes back on its own.)
+# the catch is the replug. if no usb transport is listed this script writes `usb_device` to otg_role
+# over the lan, waits, and then asks for the cable to be pulled and put back; after that it uses usb
+# for the flash itself.
+#
+# **do not expect usb back after the reboot this script causes.** measured 2026-09-16 on both sides
+# at once: the host re-enumerates within about five seconds, but what it gets is the one-second
+# gadget session that lives between t=2.7s and t=3.7s of the boot. the vendor loader then flips the
+# port to host for ~3 s to scan for a firmware stick, which hides the disconnect, and the host is
+# left holding a device object whose endpoints answer nothing. cycling the gadget, re-initialising
+# the controller and the udc's own soft_connect were all tried from the device and the host logs
+# nothing for any of them. the lan comes back on its own in about sixteen seconds, which is why this
+# script watches both. see DEVICE.md, "what happens to usb across a reboot".
+#
+# (an earlier version of this comment said the role boots at `usb_host` and that the runtime's write
+# is what turns the gadget on. both were wrong -- the loader has already restored device mode 200 ms
+# before the supervisor writes.)
 #
 # staging goes to /data, not /tmp: the flasher's first pass restarts the app and this device reboots
 # partway through, and /tmp is a tmpfs, so an image staged there is gone before the write happens.
@@ -79,10 +90,10 @@ if [ "$FORCE_LAN" -eq 0 ]; then
                 [ -n "$DEV" ] && break
             done
             if [ -z "$DEV" ]; then
-                # the role write takes, but the gadget only re-attaches when the port sees a fresh
-                # connect. if the cable stayed plugged in across a reboot -- which resets the role
-                # to usb_host -- the host's view of the port never changed, and nothing will
-                # enumerate until someone unplugs it. measured: a replug fixes it every time.
+                # the host is holding a device object it cannot talk to, from a gadget session
+                # that ended during the boot. nothing the device can do clears that -- three
+                # separate re-advertise mechanisms were measured against it and the host logged
+                # none of them. a replug is the only thing that works, and it works every time.
                 say "the otg role is set, but the gadget has not re-attached"
                 echo "   >>> unplug the usb cable and plug it back in, then press enter (or ctrl-c to use the lan)"
                 read -r _ </dev/tty || true
@@ -274,12 +285,12 @@ adb -s "$DEV" shell "setprop ctl.stop zkswe; setprop ctl.start zkswe" >/dev/null
 # ------------------------------------------------------------------ settle
 # watch **both** transports, not just the one we flashed over.
 #
-# the usb gadget does not come back on its own if the cable stayed plugged in across the reboot:
-# the role resets to host, the runtime sets it back to device, but the host's view of the port never
-# changed and nothing re-enumerates until someone unplugs it. waiting only on usb therefore measures
-# how long until a human walks over, not how long the flash took -- which is how an earlier run got
-# recorded as "back after 85s" when the device had been up and serving on the lan the whole time.
-# the write plus reboot is about twenty seconds.
+# the usb gadget does not come back on its own if the cable stayed plugged in across the reboot, and
+# it cannot be made to: the host enumerates a gadget session that has already ended and then stops
+# watching the port. waiting only on usb therefore measures how long until a human walks over, not
+# how long the flash took -- which is how an earlier run got recorded as "back after 85s" when the
+# device had been up and serving on the lan the whole time. the write plus reboot is about twenty
+# seconds; the lan answered at sixteen in the measured run.
 answering() {
     if adb -s "$DEV" shell true >/dev/null 2>&1; then echo "$DEV"; return 0; fi
     if [ "$DEV" != "$LAN" ]; then
@@ -306,8 +317,8 @@ for i in $(seq 1 48); do
     fi
 done
 if [ -n "$BACK" ] && [ "$BACK" != "$DEV" ] && [ "$DEV" != "$LAN" ]; then
-    warn "it came back on $BACK, not usb. the otg role resets on boot and the runtime sets it"
-    warn "again, but a cable left plugged in does not re-enumerate -- unplug and replug for usb."
+    warn "it came back on $BACK, not usb. that is expected: a cable left plugged in across the"
+    warn "reboot strands the host's view of the port. unplug and replug it if you want usb back."
 fi
 
 echo

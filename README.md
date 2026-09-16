@@ -318,8 +318,9 @@ the device:
   `switchApp` / `switchDiyApp` / `keyEvent` — no broker needed.
   ([`HTTP-API.md`](HTTP-API.md))
 - **adb (port 5555)** — over wifi, and ~~usb is mass-storage~~ **✗ that was
-  wrong: adb over the usb cable works too**, after one write to the otg role and
-  a replug ([`DEVICE.md`](DEVICE.md#adb)). gives a **root** shell,
+  wrong: adb over the usb cable works too**. it does not survive a reboot with
+  the cable in, for a reason that cannot be fixed on the device
+  ([`DEVICE.md`](DEVICE.md#what-happens-to-usb-across-a-reboot)). gives a **root** shell,
   though busybox is stripped to almost nothing and `/data` is the only
   persistent writable mount. ([`DEVICE.md`](DEVICE.md))
 - **mqtt** — the other way to drive the 52×16 display without ulanzi studio;
@@ -435,7 +436,7 @@ sigmastar mi api is used instead.
 | charging | **usb-c, 5 v ⎓ 3 a** (*spec*), or the pogo-pin charging dock. *measured 2026-09-14:* the dock registers on the same `vin` the mcu reports for usb-c, so undocking reads as loss of usb power |
 | monitoring | done by the mcu: the app polls pack millivolts and `vin` (usb present). firmware thresholds: **low battery below 3600 mv**, **emergency below 3550 mv** → 30 s countdown → shutdown (skipped while on usb power) |
 | shutdown | the custom runtime reproduces those thresholds — see [`RUNTIME.md`](RUNTIME.md#the-low-battery-shutdown) — and powers off through the mcu's own `powerOff` command rather than halting the soc, which would leave the rails up |
-| usb | the soc has both an ehci **host** (with `vold` ready to mount a stick at `/mnt/usb1`, used for factory-test configs) and a device controller (`Sstar-udc`, msb250x). the gadget is configured as **adb** (`18d1:d002`), not mass storage — but the otg controller boots in `usb_host` mode, so nothing enumerates until `usb_device` is written to `/sys/bus/platform/devices/soc:usbotg/otg_role` and the cable is replugged. the custom runtime does that at startup |
+| usb | the soc has both an ehci **host** (with `vold` ready to mount a stick at `/mnt/usb1`, used for factory-test configs) and a device controller (`Sstar-udc`, msb250x). the gadget is configured as **adb** (`18d1:d002`), not mass storage. ~~the otg controller boots in `usb_host` mode, so nothing enumerates until `usb_device` is written to otg_role~~ **✗ corrected: it boots in device mode and enumerates on its own; the vendor loader then flips the port to host for ~3 s to scan for a firmware stick, and that excursion is what strands the host's view of the port across a reboot** ([`DEVICE.md`](DEVICE.md#what-happens-to-usb-across-a-reboot)) |
 | rtc | **none usable**: the soc's rtc block is enabled in the device tree but no driver is bound, so there is no `/dev/rtc` and the clock is set purely by sntp ([`DEVICE.md`](DEVICE.md#time)) |
 
 ### also on the soc, unused

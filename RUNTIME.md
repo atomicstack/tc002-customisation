@@ -115,18 +115,32 @@ usage: tc002-supervisor [options]
 
 #### `--usb-role`, and the replug that catches everyone
 
-The usb otg controller boots in **host** mode and nothing in the stock boot
-changes it, so the adb gadget the vendor already configured is unreachable over
-a cable. The supervisor writes `usb_device` to
-`/sys/bus/platform/devices/soc:usbotg/otg_role` at startup — it has to be us,
-because the role resets on every boot.
+The supervisor writes `usb_device` to
+`/sys/bus/platform/devices/soc:usbotg/otg_role` at startup, and `--usb-role`
+chooses what it writes.
 
-**A cable left plugged in across a reboot will not re-enumerate.** The write
-lands, but the host's view of the port never changed, so nothing attaches until
-someone unplugs and replugs it. Expect that after every reboot, including after
-a flash. [`DEVICE.md`](DEVICE.md#adb) has the diagnosis, the symptom pair that
-impersonates a bad cable, and the sysfs files that are actions rather than
-values.
+> **corrected 2026-09-16.** This section used to say the controller *"boots in
+> host mode and nothing in the stock boot changes it"*, and that the
+> supervisor's write *"has to be us, because the role resets on every boot"*.
+> ~~Both were wrong.~~ Measured across two boots of the flashed runtime: the
+> controller comes up in **device** mode, the gadget enumerates at t≈2.7 s, the
+> vendor loader flips the port to host at t≈3.7 s to scan for a firmware stick,
+> and flips it back at t≈6.8 s — **200 ms before** the supervisor's write at
+> t≈7.0 s, which therefore only confirms a role that is already set. The write
+> is cheap and still worth keeping as a guarantee, but it is not what turns adb
+> on. What the *stock* app leaves the role at after its own scan was not
+> re-measured, and the original stock reading may itself have been an artifact
+> of reading the action files — see [`DEVICE.md`](DEVICE.md#adb).
+
+**A cable left plugged in across a reboot does not come back, and this cannot be
+fixed from the device.** The port re-enumerates on the host within about five
+seconds — but what it enumerates is the one-second gadget session that exists
+between t≈2.7 s and t≈3.7 s, and the host-mode excursion that follows hides the
+disconnect, so the host keeps a device object it can never talk to again.
+Nothing the device can do afterwards clears it. Expect a replug after every
+reboot if you want usb back; wifi returns on its own in about sixteen seconds.
+[`DEVICE.md`](DEVICE.md#adb) has the measured timeline and the three
+re-advertise mechanisms that were tried and failed.
 
 `--usb-role keep` opts out. The default costs physical-access root over usb,
 which is the same root the dev profile already hands to anyone on the lan, and

@@ -165,48 +165,94 @@ run `apply` again. `status` says which library the running app has mapped.
 ## adb
 
 Over wifi, and **over the usb cable too** — Ulanzi's docs say USB adb does not
-work on wifi-equipped models, and on this unit that is wrong. It takes one write
-and a replug.
+work on wifi-equipped models, and on this unit that is wrong.
 
 The vendor's `/etc/init.rc` configures the usb **gadget** completely: vendor id
-`18d1`, product `d002`, the `adb` function, `enable 1`. What it never sets is the
-**controller's role**, which boots as `usb_host`. So the device carries a fully
-configured adb gadget that no host can ever see, because it is trying to be a
-host itself.
+`18d1`, product `d002`, the `adb` function, `enable 1`. Once it is up the device
+appears as `18d1:d002` "Zkswe", serial `0123456789ABCDEF`, alongside any network
+transport, and macOS asks to approve the accessory once. It is a way in that does
+not depend on wifi: verified with `wpa_supplicant` stopped and `wlan0` down to no
+carrier and no address, the usb shell stayed up and the wifi was brought back
+through it.
+
+**Do not read the three files beside `otg_role`** named `usb_device`, `usb_host`
+and `usb_null` to find out the current role: they are *actions*, and reading one
+performs that switch. Read `otg_role`.
+
+### what happens to usb across a reboot
+
+Short version: **a cable left plugged in does not come back, and no amount of
+work on the device will change that.** Replug it, or use wifi, which returns on
+its own in about sixteen seconds.
+
+> **corrected 2026-09-16.** This section used to say the controller *"boots as
+> `usb_host`"*, that one write of `usb_device` plus a replug was what turned adb
+> on, and that a plugged cable *"leaves the host's view of the port unchanged and
+> nothing enumerates"*. ~~All three were wrong~~, and the third was wrong in the
+> direction that makes the real fault harder to find: the host **does**
+> re-enumerate, promptly, and still cannot talk to the device.
+
+The measured sequence, from the device's kernel log and the mac's
+`IOUSBHostFamily` log on the same reboot, two boots running:
+
+| device t | what happens | what the mac sees |
+|---|---|---|
+| 0.15 s | `PULL_UP(OFF)` then `PULL_UP(ON)` — the controller comes up in **device** mode | `terminateDevice: hardware connection lost` at reset |
+| 2.1 s | `init.rc`'s `sys.usb.config=adb` block binds the `adb` function | two `enumeration failed` for `18d1/0001` |
+| 2.7 s | `USB_STATE=CONFIGURED` | `enumerated 0x18d1/d002 at 480 Mbps` — about 5 s after the reset |
+| 3.7 s | `PULL_UP(OFF)`, ehci registers: **the vendor loader flips the port to host** to scan for a firmware stick | nothing — the disconnect is hidden behind the host-mode bus |
+| 4.4 s | `usb scan usb_id thread exit!!!` | |
+| 6.8 s | ehci removed, `PULL_UP(ON)` — back to device mode | nothing |
+| 7.0 s | the supervisor writes `usb_device`, reads back `usb_device` | nothing |
+
+So the host enumerates the **one-second gadget session that lives between 2.7 s
+and 3.7 s**, and the host-mode excursion that immediately follows keeps it from
+ever seeing that session end. It is left holding a device object whose endpoints
+answer nothing: `AppleUSBIORequest::complete: ... endpoint 0x00: status
+0xe00002ed (transaction error)`, once a second, until the port is physically
+re-cycled. `system_profiler SPUSBDataType` still lists the clock the whole time,
+which is what makes this look like a working cable.
+
+The excursion belongs to `/bin/zkgui`. `libzkhardware.so`, which only zkgui
+links, is the one binary on the device that holds the four role paths, and it
+runs the scan **before** it `dlopen`s our bootstrap. There is no point in the
+boot at which our code exists and the damage has not already been done.
+
+Three device-side ways to re-advertise were tried against a wedged port. All
+three reach the hardware, and the mac logs **nothing** for any of them:
 
 ```sh
-echo usb_device > /sys/bus/platform/devices/soc:usbotg/otg_role
+echo 0 > /sys/class/zkswe_usb/zkswe0/enable; sleep 1; echo 1 > ...  # PULL_UP off/on, adb re-bind
+cat /sys/bus/platform/devices/soc:usbotg/usb_null   # role to null, then usb_device:
+cat /sys/bus/platform/devices/soc:usbotg/usb_device #   a full "Init USB controller"
+echo disconnect > /sys/class/udc/soc:Sstar-udc/soft_connect; ...; echo connect > ...
 ```
 
-**Then unplug the cable and plug it back in.** The write takes effect, but the
-gadget only re-attaches when the port sees a fresh connect; a cable that was
-already plugged in leaves the host's view of the port unchanged and nothing
-enumerates. This catches you after every reboot, because the role resets and the
-cable is usually still in.
+A twelve-second disconnect was no more visible than a one-second one. The host
+is not watching that port for a connect any more, and macOS offers no way to
+power-cycle a port from userspace.
 
-The symptom pair, when it is not working, impersonates a bad cable exactly:
+Two smaller things measured at the same time, both worth knowing:
+
+- with the role already at `usb_device`, **writes to `otg_role` are silently
+  ignored** — `usb_null`, `usb_host` and `usb_device` all returned success and
+  changed nothing. Only the action files moved it. The older claim that writes
+  are ignored *"while a host is attached and the gadget is `CONFIGURED`"* is too
+  narrow; the gadget was `DISCONNECTED` for this test.
+- after the excursion the gadget can be left reporting `state: CONFIGURED` with
+  `current_speed: UNKNOWN`, which is not a live session. The symptom pair below
+  is the honest one, and it impersonates a bad cable exactly:
 
 ```sh
 cat /sys/class/zkswe_usb/zkswe0/state   # DISCONNECTED
 cat /sys/class/udc/soc:Sstar-udc/state  # powered  <- vbus is there, no data session
 ```
 
-**Do not read the three files beside `otg_role`** named `usb_device`, `usb_host`
-and `usb_null` to find out the current role: they are *actions*, and reading one
-performs that switch. Read `otg_role`. A write to it is also accepted and
-silently ignored while a host is attached and the gadget is `CONFIGURED` — the
-driver will not tear down a live session.
-
-Once it is up the device appears as `18d1:d002` "Zkswe", serial
-`0123456789ABCDEF`, alongside any network transport, and macOS asks to approve
-the accessory once. It is a way in that does not depend on wifi: verified with
-`wpa_supplicant` stopped and `wlan0` down to no carrier and no address, the usb
-shell stayed up and the wifi was brought back through it.
-
-The custom runtime sets the role itself at startup (`--usb-role`, default
-`device`), because nothing in the stock boot does and it resets every time.
-That is what makes usb a recovery route on a flashed device whose network
-bring-up is the thing that failed.
+The custom runtime still writes the role at startup (`--usb-role`, default
+`device`). On the flashed path that write lands 200 ms after the loader has
+already restored device mode, so it confirms rather than causes — but it costs
+nothing and it is the guarantee that matters on a device whose network bring-up
+is the thing that failed.
 
 ```bash
 brew install --cask android-platform-tools

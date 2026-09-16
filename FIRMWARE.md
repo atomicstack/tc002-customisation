@@ -463,7 +463,7 @@ library: `setenv ZK_UPGRADE_RESTART=1`, then `zk_upgrade_check(dir)`,
 `zk_upgrade_has_select_item()`, `zk_upgrade_ready()`, `zk_upgrade_perform()`,
 `zk_upgrade_end(result)`. The non-`1` return encodings were not mapped. The
 simpler alternative is to make sure the stock loader still gets to run the
-upgrade, see [the bootstrap must yield](#1-the-bootstrap-must-yield-to-a-pending-upgrade).
+upgrade, see [the bootstrap must yield](#1-the-bootstrap-must-yield-to-a-pending-upgrade--done).
 
 ---
 
@@ -766,11 +766,19 @@ This is what actually worked on 2026-09-15, not a proposal.
 2. **Prefer usb for the flash itself.** The sequence stops `zkswe` and the
    device reboots partway through, and wifi on this device is brought up by
    whatever owns the panel — so the lan transport can vanish exactly when the
-   write is happening. The otg controller boots in *host* mode and nothing in
-   the stock boot changes it, so enable the gadget first:
-   `echo usb_device > /sys/bus/platform/devices/soc:usbotg/otg_role`. If the
-   cable was already plugged in, unplug and replug it: the role write takes,
-   but the gadget only re-attaches on a fresh connect.
+   write is happening.
+
+   If no usb transport is listed, write the role and then **unplug and replug
+   the cable**: `echo usb_device > /sys/bus/platform/devices/soc:usbotg/otg_role`.
+
+   > ~~The otg controller boots in *host* mode and nothing in the stock boot
+   > changes it~~ **✗ corrected 2026-09-16: it boots in device mode and
+   > enumerates by itself; the vendor loader flips the port to host for about
+   > three seconds early in the boot to scan for a firmware stick, and that is
+   > what strands the host.** The role write is still worth doing — it is cheap
+   > and it is the guarantee — but it is not what turns the gadget on, and no
+   > write can substitute for the replug. See
+   > [`DEVICE.md`](DEVICE.md#what-happens-to-usb-across-a-reboot).
 
 3. **Flash:**
 
@@ -805,9 +813,10 @@ This is what actually worked on 2026-09-15, not a proposal.
 
    **The write plus reboot takes about 20 seconds.** Earlier runs here were
    recorded as 85 s and three minutes; both were wrong. The script was waiting
-   on the usb transport, which does not re-enumerate after the reboot until the
-   cable is physically replugged, while the device had been up and serving on
-   the lan the whole time. It now watches both and says which one answered.
+   on the usb transport, which is gone for good after the reboot until the cable
+   is physically replugged, while the device had been up and serving on the lan
+   the whole time — the lan came back in about sixteen seconds in the measured
+   run. It now watches both and says which one answered.
 
 5. **Confirm by listing `/res/bin`.** If `tc002-supervisor` is there, it worked.
    `/data/.zkupgraderec` is **not** a usable check: `zk_upgrade_check` removes it

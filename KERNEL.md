@@ -444,13 +444,20 @@ kernel.
 > that reading of the symptom was wrong, and it is wrong in a way that cost
 > hours later: the same `powered` + `DISCONNECTED` pair appeared with a laptop
 > plugged straight into the usb-c port, and it sent the investigation chasing
-> cables. the real cause is that the otg controller boots in **host** mode —
-> `/sys/bus/platform/devices/soc:usbotg/otg_role` reads `usb_host` — so the
-> device never presents itself to anything, dock or host. one write of
-> `usb_device` and a replug takes it to `CONFIGURED` at high speed.
+> cables.
+>
+> **the replacement explanation was also wrong, and is corrected here
+> (2026-09-16).** it said *"the otg controller boots in **host** mode ... one
+> write of `usb_device` and a replug takes it to `CONFIGURED`"*. measured on two
+> boots: the controller comes up in **device** mode and the gadget enumerates by
+> itself at t≈2.7 s. it is `/bin/zkgui` that flips the port to host at t≈3.7 s,
+> to scan for a firmware stick, and back at t≈6.8 s. that excursion — not the
+> boot role — is what leaves a host holding a dead device object, and it happens
+> before our bootstrap is loaded, so it cannot be prevented from here.
 >
 > so the gadget is **not** untestable. adb over the cable is working and is
-> documented in [`DEVICE.md`](DEVICE.md#adb).
+> documented in [`DEVICE.md`](DEVICE.md#adb), with the full timeline in
+> [what happens to usb across a reboot](DEVICE.md#what-happens-to-usb-across-a-reboot).
 
 hid itself is still untested, for a different and better reason: changing the
 function list is mutative and would drop the `adb` function the deploy path
