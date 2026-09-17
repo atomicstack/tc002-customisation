@@ -9,8 +9,10 @@ const sys = @import("sys/linux.zig");
 const log = @import("sys/log.zig");
 const http = @import("net/http.zig");
 const sse = @import("net/sse.zig");
+const docs = @import("net/docs.zig");
 const sound_store = @import("sound/store.zig");
 const api = @import("net/api.zig");
+const ha = @import("net/ha.zig");
 const clients = @import("net/clients.zig");
 const berry_store = @import("berry/store.zig");
 const json = @import("net/json.zig");
@@ -99,6 +101,7 @@ const Conn = struct {
     out: [out_buf_len]u8 = undefined,
     out_len: usize = 0,
     out_off: usize = 0,
+    static_body: docs.Transfer = .{ .body = "" },
 
     /// reset the bookkeeping only: assigning a whole `Conn` copies its 12 kib of buffers and makes
     /// every page of the table resident for nothing (measured: 48 kib for 16 useful bytes).
@@ -117,6 +120,7 @@ const Conn = struct {
         c.screen_raw = false;
         c.out_len = 0;
         c.out_off = 0;
+        c.static_body = .{ .body = "" };
     }
 };
 
@@ -207,18 +211,10 @@ const Netd = struct {
     state_dirty: bool = true,
     last_state_pub_ns: u64 = 0,
     next_metrics_ns: u64 = 0,
-    // home-assistant discovery: one entity per second, at most one pass in flight
-    disc_index: u8 = 0,
-    disc_active: bool = false,
-    disc_remove: bool = false,
+    // home-assistant discovery: retained cleanup survives reconnects and config changes.
+    discovery: ha.Discovery = .{},
     disc_next_ns: u64 = 0,
-    disc_published: bool = false,
-    disc_prefix_used: config.Text = .{},
-    /// the device name discovery was last published under. a cold boot can publish under the
-    /// `boot` fallback and only then learn the mac, which changes the name; without this there is
-    /// nothing to notice that by, and home assistant keeps a device nothing will ever address.
-    disc_id_buf: [identity.max]u8 = undefined,
-    disc_id_len: usize = 0,
+    disc_sent_ns: u64 = 0,
     // counters
     http_requests: u32 = 0,
     http_rejected: u32 = 0,
@@ -310,6 +306,7 @@ const Netd = struct {
 
     fn respond(self: *Netd, c: *Conn, status: u16, content_type: []const u8, body: []const u8) void {
         _ = self;
+        c.static_body = .{ .body = "" };
         const r = http.writeResponse(&c.out, status, content_type, body);
         c.out_len = r.len;
         c.out_off = 0;
@@ -325,20 +322,28 @@ const Netd = struct {
     }
 
     fn flushConn(self: *Netd, c: *Conn, now: u64) void {
-        while (c.out_off < c.out_len) {
-            const n = sys.write(c.fd, c.out[c.out_off..c.out_len]) catch |e| switch (e) {
-                error.WouldBlock => {
-                    sys.epollMod(self.ep, c.fd, linux.EPOLL.OUT, self.connTag(c));
-                    c.last_ns = now;
-                    return;
-                },
-                error.Interrupted => continue,
-                else => {
-                    self.closeConn(c);
-                    return;
-                },
-            };
-            c.out_off += n;
+        // static assets may exceed a response buffer; keep only a slice into read-only data
+        // and refill after each complete chunk. partial writes keep the current chunk intact.
+        while (true) {
+            while (c.out_off < c.out_len) {
+                const n = sys.write(c.fd, c.out[c.out_off..c.out_len]) catch |e| switch (e) {
+                    error.WouldBlock => {
+                        sys.epollMod(self.ep, c.fd, linux.EPOLL.OUT, self.connTag(c));
+                        c.last_ns = now;
+                        return;
+                    },
+                    error.Interrupted => continue,
+                    else => {
+                        self.closeConn(c);
+                        return;
+                    },
+                };
+                c.out_off += n;
+            }
+            const more = c.static_body.next(&c.out);
+            if (more.len == 0) break;
+            c.out_len = more.len;
+            c.out_off = 0;
         }
         if (c.state == .streaming) {
             // a stream is never finished. keep the slot, empty the buffer, and go back to watching
@@ -693,6 +698,22 @@ const Netd = struct {
     }
 
     fn dispatch(self: *Netd, c: *Conn, now: u64) void {
+        // public reference assets contain no device state. the api below still authenticates
+        // every read and write, including requests sent by the explorer.
+        if (docs.lookup(c.req.path)) |asset| {
+            if (c.req.method != .GET) {
+                self.respondError(c, 405, "method_not_allowed", "documentation accepts get only");
+            } else {
+                const bytes = asset.bytes();
+                c.out_len = docs.header(&c.out, asset.contentType(), bytes.len).len;
+                c.out_off = 0;
+                c.static_body = .{ .body = bytes };
+                c.state = .writing;
+                c.awaiting = .none;
+            }
+            self.flushConn(c, now);
+            return;
+        }
         const body = c.in[c.head_len .. c.head_len + c.body_len];
         const creds = self.creds orelse {
             self.respondError(c, 503, "not_ready", "credentials not received yet");
@@ -811,13 +832,10 @@ const Netd = struct {
         self.status = st;
         self.status_at_ns = now;
         if (changed) self.state_dirty = true;
-        // the mac can arrive after discovery has already gone out under the boot fallback
-        if (self.disc_published and self.cfg.discovery) {
+        // a late mac must clear discovery under the previous boot identity first.
+        if (self.discovery.id_len > 0 and self.cfg.discovery) {
             var id: [identity.max]u8 = undefined;
-            if (identity.shouldRepublish(self.disc_id_buf[0..self.disc_id_len], self.deviceId(&id))) {
-                log.info("device identity changed; republishing discovery", .{});
-                self.discoveryStart(false, now);
-            }
+            if (!std.mem.eql(u8, self.deviceId(&id), self.discovery.id[0..self.discovery.id_len])) self.discoveryStart(now);
         }
         if (request_id != 0) {
             if (self.findConn(true, request_id)) |c| {
@@ -833,14 +851,12 @@ const Netd = struct {
 
     fn onConfig(self: *Netd, request_id: u64, cfg: config.Config, now: u64) void {
         const mqtt_changed = !std.meta.eql(cfg.mqtt, self.cfg.mqtt);
-        const discovery_was = self.cfg.discovery;
+        const discovery_changed = self.cfg.discovery != cfg.discovery or self.cfg.discovery_controls != cfg.discovery_controls;
         const prefix_changed = !std.mem.eql(u8, cfg.discovery_prefix.slice(), self.cfg.discovery_prefix.slice());
         self.cfg = cfg;
-        if (self.m_connected and self.have_cfg) {
-            if ((discovery_was and !cfg.discovery) or (discovery_was and prefix_changed)) self.discoveryStart(true, now) else if (cfg.discovery and (!discovery_was or prefix_changed)) self.discoveryStart(false, now);
-        }
+        if (self.have_cfg and (discovery_changed or prefix_changed)) self.discoveryStart(now);
         self.have_cfg = true;
-        if (mqtt_changed or !self.client.enabled) self.applyMqttSettings(now);
+        if (mqtt_changed or discovery_changed or prefix_changed or !self.client.enabled) self.applyMqttSettings(now);
         if (self.next_metrics_ns == 0 and cfg.metrics_interval_s != 0) self.next_metrics_ns = now + @as(u64, cfg.metrics_interval_s) * ns_per_s;
         if (self.findConn(true, request_id)) |c| {
             if (c.awaiting == .config) {
@@ -850,6 +866,12 @@ const Netd = struct {
                 self.flushConn(c, now);
             }
         }
+        self.publishConfigDoc();
+        for (&self.m_pending) |*p| if (p.used and p.id == request_id) {
+            p.used = false;
+            self.publishResult(request_id, if (cfg.saved_revision == cfg.revision) .applied else .unavailable, cfg.revision);
+            break;
+        };
     }
 
     /// the generators' own parameters, as a view: one object per generator keyed by the names its
@@ -1010,7 +1032,14 @@ const Netd = struct {
     }
 
     fn onSaveResult(self: *Netd, request_id: u64, r: messages.SaveResult, now: u64) void {
-        const c = self.findConn(true, request_id) orelse return;
+        const c = self.findConn(true, request_id) orelse {
+            for (&self.m_pending) |*p| if (p.used and p.id == request_id) {
+                p.used = false;
+                self.publishResult(request_id, r.status, r.saved_revision);
+                break;
+            };
+            return;
+        };
         switch (r.status) {
             .applied => {
                 var o = Out{ .buf = &json_buf };
@@ -1342,7 +1371,7 @@ const Netd = struct {
         o.str(c.timezone.slice());
         o.add(",\"ntp\":{\"server\":");
         if (c.ntp_server) |s| o.fmt("\"{d}.{d}.{d}.{d}\"", .{ s[0], s[1], s[2], s[3] }) else o.add("null");
-        o.fmt(",\"interval_s\":{d}}},\"frame_timeout_ms\":{d},\"metrics_interval_s\":{d},\"discovery\":{{\"enabled\":{},\"prefix\":", .{ c.ntp_interval_s, c.frame_timeout_ms, c.metrics_interval_s, c.discovery });
+        o.fmt(",\"interval_s\":{d}}},\"frame_timeout_ms\":{d},\"metrics_interval_s\":{d},\"discovery\":{{\"enabled\":{},\"controls\":{},\"prefix\":", .{ c.ntp_interval_s, c.frame_timeout_ms, c.metrics_interval_s, c.discovery, c.discovery_controls });
         o.str(c.discovery_prefix.slice());
         o.add("},\"clock\":");
         clockJson(o, messages.ClockStyle.full(c.clockStyle()));
@@ -1663,9 +1692,12 @@ const Netd = struct {
                 self.setError("");
                 self.mqttFlush();
                 self.mqttPublish("availability", "online", 1, true);
+                self.publishConfigDoc();
                 self.state_dirty = true;
                 self.last_state_pub_ns = 0;
-                if (self.cfg.discovery) self.discoveryStart(false, now);
+                var discovery_id: [identity.max]u8 = undefined;
+                self.discovery.reconnect(self.cfg.discovery_prefix.slice(), self.deviceId(&discovery_id), self.cfg.discovery);
+                self.disc_next_ns = now;
             },
             .send_ping => {
                 const space = self.mqttSpace();
@@ -1724,7 +1756,7 @@ const Netd = struct {
                     self.mqttDirective(self.client.onConnack(c.return_code, now), now);
                 },
                 .publish => |p| self.onMqttPublish(p, now),
-                .puback => {},
+                .puback => |id| self.discovery.acknowledge(id),
                 .suback => {},
                 .pingresp => self.client.onPingresp(),
                 .other => {},
@@ -1768,7 +1800,7 @@ const Netd = struct {
         }
         // home-assistant birth: republish discovery when it comes online
         if (self.cfg.discovery and std.mem.endsWith(u8, p.topic, "/status") and std.mem.startsWith(u8, p.topic, self.cfg.discovery_prefix.slice())) {
-            if (std.mem.eql(u8, p.payload, "online")) self.discoveryStart(false, now);
+            if (std.mem.eql(u8, p.payload, "online")) self.discoveryStart(now);
             return;
         }
         // a topic a script asked for is a script's business, not a command
@@ -1843,17 +1875,24 @@ const Netd = struct {
                 .sound_stop => self.mqttRelay(.{ .sound_cmd = messages.SoundCmd.init(.stop, "", 0, false) }, self.newId(), 0, now),
                 .notify => |n| self.mqttRelay(.{ .notify = messages.Notify.init(n.text, n.colour, n.duration_s, messages.Transition.fromSpec(n.transition)) }, n.request_id, n.epoch orelse 0, now),
                 .config_patch => |cp| {
-                    // the control subset only: transient brightness and scene parameters
-                    const admin_fields = cp.timezone != null or cp.ntp_server != null or cp.ntp_interval_s != null or cp.frame_timeout_ms != null or cp.metrics_interval_s != null or cp.discovery != null or cp.discovery_prefix != null or cp.clock_font != null or cp.clock_colour_mode != null or cp.clock_colour != null or cp.clock_colour2 != null or cp.clock_gradient != null or cp.clock_spread != null or cp.ip_mode != null or cp.sound_enabled != null or cp.sound_volume != null;
-                    if (admin_fields) {
-                        var o = Out{ .buf = &json_buf };
-                        o.add("{\"status\":\"rejected\",\"error\":\"admin_only\",\"message\":\"durable settings are administered over http\"}");
-                        self.mqttPublish("result", o.slice(), 0, false);
-                        return;
+                    switch (ha.patchPolicy(cp, self.cfg.discovery_controls)) {
+                        .rejected => {
+                            self.mqttPublish("result", "{\"status\":\"rejected\",\"error\":\"admin_only\",\"message\":\"this setting requires http or an enabled home assistant controls opt in\"}", 0, false);
+                            return;
+                        },
+                        .durable => {
+                            const w = messages.ConfigPatch.fromApi(cp) catch {
+                                self.publishResult(self.newId(), .rejected, self.status.revision);
+                                return;
+                            };
+                            self.mqttRelay(.{ .config_patch = w }, self.newId(), 0, now);
+                            return;
+                        },
+                        .transient => {},
                     }
-                    const rid = self.newId();
-                    if (cp.brightness) |b| self.mqttRelay(.{ .brightness = .{ .value = b } }, rid, 0, now);
-                    if (cp.base) |b| self.mqttRelay(.{ .set_base = .{ .base = @intFromEnum(b), .generator = if (cp.generator) |g| @intFromEnum(g) else 0xff, .seed = 0 } }, rid + 1, 0, now);
+                    const ids = ha.transientIds(&self.next_id);
+                    if (cp.brightness) |b| self.mqttRelay(.{ .brightness = .{ .value = b } }, ids.brightness, 0, now);
+                    if (cp.base orelse (if (cp.generator != null) @as(?api.Base, .art) else null)) |b| self.mqttRelay(.{ .set_base = .{ .base = @intFromEnum(b), .generator = if (cp.generator) |g| @intFromEnum(g) else 0xff, .seed = 0 } }, ids.scene, 0, now);
                 },
                 else => {},
             },
@@ -1896,74 +1935,8 @@ const Netd = struct {
     // home-assistant mqtt discovery: read-only diagnostic sensors over the metrics topic, the
     // display power over the state topic, and the physical controls as momentary event entities
 
-    const Component = enum { sensor, binary_sensor, event };
-    const Entity = struct {
-        key: []const u8,
-        name: []const u8,
-        template: []const u8 = "",
-        unit: []const u8 = "",
-        device_class: []const u8 = "",
-        state_class: []const u8 = "",
-        component: Component = .sensor,
-        /// topic under the prefix that carries the state or the events
-        topic: []const u8 = "metrics",
-        /// json array body for an event entity's `event_types`
-        event_types: []const u8 = "",
-        diagnostic: bool = true,
-    };
-    const entities = [_]Entity{
-        .{ .key = "power", .name = "display power", .component = .binary_sensor, .topic = "state", .template = "{{ 'ON' if value_json.power else 'OFF' }}", .device_class = "power" },
-        .{ .key = "button_left", .name = "left button", .component = .event, .topic = "input/left", .event_types = "\"press\",\"release\",\"long\"", .device_class = "button", .diagnostic = false },
-        .{ .key = "button_middle", .name = "middle button", .component = .event, .topic = "input/middle", .event_types = "\"press\",\"release\",\"long\"", .device_class = "button", .diagnostic = false },
-        .{ .key = "button_right", .name = "right button", .component = .event, .topic = "input/right", .event_types = "\"press\",\"release\",\"long\"", .device_class = "button", .diagnostic = false },
-        .{ .key = "knob", .name = "knob", .component = .event, .topic = "input/knob", .event_types = "\"press\",\"release\",\"long\"", .device_class = "button", .diagnostic = false },
-        .{ .key = "rotary", .name = "rotary", .component = .event, .topic = "input/rotary", .event_types = "\"cw\",\"ccw\"", .diagnostic = false },
-        .{ .key = "uptime", .name = "uptime", .template = "{{ value_json.uptime_s }}", .unit = "s", .device_class = "duration", .state_class = "" },
-        .{ .key = "memory_available", .name = "memory available", .template = "{{ value_json.memory_available_kb }}", .unit = "kB", .device_class = "data_size", .state_class = "measurement" },
-        .{ .key = "cpu", .name = "cpu utilization", .template = "{{ value_json.cpu_pct }}", .unit = "%", .device_class = "", .state_class = "measurement" },
-        .{ .key = "rss_supervisor", .name = "supervisor rss", .template = "{{ value_json.rss_kb.supervisor }}", .unit = "kB", .device_class = "data_size", .state_class = "measurement" },
-        .{ .key = "rss_renderer", .name = "renderer rss", .template = "{{ value_json.rss_kb.renderer }}", .unit = "kB", .device_class = "data_size", .state_class = "measurement" },
-        .{ .key = "rss_netd", .name = "netd rss", .template = "{{ value_json.rss_kb.netd }}", .unit = "kB", .device_class = "data_size", .state_class = "measurement" },
-        .{ .key = "renderer_restarts", .name = "renderer restarts", .template = "{{ value_json.renderer_restarts }}", .unit = "", .device_class = "", .state_class = "total" },
-        .{ .key = "mqtt_reconnects", .name = "mqtt reconnects", .template = "{{ value_json.mqtt_reconnects }}", .unit = "", .device_class = "", .state_class = "total" },
-        .{ .key = "scene", .name = "scene", .template = "{{ value_json.scene }}", .unit = "", .device_class = "", .state_class = "" },
-        .{ .key = "brightness", .name = "brightness", .template = "{{ value_json.brightness }}", .unit = "%", .device_class = "", .state_class = "measurement" },
-        .{ .key = "night", .name = "night schedule", .template = "{{ value_json.night }}", .unit = "", .device_class = "", .state_class = "" },
-        .{ .key = "fps", .name = "achieved fps", .template = "{{ value_json.fps if value_json.fps is not none else 'unknown' }}", .unit = "fps", .device_class = "", .state_class = "measurement" },
-        .{ .key = "presented", .name = "frames presented", .template = "{{ value_json.presented }}", .unit = "", .device_class = "", .state_class = "total_increasing" },
-        .{ .key = "time_state", .name = "time sync", .template = "{{ value_json.time.state }}", .unit = "", .device_class = "", .state_class = "" },
-        .{ .key = "load_1m", .name = "load average 1m", .template = "{{ value_json.load_1m }}", .unit = "", .device_class = "", .state_class = "measurement" },
-        // the device's own counters. the rate pair reads null until a second sample exists, and
-        // "frames the driver dropped" is deliberately not called packet loss -- see runtime.md
-        .{ .key = "net_rx_rate", .name = "wifi receive rate", .template = "{{ value_json.net.rx_bytes_per_s }}", .unit = "B/s", .device_class = "data_rate", .state_class = "measurement" },
-        .{ .key = "net_tx_rate", .name = "wifi transmit rate", .template = "{{ value_json.net.tx_bytes_per_s }}", .unit = "B/s", .device_class = "data_rate", .state_class = "measurement" },
-        .{ .key = "net_rx_bytes", .name = "wifi received", .template = "{{ value_json.net.rx_bytes }}", .unit = "B", .device_class = "data_size", .state_class = "total_increasing" },
-        .{ .key = "net_tx_bytes", .name = "wifi transmitted", .template = "{{ value_json.net.tx_bytes }}", .unit = "B", .device_class = "data_size", .state_class = "total_increasing" },
-        .{ .key = "net_rx_dropped", .name = "wifi frames the driver dropped", .template = "{{ value_json.net.rx_dropped }}", .unit = "", .device_class = "", .state_class = "total_increasing" },
-        .{ .key = "net_rx_errors", .name = "wifi receive errors", .template = "{{ value_json.net.rx_errors }}", .unit = "", .device_class = "", .state_class = "total_increasing" },
-        .{ .key = "net_tx_errors", .name = "wifi transmit errors", .template = "{{ value_json.net.tx_errors }}", .unit = "", .device_class = "", .state_class = "total_increasing" },
-        .{ .key = "memory_cached", .name = "memory cached", .template = "{{ value_json.memory_cached_kb }}", .unit = "kB", .device_class = "data_size", .state_class = "measurement" },
-        .{ .key = "memory_dirty", .name = "memory dirty", .template = "{{ value_json.memory_dirty_kb }}", .unit = "kB", .device_class = "data_size", .state_class = "measurement" },
-        .{ .key = "memory_slab", .name = "memory slab", .template = "{{ value_json.memory_slab_kb }}", .unit = "kB", .device_class = "data_size", .state_class = "measurement" },
-        .{ .key = "config_saves", .name = "settings saves", .template = "{{ value_json.config_saves.count }}", .unit = "", .device_class = "", .state_class = "total_increasing" },
-        .{ .key = "config_save_failures", .name = "settings save failures", .template = "{{ value_json.config_saves.failures }}", .unit = "", .device_class = "", .state_class = "total_increasing" },
-        .{ .key = "config_save_bytes", .name = "settings bytes written", .template = "{{ value_json.config_saves.bytes }}", .unit = "B", .device_class = "data_size", .state_class = "total_increasing" },
-        .{ .key = "memory_free", .name = "memory free", .template = "{{ value_json.memory_free_kb }}", .unit = "kB", .device_class = "data_size", .state_class = "measurement" },
-        .{ .key = "tmpfs_used", .name = "tmpfs and shmem used", .template = "{{ value_json.tmpfs_used_kb }}", .unit = "kB", .device_class = "data_size", .state_class = "measurement" },
-        .{ .key = "memory_total", .name = "memory total", .template = "{{ value_json.memory_total_kb }}", .unit = "kB", .device_class = "data_size", .state_class = "measurement" },
-        .{ .key = "memory_used_pct", .name = "memory used", .template = "{{ (100 * (value_json.memory_total_kb - value_json.memory_available_kb) / value_json.memory_total_kb) | round(0) if value_json.memory_total_kb else 'unknown' }}", .unit = "%", .device_class = "", .state_class = "measurement" },
-        .{ .key = "flash_used", .name = "flash used", .template = "{{ value_json.flash_used_kb }}", .unit = "kB", .device_class = "data_size", .state_class = "measurement" },
-        .{ .key = "flash_total", .name = "flash total", .template = "{{ value_json.flash_total_kb }}", .unit = "kB", .device_class = "data_size", .state_class = "measurement" },
-        .{ .key = "flash_used_pct", .name = "flash used", .template = "{{ (100 * value_json.flash_used_kb / value_json.flash_total_kb) | round(0) if value_json.flash_total_kb else 'unknown' }}", .unit = "%", .device_class = "", .state_class = "measurement" },
-        .{ .key = "wifi_rssi", .name = "wifi signal", .template = "{{ value_json.wifi.rssi_dbm }}", .unit = "dBm", .device_class = "signal_strength", .state_class = "measurement" },
-        .{ .key = "wifi_quality", .name = "wifi link quality", .template = "{{ value_json.wifi.quality }}", .unit = "", .device_class = "", .state_class = "measurement" },
-        .{ .key = "cpu_supervisor", .name = "supervisor cpu", .template = "{{ value_json.cpu_pct_by_process.supervisor }}", .unit = "%", .device_class = "", .state_class = "measurement" },
-        .{ .key = "cpu_renderer", .name = "renderer cpu", .template = "{{ value_json.cpu_pct_by_process.renderer }}", .unit = "%", .device_class = "", .state_class = "measurement" },
-        .{ .key = "cpu_netd", .name = "netd cpu", .template = "{{ value_json.cpu_pct_by_process.netd }}", .unit = "%", .device_class = "", .state_class = "measurement" },
-        .{ .key = "battery_voltage", .name = "battery voltage", .template = "{{ value_json.battery.millivolts }}", .unit = "mV", .device_class = "voltage", .state_class = "measurement" },
-        .{ .key = "battery", .name = "battery", .template = "{{ value_json.battery.percent }}", .unit = "%", .device_class = "battery", .state_class = "measurement" },
-        .{ .key = "usb_power", .name = "usb power", .template = "{{ 'on' if value_json.battery.usb_present else ('off' if value_json.battery.usb_present is not none else 'unknown') }}", .unit = "", .device_class = "", .state_class = "" },
-    };
+    const Entity = ha.Entity;
+    const entities = ha.entities;
 
     /// the stable device identity: the wlan0 mac, or the boot id when there is none. never the ip.
     fn deviceId(self: *Netd, buf: *[identity.max]u8) []const u8 {
@@ -1972,62 +1945,56 @@ const Netd = struct {
     }
 
     fn discoveryTopic(self: *Netd, buf: []u8, e: Entity) []const u8 {
-        var id: [24]u8 = undefined;
-        return std.fmt.bufPrint(buf, "{s}/{s}/{s}/{s}/config", .{ self.disc_prefix_used.slice(), @tagName(e.component), self.deviceId(&id), e.key }) catch buf[0..0];
+        return std.fmt.bufPrint(buf, "{s}/{s}/{s}/{s}/config", .{ self.discovery.prefix.slice(), @tagName(e.component), self.discovery.id[0..self.discovery.id_len], e.key }) catch buf[0..0];
     }
 
-    /// start a discovery pass: publish (or, when removing, clear) every entity, one per second.
-    fn discoveryStart(self: *Netd, remove: bool, now: u64) void {
-        if (!self.m_connected) return;
-        if (!remove) {
-            self.disc_prefix_used = self.cfg.discovery_prefix;
-            var id: [identity.max]u8 = undefined;
-            const d = self.deviceId(&id);
-            @memcpy(self.disc_id_buf[0..d.len], d);
-            self.disc_id_len = d.len;
-        }
-        self.disc_index = 0;
-        self.disc_active = true;
-        self.disc_remove = remove;
+    fn discoveryStart(self: *Netd, now: u64) void {
+        var id: [identity.max]u8 = undefined;
+        self.discovery.start(self.cfg.discovery_prefix.slice(), self.deviceId(&id), self.cfg.discovery);
         self.disc_next_ns = now;
     }
 
     fn discoveryStep(self: *Netd, now: u64) void {
-        if (!self.disc_active or !self.m_connected or now < self.disc_next_ns) return;
-        if (self.disc_index >= entities.len) {
-            self.disc_active = false;
-            if (!self.disc_remove) {
-                self.disc_published = true;
-                // a fresh sample right after the pass, then the periodic cadence continues
-                self.next_metrics_ns = now;
-            } else self.disc_published = false;
+        if (!self.discovery.active or !self.m_connected or now < self.disc_next_ns) return;
+        // keep the frozen prefix until every retained publish has reached the broker.
+        if (self.discovery.pending != 0 and now - self.disc_sent_ns < 5 * ns_per_s) return;
+        self.discovery.pending = 0;
+        if (self.discovery.index >= entities.len) {
+            var id: [identity.max]u8 = undefined;
+            self.discovery.finish(self.cfg.discovery_prefix.slice(), self.deviceId(&id), self.cfg.discovery);
+            self.next_metrics_ns = now;
             return;
         }
-        const e = entities[self.disc_index];
+        const e = entities[self.discovery.index];
         var tb: [160]u8 = undefined;
         const t = self.discoveryTopic(&tb, e);
-        if (self.disc_remove) {
-            self.mqttPublishTopic(t, "", 1, true);
-        } else {
-            var o = Out{ .buf = json_buf[0..1024] };
-            const interval: u64 = if (self.cfg.metrics_interval_s != 0) self.cfg.metrics_interval_s else 30;
-            var id: [24]u8 = undefined;
-            const dev = self.deviceId(&id);
-            o.fmt("{{\"name\":\"{s}\",\"unique_id\":\"{s}_{s}\",\"state_topic\":\"{s}/{s}\",\"availability_topic\":\"{s}/availability\"", .{ e.name, dev, e.key, self.prefix(), e.topic, self.prefix() });
-            switch (e.component) {
-                .sensor => o.fmt(",\"value_template\":\"{s}\",\"expire_after\":{d}", .{ e.template, interval * 3 }),
-                .binary_sensor => o.fmt(",\"value_template\":\"{s}\",\"payload_on\":\"ON\",\"payload_off\":\"OFF\"", .{e.template}),
-                .event => o.fmt(",\"event_types\":[{s}]", .{e.event_types}),
-            }
-            if (e.diagnostic) o.add(",\"entity_category\":\"diagnostic\"");
-            if (e.unit.len > 0) o.fmt(",\"unit_of_measurement\":\"{s}\"", .{e.unit});
-            if (e.device_class.len > 0) o.fmt(",\"device_class\":\"{s}\"", .{e.device_class});
-            if (e.state_class.len > 0) o.fmt(",\"state_class\":\"{s}\"", .{e.state_class});
-            o.fmt(",\"device\":{{\"identifiers\":[\"{s}\"],\"name\":\"tc002\",\"model\":\"tc002 custom runtime\",\"manufacturer\":\"ulanzi (custom firmware)\",\"sw_version\":\"plan-b\"}},\"origin\":{{\"name\":\"tc002-netd\"}}}}", .{dev});
-            if (!o.overflow) self.mqttPublishTopic(t, o.slice(), 1, true) else self.mqtt_dropped += 1;
-        }
-        self.disc_index += 1;
+        const payload = if (ha.removeEntity(self.discovery.remove, self.cfg.discovery, self.cfg.discovery_controls, e.command.len > 0)) "" else ha.render(json_buf[0..1024], e, self.discovery.id[0..self.discovery.id_len], self.prefix(), if (self.cfg.metrics_interval_s != 0) self.cfg.metrics_interval_s else 30) catch {
+            self.mqtt_dropped += 1;
+            self.disc_next_ns = now + ns_per_s;
+            return;
+        };
+        const packet_id = self.client.packetId();
+        const n = mqtt.encodePublish(self.mqttSpace(), .{ .topic = t, .payload = payload, .qos = 1, .retain = true, .packet_id = packet_id }) catch {
+            self.mqtt_dropped += 1;
+            self.disc_next_ns = now + ns_per_s;
+            return;
+        };
+        self.discovery.pending = packet_id;
+        self.disc_sent_ns = now;
+        self.mqttQueue(n);
+        self.mqttFlush();
         self.disc_next_ns = now + ns_per_s;
+    }
+
+    fn publishConfigDoc(self: *Netd) void {
+        if (!self.m_connected or !self.have_cfg) return;
+        if (!self.cfg.discovery_controls) {
+            self.mqttPublish("config", "", 1, true);
+            return;
+        }
+        var o = Out{ .buf = json_buf[0..8192] };
+        self.configJson(&o);
+        if (!o.overflow) self.mqttPublish("config", o.slice(), 1, true) else self.mqtt_dropped += 1;
     }
 
     /// topics a script asked for, handed over by the supervisor. netd does the subscribing because

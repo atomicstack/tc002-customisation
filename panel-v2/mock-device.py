@@ -279,7 +279,7 @@ class Device:
             self._append_log(line)
         self.config = {"revision": 0, "saved_revision": 0, "brightness": 100, "base": "art", "generator": "popsquares",
                        "timezone": "UTC0", "ntp_server": None, "ntp_interval_s": 300, "frame_timeout_ms": 500,
-                       "metrics_interval_s": 30, "discovery": False, "discovery_prefix": "homeassistant", "origins": [],
+                       "metrics_interval_s": 30, "discovery": False, "discovery_controls": False, "discovery_prefix": "homeassistant", "origins": [],
                        "clock": dict(DEFAULT_CLOCK), "ip_mode": "lines",
                        "night": False, "night_brightness": 5, "night_lead_min": 30,
                        "latitude": None, "longitude": None,
@@ -400,7 +400,7 @@ class Device:
                 "base": c["base"], "generator": c["generator"], "timezone": c["timezone"],
                 "ntp": {"server": c["ntp_server"], "interval_s": c["ntp_interval_s"]},
                 "frame_timeout_ms": c["frame_timeout_ms"], "metrics_interval_s": c["metrics_interval_s"],
-                "discovery": {"enabled": c["discovery"], "prefix": c["discovery_prefix"]}, "clock": dict(c["clock"]),
+                "discovery": {"enabled": c["discovery"], "controls": c["discovery_controls"], "prefix": c["discovery_prefix"]}, "clock": dict(c["clock"]),
                 "night": {"enabled": c["night"], "brightness": c["night_brightness"], "lead_min": c["night_lead_min"]},
                 "latitude": c["latitude"], "longitude": c["longitude"],
                 "location": {"latitude": self.point()[0], "longitude": self.point()[1], "source": self.point()[2]},
@@ -758,6 +758,10 @@ class Device:
             if not isinstance(v, int) or (v != 0 and not 10 <= v <= 3600):
                 raise Reject(400, "invalid_metrics_interval", "metrics_interval_s must be 0 (off) or 10..3600")
             nxt["metrics_interval_s"] = v
+        if "discovery_controls" in body:
+            if not isinstance(body["discovery_controls"], bool):
+                raise Reject(400, "invalid_type", "discovery_controls must be boolean")
+            nxt["discovery_controls"] = body["discovery_controls"]
         if "discovery" in body:
             if not isinstance(body["discovery"], bool):
                 raise Reject(400, "invalid_json", "the body is not valid json for this schema")
@@ -862,7 +866,7 @@ SCHEMAS = {
     "input": ({"control", "event", "steps", "request_id", "epoch"}, {"control", "event"}),
     "notify": ({"text", "colour", "duration_s", "transition", "direction", "transition_ms", "exit", "request_id", "epoch"}, {"text"}),
     "config": ({"brightness", "base", "generator", "timezone", "ntp_server", "ntp_interval_s", "frame_timeout_ms",
-                "metrics_interval_s", "discovery", "discovery_prefix", "expected_revision",
+                "metrics_interval_s", "discovery", "discovery_controls", "discovery_prefix", "expected_revision",
                 "clock_font", "clock_colour_mode", "clock_colour", "clock_colour2", "clock_gradient", "clock_spread",
                 "clock_digit", "ip_mode", "generator_params",
                 "night", "night_brightness", "night_lead_min", "latitude", "longitude", "location_auto",
@@ -1028,7 +1032,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if not path.startswith("/api/v1/"):
             return self._error(404, "not_found", "no such route")
         endpoint = path[len("/api/v1/"):]
-        if self.headers.get("Origin"):
+        origin = self.headers.get("Origin")
+        host = self.headers.get("Host", "")
+        same_origin = bool(re.fullmatch(r"[a-zA-Z0-9.\-:\[\]]{1,255}", host)) and origin == "http://" + host
+        if origin and not same_origin and origin not in d.config["origins"]:
             return self._error(403, "origin_denied", "this origin is not allowed")
         need, known = route_lookup(method, endpoint)
         if need is None:

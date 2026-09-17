@@ -97,9 +97,33 @@ mqtt topics under the configured prefix: `availability` (retained, last will `of
 (retained, at most twice per second), `result` (one per command, with the request id), `metrics`
 (every 30 s by default), `screen` (a binary frame, in answer to `cmd/screen`), `input/<control>`
 (momentary button, knob and rotary events, never retained), and `cmd/scene`, `cmd/action`,
-`cmd/notify`, `cmd/frame`, `cmd/input`, `cmd/screen`, `cmd/config` (control subset only).
-home-assistant discovery is opt-in and publishes read-only sensors plus event entities for the
-controls. the full reference is [`RUNTIME.md`](../RUNTIME.md).
+`cmd/notify`, `cmd/frame`, `cmd/input`, `cmd/screen`, `cmd/config` (transient controls,
+plus an opt-in allowlist of durable settings).
+home-assistant discovery is opt-in and publishes read-only sensors plus input event entities.
+`discovery_controls=true` separately adds 19 writable entities and permits their durable settings
+over mqtt; it defaults to false and may only be enabled through authenticated configuration. the full reference is [`RUNTIME.md`](../RUNTIME.md).
+
+## api reference
+
+open `http://<device>/api/docs` for the offline api explorer. download the contract from
+`/api/openapi.json` (openapi 3.1) or `/api/schema.json` (json schema draft 2020-12).
+the reference is public; executing requests needs a bearer token, held only in page memory.
+all api calls still use the custom runtime's `/api/v1` routes.
+
+regenerate and verify the contract after changing routes, fields or responses:
+
+```sh
+python3 tools/generate-api-schema.py
+python3 tools/generate-api-schema.py --check
+python3 -m venv /tmp/tc002-schema-check
+/tmp/tc002-schema-check/bin/pip install jsonschema openapi-spec-validator
+/tmp/tc002-schema-check/bin/python -m unittest discover -s tools -p test_api_schema.py
+node --test tools/test-api-docs.mjs
+node --test tools/test-api-docs-browser.mjs  # isolated chrome + mock; skips if chrome is absent
+```
+
+schema generation uses only the python standard library; validators are development dependencies.
+normal firmware builds embed the checked-in artifacts and do not require python or node.
 
 ## tradeoffs made for this device (reported, not hidden)
 
@@ -236,6 +260,13 @@ adb shell "/tmp/tc002-memdump $(pid) hex" | tr -d '\r\n' | xxd -r -p > snapshot.
 ```
 
 ## telemetry for home assistant and grafana
+
+writable entities require both `discovery=true` and `discovery_controls=true` in the device
+configuration; the latter defaults to false. the console has a separate checkbox, and the go cli
+accepts `config set --discovery --discovery-controls`. disabling it removes the writable discovery
+records. see [the full reference](../RUNTIME.md#home-assistant-discovery) for the entity list and the
+limited settings mqtt is then allowed to persist.
+
 
 with mqtt enabled and `discovery=true`, netd advertises 43 read-only diagnostic sensors, a display-power
 binary sensor and five event entities for the physical controls, grouped under

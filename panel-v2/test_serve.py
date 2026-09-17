@@ -155,6 +155,20 @@ def load_mock():
 class MockDeviceTests(unittest.TestCase):
     """pure tests on Device, no server: the log ring's capacity and sequence numbering."""
 
+    def test_home_assistant_controls_are_explicit_and_persisted(self):
+        mod = load_mock()
+        device = mod.Device(control="c" * 64, admin="a" * 64)
+        self.assertFalse(device.config_doc()["discovery"]["controls"])
+        device.patch_config({"discovery_controls": True})
+        self.assertTrue(device.config_doc()["discovery"]["controls"])
+        self.assertEqual(device.config["revision"], device.config["saved_revision"])
+        device.patch_config({"brightness": 31})
+        self.assertTrue(device.config_doc()["discovery"]["controls"])
+        device.patch_config({"discovery_controls": False})
+        self.assertFalse(device.config_doc()["discovery"]["controls"])
+        with self.assertRaises(mod.Reject):
+            device.patch_config({"discovery_controls": "true"})
+
     def test_log_ring_caps_at_64_and_keeps_the_sequence_counting(self):
         mod = load_mock()
         device = mod.Device(control="c" * 64, admin="a" * 64)

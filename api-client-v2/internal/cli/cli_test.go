@@ -43,6 +43,8 @@ func TestRuntimeRequests(t *testing.T) {
 		{[]string{"power", "off"}, "POST", "/action", `{"action":"power","power":false}`},
 		{[]string{"input", "rotary", "ccw", "--steps", "3"}, "POST", "/input", `{"control":"rotary","event":"ccw","steps":3}`},
 		{[]string{"notify", "Hello World", "--colour", "00ff80", "--duration", "3", "--transition", "slide", "--direction", "left"}, "POST", "/notify", `{"text":"Hello World","colour":"00ff80","duration_s":3,"transition":"slide","direction":"left"}`},
+		{[]string{"config", "set", "--discovery-controls=true"}, "PATCH", "/config", `{"discovery_controls":true}`},
+		{[]string{"config", "set", "--discovery-controls=false"}, "PATCH", "/config", `{"discovery_controls":false}`},
 		{[]string{"config", "get"}, "GET", "/config", ""},
 		{[]string{"config", "set", "--brightness", "20", "--clock-colour", "001122", "--night=false", "--timezone", "Europe/Amsterdam"}, "PATCH", "/config", `{"brightness":20,"clock_colour":"001122","night":false,"timezone":"Europe/Amsterdam"}`},
 		{[]string{"config", "set", "--data", `{"generator_params":[{"scene":"cube","name":"speed","value":"2"}]}`}, "PATCH", "/config", `{"generator_params":[{"scene":"cube","name":"speed","value":"2"}]}`},

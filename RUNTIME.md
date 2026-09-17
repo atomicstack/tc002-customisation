@@ -1287,12 +1287,37 @@ text on its next start, so nothing needs re-pairing.
 anyone who can sniff the lan can read the tokens in flight, which is why this
 profile is called `isolated-lan`.
 
-a request with no `Origin` header (a non-browser client) is allowed. a
-request with one is refused with `403 origin_denied` unless the origin is
-listed exactly in the settings' `allowed_origins`. no cors headers are
-emitted at all, so a browser could not read the replies even if allowed; the
-api is for programs, not pages. `allowed_origins` can only be set by editing
-`config.json` before the supervisor starts; there is no api field for it.
+a request with no `Origin` header (a non-browser client) is allowed. a browser
+request is also allowed when its origin exactly matches `http://` plus the request
+host, so the device's own api explorer can execute authenticated requests. other
+origins must appear exactly in `allowed_origins`, or receive `403 origin_denied`.
+no cors headers are emitted. every api request still needs its bearer token;
+there are no cookie credentials. `allowed_origins` is file-only.
+
+### offline api explorer and schemas
+
+open `http://<device>/api/docs` for a swagger-style reference and request editor.
+the page, javascript, styles and schema ship in netd and work without internet
+access. `/api/openapi.json` is the openapi 3.1 document; `/api/schema.json` exports
+its models as json schema draft 2020-12 `$defs`. for example, a validator can use
+`/api/schema.json#/$defs/NotifyBody` to validate a notification body. the
+[`openapi file`](runtime/src/net/docs/openapi.json) can also be loaded into swagger ui
+or another openapi client.
+
+these five static assets (plus the trailing-slash page alias) are public and
+contain no device state. executing an operation still requires a token with its
+listed scope. the page keeps the token only in memory, sends only to this origin,
+and never follows redirects. requests run only when execute is pressed. responses
+are limited to a 64 kib preview and ten seconds, with a stop button for event streams.
+use the cli for ongoing streams and multi-chunk uploads. stream-session routes are
+listed as unavailable rather than presented as working features.
+
+schemas are generated from the route and request-field declarations with explicit
+validation constraints and response models in `runtime/tools/generate-api-schema.py`.
+changes to wire behavior must update this contract. shared byte pools, state-dependent
+conflicts and other runtime-only checks are documented where json schema cannot
+express them. assets larger than a response buffer are sent in bounded chunks from
+read-only storage; connection buffers stay the same size.
 
 ### routes
 
@@ -1546,7 +1571,7 @@ shows up as a revision gap, and the gap is the signal to resync.
 | `sound.enabled`, `sound.volume` (patch as `sound_enabled`, `sound_volume`) | bool, default false; 1–100, default 60 | the [speaker](#sound). audiod is spawned only while enabled, and **replaced** on any change |
 | `battery.shutdown`, `battery.shutdown_mv`, `battery.grace_s` (patch as `battery_shutdown`, `battery_shutdown_mv`, `battery_grace_s`) | bool, default **true**; 3000–4000 mv, default 3550; 0–300 s, default 30 | [low-battery shutdown](#the-low-battery-shutdown). the warning threshold is `shutdown_mv + 50` and is not a setting of its own |
 | `metrics_interval_s` | 0 (off) or 10–3600 | mqtt `metrics` cadence |
-| `discovery.enabled`, `discovery.prefix` (patch as `discovery`, `discovery_prefix`) | bool; ≤ 64 characters | home-assistant discovery on the next mqtt connection |
+| `discovery.enabled`, `discovery.controls`, `discovery.prefix` (patch as `discovery`, `discovery_controls`, `discovery_prefix`) | bool; bool default false; ≤ 64 characters | opt-in discovery, with a separate opt-in for writable controls |
 | `allowed_origins` | up to four exact origins | read from the file only |
 | `expected_revision` (patch only) | | the patch is refused with `409 revision_conflict` unless the current revision matches |
 
@@ -1878,7 +1903,7 @@ all topics live under `prefix` (default `tc002`):
 | `metrics` | out, every `metrics_interval_s` | the [metrics document](#the-metrics-document) |
 | `cmd/scene`, `cmd/action`, `cmd/notify` | in, qos 1 | exactly the http json bodies |
 | `cmd/frame` | in, qos 1 | binary, 2,510 bytes big-endian: `u64 request_id`, `u32 epoch`, `u16 duration_s`, 2,496 rgb bytes. a binary payload cannot leave a field out, so zero says "you pick": a zero id is minted by the device, a zero epoch means the current one; or 2,514 / 2,515 bytes with `u8 effect`, `u8 direction`, `u16 duration_ms` and optionally `u8 exit` before the rgb (see [transitions](#transitions)) |
-| `cmd/config` | in, qos 1 | the control subset only: `brightness`, `base`, `generator` (transient, like `/action` and `/scene`). any durable field is answered `admin_only`; those are administered over http |
+| `cmd/config` | in, qos 1 | `brightness`, `base`, `generator` stay transient. with `discovery_controls: true`, the explicitly allowed clock/time/night fields below are durable; other privileged fields are refused |
 | `cmd/input` | in, qos 1 | the `/input` json body; answered on `result` |
 | `cmd/sound` | in, qos 1 | the `POST /sound` json body — `{"name","volume"?,"loop"?}` or `{"stop":true}`; answered on `result`. the only command topic whose answer is not the renderer's: the id in that `result` is minted by the device, because the body carries no `request_id` to echo. `sound.enabled` is off by default, and playing while it is off answers `unavailable` rather than failing silently |
 | `cmd/screen` | in, qos 1 | any payload; answered on `screen` |
@@ -1972,8 +1997,40 @@ one device, linked to the `availability` topic, and the metrics sensors expire
 after three metrics intervals. a home-assistant birth message
 (`<discovery_prefix>/status` = `online`) repeats the pass; turning discovery
 off, or changing the prefix, clears exactly those topics with empty retained
-publishes. nothing writable is exposed through discovery; control goes through
-`cmd/*`.
+publishes. writable discovery has a second opt-in, `discovery_controls`, which is
+false by default. enable both over authenticated http, for example:
+
+```sh
+tc002 --server http://<device> --token-file tokens config set --discovery --discovery-controls
+```
+
+or `PATCH /api/v1/config` with `{"discovery":true,"discovery_controls":true}`.
+the console exposes the same checkbox. turning controls off removes their retained
+discovery records; reconnects retry unacknowledged removals before moving on. old
+prefixes and device identities are cleared before the new set is published. the
+original read-only entity ids stay unchanged; the 19 additional controls use
+`*_control` keys:
+
+- display power, brightness, base scene, art generator and notification text;
+- clock font, colour mode, both colours, gradient, digit style and spread;
+- ip layout, timezone, ntp server and interval;
+- night dimming, night brightness and night lead.
+
+power/scene/brightness/generator/notification commands are transient. the allowed
+durable fields are `clock_font`, `clock_colour_mode`, `clock_colour`, `clock_colour2`,
+`clock_gradient`, `clock_spread`, `clock_digit`, `ip_mode`, `timezone`, `ntp_server`,
+`ntp_interval_s`, `night`, `night_brightness` and `night_lead_min`; `expected_revision`
+may guard a patch. the supervisor validates and saves these exactly as for http.
+with controls enabled, broker write access is the authority for those settings.
+mqtt cannot enable its own opt-in, change discovery, credentials or unrelated
+privileged settings. ordinary mqtt control commands remain available as before.
+
+controls read live display values from retained `state` and durable values from a
+retained `config` document, published only while the writable feature is enabled
+and cleared on disable. ha payloads omit request ids so each click receives a fresh
+one; explicit caller ids retain their existing retry/deduplication semantics.
+there are 68 discovery records with controls enabled, paced one per second; disabled
+controls also receive empty retained records to remove previously advertised entries.
 
 ## host tools (`runtime/tools/`)
 

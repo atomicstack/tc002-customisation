@@ -41,12 +41,14 @@ test {
     _ = @import("supervisor/cli.zig");
     _ = @import("net/json.zig");
     _ = @import("net/http.zig");
+    _ = @import("net/docs.zig");
     _ = @import("net/sse.zig");
     _ = @import("sound/wav.zig");
     _ = @import("sound/store.zig");
     _ = @import("sound/mi.zig");
     _ = @import("sound/vendor.zig");
     _ = @import("net/api.zig");
+    _ = @import("net/ha.zig");
     _ = @import("net/credfile.zig");
     _ = @import("net/clients.zig");
     _ = @import("net/mqtt.zig");

@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>tc002 · api explorer</title>
+  <link rel="stylesheet" href="/api/docs/style.css">
+  <script type="module" src="/api/docs/app.js"></script>
+</head>
+<body>
+  <header>
+    <div class="eyebrow"><span class="pixel"></span> tc002 / custom runtime</div>
+    <h1>api explorer<span class="dot">.</span></h1>
+    <p class="intro">explore the device’s http api, inspect its schemas, and send requests.</p>
+    <div class="meta"><span id="count">loading schema…</span><code>/api/v1</code><span>offline reference</span></div>
+    <nav class="downloads" aria-label="schema downloads"><a href="/api/openapi.json" download="openapi.json">openapi json ↗</a><a href="/api/schema.json" download="schema.json">json schema ↗</a></nav>
+  </header>
+  <main>
+    <section class="connection" aria-label="authentication">
+      <div><h2>try a request</h2><p>requests go to this device. enter a token with the operation’s required scope. it stays in this page’s memory.</p></div>
+      <label for="token">bearer token</label>
+      <div class="token-row"><input id="token" type="password" autocomplete="off" spellcheck="false" placeholder="64 hex characters" maxlength="64"><button id="forget" type="button">clear token</button></div>
+      <p class="hint">execute sends the request immediately. previews stop after 10 seconds or 64 kib; use the cli for continuous events and chunked sound uploads.</p>
+    </section>
+    <div class="browse"><label for="filter">find an operation</label><input id="filter" type="search" placeholder="filter by path, field or description" autocomplete="off"><nav id="tags" aria-label="api groups"></nav></div>
+    <div id="operations"><p>loading operations…</p></div>
+  </main>
+  <footer>tc002 custom runtime · schemas describe this build · all api requests require authentication</footer>
+</body>
+</html>

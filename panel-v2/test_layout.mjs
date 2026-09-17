@@ -162,6 +162,20 @@ test.after(async () => {
   if (tmp) try { rmSync(tmp, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }); } catch { /* a stray profile file is not a test failure */ }
 });
 
+test('home assistant controls can be enabled and disabled from device settings',
+  { skip: chromeAvailable ? false : 'google chrome is not installed' }, async () => {
+  await cdp.eval(`document.querySelector('[data-tab="device"]').click(); loadConfig()`);
+  assert.equal(await cdp.eval(`document.getElementById('ccontrols').checked`), false);
+  for (const enabled of [true, false]) {
+    await cdp.eval(`document.getElementById('ccontrols').checked=${enabled}; document.getElementById('capply').click()`);
+    await waitFor(async () => {
+      if (await cdp.eval(`CONFIG.discovery.controls`) !== enabled) throw new Error('waiting for settings reply');
+      return true;
+    });
+    assert.equal(await cdp.eval(`call('GET', 'config').then(c => c.discovery.controls)`), enabled);
+  }
+});
+
 // each control must be named by its own row: a select sitting beside two others under one shared
 // label reads as an anonymous box (the transition rows once put effect, direction and exit under a
 // single "Transition" label)

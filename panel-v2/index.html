@@ -399,6 +399,8 @@ input[type=file]{font:12px var(--body);color:var(--muted);max-width:220px}
         <div class="field"><label for="cft">Frame timeout<span class="key">frame_timeout_ms · 100–2000, for streaming</span></label><input type="number" id="cft" min="100" max="2000"></div>
         <div class="field"><label for="cmi">Metrics interval<span class="key">metrics_interval_s · 0 = off, 10–3600</span></label><input type="number" id="cmi" min="0" max="3600"></div>
         <div class="field"><label for="cdisc">Home Assistant discovery<span class="key">discovery</span></label><input type="checkbox" class="sw" id="cdisc"></div>
+        <div class="field"><label for="ccontrols">home assistant controls<span class="key">discovery_controls</span></label><input type="checkbox" class="sw" id="ccontrols"></div>
+        <p class="hint">enables writable discovery and lets mqtt publishers change clock, time and night settings.</p>
         <div class="field"><label for="cdp">Discovery prefix<span class="key">discovery_prefix</span></label><input type="text" id="cdp" placeholder="homeassistant"></div>
       </div>
       <div class="actions">
@@ -1263,6 +1265,7 @@ function showConfig(c) {
     : 'nowhere: the schedule cannot run';
   $('clocauto').disabled = !c.location || c.location.source !== 'set';
   $('cft').value = c.frame_timeout_ms; $('cmi').value = c.metrics_interval_s;
+  $('ccontrols').checked = !!c.discovery.controls;
   $('cdisc').checked = !!c.discovery.enabled; $('cdp').value = c.discovery.prefix;
   const k = c.clock || S.DEFAULT_CLOCK_STYLE;   // a runtime without clock styles: show the defaults, patch nothing
   $('cfont').value = k.font; $('cmode').value = k.colour_mode; $('ccolour').value = '#' + k.colour; $('ccolour2').value = '#' + k.colour2; $('cgrad').value = k.gradient;
@@ -1319,6 +1322,7 @@ $('capply').addEventListener('click', async () => {
   const ntpi = +$('cntpi').value; if (ntpi !== CONFIG.ntp.interval_s) patch.ntp_interval_s = ntpi;
   const ft = +$('cft').value; if (ft !== CONFIG.frame_timeout_ms) patch.frame_timeout_ms = ft;
   const mi = +$('cmi').value; if (mi !== CONFIG.metrics_interval_s) patch.metrics_interval_s = mi;
+  if ($('ccontrols').checked !== !!CONFIG.discovery.controls) patch.discovery_controls = $('ccontrols').checked;
   if ($('cdisc').checked !== !!CONFIG.discovery.enabled) patch.discovery = $('cdisc').checked;
   const dp = $('cdp').value.trim(); if (dp !== CONFIG.discovery.prefix) patch.discovery_prefix = dp;
   if (CONFIG.clock) {

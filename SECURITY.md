@@ -89,10 +89,19 @@ the stock app and its unauthenticated api are not, and the picture changes:
   refusable.
   gap: the two built-in tokens still have no rotation — changing either means
   deleting the file and restarting, which invalidates every client at once.
-- **browser writes are refused.** a request carrying an `Origin` header is
-  answered `403` unless the origin is on an explicit allow list (empty by
-  default), and no cors headers are ever emitted. the destructive stock
-  endpoints (`update`, `resetConfig`, `setWifiConfig`, `setSn`) do not exist.
+- **browser writes require bearer authentication and an allowed origin.** the
+  device-hosted `/api/docs` page may call its own origin (`http://` plus the
+  request host). any other `Origin` needs the explicit allow list, empty by
+  default. no cors headers or cookie credentials are used. reference assets
+  are public and contain no device state; every `/api/v1` route is authenticated.
+  the destructive stock endpoints (`update`, `resetConfig`, `setWifiConfig`,
+  `setSn`) do not exist.
+- **writable home-assistant discovery is separately opt-in.** `discovery_controls`
+  defaults to false. enabling it also grants broker writers access to an explicit
+  allowlist of durable clock/time/night settings. mqtt cannot set the opt-in or
+  change discovery, credentials, script execution, battery or other privileged
+  settings. turning it off refuses those durable writes and removes the writable
+  discovery records. existing transient mqtt controls keep their existing behavior.
 - **the network daemon is unprivileged.** `tc002-netd` runs as uid 1001 with
   two inherited descriptors and no access to the token or settings files.
   gap: `/dev/socket/property_service` is world-writable on this init, so the

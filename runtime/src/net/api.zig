@@ -82,7 +82,20 @@ pub const OriginPolicy = struct {
     allowed: [max_origins][]const u8 = .{ "", "", "", "" },
     count: u8 = 0,
 
-    /// no origin header (a non-browser client) is allowed; a browser origin only if listed exactly.
+    /// the reference page is served by this same plaintext listener. allow its browser origin,
+    /// while retaining the explicit allowlist for other origins; bearer auth is still required.
+    pub fn allowsRequest(self: *const OriginPolicy, req: http.Request) bool {
+        if (self.allows(req.origin)) return true;
+        const host = req.host orelse return false;
+        const origin = req.origin orelse return true;
+        if (host.len == 0 or host.len > 255) return false;
+        for (host) |c| {
+            if (!std.ascii.isAlphanumeric(c) and c != '.' and c != '-' and c != ':' and c != '[' and c != ']') return false;
+        }
+        return std.mem.startsWith(u8, origin, "http://") and std.mem.eql(u8, origin[7..], host);
+    }
+
+    /// no origin header (a non-browser client) is allowed; other origins must be listed exactly.
     pub fn allows(self: *const OriginPolicy, origin: ?[]const u8) bool {
         const o = origin orelse return true;
         for (self.allowed[0..self.count]) |a| if (std.mem.eql(u8, a, o)) return true;
@@ -184,6 +197,7 @@ pub const ConfigPatch = struct {
     frame_timeout_ms: ?u16 = null,
     metrics_interval_s: ?u32 = null,
     discovery: ?bool = null,
+    discovery_controls: ?bool = null,
     discovery_prefix: ?[]const u8 = null,
     expected_revision: ?u32 = null,
     clock_font: ?clock.Font = null,
@@ -298,6 +312,7 @@ const ConfigBody = struct {
     frame_timeout_ms: ?u16 = null,
     metrics_interval_s: ?u32 = null,
     discovery: ?bool = null,
+    discovery_controls: ?bool = null,
     discovery_prefix: ?[]const u8 = null,
     expected_revision: ?u32 = null,
     clock_font: ?[]const u8 = null,
@@ -796,7 +811,7 @@ pub fn route(req: http.Request, body: []const u8, creds: *const Credentials, sto
     // filled in by a failed body parse, so the rejection can name the field that was wrong
     var where = json.Where{};
     // origin first: reject disallowed origins before any work
-    if (!origins.allows(req.origin)) return .{ .reject = .{ .status = 403, .code = "origin_denied", .message = "this origin is not allowed" } };
+    if (!origins.allowsRequest(req)) return .{ .reject = .{ .status = 403, .code = "origin_denied", .message = "this origin is not allowed" } };
     // path and method
     var path_known = false;
     var matched: ?Endpoint = null;
@@ -988,7 +1003,6 @@ pub fn route(req: http.Request, body: []const u8, creds: *const Credentials, sto
     return .{ .reject = .{ .status = 404, .code = "not_found", .message = "no such route" } };
 }
 
-
 pub const BodyKind = enum { scene, action, notify, config_patch, config_save, mqtt_put, ntfy_put, input, canvas_put, canvas_patch, sound };
 
 pub fn enumByName(comptime E: type, text: []const u8) ?E {
@@ -1162,6 +1176,7 @@ pub fn parseBody(kind: BodyKind, body: []const u8, arena: *Arena, generated_id: 
                 .frame_timeout_ms = b.frame_timeout_ms,
                 .metrics_interval_s = b.metrics_interval_s,
                 .discovery = b.discovery,
+                .discovery_controls = b.discovery_controls,
                 .discovery_prefix = b.discovery_prefix,
                 .expected_revision = b.expected_revision,
                 .night = b.night,
@@ -1960,9 +1975,10 @@ test "a route asks for one bit, and a token either holds it or does not" {
 test "status covers observing a clock, and the other reads have scopes of their own" {
     // an explicit list, not "every get": the exclusions below are the whole point of one.
     for ([_][]const u8{
-        "/api/v1/status",     "/api/v1/scenes",  "/api/v1/config",
-        "/api/v1/canvas",     "/api/v1/icons",   "/api/v1/sprites",
-        "/api/v1/sounds",     "/api/v1/mqtt/status", "/api/v1/berry", "/api/v1/berry/scripts",
+        "/api/v1/status",        "/api/v1/scenes",      "/api/v1/config",
+        "/api/v1/canvas",        "/api/v1/icons",       "/api/v1/sprites",
+        "/api/v1/sounds",        "/api/v1/mqtt/status", "/api/v1/berry",
+        "/api/v1/berry/scripts",
     }) |p| {
         try std.testing.expectEqual(clients.Scope.status, endpointFor(.GET, p).?.scope);
     }
@@ -2071,7 +2087,7 @@ test "a full store still renders a listing that fits one response" {
     var i: usize = 0;
     while (i < clients.max_clients) : (i += 1) {
         var name: [clients.name_max]u8 = undefined;
-        _ = std.fmt.bufPrint(&name, "{s}{d:0>4}", .{"n" ** (clients.name_max - 4), i}) catch unreachable;
+        _ = std.fmt.bufPrint(&name, "{s}{d:0>4}", .{ "n" ** (clients.name_max - 4), i }) catch unreachable;
         try store.add(&name, clients.grantable, [_]u8{@intCast(i & 0xff)} ** 32, std.math.minInt(i64));
     }
     var buf: [http.response_buf_len]u8 = undefined;
@@ -2150,4 +2166,17 @@ test "running a stored script is admin, and never carries source" {
     try expectReject(R.go(&c, &origins, &arena, .GET, "/api/v1/berry/scripts/greet/run", admin_header, ""), 405, "method_not_allowed");
     // reading the source is `scripts` now, like running it: the operating secret does neither
     try expectReject(R.go(&c, &origins, &arena, .GET, "/api/v1/berry/scripts/greet", control_header, ""), 403, "forbidden");
+}
+
+test "the device docs can execute same-origin authenticated browser requests" {
+    var arena: Arena = undefined;
+    var req = testReq(.POST, "/api/v1/notify", "", control_header, "application/json", "http://tc002.local:8080");
+    req.host = "tc002.local:8080";
+    const routed = route(req, "{\"text\":\"hello\"}", &testCreds(), &no_clients, &.{}, &arena, test_minted);
+    try std.testing.expect(routed == .op);
+    req.authorization = null;
+    try expectReject(route(req, "{}", &testCreds(), &no_clients, &.{}, &arena, test_minted), 401, "unauthorized");
+    req.authorization = control_header;
+    req.origin = "http://evil.example";
+    try expectReject(route(req, "{}", &testCreds(), &no_clients, &.{}, &arena, test_minted), 403, "origin_denied");
 }

@@ -111,6 +111,16 @@ tc002 request GET /logs --query after=12
 tc002 --admin request PATCH /config --data '{"brightness":30}'
 ```
 
+## home assistant controls
+
+```sh
+tc002 config set --discovery --discovery-controls
+tc002 config set --discovery-controls=false
+```
+
+writable discovery is off by default. enabling it also allows the documented clock/time/night
+settings to be changed by broker writers. other privileged settings remain http-only.
+
 ## files and streaming
 
 ```sh

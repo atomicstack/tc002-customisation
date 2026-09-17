@@ -1390,7 +1390,7 @@ pub const ClientSet = struct {
 
 /// a config patch on the wire: presence flags plus fixed fields.
 pub const ConfigPatch = struct {
-    has: u32 = 0,
+    has: u64 = 0,
     brightness: u8 = 0,
     base: u8 = 0,
     generator: u8 = 0,
@@ -1400,6 +1400,7 @@ pub const ConfigPatch = struct {
     frame_timeout_ms: u16 = 0,
     metrics_interval_s: u32 = 0,
     discovery: u8 = 0,
+    discovery_controls: u8 = 0,
     discovery_prefix: config.Text = .{},
     expected_revision: u32 = 0,
     clock_font: u8 = 0,
@@ -1429,44 +1430,42 @@ pub const ConfigPatch = struct {
     battery_grace_s: u16 = 0,
 
     pub const F = struct {
-        pub const brightness: u32 = 1 << 0;
-        pub const base: u32 = 1 << 1;
-        pub const generator: u32 = 1 << 2;
-        pub const timezone: u32 = 1 << 3;
-        pub const ntp_server: u32 = 1 << 4;
-        pub const ntp_interval_s: u32 = 1 << 5;
-        pub const frame_timeout_ms: u32 = 1 << 6;
-        pub const metrics_interval_s: u32 = 1 << 7;
-        pub const discovery: u32 = 1 << 8;
-        pub const discovery_prefix: u32 = 1 << 9;
-        pub const expected_revision: u32 = 1 << 10;
-        pub const clock_font: u32 = 1 << 11;
-        pub const clock_colour_mode: u32 = 1 << 12;
-        pub const clock_colour: u32 = 1 << 13;
-        pub const clock_colour2: u32 = 1 << 14;
-        pub const clock_gradient: u32 = 1 << 15;
-        pub const clock_spread: u32 = 1 << 16;
-        pub const ip_mode: u32 = 1 << 17;
-        pub const clock_digit: u32 = 1 << 18;
-        pub const night: u32 = 1 << 19;
-        pub const night_brightness: u32 = 1 << 20;
-        pub const night_lead_min: u32 = 1 << 21;
-        pub const location: u32 = 1 << 22;
-        pub const location_auto: u32 = 1 << 23;
-        pub const berry_enabled: u32 = 1 << 24;
-        pub const battery_shutdown: u32 = 1 << 29;
-        pub const battery_shutdown_mv: u32 = 1 << 30;
-        // the last one. `has` is a u32 and bit 31 is now spoken for: the next setting to arrive
-        // here widens it, which is a wire change for the three binaries that speak this and
-        // nothing else.
-        pub const battery_grace_s: u32 = 1 << 31;
-        pub const berry_heap_kb: u32 = 1 << 25;
-        pub const berry_handler_ms: u32 = 1 << 26;
-        pub const sound_enabled: u32 = 1 << 27;
-        pub const sound_volume: u32 = 1 << 28;
+        pub const brightness: u64 = 1 << 0;
+        pub const base: u64 = 1 << 1;
+        pub const generator: u64 = 1 << 2;
+        pub const timezone: u64 = 1 << 3;
+        pub const ntp_server: u64 = 1 << 4;
+        pub const ntp_interval_s: u64 = 1 << 5;
+        pub const frame_timeout_ms: u64 = 1 << 6;
+        pub const metrics_interval_s: u64 = 1 << 7;
+        pub const discovery_controls: u64 = 1 << 32;
+        pub const discovery: u64 = 1 << 8;
+        pub const discovery_prefix: u64 = 1 << 9;
+        pub const expected_revision: u64 = 1 << 10;
+        pub const clock_font: u64 = 1 << 11;
+        pub const clock_colour_mode: u64 = 1 << 12;
+        pub const clock_colour: u64 = 1 << 13;
+        pub const clock_colour2: u64 = 1 << 14;
+        pub const clock_gradient: u64 = 1 << 15;
+        pub const clock_spread: u64 = 1 << 16;
+        pub const ip_mode: u64 = 1 << 17;
+        pub const clock_digit: u64 = 1 << 18;
+        pub const night: u64 = 1 << 19;
+        pub const night_brightness: u64 = 1 << 20;
+        pub const night_lead_min: u64 = 1 << 21;
+        pub const location: u64 = 1 << 22;
+        pub const location_auto: u64 = 1 << 23;
+        pub const berry_enabled: u64 = 1 << 24;
+        pub const battery_shutdown: u64 = 1 << 29;
+        pub const battery_shutdown_mv: u64 = 1 << 30;
+        pub const battery_grace_s: u64 = 1 << 31;
+        pub const berry_heap_kb: u64 = 1 << 25;
+        pub const berry_handler_ms: u64 = 1 << 26;
+        pub const sound_enabled: u64 = 1 << 27;
+        pub const sound_volume: u64 = 1 << 28;
     };
 
-    pub const fixed_len = 4 + 3 + 65 + 4 + 4 + 2 + 4 + 1 + 65 + 4 + 12 + 7 + (1 + 2 + 2) + (1 + 1) + 1;
+    pub const fixed_len = 8 + 3 + 65 + 4 + 4 + 2 + 4 + 2 + 65 + 4 + 12 + 7 + (1 + 2 + 2) + (1 + 1) + (1 + 2 + 2) + 1;
     pub const wire_len = fixed_len + api.max_params_per_patch * 6;
 
     pub fn fromApi(p: api.ConfigPatch) error{TooLong}!ConfigPatch {
@@ -1502,6 +1501,10 @@ pub const ConfigPatch = struct {
         if (p.metrics_interval_s) |v| {
             w.has |= F.metrics_interval_s;
             w.metrics_interval_s = v;
+        }
+        if (p.discovery_controls) |v| {
+            w.has |= F.discovery_controls;
+            w.discovery_controls = @intFromBool(v);
         }
         if (p.discovery) |v| {
             w.has |= F.discovery;
@@ -1616,6 +1619,7 @@ pub const ConfigPatch = struct {
             .ntp_interval_s = if (h & F.ntp_interval_s != 0) self.ntp_interval_s else null,
             .frame_timeout_ms = if (h & F.frame_timeout_ms != 0) self.frame_timeout_ms else null,
             .metrics_interval_s = if (h & F.metrics_interval_s != 0) self.metrics_interval_s else null,
+            .discovery_controls = if (h & F.discovery_controls != 0) self.discovery_controls != 0 else null,
             .discovery = if (h & F.discovery != 0) self.discovery != 0 else null,
             .discovery_prefix = if (h & F.discovery_prefix != 0) self.discovery_prefix.slice() else null,
             .expected_revision = if (h & F.expected_revision != 0) self.expected_revision else null,
@@ -2361,8 +2365,8 @@ fn encodePayload(msg: Message, out: []u8) usize {
         },
         .config_patch => |p| {
             var o: usize = 0;
-            std.mem.writeInt(u32, out[o..][0..4], p.has, .little);
-            o += 4;
+            std.mem.writeInt(u64, out[o..][0..8], p.has, .little);
+            o += 8;
             out[o] = p.brightness;
             out[o + 1] = p.base;
             out[o + 2] = p.generator;
@@ -2377,7 +2381,8 @@ fn encodePayload(msg: Message, out: []u8) usize {
             std.mem.writeInt(u32, out[o..][0..4], p.metrics_interval_s, .little);
             o += 4;
             out[o] = p.discovery;
-            o += 1;
+            out[o + 1] = p.discovery_controls;
+            o += 2;
             putText(out, &o, p.discovery_prefix);
             std.mem.writeInt(u32, out[o..][0..4], p.expected_revision, .little);
             o += 4;
@@ -2543,10 +2548,10 @@ fn encodePayload(msg: Message, out: []u8) usize {
             out[o + 2] = st.menu_state;
             o += 3;
             inline for (.{
-                st.net_rx_bytes,   st.net_tx_bytes,   st.net_rx_packets, st.net_tx_packets,
-                st.net_rx_errors,  st.net_rx_dropped, st.net_tx_errors,  st.net_tx_dropped,
-                st.net_rx_bps,     st.net_tx_bps,     st.mem_cached_kb,  st.mem_dirty_kb,
-                st.mem_writeback_kb, st.mem_slab_kb,  st.saves,          st.save_failures,
+                st.net_rx_bytes,     st.net_tx_bytes,   st.net_rx_packets, st.net_tx_packets,
+                st.net_rx_errors,    st.net_rx_dropped, st.net_tx_errors,  st.net_tx_dropped,
+                st.net_rx_bps,       st.net_tx_bps,     st.mem_cached_kb,  st.mem_dirty_kb,
+                st.mem_writeback_kb, st.mem_slab_kb,    st.saves,          st.save_failures,
                 st.save_bytes,
             }) |v| {
                 std.mem.writeInt(u32, out[o..][0..4], v, .big);
@@ -2920,8 +2925,8 @@ pub fn decodePacket(bytes: []const u8) Error!Packet {
             const b = p;
             var w = ConfigPatch{};
             var o: usize = 0;
-            w.has = std.mem.readInt(u32, b[o..][0..4], .little);
-            o += 4;
+            w.has = std.mem.readInt(u64, b[o..][0..8], .little);
+            o += 8;
             w.brightness = b[o];
             w.base = b[o + 1];
             w.generator = b[o + 2];
@@ -2936,7 +2941,8 @@ pub fn decodePacket(bytes: []const u8) Error!Packet {
             w.metrics_interval_s = std.mem.readInt(u32, b[o..][0..4], .little);
             o += 4;
             w.discovery = b[o];
-            o += 1;
+            w.discovery_controls = b[o + 1];
+            o += 2;
             w.discovery_prefix = try getText(b, &o);
             w.expected_revision = std.mem.readInt(u32, b[o..][0..4], .little);
             o += 4;
@@ -3108,10 +3114,10 @@ pub fn decodePacket(bytes: []const u8) Error!Packet {
             st.menu_state = b[o + 2];
             o += 3;
             inline for (.{
-                &st.net_rx_bytes,   &st.net_tx_bytes,   &st.net_rx_packets, &st.net_tx_packets,
-                &st.net_rx_errors,  &st.net_rx_dropped, &st.net_tx_errors,  &st.net_tx_dropped,
-                &st.net_rx_bps,     &st.net_tx_bps,     &st.mem_cached_kb,  &st.mem_dirty_kb,
-                &st.mem_writeback_kb, &st.mem_slab_kb,  &st.saves,          &st.save_failures,
+                &st.net_rx_bytes,     &st.net_tx_bytes,   &st.net_rx_packets, &st.net_tx_packets,
+                &st.net_rx_errors,    &st.net_rx_dropped, &st.net_tx_errors,  &st.net_tx_dropped,
+                &st.net_rx_bps,       &st.net_tx_bps,     &st.mem_cached_kb,  &st.mem_dirty_kb,
+                &st.mem_writeback_kb, &st.mem_slab_kb,    &st.saves,          &st.save_failures,
                 &st.save_bytes,
             }) |f| {
                 f.* = std.mem.readInt(u32, b[o..][0..4], .big);
@@ -3229,4 +3235,20 @@ test "the build id survives the status wire, whole and null-padded" {
     @memset(&full.build, 'x');
     const p2 = try decodePacket(try encodePacket(.{ .status = full }, 9, 1, &buf));
     try std.testing.expectEqual(full.build, p2.message.status.build);
+}
+
+test "ha controls opt in survives the config patch wire including explicit false" {
+    for ([_]?bool{ null, false, true }) |value| {
+        const w = try ConfigPatch.fromApi(.{ .discovery_controls = value, .battery_grace_s = 12 });
+        var buf: [codec.max_message]u8 = undefined;
+        const back = try decodePacket(try encodePacket(.{ .config_patch = w }, 7, 0, &buf));
+        try std.testing.expectEqual(value, back.message.config_patch.toApi().discovery_controls);
+        try std.testing.expectEqual(@as(?u16, 12), back.message.config_patch.toApi().battery_grace_s);
+    }
+}
+
+test "config patch fixed length covers every scalar before generator parameters" {
+    var buf: [codec.max_message]u8 = undefined;
+    const packet = try encodePacket(.{ .config_patch = .{} }, 1, 0, &buf);
+    try std.testing.expectEqual(ConfigPatch.fixed_len, packet.len - codec.header_len);
 }

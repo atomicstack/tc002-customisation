@@ -85,6 +85,7 @@ pub const Config = struct {
     frame_timeout_ms: u16 = 500,
     metrics_interval_s: u32 = 30,
     discovery: bool = false,
+    discovery_controls: bool = false,
     discovery_prefix: Text = Text.init("homeassistant"),
     origins: [api.max_origins]Text = .{ .{}, .{}, .{}, .{} },
     origin_count: u8 = 0,
@@ -181,6 +182,7 @@ pub const Config = struct {
         if (p.frame_timeout_ms) |v| next.frame_timeout_ms = v;
         if (p.metrics_interval_s) |v| next.metrics_interval_s = v;
         if (p.discovery) |v| next.discovery = v;
+        if (p.discovery_controls) |v| next.discovery_controls = v;
         if (p.discovery_prefix) |v| try next.discovery_prefix.set(v);
         if (p.clock_font) |v| next.clock_font = @intFromEnum(v);
         if (p.clock_colour_mode) |v| next.clock_colour_mode = @intFromEnum(v);
@@ -335,7 +337,7 @@ fn getText(in: []const u8, off: *usize) error{BadPayload}!Text {
 const text_wire = 1 + text_max;
 /// schema, revisions, brightness/base/generator, timezone, ntp, intervals, discovery, origins,
 /// mqtt, the clock style, the night schedule
-pub const encoded_len = 1 + 4 + 4 + 3 + text_wire + 5 + 4 + 2 + 4 + 1 + text_wire + 1 + api.max_origins * text_wire + 1 + text_wire + 2 + 4 * text_wire + 1 + 12 + 8 + 1 + 5 * text_wire + 2 + 1 + param.owner_count * param.max_per_owner * 4 + (1 + 2 + 2) + (1 + 1) + (1 + 2 + 2);
+pub const encoded_len = 2 + 4 + 4 + 3 + text_wire + 5 + 4 + 2 + 4 + 1 + text_wire + 1 + api.max_origins * text_wire + 1 + text_wire + 2 + 4 * text_wire + 1 + 12 + 8 + 1 + 5 * text_wire + 2 + 1 + param.owner_count * param.max_per_owner * 4 + (1 + 2 + 2) + (1 + 1) + (1 + 2 + 2);
 
 pub fn encode(c: *const Config, out: *[encoded_len]u8) void {
     var o: usize = 0;
@@ -360,7 +362,8 @@ pub fn encode(c: *const Config, out: *[encoded_len]u8) void {
     std.mem.writeInt(u32, out[o..][0..4], c.metrics_interval_s, .little);
     o += 4;
     out[o] = @intFromBool(c.discovery);
-    o += 1;
+    out[o + 1] = @intFromBool(c.discovery_controls);
+    o += 2;
     putText(out, &o, c.discovery_prefix);
     out[o] = c.origin_count;
     o += 1;
@@ -450,7 +453,8 @@ pub fn decode(in: []const u8) error{BadPayload}!Config {
     c.metrics_interval_s = std.mem.readInt(u32, in[o..][0..4], .little);
     o += 4;
     c.discovery = in[o] != 0;
-    o += 1;
+    c.discovery_controls = in[o + 1] != 0;
+    o += 2;
     c.discovery_prefix = try getText(in, &o);
     c.origin_count = in[o];
     if (c.origin_count > api.max_origins) return error.BadPayload;
@@ -535,6 +539,7 @@ const FileForm = struct {
     frame_timeout_ms: u16 = 500,
     metrics_interval_s: u32 = 30,
     discovery: bool = false,
+    discovery_controls: bool = false,
     discovery_prefix: []const u8 = "homeassistant",
     origins: []const []const u8 = &.{},
     clock_font: []const u8 = "classic",
@@ -654,6 +659,7 @@ pub fn toJson(c: *const Config, out: []u8) error{Overflow}![]u8 {
         .frame_timeout_ms = c.frame_timeout_ms,
         .metrics_interval_s = c.metrics_interval_s,
         .discovery = c.discovery,
+        .discovery_controls = c.discovery_controls,
         .discovery_prefix = c.discovery_prefix.slice(),
         .origins = origins_buf[0..c.origin_count],
         .mqtt = .{
@@ -706,6 +712,7 @@ pub fn fromJson(bytes: []const u8, arena: []u8) error{ Invalid, TooLong }!Config
     c.frame_timeout_ms = f.frame_timeout_ms;
     c.metrics_interval_s = f.metrics_interval_s;
     c.discovery = f.discovery;
+    c.discovery_controls = f.discovery_controls;
     c.night = f.night;
     if (f.night_brightness < 1 or f.night_brightness > 100) return error.Invalid;
     c.night_brightness = f.night_brightness;
@@ -1186,5 +1193,21 @@ test "every base and every generator survives the settings file" {
             try std.testing.expectEqual(@as(u8, @intCast(bf.value)), back.base);
             try std.testing.expectEqual(@as(u8, @intCast(gf.value)), back.generator);
         }
+    }
+}
+
+test "ha controls require an explicit persisted opt in" {
+    try std.testing.expect(@hasField(Config, "discovery_controls"));
+    if (comptime @hasField(Config, "discovery_controls")) {
+        var c = Config{};
+        try std.testing.expect(!c.discovery_controls);
+        try c.patch(.{ .discovery_controls = true });
+        var wire: [encoded_len]u8 = undefined;
+        encode(&c, &wire);
+        try std.testing.expect((try decode(&wire)).discovery_controls);
+        var out: [file_max]u8 = undefined;
+        var arena: [8192]u8 = undefined;
+        try std.testing.expect((try fromJson(try toJson(&c, &out), &arena)).discovery_controls);
+        try std.testing.expect(!(try fromJson("{\"schema\":1}", &arena)).discovery_controls);
     }
 }
