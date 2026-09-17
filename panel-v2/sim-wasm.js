@@ -407,11 +407,23 @@
                       hexInt(c.colour, -1), hexInt(c.colour2, -1),
                       c.fade == null ? -1 : (c.fade ? 1 : 0), ev.at);
     },
-    notify: (e, ev) => e.notify(writeScratch(String(ev.text == null ? '' : ev.text)),
-                                hexInt(ev.colour, 0xffffff), ev.duration_s | 0, ev.at),
-    // the overlay timing out is a real state change with a revision of its own, but the replica's
-    // own tick expires it: applying anything here would double-count
-    overlay_expired: () => {},
+    notify: (e, ev) => {
+      const encoder = new TextEncoder();
+      const text = encoder.encode(String(ev.text == null ? '' : ev.text));
+      const name = encoder.encode(String(ev.name == null ? '' : ev.name));
+      if (text.length + name.length > e.scratchLen()) return 0;
+      const input = bytes(e.scratchPtr(), text.length + name.length);
+      input.set(text);
+      input.set(name, text.length);
+      return e.notifyNamed(text.length, hexInt(ev.colour, 0xffffff), ev.duration_s | 0,
+                           name.length, ev.stack ? 1 : 0, ev.hold ? 1 : 0, ev.at);
+    },
+    dismiss_notify: (e, ev) => e.dismissNotify(writeScratch(String(ev.name == null ? '' : ev.name)), ev.at),
+    // events are drained before composing a frame. replay an unapplied expiry at the device's
+    // time, even if a late local promotion shifted its deadline. an applied expiry stays a no-op.
+    overlay_expired: (e, ev) => {
+      if ((e.revision() >>> 0) === ((ev.revision - 1) >>> 0)) e.expireOverlay(ev.at);
+    },
     // the pixels are not on the wire, and 2.5 kB per frame have no business being: a raw frame is
     // the one statement the replica cannot reproduce, so it says so and resyncs
     raw: null,

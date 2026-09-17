@@ -2,7 +2,8 @@
 //! (notification, raw frame, stream arming). owns the applied state revision. pure.
 //!
 //! rules from the design: a base selection clears any overlay; a new notification or raw frame
-//! replaces the existing overlay; expiry reveals the current base; stream arming waits two
+//! replaces the existing overlay unless stacked; expiry promotes the next queued notification or
+//! reveals the current base; stream arming waits two
 //! seconds for a session and then falls back; rotary selects the generator in art and changes
 //! clock faces in the clock and layouts in ip; a short knob press reseeds art; a long one arms streaming.
 const std = @import("std");
@@ -17,6 +18,7 @@ const menu = @import("menu.zig");
 const canvas = @import("canvas.zig");
 const pages = @import("pages.zig");
 const param = @import("param.zig");
+pub const notification = @import("notification.zig");
 
 const white = [3]u8{ 255, 255, 255 };
 const s_ns = std.time.ns_per_s;
@@ -661,7 +663,7 @@ pub const Base = enum(u8) {
 pub const min_duration_s: u16 = 1;
 pub const max_duration_s: u16 = 300;
 
-pub const Notify = struct { text: [128]u8, len: u8, colour: [3]u8, since_ns: u64, until_ns: u64, transition: transition.Spec };
+pub const Notify = notification.Entry;
 pub const Raw = struct { rgb: geometry.Rgb, until_ns: u64, transition: transition.Spec };
 
 pub const Overlay = union(enum) { none, notify: Notify, raw: Raw, stream_arming: u64 };
@@ -673,7 +675,8 @@ pub const Outgoing = struct { base: Base, generator: scene.Generator, overlay: O
 pub const Command = union(enum) {
     set_base: Base,
     select_generator: scene.Generator,
-    notify: struct { text: []const u8, colour: [3]u8, duration_s: u16 },
+    notify: struct { text: []const u8, colour: [3]u8, duration_s: u16, name: []const u8 = "", stack: bool = false, hold: bool = false },
+    dismiss_notify: []const u8,
     raw: struct { rgb: *const geometry.Rgb, duration_s: u16 },
     /// one frame of a stream: the same overlay slot as `raw`, a deadline in milliseconds rather
     /// than seconds, and no revision bump
@@ -711,10 +714,11 @@ pub const Statement = struct {
         power = 7,
         set_clock_style = 8,
         set_ip_mode = 9,
-        /// a notification or raw frame reached its deadline and the base came back. it moves the
+        /// an overlay reached its deadline and the next notification or base came back. it moves the
         /// revision from inside `tick` rather than `applyWith`, and it is a real state change, so
         /// it gets a statement of its own instead of leaving a mirror with an unexplained gap.
         overlay_expired = 10,
+        dismiss_notify = 11,
     };
     pub const text_max = 128;
 
@@ -734,6 +738,9 @@ pub const Statement = struct {
     /// how long a notification or raw frame holds the overlay
     duration_s: u16 = 0,
     colour: [3]u8 = .{ 0, 0, 0 },
+    name: notification.Name = .{},
+    stack: bool = false,
+    hold: bool = false,
     text_len: u8 = 0,
     text: [text_max]u8 = [_]u8{0} ** text_max,
 
@@ -742,12 +749,13 @@ pub const Statement = struct {
     }
 };
 
-pub const Reject = enum { invalid_text, invalid_duration, invalid_brightness };
+pub const Reject = enum { invalid_text, invalid_duration, invalid_brightness, invalid_name, queue_full };
 pub const Result = union(enum) { applied: u32, rejected: Reject };
 
 pub const Arbiter = struct {
     base: Base,
     overlay: Overlay = .none,
+    notifications: notification.Waiting = .{},
     revision: u32 = 0,
     brightness: u8 = 100,
     power: bool = true,
@@ -885,8 +893,15 @@ pub const Arbiter = struct {
                 st.kind = .notify;
                 st.colour = n.colour;
                 st.duration_s = n.duration_s;
+                st.name = notification.Name.init(n.name);
+                st.stack = n.stack;
+                st.hold = n.hold;
                 st.text_len = @intCast(@min(n.text.len, Statement.text_max));
                 @memcpy(st.text[0..st.text_len], n.text[0..st.text_len]);
+            },
+            .dismiss_notify => |name| {
+                st.kind = .dismiss_notify;
+                st.name = notification.Name.init(name);
             },
             .raw => |r| {
                 st.kind = .raw;
@@ -938,6 +953,7 @@ pub const Arbiter = struct {
                     self.pending = spec orelse .{ .effect = .slide, .direction = if (forward) .left else .right, .duration_ns = self.default_transition.duration_ns };
                 } else if (self.overlay != .none) self.mark(spec);
                 self.base = b;
+                self.notifications.len = 0;
                 self.overlay = .none;
                 return .{ .applied = self.bump() };
             },
@@ -951,12 +967,33 @@ pub const Arbiter = struct {
                 if (n.text.len == 0 or n.text.len > 128) return .{ .rejected = .invalid_text };
                 for (n.text) |c| if (c < 0x20 or c > 0x7e) return .{ .rejected = .invalid_text };
                 if (!validDuration(n.duration_s)) return .{ .rejected = .invalid_duration };
+                if (n.name.len != 0 and !notification.validName(n.name)) return .{ .rejected = .invalid_name };
                 const t = spec orelse self.default_transition;
-                var o = Notify{ .text = undefined, .len = @intCast(n.text.len), .colour = n.colour, .since_ns = now_ns, .until_ns = now_ns + @as(u64, n.duration_s) * s_ns, .transition = t };
+                var o = Notify{ .text = undefined, .len = @intCast(n.text.len), .colour = n.colour, .name = notification.Name.init(n.name), .duration_s = n.duration_s, .hold = n.hold, .since_ns = now_ns, .until_ns = now_ns + @as(u64, n.duration_s) * s_ns, .transition = t };
                 @memcpy(o.text[0..n.text.len], n.text);
+                if (n.stack and self.overlay == .notify) {
+                    if (!self.notifications.push(o)) return .{ .rejected = .queue_full };
+                    self.revision +%= 1;
+                    return .{ .applied = self.revision };
+                }
                 self.overlay = .{ .notify = o };
                 self.pending = t;
                 return .{ .applied = self.bump() };
+            },
+            .dismiss_notify => |name| {
+                if (name.len != 0 and !notification.validName(name)) return .{ .rejected = .invalid_name };
+                if (self.overlay == .notify and (name.len == 0 or std.mem.eql(u8, name, self.overlay.notify.name.slice()))) {
+                    self.advanceNotification(now_ns);
+                    return .{ .applied = self.bump() };
+                }
+                if (name.len != 0) for (self.notifications.entries[0..self.notifications.len], 0..) |*n, i| {
+                    if (std.mem.eql(u8, name, n.name.slice())) {
+                        _ = self.notifications.remove(i);
+                        self.revision +%= 1;
+                        return .{ .applied = self.revision };
+                    }
+                };
+                return .{ .applied = self.revision };
             },
             .power => |on| {
                 if (on == self.power) return .{ .applied = self.revision };
@@ -978,6 +1015,7 @@ pub const Arbiter = struct {
             .raw => |r| {
                 if (!validDuration(r.duration_s)) return .{ .rejected = .invalid_duration };
                 const t = spec orelse transition.Spec.cut;
+                self.notifications.len = 0;
                 self.overlay = .{ .raw = .{ .rgb = r.rgb.*, .until_ns = now_ns + @as(u64, r.duration_s) * s_ns, .transition = t } };
                 if (!t.instant()) self.pending = t;
                 return .{ .applied = self.bump() };
@@ -987,6 +1025,7 @@ pub const Arbiter = struct {
                 // and counting it is the difference between "the device is slow" and "you are
                 // sending faster than sixty a second, which it cannot show"
                 if (self.dirty and self.overlay == .raw) self.stream_coalesced +|= 1;
+                self.notifications.len = 0;
                 self.overlay = .{ .raw = .{ .rgb = st.rgb.*, .until_ns = now_ns + @as(u64, st.timeout_ms) * std.time.ns_per_ms, .transition = transition.Spec.cut } };
                 self.stream_frames +|= 1;
                 self.dirty = true;
@@ -1004,6 +1043,7 @@ pub const Arbiter = struct {
                 return .{ .applied = self.bump() };
             },
             .arm_stream => {
+                self.notifications.len = 0;
                 self.overlay = .{ .stream_arming = now_ns + arming_wait_ns };
                 return .{ .applied = self.bump() };
             },
@@ -1276,37 +1316,60 @@ pub const Arbiter = struct {
         // an outgoing generator keeps moving through its transition
         if (self.outgoing) |o| if (o.generator != self.art.generator) self.art.stepGenerator(o.generator, dt_s);
         const until: ?u64 = switch (self.overlay) {
-            .notify => |n| n.until_ns,
+            .notify => |n| if (n.hold) null else n.until_ns,
             .raw => |r| r.until_ns,
             .stream_arming => |u| u,
             .none => null,
         };
         if (until) |u| if (now_ns >= u) {
-            const before = self.capture();
-            const was_pending = self.pending != null;
-            // an overlay leaves with the paired effect travelling the other way
-            switch (self.overlay) {
-                .notify => |n| self.pending = n.transition.outgoing(),
-                .raw => |r| if (!r.transition.instant()) {
-                    self.pending = r.transition.outgoing();
-                },
-                else => {},
-            }
-            self.overlay = .none;
-            _ = self.bump();
-            self.applied = .{ .kind = .overlay_expired, .revision = self.revision, .at_ns = now_ns };
-            if (!was_pending and self.pending != null) self.outgoing = before;
+            _ = self.expireOverlay(now_ns);
         };
+    }
+
+    /// expire exactly one overlay, either from the local timer or an authoritative mirror event.
+    /// mirror events may precede a locally calculated deadline after a late frame promoted it.
+    pub fn expireOverlay(self: *Arbiter, now_ns: u64) bool {
+        if (self.overlay == .none) return false;
+        const before = self.capture();
+        const was_pending = self.pending != null;
+        // an overlay leaves with the paired effect travelling the other way
+        switch (self.overlay) {
+            .notify => |n| self.pending = n.transition.outgoing(),
+            .raw => |r| if (!r.transition.instant()) {
+                self.pending = r.transition.outgoing();
+            },
+            else => {},
+        }
+        if (self.overlay == .notify) self.advanceNotification(now_ns) else self.overlay = .none;
+        _ = self.bump();
+        self.applied = .{ .kind = .overlay_expired, .revision = self.revision, .at_ns = now_ns };
+        if (!was_pending and self.pending != null) self.outgoing = before;
+        return true;
     }
 
     /// when the current overlay expires, so the loop can arm a timer for it.
     pub fn nextExpiryNs(self: *const Arbiter) ?u64 {
         return switch (self.overlay) {
-            .notify => |n| n.until_ns,
+            .notify => |n| if (n.hold) null else n.until_ns,
             .raw => |r| r.until_ns,
             .stream_arming => |u| u,
             .none => null,
         };
+    }
+
+    /// promote one waiting entry at the time it actually becomes visible.
+    fn advanceNotification(self: *Arbiter, now_ns: u64) void {
+        const current = self.overlay.notify;
+        if (self.notifications.len > 0) {
+            var next = self.notifications.remove(0);
+            next.since_ns = now_ns;
+            next.until_ns = now_ns + @as(u64, next.duration_s) * s_ns;
+            self.overlay = .{ .notify = next };
+            self.pending = next.transition;
+        } else {
+            self.overlay = .none;
+            self.pending = current.transition.outgoing();
+        }
     }
 
     fn renderBase(self: *Arbiter, wall_ns: u64, rgb: *geometry.Rgb) void {
@@ -1460,4 +1523,118 @@ test "a time correction pulses the clock's separators once and then leaves the f
     var after = geometry.black_rgb;
     a.render(wall, &after);
     try std.testing.expectEqualSlices(u8, &before, &after);
+}
+
+fn queuedTestCommand(text: []const u8, name: []const u8, stack: bool, hold: bool, seconds: u16) Command {
+    return .{ .notify = .{ .text = text, .colour = white, .duration_s = seconds, .name = name, .stack = stack, .hold = hold } };
+}
+
+fn dismissForTest(a: *Arbiter, name: []const u8, now: u64) Result {
+    return a.apply(.{ .dismiss_notify = name }, now);
+}
+
+test "queued notification waits and gets its full duration after promotion" {
+    var a = fresh();
+    _ = a.apply(queuedTestCommand("first", "a", false, false, 2), 0);
+    _ = a.takeTransition();
+    _ = a.takeDirty();
+    _ = a.apply(queuedTestCommand("second", "b", true, false, 3), s_ns);
+    try std.testing.expectEqualStrings("first", a.overlay.notify.text[0..a.overlay.notify.len]);
+    try std.testing.expect(a.takeTransition() == null);
+    a.tick(2 * s_ns, 0);
+    try std.testing.expectEqualStrings("second", a.overlay.notify.text[0..a.overlay.notify.len]);
+    a.tick(4 * s_ns, 0);
+    try std.testing.expect(a.overlay == .notify);
+    a.tick(5 * s_ns, 0);
+    try std.testing.expect(a.overlay == .none);
+}
+
+test "held notification survives time and dismissal reveals the waiting one" {
+    var a = fresh();
+    _ = a.apply(queuedTestCommand("held", "door", false, true, 1), 0);
+    a.tick(3600 * s_ns, 0);
+    try std.testing.expect(a.overlay == .notify);
+    _ = a.apply(queuedTestCommand("next", "next", true, false, 2), 3600 * s_ns);
+    _ = dismissForTest(&a, "door", 3601 * s_ns);
+    try std.testing.expectEqualStrings("next", a.overlay.notify.text[0..a.overlay.notify.len]);
+    a.tick(3603 * s_ns, 0);
+    try std.testing.expect(a.overlay == .none);
+}
+
+test "named dismissal removes a waiting notification without disturbing the active one" {
+    var a = fresh();
+    _ = a.apply(queuedTestCommand("first", "a", false, true, 1), 0);
+    _ = a.apply(queuedTestCommand("second", "b", true, false, 2), 0);
+    _ = dismissForTest(&a, "b", 0);
+    try std.testing.expectEqualStrings("first", a.overlay.notify.text[0..a.overlay.notify.len]);
+    _ = dismissForTest(&a, "a", 0);
+    try std.testing.expect(a.overlay == .none);
+}
+
+test "notification queue capacity refuses overflow without losing an accepted entry" {
+    var a = fresh();
+    _ = a.apply(queuedTestCommand("active", "a", true, true, 1), 0);
+    for (0..notification.capacity - 1) |_| _ = a.apply(queuedTestCommand("waiting", "b", true, false, 1), 0);
+    const revision = a.revision;
+    try expectRejected(a.apply(queuedTestCommand("overflow", "c", true, false, 1), 0), .queue_full);
+    try std.testing.expectEqual(revision, a.revision);
+    try std.testing.expectEqual(notification.capacity - 1, a.notifications.len);
+    try std.testing.expectEqualStrings("active", a.overlay.notify.text[0..a.overlay.notify.len]);
+    // the original replacement operation still works when every slot is occupied.
+    _ = a.apply(queuedTestCommand("replacement", "r", false, true, 1), 0);
+    try std.testing.expectEqual(notification.capacity - 1, a.notifications.len);
+    _ = dismissForTest(&a, "", 0);
+    try std.testing.expectEqualStrings("waiting", a.overlay.notify.text[0..a.overlay.notify.len]);
+}
+
+test "named dismissal is first-match and missing names do not move revision" {
+    var a = fresh();
+    _ = a.apply(queuedTestCommand("one", "same", true, true, 1), 0);
+    _ = a.apply(queuedTestCommand("two", "same", true, true, 1), 0);
+    const revision = a.revision;
+    _ = a.takeApplied();
+    _ = dismissForTest(&a, "absent", 0);
+    try std.testing.expectEqual(revision, a.revision);
+    try std.testing.expect(a.takeApplied() == null);
+    _ = dismissForTest(&a, "same", 0);
+    try std.testing.expectEqualStrings("two", a.overlay.notify.text[0..a.overlay.notify.len]);
+    const st = a.takeApplied().?;
+    try std.testing.expectEqual(Statement.Kind.dismiss_notify, st.kind);
+    try std.testing.expectEqualStrings("same", st.name.slice());
+    try std.testing.expectEqual(revision + 1, st.revision);
+}
+
+test "scene frame and stream takeover clear pending notifications but power does not" {
+    var frame = geometry.black_rgb;
+    const commands = [_]Command{ .{ .set_base = .clock }, .{ .raw = .{ .rgb = &frame, .duration_s = 1 } }, .{ .stream = .{ .rgb = &frame, .timeout_ms = 100 } }, .arm_stream };
+    for (commands) |cmd| {
+        var a = fresh();
+        _ = a.apply(queuedTestCommand("one", "a", true, true, 1), 0);
+        _ = a.apply(queuedTestCommand("two", "b", true, true, 1), 0);
+        _ = a.apply(cmd, 0);
+        try std.testing.expectEqual(@as(usize, 0), a.notifications.len);
+        a.tick(400 * s_ns, 0);
+        try std.testing.expect(a.overlay == .none);
+    }
+    var a = fresh();
+    _ = a.apply(queuedTestCommand("one", "a", true, true, 1), 0);
+    _ = a.apply(queuedTestCommand("two", "b", true, false, 1), 0);
+    _ = a.apply(.{ .power = false }, 0);
+    a.tick(400 * s_ns, 0);
+    try std.testing.expectEqualStrings("one", a.overlay.notify.text[0..a.overlay.notify.len]);
+    try std.testing.expectEqual(@as(usize, 1), a.notifications.len);
+}
+
+test "waiting dismissal keeps the transition and display timer unchanged" {
+    var a = fresh();
+    _ = a.apply(queuedTestCommand("one", "a", true, false, 3), 0);
+    _ = a.takeTransition();
+    _ = a.takeDirty();
+    _ = a.apply(queuedTestCommand("two", "b", true, true, 1), s_ns);
+    _ = dismissForTest(&a, "b", 2 * s_ns);
+    try std.testing.expect(a.takeTransition() == null);
+    try std.testing.expect(!a.takeDirty());
+    a.tick(3 * s_ns, 0);
+    try std.testing.expect(a.overlay == .none);
+    try std.testing.expectEqual(Statement.Kind.overlay_expired, a.takeApplied().?.kind);
 }

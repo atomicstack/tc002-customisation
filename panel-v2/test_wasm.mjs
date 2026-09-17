@@ -437,6 +437,130 @@ test('overlay_expired advances the revision without double-counting', () => {
   assert.equal(W.revision(), before, 'the replica must not bump for it');
 });
 
+const notificationEvent = (revision, extra = {}) => ({
+  revision, age_ms: 0, cmd: 'notify', source: 'api', text: 'hi',
+  colour: 'ff0000', duration_s: 1, ...extra,
+});
+const replay = (ev, at) => {
+  const result = W.applyStatement(ev, at);
+  assert.equal(result.ok, true, result.reason || '');
+  assert.equal(W.revision(), ev.revision);
+};
+const notificationFrame = at => {
+  W.exports.frame(at, WALL);
+  return W.frame();
+};
+const onlyChannel = (rgb, channel) => {
+  assert.ok(lit(rgb) > 0, 'the notification draws text');
+  assert.ok(rgb.every((value, i) => i % 3 === channel || value === 0),
+            `the notification uses colour channel ${channel}`);
+};
+
+test('a held notification survives its duration and a stacked one waits for dismissal', () => {
+  W.reset('clock', 'popsquares', 1);
+  W.setRevision(0);
+  replay(notificationEvent(1, { name: 'held', hold: true }), 1000);
+  const held = notificationFrame(1000);
+  assert.deepEqual(notificationFrame(5000), held);
+  assert.equal(W.revision(), 1, 'held notifications do not expire');
+  replay(notificationEvent(2, { name: 'next', stack: true, colour: '00ff00' }), 5000);
+  assert.deepEqual(notificationFrame(5000), held, 'stacking leaves the active text visible');
+  replay({ revision: 3, cmd: 'dismiss_notify', name: 'held' }, 9000);
+  onlyChannel(notificationFrame(9500), 1);
+  assert.equal(W.revision(), 3, 'the waiting notification gets its full duration on promotion');
+  notificationFrame(10001);
+  replay({ revision: 4, cmd: 'overlay_expired' }, 10001);
+});
+
+test('dismissing a named waiting notification preserves the active timer and queue order', () => {
+  W.reset('clock', 'popsquares', 1);
+  W.setRevision(0);
+  replay(notificationEvent(1, { name: 'first', hold: true }), 1000);
+  replay(notificationEvent(2, { name: 'removed', stack: true, colour: '00ff00' }), 1100);
+  replay(notificationEvent(3, { name: 'last', stack: true, colour: '0000ff' }), 1200);
+  replay({ revision: 4, cmd: 'dismiss_notify', name: 'removed' }, 1300);
+  onlyChannel(notificationFrame(1400), 0);
+  replay({ revision: 4, cmd: 'dismiss_notify', name: 'missing' }, 1500);
+  replay({ revision: 5, cmd: 'dismiss_notify', name: '' }, 5000);
+  onlyChannel(notificationFrame(5500), 2);
+});
+
+test('notification expiry promotes the queue and matches the streamed revision', () => {
+  W.reset('clock', 'popsquares', 1);
+  W.setRevision(0);
+  replay(notificationEvent(1), 1000);
+  replay(notificationEvent(2, { stack: true, colour: '00ff00', duration_s: 2 }), 1500);
+  onlyChannel(notificationFrame(1999), 0);
+  onlyChannel(notificationFrame(2001), 1);
+  replay({ revision: 3, cmd: 'overlay_expired' }, 2001);
+  onlyChannel(notificationFrame(3999), 1);
+  assert.equal(W.revision(), 3);
+  notificationFrame(4002);
+  replay({ revision: 4, cmd: 'overlay_expired' }, 4002);
+});
+
+test('expiry events promote queued notifications before the next frame using event age', () => {
+  W.reset('clock', 'popsquares', 1);
+  W.setRevision(0);
+  replay(notificationEvent(1), 1000);
+  replay(notificationEvent(2, { stack: true, colour: '00ff00', duration_s: 2 }), 1500);
+  onlyChannel(notificationFrame(1999), 0);
+  // draw drains the stream before composing: the event itself must advance the due overlay.
+  replay({ revision: 3, cmd: 'overlay_expired', age_ms: 500 }, 2501);
+  onlyChannel(notificationFrame(2501), 1);
+  onlyChannel(notificationFrame(3999), 1);
+  assert.equal(W.revision(), 3, 'promotion starts at the event time, with its full duration');
+  replay({ revision: 4, cmd: 'overlay_expired', age_ms: 500 }, 4502);
+  notificationFrame(4502);
+  assert.equal(W.revision(), 4, 'composing after replay must not expire the overlay twice');
+});
+
+test('a late expiry event after a local tick does not rewind a scrolling notification', () => {
+  W.reset('clock', 'popsquares', 1);
+  W.setRevision(0);
+  replay(notificationEvent(1), 1000);
+  replay(notificationEvent(2, { stack: true, duration_s: 2,
+    text: 'a much longer notification that scrolls' }), 1500);
+  notificationFrame(2001);
+  const before = notificationFrame(2400);
+  replay({ revision: 3, cmd: 'overlay_expired', age_ms: 499 }, 2500);
+  assert.deepEqual(W.frame(), before, 'event replay leaves the current rendered frame alone');
+  assert.deepEqual(notificationFrame(2400), before, 'the scroll timing stays on the local clock');
+  notificationFrame(4002);
+  replay({ revision: 4, cmd: 'overlay_expired', age_ms: 498 }, 4500);
+});
+
+test('authoritative expiry survives a successor promoted late by the local frame timer', () => {
+  W.reset('clock', 'popsquares', 1);
+  W.setRevision(0);
+  replay(notificationEvent(1), 1000);
+  replay(notificationEvent(2, { stack: true, colour: '00ff00', duration_s: 2 }), 1500);
+  onlyChannel(notificationFrame(2030), 1);
+  // the replica promoted at 2030, while the device promoted at 2001.
+  replay({ revision: 3, cmd: 'overlay_expired', age_ms: 100 }, 2101);
+  onlyChannel(notificationFrame(3999), 1);
+  // the device's second expiry precedes the replica's locally calculated 4030 deadline.
+  replay({ revision: 4, cmd: 'overlay_expired', age_ms: 100 }, 4102);
+  notificationFrame(4102);
+  assert.equal(W.revision(), 4, 'the later frame must not apply the same expiry again');
+});
+
+test('named notification exports reject oversized scratch inputs without changing state', () => {
+  W.reset('clock', 'popsquares', 1);
+  W.setRevision(0);
+  const e = W.exports;
+  assert.equal(typeof e.notifyNamed, 'function');
+  assert.equal(typeof e.dismissNotify, 'function');
+  new Uint8Array(e.memory.buffer, e.scratchPtr(), 40).fill(97);
+  assert.equal(e.notifyNamed(2, 0xff0000, 1, 33, 0, 0, 1000), 0);
+  assert.equal(e.notifyNamed(e.scratchLen() + 1, 0xff0000, 1, 0, 0, 0, 1000), 0);
+  assert.equal(e.notifyNamed(0xffffffff, 0xff0000, 1, 32, 0, 0, 1000), 0);
+  assert.equal(e.dismissNotify(33, 1000), 0);
+  assert.equal(e.dismissNotify(0xffffffff, 1000), 0);
+  assert.equal(W.revision(), 0);
+  assert.equal(e.notify(2, 0xff0000, 1, 1000), 1, 'the legacy notification export remains usable');
+});
+
 test('an event is placed at the instant it happened, not the instant it arrived', () => {
   // a scrolling notification is the clearest case: where the text sits depends on when it began,
   // so learning about it late has to move it back, not restart it. (a reseed would not do here —

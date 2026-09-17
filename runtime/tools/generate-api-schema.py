@@ -62,6 +62,7 @@ def enum_source(path, name):
 BOOL = {'type': 'boolean'}
 COLOUR = string(pattern='^[0-9a-fA-F]{6}$')
 REQUEST_ID = string(pattern='^[0-9a-fA-F]{1,16}$', description='caller id for retries; generated if omitted; 1..16 hex digits')
+NOTIFICATION_NAME = string(minLength=1, maxLength=32, pattern=r'^[A-Za-z0-9_-]+(?![\s\S])')
 NAME = string(pattern='^[A-Za-z0-9_-][A-Za-z0-9_.-]{0,31}$')
 ID = string(minLength=1, maxLength=8)
 OCTET = r'(?:[0-9]{1,2}|[01][0-9]{2}|2[0-4][0-9]|25[0-5])'
@@ -133,7 +134,7 @@ def request_schemas():
         schemas[model_name]['properties'].update(copy.deepcopy(fields))
     for name in ('SceneBody', 'NotifyBody'):
         update(name, **TRANSITION)
-    for name in ('SceneBody', 'ActionBody', 'InputBody', 'NotifyBody'):
+    for name in ('SceneBody', 'ActionBody', 'InputBody', 'NotifyBody', 'DismissNotifyBody'):
         update(name, request_id=REQUEST_ID)
     clock_fields = dict(font=FONT, colour_mode=enum('solid', 'gradient'), colour=COLOUR, colour2=COLOUR, gradient=enum('horizontal', 'vertical', 'diagonal'), digits=DIGITS)
     update('ClockBody', **clock_fields)
@@ -143,7 +144,8 @@ def request_schemas():
     schemas['ActionBody']['allOf'] = [condition('action', 'brightness', {**nonnull('brightness'), 'properties': {'brightness': integer(1, 100)}}), condition('action', 'power', nonnull('power'))]
     update('InputBody', control=enum('left', 'middle', 'right', 'knob', 'rotary'), event=enum('press', 'release', 'click', 'long', 'cw', 'ccw'), steps=integer(1, 16, default=1))
     schemas['InputBody']['allOf'] = [{'if': {'properties': {'control': {'const': 'rotary'}}}, 'then': {'properties': {'event': enum('cw', 'ccw')}}, 'else': {'properties': {'event': enum('press', 'release', 'click', 'long'), 'steps': {'const': 1}}}}]
-    update('NotifyBody', text=string(minLength=1, maxLength=128, pattern='^[ -~]+$'), colour=COLOUR, duration_s=integer(1, 300, default=5))
+    update('DismissNotifyBody', name=NOTIFICATION_NAME)
+    update('NotifyBody', name=NOTIFICATION_NAME, text=string(minLength=1, maxLength=128, pattern='^[ -~]+$'), colour=COLOUR, duration_s=integer(1, 300, default=5))
     update('ConfigBody', brightness=integer(1, 100), base=BASE, generator=GENERATOR, timezone=string(minLength=1, maxLength=64, description='timezone name supported by the runtime timezone table'), ntp_server=IPV4, ntp_interval_s={'type': 'integer', 'enum': [300, 600]}, frame_timeout_ms=integer(100, 2000), metrics_interval_s={'anyOf': [{'const': 0}, integer(10, 3600)]}, discovery_prefix=string(minLength=1, maxLength=64), ip_mode=enum('lines', 'mini', 'scroll', 'big'), night_brightness=integer(1, 100), night_lead_min=integer(0, 120), latitude={'type': 'number', 'minimum': -90, 'maximum': 90}, longitude={'type': 'number', 'minimum': -180, 'maximum': 180}, berry_heap_kb=integer(16, 256), berry_handler_ms=integer(10, 1000), battery_shutdown_mv=integer(3000, 4000), battery_grace_s=integer(0, 300), generator_params=array(ref('GenParamBody'), maxItems=8))
     update('ConfigBody', sound_volume=integer(1, 100))
     if 'discovery_controls' in schemas['ConfigBody']['properties']:
@@ -156,7 +158,7 @@ def request_schemas():
     update('MqttBody', host=IPV4, port=integer(1, 65535))
     for name in ('username', 'password', 'client_id', 'prefix'):
         update('MqttBody', **{name: string(maxLength=64, **({'writeOnly': True} if name == 'password' else {}))})
-    update('NtfyBody', url=string(maxLength=64, pattern=r'^(?:$|https?://[^\s]+$)', description='empty disables the url; http://host[:port][/prefix] or https://host[:port][/prefix]'), topic=string(maxLength=64, pattern='^[A-Za-z0-9_-]*$'), duration_s=integer(1, 300), ca=string(maxLength=3500, description='pem certificate containing -----BEGIN CERTIFICATE-----, or empty to remove'))
+    update('NtfyBody', url=string(maxLength=64, pattern=r'^(?:$|https?://[^\s]+$)', description='empty disables the url; http://host[:port][/prefix] or https://host[:port][/prefix]'), topic=string(maxLength=64, pattern=r'^[A-Za-z0-9_-]*(?![\s\S])'), duration_s=integer(1, 300), ca=string(maxLength=3500, description='pem certificate containing -----BEGIN CERTIFICATE-----, or empty to remove'))
     for name in ('token', 'username', 'password'):
         update('NtfyBody', **{name: string(maxLength=64, **({'writeOnly': True} if name != 'username' else {}))})
     update('TokensBody', name=NAME, scopes=array(SCOPES, minItems=1))
@@ -201,7 +203,7 @@ def response_schemas(schemas):
         return ref(name)
     clock = obj(dict(font=FONT, colour_mode=enum('solid', 'gradient'), colour=COLOUR, colour2=COLOUR, gradient=enum('horizontal', 'vertical', 'diagonal'), spread=integer(0, 255), digits=DIGITS))
     model('ErrorResponse', dict(error=text, message=text, request_id=string(pattern='^[0-9a-f]{16}$')))
-    model('AppliedEvent', dict(revision=n, age_ms=n, cmd=enum('set_base', 'select_generator', 'notify', 'raw', 'brightness', 'reseed', 'power', 'set_ip_mode', 'set_clock_style', 'arm_stream', 'overlay_expired'), source=enum('local', 'api', 'ntfy', 'input'), base=BASE, generator=GENERATOR, text=text, colour=COLOUR, duration_s=n, brightness=n, seed=n, power=b, ip_mode=enum('lines', 'mini', 'scroll', 'big'), clock=clock), ['revision', 'age_ms', 'cmd', 'source'])
+    model('AppliedEvent', dict(revision=n, age_ms=n, cmd=enum('set_base', 'select_generator', 'notify', 'raw', 'brightness', 'reseed', 'power', 'set_ip_mode', 'set_clock_style', 'arm_stream', 'overlay_expired', 'dismiss_notify'), name=string(maxLength=32, pattern=r'^[A-Za-z0-9_-]*(?![\s\S])'), stack=b, hold=b, source=enum('local', 'api', 'ntfy', 'input'), base=BASE, generator=GENERATOR, text=text, colour=COLOUR, duration_s=n, brightness=n, seed=n, power=b, ip_mode=enum('lines', 'mini', 'scroll', 'big'), clock=clock), ['revision', 'age_ms', 'cmd', 'source'])
     model('AppliedResponse', dict(status={'const': 'applied'}, revision=n, epoch=n, request_id=string(pattern='^[0-9a-f]{16}$')))
     model('SavedResponse', dict(status={'const': 'saved'}, saved_revision=n))
     model('BerryResult', dict(status={'const': 'ok'}, name=text, note=text), ['status', 'name'])
@@ -232,14 +234,16 @@ def response_schemas(schemas):
 def build():
     schemas = request_schemas()
     response_schemas(schemas)
-    requests = {('/scene', 'put'): 'SceneBody', ('/action', 'post'): 'ActionBody', ('/config', 'patch'): 'ConfigBody', ('/config/save', 'post'): 'SaveBody', ('/notify', 'post'): 'NotifyBody', ('/canvas', 'put'): 'CanvasBody', ('/canvas', 'patch'): 'PatchBody', ('/mqtt', 'put'): 'MqttBody', ('/ntfy', 'put'): 'NtfyBody', ('/input', 'post'): 'InputBody', ('/sound', 'post'): 'SoundBody', ('/tokens', 'post'): 'TokensBody', ('/tokens/{name}/rotate', 'post'): 'RotateBody'}
+    requests = {('/scene', 'put'): 'SceneBody', ('/action', 'post'): 'ActionBody', ('/config', 'patch'): 'ConfigBody', ('/config/save', 'post'): 'SaveBody', ('/notify', 'post'): 'NotifyBody', ('/notify/dismiss', 'post'): 'DismissNotifyBody', ('/canvas', 'put'): 'CanvasBody', ('/canvas', 'patch'): 'PatchBody', ('/mqtt', 'put'): 'MqttBody', ('/ntfy', 'put'): 'NtfyBody', ('/input', 'post'): 'InputBody', ('/sound', 'post'): 'SoundBody', ('/tokens', 'post'): 'TokensBody', ('/tokens/{name}/rotate', 'post'): 'RotateBody'}
     reads = {'/status': 'StatusResponse', '/scenes': 'ScenesResponse', '/config': 'ConfigResponse', '/icons': 'IconsResponse', '/sprites': 'SpritesResponse', '/canvas': 'CanvasResponse', '/mqtt': 'MqttResponse', '/mqtt/status': 'MqttStatus', '/ntfy': 'NtfyResponse', '/screen': 'ScreenResponse', '/logs': 'LogsResponse', '/sounds': 'SoundsResponse', '/berry': 'BerryResponse', '/berry/scripts': 'ScriptsResponse', '/tokens': 'TokensResponse'}
     notes = {
         '/config': 'read current settings or patch selected fields. expected_revision enables optimistic concurrency. accepted changes apply live and immediately attempt persistence; saved_revision == revision confirms they were saved. /config/save can retry a failed save. discovery_controls defaults to false and enables writable home assistant discovery only with discovery enabled. mqtt cmd/config cannot change credentials or discovery opt-in.',
         '/config/save': 'persist the current settings; optional revision must match. an empty body is accepted with application/json.',
         '/scene': 'select clock, art or canvas; art may select a generator and seed. clock customizations apply to this scene command.',
         '/action': 'brightness requires brightness (1..100); power requires power; reseed accepts seed; arm_stream opens the local stream-arming overlay but does not implement stream sessions.',
-        '/notify': 'show 1..128 printable ascii characters for 1..300 seconds, default 5; long text scrolls.',
+        '/notify': 'show 1..128 printable ascii characters; long text scrolls. stack=true queues fifo with eight slots including the active notification; otherwise replace the active notification and keep the queue. duration_s is 1..300 (default 5), starting when displayed. hold=true disables expiry; both flags default false. names are case-sensitive, 1..32 ascii letters, digits, _ or -.',
+        '/notify/dismiss': 'omit name to dismiss the current notification, or provide a name to remove the first matching active or queued notification. an unknown name is a successful no-op; an empty name is invalid. dismissing the active notification promotes the next queued entry.',
+        '/reboot': 'reboot the device through its reboot notice. requires the reboot scope and takes no request body.',
         '/frame': 'show exactly 2496 row-major rgb888 bytes (52 x 16), for duration_s seconds. limited to ten frames per second. query transition defaults to cut.',
         '/canvas': 'read or replace a canvas, patch values by element id, or clear it. at most 24 elements, 256 pooled text bytes, and 1024 pooled data bytes. /scene selects the canvas base; reading a document includes revision/limits which must be removed before put.',
         '/screen': 'json includes base64 rgb pixels; format=raw returns exactly 2496 rgb888 bytes.',
@@ -261,6 +265,7 @@ def build():
         'ConfigBody': {'discovery': True, 'discovery_controls': True},
         'SaveBody': {},
         'NotifyBody': {'text': 'hello', 'colour': 'ffffff', 'duration_s': 5},
+        'DismissNotifyBody': {'name': 'door'},
         'CanvasBody': {'elements': [{'type': 'text', 'id': 'reading', 'at': [0, 0], 'text': '22c', 'colour': 'ffffff'}]},
         'PatchBody': {'values': [{'id': 'reading', 'text': '23c'}]},
         'MqttBody': {'enabled': True, 'host': '192.168.1.10', 'port': 1883},
@@ -278,7 +283,9 @@ def build():
         ('/config', 'get'): 'read device settings',
         ('/config', 'patch'): 'update device settings',
         ('/config/save', 'post'): 'save settings to persistent storage',
-        ('/notify', 'post'): 'show a notification',
+        ('/notify', 'post'): 'show or queue a notification',
+        ('/notify/dismiss', 'post'): 'dismiss a notification',
+        ('/reboot', 'post'): 'reboot the device',
         ('/frame', 'post'): 'show an rgb frame',
         ('/icons', 'get'): 'list built-in icons',
         ('/sprites', 'get'): 'list uploaded sprites',
@@ -342,6 +349,8 @@ def build():
             op['responses'][status] = {'description': desc, 'content': content(ref('ErrorResponse'))}
         if method != 'get':
             op['responses']['409'] = {'description': 'stale epoch, revision conflict, expired session, or storage conflict', 'content': content(ref('ErrorResponse'))}
+        if path == '/notify':
+            op['responses']['409']['description'] += '; queue_full when stacking would exceed eight notifications'
         if (path, method) in requests:
             op['requestBody'] = {'required': path not in ('/config/save', '/tokens/{name}/rotate'), 'description': 'strict json: unknown and duplicate fields are rejected; maximum 8192 bytes and eight nesting levels; optional null means unchanged or default', 'content': content(ref(requests[path, method]))}
         if (path, method) in requests:

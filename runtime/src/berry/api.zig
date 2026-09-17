@@ -27,11 +27,15 @@ const Bvm = vm_mod.Bvm;
 // -- the berry stack api. only what these bindings need.
 
 extern fn be_top(vm: *Bvm) c_int;
+extern fn be_isbool(vm: *Bvm, index: c_int) bool;
+extern fn be_tobool(vm: *Bvm, index: c_int) bool;
+extern fn be_isnil(vm: *Bvm, index: c_int) bool;
 extern fn be_isint(vm: *Bvm, index: c_int) bool;
 extern fn be_isstring(vm: *Bvm, index: c_int) bool;
 extern fn be_isnumber(vm: *Bvm, index: c_int) bool;
 extern fn be_toint(vm: *Bvm, index: c_int) i64;
 extern fn be_tostring(vm: *Bvm, index: c_int) [*:0]const u8;
+extern fn be_strlen(vm: *Bvm, index: c_int) c_int;
 extern fn be_pushint(vm: *Bvm, value: i64) void;
 extern fn be_pushbool(vm: *Bvm, value: c_int) void;
 extern fn be_pushnil(vm: *Bvm) void;
@@ -68,7 +72,8 @@ fn argInt(vm: *Bvm, index: c_int, fallback: i64) i64 {
 
 fn argText(vm: *Bvm, index: c_int) []const u8 {
     if (index > be_top(vm) or !be_isstring(vm, index)) return "";
-    return std.mem.span(be_tostring(vm, index));
+    // berry strings can contain nul; validation must see the entire value.
+    return be_tostring(vm, index)[0..@intCast(be_strlen(vm, index))];
 }
 
 /// a colour is either 0xrrggbb or "rrggbb". the integer is the fast path and the string is the
@@ -126,11 +131,26 @@ fn brightnessFn(vm: ?*Bvm) callconv(.c) c_int {
 fn notifyFn(vm: ?*Bvm) callconv(.c) c_int {
     const v = vm.?;
     const text = argText(v, 1);
-    if (text.len == 0) return refuse(v, "a notification needs text");
+    if (text.len == 0 or text.len > 128) return refuse(v, "notification text must be 1 to 128 printable ascii characters");
+    for (text) |c| if (c < 0x20 or c > 0x7e) return refuse(v, "notification text must be 1 to 128 printable ascii characters");
     const colour = argColour(v, 2, .{ 255, 255, 255 });
     const seconds = argInt(v, 3, 5);
     if (seconds < arbiter.min_duration_s or seconds > arbiter.max_duration_s) return refuse(v, "a notification lasts 1 to 300 seconds");
-    send(.{ .notify = messages.Notify.init(text, colour, @intCast(seconds), .{}) });
+    const name = argText(v, 4);
+    if (be_top(v) >= 4 and !be_isnil(v, 4) and !arbiter.notification.validName(name)) return refuse(v, "a notification name is 1 to 32 letters, digits, _ or -");
+    if (be_top(v) >= 5 and !be_isbool(v, 5)) return refuse(v, "stack must be a boolean");
+    if (be_top(v) >= 6 and !be_isbool(v, 6)) return refuse(v, "hold must be a boolean");
+    const stack = be_top(v) >= 5 and be_tobool(v, 5);
+    const hold = be_top(v) >= 6 and be_tobool(v, 6);
+    send(.{ .notify = messages.Notify.init(text, colour, @intCast(seconds), .{}).withOptions(name, stack, hold) });
+    return be_returnnilvalue(v);
+}
+
+fn dismissFn(vm: ?*Bvm) callconv(.c) c_int {
+    const v = vm.?;
+    const name = argText(v, 1);
+    if (be_top(v) >= 1 and !arbiter.notification.validName(name)) return refuse(v, "a notification name is 1 to 32 letters, digits, _ or -");
+    send(.{ .dismiss_notify = arbiter.notification.Name.init(name) });
     return be_returnnilvalue(v);
 }
 
@@ -294,6 +314,7 @@ const bindings = [_]Binding{
     .{ .name = "_tc002_scene", .f = sceneFn },
     .{ .name = "_tc002_brightness", .f = brightnessFn },
     .{ .name = "_tc002_notify", .f = notifyFn },
+    .{ .name = "_tc002_dismiss", .f = dismissFn },
     .{ .name = "_tc002_subscribe", .f = subscribeFn },
     .{ .name = "_tc002_unsubscribe", .f = unsubscribeFn },
     .{ .name = "_tc002_publish", .f = publishFn },
@@ -325,6 +346,7 @@ pub const prelude =
     \\tc002.scene = _tc002_scene
     \\tc002.brightness = _tc002_brightness
     \\tc002.notify = _tc002_notify
+    \\tc002.dismiss = _tc002_dismiss
     \\tc002.subscribe = def (filter, f)
     \\  if f != nil tc002.on('mqtt:' + filter, f) end
     \\  return _tc002_subscribe(filter)

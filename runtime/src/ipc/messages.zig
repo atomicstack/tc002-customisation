@@ -285,6 +285,7 @@ pub const Kind = enum(u8) {
     result = 3,
     set_base = 16,
     notify = 17,
+    dismiss_notify = 85,
     frame = 18,
     brightness = 19,
     reseed = 20,
@@ -724,7 +725,7 @@ comptime {
     if (canvas.Patch.wire_max > codec.max_payload) @compileError("a canvas patch does not fit one ipc packet");
 }
 
-pub const Status = enum(u8) { applied = 0, rejected = 1, overload = 2, stale_epoch = 3, expired = 4, unavailable = 5, timeout = 6, conflict = 7 };
+pub const Status = enum(u8) { applied = 0, rejected = 1, overload = 2, stale_epoch = 3, expired = 4, unavailable = 5, timeout = 6, conflict = 7, queue_full = 8 };
 
 /// `seed` is the art scene's current seed: the console runs the same generators in its preview
 /// and cannot reproduce the panel's animation without it.
@@ -867,10 +868,13 @@ pub const Applied = struct {
     style: ClockStyle = .{},
     duration_s: u16 = 0,
     colour: [3]u8 = .{ 0, 0, 0 },
+    name: arbiter.notification.Name = .{},
+    stack: bool = false,
+    hold: bool = false,
     text_len: u8 = 0,
     text: [arbiter.Statement.text_max]u8 = [_]u8{0} ** arbiter.Statement.text_max,
 
-    pub const wire_len = 1 + 1 + 4 + 4 + 1 + 1 + 4 + 1 + 1 + 1 + ClockStyle.wire_len + 2 + 3 + 1 + arbiter.Statement.text_max;
+    pub const wire_len = 1 + 1 + 4 + 4 + 1 + 1 + 4 + 1 + 1 + 1 + ClockStyle.wire_len + 2 + 3 + 1 + arbiter.Statement.text_max + notification_options_len;
 
     pub fn init(st: arbiter.Statement, source: Source, age_ms: u32) Applied {
         return .{
@@ -889,6 +893,9 @@ pub const Applied = struct {
             .colour = st.colour,
             .text_len = @min(st.text_len, arbiter.Statement.text_max),
             .text = st.text,
+            .name = st.name,
+            .stack = st.stack,
+            .hold = st.hold,
         };
     }
 
@@ -916,6 +923,7 @@ pub const Applied = struct {
         out[o] = self.text_len;
         o += 1;
         @memcpy(out[o..][0..arbiter.Statement.text_max], &self.text);
+        putNotificationOptions(out[o + arbiter.Statement.text_max ..], self.name, self.stack, self.hold);
     }
 
     fn get(b: []const u8) Applied {
@@ -940,6 +948,10 @@ pub const Applied = struct {
         a.text_len = @min(b[o], arbiter.Statement.text_max);
         o += 1;
         @memcpy(&a.text, b[o..][0..arbiter.Statement.text_max]);
+        const options = b[o + arbiter.Statement.text_max ..];
+        a.name = arbiter.notification.Name.init(options[1..][0..options[0]]);
+        a.stack = options[notification_options_len - 1] & 1 != 0;
+        a.hold = options[notification_options_len - 1] & 2 != 0;
         return a;
     }
 };
@@ -1244,7 +1256,23 @@ pub const Brightness = struct { value: u8 };
 pub const Reseed = struct { seed: u32 };
 pub const IpChanged = struct { present: u8, addr: [4]u8 };
 
+const notification_options_len = arbiter.notification.name_max + 2;
+
+fn putNotificationOptions(out: []u8, name: arbiter.notification.Name, stack: bool, hold: bool) void {
+    out[0] = name.len;
+    @memcpy(out[1..][0..arbiter.notification.name_max], &name.bytes);
+    out[notification_options_len - 1] = @as(u8, @intFromBool(stack)) | (@as(u8, @intFromBool(hold)) << 1);
+}
+
+fn validNotificationOptions(b: []const u8) bool {
+    if (b.len != notification_options_len or b[0] > arbiter.notification.name_max or b[notification_options_len - 1] > 3) return false;
+    return b[0] == 0 or arbiter.notification.validName(b[1..][0..b[0]]);
+}
+
 pub const Notify = struct {
+    name: arbiter.notification.Name = .{},
+    stack: bool = false,
+    hold: bool = false,
     colour: [3]u8,
     duration_s: u16,
     len: u8,
@@ -1254,6 +1282,14 @@ pub const Notify = struct {
     pub fn init(text: []const u8, colour: [3]u8, duration_s: u16, t: Transition) Notify {
         var n = Notify{ .colour = colour, .duration_s = duration_s, .len = @intCast(text.len), .text = [_]u8{0} ** 128, .transition = t };
         @memcpy(n.text[0..text.len], text);
+        return n;
+    }
+
+    pub fn withOptions(self: Notify, name: []const u8, stack: bool, hold: bool) Notify {
+        var n = self;
+        n.name = arbiter.notification.Name.init(name);
+        n.stack = stack;
+        n.hold = hold;
         return n;
     }
 
@@ -2108,6 +2144,7 @@ pub const Message = union(Kind) {
     result: Result,
     set_base: SetBase,
     notify: Notify,
+    dismiss_notify: arbiter.notification.Name,
     frame: Frame,
     brightness: Brightness,
     reseed: Reseed,
@@ -2648,7 +2685,15 @@ fn encodePayload(msg: Message, out: []u8) usize {
             n.transition.put(out[5..11]);
             out[11] = n.len;
             @memcpy(out[12 .. 12 + @as(usize, n.len)], n.text[0..n.len]);
-            return 12 + @as(usize, n.len);
+            const end = 12 + @as(usize, n.len);
+            // unchanged callers retain their original encoding.
+            if (n.name.len == 0 and !n.stack and !n.hold) return end;
+            putNotificationOptions(out[end..], n.name, n.stack, n.hold);
+            return end + notification_options_len;
+        },
+        .dismiss_notify => |name| {
+            putNotificationOptions(out, name, false, false);
+            return notification_options_len;
         },
         .frame => |f| {
             std.mem.writeInt(u16, out[0..2], f.duration_s, .big);
@@ -2854,7 +2899,9 @@ pub fn decodePacket(bytes: []const u8) Error!Packet {
             break :blk .{ .berry_event = try BerryEvent.get(p) };
         },
         .applied => blk: {
-            break :blk .{ .applied = Applied.get(try fixed(p, Applied.wire_len)) };
+            const b = try fixed(p, Applied.wire_len);
+            if (!validNotificationOptions(b[b.len - notification_options_len ..])) return error.BadPayload;
+            break :blk .{ .applied = Applied.get(b) };
         },
         .sound_config => blk: {
             const b = try fixed(p, 2);
@@ -3218,8 +3265,20 @@ pub fn decodePacket(bytes: []const u8) Error!Packet {
         .notify => blk: {
             if (p.len < 12) return error.BadPayload;
             const len = p[11];
-            if (len == 0 or len > 128 or p.len != 12 + @as(usize, len)) return error.BadPayload;
-            break :blk .{ .notify = Notify.init(p[12..], p[0..3].*, std.mem.readInt(u16, p[3..5], .big), Transition.get(p[5..11])) };
+            const end = 12 + @as(usize, len);
+            if (len == 0 or len > 128 or (p.len != end and p.len != end + notification_options_len)) return error.BadPayload;
+            var n = Notify.init(p[12..end], p[0..3].*, std.mem.readInt(u16, p[3..5], .big), Transition.get(p[5..11]));
+            if (p.len > end) {
+                const options = p[end..];
+                if (!validNotificationOptions(options)) return error.BadPayload;
+                const flags = options[notification_options_len - 1];
+                n = n.withOptions(options[1..][0..options[0]], flags & 1 != 0, flags & 2 != 0);
+            }
+            break :blk .{ .notify = n };
+        },
+        .dismiss_notify => blk: {
+            if (!validNotificationOptions(p) or p[notification_options_len - 1] != 0) return error.BadPayload;
+            break :blk .{ .dismiss_notify = arbiter.notification.Name.init(p[1..][0..p[0]]) };
         },
         .frame => blk: {
             const b = try fixed(p, 8 + geometry.rgb_bytes);
@@ -3330,4 +3389,60 @@ test "the mdns switch survives the config patch wire including explicit false" {
         try std.testing.expectEqual(value, back.message.config_patch.toApi().mdns);
         try std.testing.expectEqual(@as(?u16, 12), back.message.config_patch.toApi().battery_grace_s);
     }
+}
+
+test "notification queue options survive ipc" {
+    var buf: [codec.max_message]u8 = undefined;
+    const n = Notify.init("door", .{ 1, 2, 3 }, 7, .{}).withOptions("door-alert", true, true);
+    const bytes = try encodePacket(.{ .notify = n }, 42, 7, &buf);
+    const p = try decodePacket(bytes);
+    try std.testing.expectEqualDeep(n, p.message.notify);
+}
+
+test "notification queue options survive applied events" {
+    const st = arbiter.Statement{ .kind = .notify, .name = arbiter.notification.Name.init("door"), .stack = true, .hold = true };
+    var buf: [1024]u8 = undefined;
+    const frame = @import("../net/sse.zig").event(&buf, Applied.init(st, .api, 0), 0);
+    try std.testing.expect(std.mem.indexOf(u8, frame, "\"name\":\"door\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, frame, "\"stack\":true") != null);
+    try std.testing.expect(std.mem.indexOf(u8, frame, "\"hold\":true") != null);
+}
+
+test "dismissal and notification event metadata round-trip with bounded names" {
+    var buf: [codec.max_message]u8 = undefined;
+    for ([_][]const u8{ "", "door", "abcdefghijklmnopqrstuvwxyz012345" }) |name| {
+        const msg = Message{ .dismiss_notify = arbiter.notification.Name.init(name) };
+        const packet = try encodePacket(msg, 4, 9, &buf);
+        const decoded = try decodePacket(packet);
+        try std.testing.expectEqualDeep(msg, decoded.message);
+        try std.testing.expectEqual(@as(u64, 4), decoded.request_id);
+    }
+    const applied = Applied.init(.{ .kind = .notify, .name = arbiter.notification.Name.init("door"), .hold = true, .stack = true }, .api, 0);
+    const packet = try encodePacket(.{ .applied = applied }, 4, 9, &buf);
+    try std.testing.expectEqualDeep(applied, (try decodePacket(packet)).message.applied);
+    const full = try encodePacket(.{ .result = .{ .status = .queue_full, .revision = 17 } }, 4, 9, &buf);
+    try std.testing.expectEqual(Status.queue_full, (try decodePacket(full)).message.result.status);
+}
+
+test "notification ipc rejects malformed lengths names and flags" {
+    var payload: [256]u8 = undefined;
+    var packet: [codec.max_message]u8 = undefined;
+    const msg = Notify.init("hi", .{ 1, 2, 3 }, 5, .{}).withOptions("door", true, true);
+    const len = encodePayload(.{ .notify = msg }, &payload);
+    const end = len - notification_options_len;
+    const Cases = struct {
+        fn rejected(p: []const u8, out: []u8) !void {
+            const bytes = try codec.encode(.{ .kind = @intFromEnum(Kind.notify), .request_id = 0, .epoch = 0, .payload_len = @intCast(p.len) }, p, out);
+            try std.testing.expectError(error.BadPayload, decodePacket(bytes));
+        }
+    };
+    try Cases.rejected(payload[0 .. len - 1], &packet);
+    payload[end] = 33;
+    try Cases.rejected(payload[0..len], &packet);
+    payload[end] = 4;
+    payload[end + 1] = '/';
+    try Cases.rejected(payload[0..len], &packet);
+    payload[end + 1] = 'd';
+    payload[len - 1] = 4;
+    try Cases.rejected(payload[0..len], &packet);
 }

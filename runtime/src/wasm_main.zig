@@ -14,6 +14,7 @@ const geometry = @import("panel/geometry.zig");
 const pack = @import("panel/pack.zig");
 const scene = @import("scene/scene.zig");
 const arbiter = @import("scene/arbiter.zig");
+const notification = @import("scene/notification.zig");
 const clock = @import("scene/clock.zig");
 const clockfont = @import("scene/clockfont.zig");
 const ip = @import("scene/ip.zig");
@@ -92,6 +93,11 @@ export fn frame(now_ms: f64, wall_ms: f64) f64 {
         .at_wall_ns => |at| @max(0, toMs(at) - wall_ms),
         .idle => -1,
     };
+}
+
+/// replay one authoritative expiry without advancing animation clocks or checking local deadlines.
+export fn expireOverlay(now_ms: f64) u32 {
+    return @intFromBool(arb.expireOverlay(toNs(now_ms)));
 }
 
 // ---- commands ----
@@ -179,12 +185,29 @@ fn rgbOf(v: i32) [3]u8 {
 /// the notification text is the first `len` bytes of scratch. returns 0 when the arbiter
 /// rejected it (bad text or duration), 1 when it took.
 export fn notify(len: u32, colour: i32, duration_s: u32, now_ms: f64) u32 {
-    const text = scratch[0..@min(len, scratch.len)];
+    return notifyNamed(len, colour, duration_s, 0, 0, 0, now_ms);
+}
+
+/// text then name occupy consecutive scratch bytes. reject lengths before forming slices.
+export fn notifyNamed(len: u32, colour: i32, duration_s: u32, name_len: u32, stack: u32, hold: u32, now_ms: f64) u32 {
+    if (len > scratch.len or name_len > notification.name_max or name_len > scratch.len - len) return 0;
     return switch (arb.apply(.{ .notify = .{
-        .text = text,
+        .text = scratch[0..len],
         .colour = rgbOf(colour),
         .duration_s = @intCast(@min(duration_s, 65535)),
+        .name = scratch[len .. len + name_len],
+        .stack = stack != 0,
+        .hold = hold != 0,
     } }, toNs(now_ms))) {
+        .applied => 1,
+        .rejected => 0,
+    };
+}
+
+/// the first scratch bytes name an entry; an empty name dismisses the current notification.
+export fn dismissNotify(name_len: u32, now_ms: f64) u32 {
+    if (name_len > notification.name_max) return 0;
+    return switch (arb.apply(.{ .dismiss_notify = scratch[0..name_len] }, toNs(now_ms))) {
         .applied => 1,
         .rejected => 0,
     };

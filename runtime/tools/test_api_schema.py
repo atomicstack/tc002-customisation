@@ -104,6 +104,29 @@ class ApiContractTests(unittest.TestCase):
         self.assertIn('application/octet-stream', spec['paths']['/screen']['get']['responses']['200']['content'])
         self.assertEqual(spec['paths']['/frame']['post']['requestBody']['content']['application/octet-stream']['schema']['minLength'], 2496)
 
+    def test_queued_notifications_and_dismissal_contract(self):
+        from jsonschema import Draft202012Validator
+        spec, document = self.artifacts()
+        operation = spec['paths']['/notify/dismiss']['post']
+        self.assertEqual(operation['x-required-scope'], 'notify')
+        self.assertEqual(operation['requestBody']['content']['application/json']['schema']['$ref'], '#/components/schemas/DismissNotifyBody')
+        for model, base in [('NotifyBody', {'text': 'hello'}), ('DismissNotifyBody', {})]:
+            validator = Draft202012Validator({'$ref': '#/$defs/' + model, '$defs': document['$defs']})
+            for name in ['door-1', 'a' * 32]:
+                self.assertEqual(list(validator.iter_errors(dict(base, name=name))), [])
+            for name in ['', 'a' * 33, 'door.bell', 'bad/name', 'door\n']:
+                self.assertTrue(list(validator.iter_errors(dict(base, name=name))))
+            self.assertEqual(list(validator.iter_errors(base)), [])
+        notify = document['$defs']['NotifyBody']['properties']
+        self.assertFalse(notify['hold']['default'])
+        self.assertFalse(notify['stack']['default'])
+        event = Draft202012Validator({'$ref': '#/$defs/AppliedEvent', '$defs': document['$defs']})
+        common = dict(revision=1, age_ms=0, source='api')
+        self.assertEqual(list(event.iter_errors(dict(common, cmd='notify', name='door', stack=True, hold=True))), [])
+        self.assertEqual(list(event.iter_errors(dict(common, cmd='dismiss_notify', name=''))), [])
+        self.assertTrue(list(event.iter_errors(dict(common, cmd='dismiss_notify', name='door\n'))))
+        self.assertIn('queue_full', spec['paths']['/notify']['post']['responses']['409']['description'])
+
     def test_documented_request_examples_are_valid(self):
         from jsonschema import Draft202012Validator
         spec, _ = self.artifacts()

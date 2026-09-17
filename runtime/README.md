@@ -22,6 +22,7 @@ cd runtime
 zig build            # all seven binaries into zig-out/bin plus zig-out/lib/libtc002-bootstrap.so
                      # (arm; static and no-libc except tc002-berryd and tc002-audiod)
 zig build test       # host unit tests of every pure module
+/usr/bin/python3 -m unittest discover -s tools -p 'test_*.py' -v  # host cli request tests
 zig build check      # elf sanity of the bootstrap: arm et_dyn, no dt_needed, has init_array
 zig build wasm       # the scene code as wasm for the console preview -> ../panel-v2/tc002-panel.wasm
 zig build test-berry # the .be fixtures in test/berry/ through the vendored interpreter, on the host
@@ -97,6 +98,10 @@ tools/tc002ctl.py -s <device-ip> --token-file tokens status
 tools/tc002ctl.py -s <device-ip> --token-file tokens scene art --generator plasma --seed 5
 tools/tc002ctl.py -s <device-ip> --token-file tokens notify hello --colour 00ff80 --duration 4
 tools/tc002ctl.py -s <device-ip> --token-file tokens notify hello --transition swipe_in --direction left   # leaves as swipe_out right
+tools/tc002ctl.py -s <device-ip> --token-file tokens notify doorbell --name door --stack --hold
+tools/tc002ctl.py -s <device-ip> --token-file tokens notify parcel --name delivery --stack --duration 10
+tools/tc002ctl.py -s <device-ip> --token-file tokens dismiss door   # first matching name, active before waiting
+tools/tc002ctl.py -s <device-ip> --token-file tokens dismiss        # current notification only
 tools/tc002ctl.py -s <device-ip> --token-file tokens frame --colour ff0000 --duration 3
 tools/tc002ctl.py -s <device-ip> --token-file tokens power off               # fades to black; `power on` fades back
 tools/tc002ctl.py -s <device-ip> --token-file tokens scene clock --font big --colour-mode gradient --colour 2060ff --colour2 60c0ff --gradient vertical
@@ -115,15 +120,33 @@ tools/tc002ctl.py -s <device-ip> --token-file tokens config-set discovery=true m
 tools/tc002-test-broker.py                              # a minimal broker on the host, for tests
 ```
 
+`notify` keeps its replacement behaviour unless `--stack` is given: replacement
+preserves waiting entries, while stacking queues in arrival order. there are eight
+slots including the active notification; a full queue rejects stacking with
+`409 queue_full` and stays unchanged, while replacement still works. durations
+start when displayed, not when queued; `--hold` disables expiry. `--name` accepts
+1–32 ascii letters/digits/`_`/`-`, case-sensitive. repeated names are allowed;
+`dismiss name` removes the first match, active before waiting, and a missing match
+is a successful no-op. omit the name to dismiss current; an empty name is invalid.
+scene selection, raw frames, stream takeover and stream arming clear the queue.
+power-off preserves it but timed expiry keeps running; runtime restart loses it.
+there is no persistent queue, priority or listing endpoint. sound behaviour is
+unchanged. see [scenes and overlays](../RUNTIME.md#scenes-and-overlays) for the
+full http contract, and [scripting](../SCRIPTING.md#tc002--the-device) for berry.
+
 mqtt topics under the configured prefix: `availability` (retained, last will `offline`), `state`
 (retained, at most twice per second), `result` (one per command, with the request id), `metrics`
 (every 30 s by default), `screen` (a binary frame, in answer to `cmd/screen`), `input/<control>`
 (momentary button, knob and rotary events, never retained), and `cmd/scene`, `cmd/action`,
-`cmd/notify`, `cmd/frame`, `cmd/input`, `cmd/screen`, `cmd/config` (transient controls,
+`cmd/notify`, `cmd/notify/dismiss`, `cmd/frame`, `cmd/input`, `cmd/screen`, `cmd/config` (transient controls,
 plus an opt-in allowlist of durable settings).
 home-assistant discovery is opt-in and publishes read-only sensors plus input event entities.
 `discovery_controls=true` separately adds 19 writable entities and permits their durable settings
 over mqtt; it defaults to false and may only be enabled through authenticated configuration. the full reference is [`RUNTIME.md`](../RUNTIME.md).
+
+`cmd/notify/dismiss` takes the same json as `POST /api/v1/notify/dismiss`, for
+example `{"name":"door"}` or `{}` for current; both http notification routes use
+the `notify` scope. `request_id` and `epoch` remain optional on both routes.
 
 ## api reference
 

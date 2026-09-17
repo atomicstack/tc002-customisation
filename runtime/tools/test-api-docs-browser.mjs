@@ -91,7 +91,7 @@ test.before(async () => {
   const debug = await freePort();
   chrome = spawn(CHROME, ['--headless=new','--no-first-run','--no-default-browser-check',`--user-data-dir=${tmp}`,`--remote-debugging-port=${debug}`,`http://127.0.0.1:${port}/api/docs`], {stdio:'ignore'});
   cdp = await Cdp.attach(debug);
-  await waitFor(async () => assert.equal(await cdp.eval("document.querySelectorAll('.operation').length"),43));
+  await waitFor(async () => assert.equal(await cdp.eval("document.querySelectorAll('.operation').length"),45));
 });
 test.after(async () => {
   cdp?.ws.close();
@@ -102,7 +102,7 @@ test.after(async () => {
   if (tmp) rmSync(tmp,{recursive:true,force:true});
 });
 test('offline explorer lists operations, schemas and unavailable routes without credentials', {skip:!available}, async () => {
-  assert.equal(await cdp.eval("document.querySelectorAll('.operation').length"),43);
+  assert.equal(await cdp.eval("document.querySelectorAll('.operation').length"),45);
   assert.equal(await cdp.eval("document.querySelectorAll('.unavailable').length"),3);
   assert.equal(await cdp.eval("document.getElementById('token').value"),'');
   for (const width of [1200,390]) {

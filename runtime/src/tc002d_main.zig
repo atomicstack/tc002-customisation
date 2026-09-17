@@ -416,7 +416,8 @@ const Renderer = struct {
                 const mode = messages.enumFromInt(ip.Mode, m.mode) orelse break :blk arbiter.Result{ .rejected = .invalid_text };
                 break :blk arb.apply(.{ .set_ip_mode = mode }, now);
             },
-            .notify => |n| arb.applyWith(.{ .notify = .{ .text = n.slice(), .colour = n.colour, .duration_s = n.duration_s } }, n.transition.toSpec(), now),
+            .dismiss_notify => |name| arb.apply(.{ .dismiss_notify = name.slice() }, now),
+            .notify => |n| arb.applyWith(.{ .notify = .{ .text = n.slice(), .colour = n.colour, .duration_s = n.duration_s, .name = n.name.slice(), .stack = n.stack, .hold = n.hold } }, n.transition.toSpec(), now),
             .frame => |f| arb.applyWith(.{ .raw = .{ .rgb = &f.rgb, .duration_s = f.duration_s } }, f.transition.toSpec(), now),
             .brightness => |b| arb.apply(.{ .brightness = b.value }, now),
             .reseed => |r| arb.apply(.{ .reseed = r.seed }, now),
@@ -437,7 +438,7 @@ const Renderer = struct {
         };
         const status: messages.Status = switch (res) {
             .applied => .applied,
-            .rejected => .rejected,
+            .rejected => |why| if (why == .queue_full) .queue_full else .rejected,
         };
         // before the reply: `.result` retires the supervisor's relay slot, and that slot is how it
         // knows whether this statement came from the api or from ntfy. anything from an input

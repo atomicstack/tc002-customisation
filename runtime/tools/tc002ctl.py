@@ -17,7 +17,9 @@ commands:
   reseed [N]                          reseed the art
   arm-stream                          arm stream mode (two-second wait)
   notify <text> [--colour rrggbb] [--duration S] [--transition EFFECT] [--direction D] [--transition-ms N]
-        [--exit reverse|same|none]
+        [--exit reverse|same|none] [--name name] [--stack] [--hold]
+                                      --stack queues behind notifications; --hold disables expiry
+  dismiss [name]                      dismiss current notification, or first matching name
   frame <file.rgb|--colour rrggbb> [--duration S] [--transition EFFECT] [--direction D] [--transition-ms N]
         [--exit reverse|same|none]        2496 raw rgb888 bytes
   transition effects (scene, notify, frame): fade cut slide swipe_out swipe_in collapse expand wipe
@@ -147,6 +149,9 @@ def main():
     ap.add_argument("--seed", type=int)
     ap.add_argument("--colour", default=None)
     ap.add_argument("--duration", type=int, default=5)
+    ap.add_argument("--name", metavar="name", help="notification name: 1..32 ascii letters, digits, _ or -")
+    ap.add_argument("--stack", action="store_true", help="queue behind existing notifications")
+    ap.add_argument("--hold", action="store_true", help="hold notification until dismissed or replaced")
     ap.add_argument("--steps", type=int, default=1)
     ap.add_argument("--out")
     ap.add_argument("--ascii", action="store_true")
@@ -256,8 +261,15 @@ def main():
     if c == "notify":
         body = {"text": " ".join(a.args), "duration_s": a.duration, "request_id": rid, "epoch": epoch(a, token)}
         if a.colour: body["colour"] = a.colour
+        if a.name is not None: body["name"] = a.name
+        if a.stack: body["stack"] = True
+        if a.hold: body["hold"] = True
         body.update(transition_fields(a))
         return show(*call(a, "POST", "/notify", body, token=token))
+    if c == "dismiss":
+        body = {"request_id": rid, "epoch": epoch(a, token)}
+        if a.args: body["name"] = a.args[0]
+        return show(*call(a, "POST", "/notify/dismiss", body, token=token))
     if c == "frame":
         if a.colour:
             rgb = bytes.fromhex(a.colour) * 832

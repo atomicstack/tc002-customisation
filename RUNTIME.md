@@ -430,12 +430,40 @@ the visible output is one **base** scene plus at most one temporary
 
 | overlay | bounds | behaviour |
 |---------|--------|-----------|
-| notification | 1–128 printable ascii characters, a colour, 1–300 s | centred if it fits; otherwise scrolls in from the right one pixel per 33 ms and wraps |
+| notification | 1–128 printable ascii characters, a colour, 1–300 s or held | centred if it fits; otherwise scrolls in from the right one pixel per 33 ms and wraps |
 | raw frame | exactly 2,496 rgb888 bytes (52×16×3), 1–300 s | shown as-is; switches at once unless the request names a [transition](#transitions) |
 | stream arming | 2 s | a placeholder for the streaming feature; falls back to the base when nothing arrives |
 
-a new notification or frame replaces the current overlay; expiry reveals the
-base; selecting a base clears any overlay. every visible change bumps a
+a notification replaces the active overlay by default, preserving any waiting
+notifications. `stack: true` instead appends it to the notification queue in
+arrival order; with no active notification it starts immediately. the queue
+holds **eight notifications including the active one**. appending when full
+returns `409 queue_full` without changing anything; default replacement still
+works when full. there is no priority or queue-listing endpoint.
+
+each notification's `duration_s` defaults to 5 and must be 1–300. its timer
+starts when it becomes active, not while it waits. `hold: true` disables timed
+expiry, even when a duration is supplied; dismissal, replacement or a display
+takeover can still remove it. expiry or active dismissal promotes the oldest
+waiting notification, or reveals the base if none remain.
+
+an optional `name` is 1–32 ascii letters, digits, `_` or `-`, case-sensitive.
+names need not be unique: `POST /api/v1/notify/dismiss` with `{"name":"door"}`
+removes the first match, checking the active notification before the waiting
+queue. another request with that name removes the next match. an omitted name
+(`{}`) dismisses only the current notification; an explicit empty name is invalid.
+no match, or no current notification, is a successful no-op. dismissing a waiting
+entry leaves the current notification's timer alone. both notify and dismiss
+accept optional `request_id` and `epoch`, and require the `notify` scope over http.
+
+selecting a scene, pushing a raw frame, taking over with a stream or arming stream
+mode clears the active notification and the entire queue. power-off preserves
+them, but timed expiry keeps running while the display is dark. notifications
+are held in memory only: restarting the runtime loses the queue. notification
+queueing and dismissal do not change sound playback; sound remains separately
+controlled through the sound api.
+
+every applied change bumps a
 **revision** counter that the api reports back, so a client can tell whether a
 command had an effect. brightness is 1–100 (never fully off) and is applied
 before the panel's level curve ([`LED-SPI.md`](LED-SPI.md)): 0 stays 0, 1..255
@@ -1200,7 +1228,7 @@ whole frame to another process costs 0.05% of a frame.
 | ntfy subscriber → supervisor | `notify` (each message), `ntfy_status` |
 | netd → supervisor | `ntfy_put` (the settings patch, the ca inline) |
 | renderer → supervisor | `heartbeat` (presented count, revision, state, base, generator, overlay, brightness), `ready`, `result`, `input` (the edges), `applied` (the statements those edges and every command turn into) |
-| supervisor → renderer | `set_base`, `notify`, `frame`, `brightness`, `reseed`, `arm_stream`, `time_corrected`, `ip_changed`, `stop`, `set_timezone` |
+| supervisor → renderer | `set_base`, `notify`, `dismiss_notify`, `frame`, `brightness`, `reseed`, `arm_stream`, `time_corrected`, `ip_changed`, `stop`, `set_timezone` |
 | supervisor → netd | `credentials`, `config`, `status`, `result`, `save_result`, `input`, `applied` (fanned out to any [event stream](#the-event-stream) subscriber) |
 | netd → supervisor | `status_get`, `config_get`, `config_patch`, `config_save`, `mqtt_put`, and the renderer commands above for relay |
 | supervisor → audiod | `sound_config` (once after spawn), `sound_cmd` (play, stop) |
@@ -1216,6 +1244,12 @@ twice; when that cache is full of live entries new commands get `overload`
 rather than losing the guarantee. the supervisor keeps 32 relays in flight
 with a 2 s deadline each; netd's own requests use ids in the upper half of
 the 64-bit space so they never collide with a client's.
+
+notification ipc keeps the original `notify` payload for callers using its old defaults;
+name/stack/hold append a bounded 34-byte options record. `dismiss_notify` is message kind 85.
+the fixed `applied` envelope gains the same options record, so install the renderer,
+supervisor and netd together and rebuild the wasm preview when upgrading. the queue lives
+only in renderer memory: seven waiting entries in addition to its active overlay.
 
 ## the http api (`/api/v1`)
 
@@ -1275,7 +1309,7 @@ notification and nothing else.
 | `status` | the safe reads: `GET` `/status` `/scenes` `/config` `/canvas` `/icons` `/sprites` `/sounds` `/berry` `/berry/scripts` `/mqtt/status` |
 | `screen` | `GET /screen` — the one read that returns what is *on* the panel rather than how it is set up |
 | `logs` | `GET /logs` and `GET /events` — the ring carries whatever any component printed, a script's own `print` included |
-| `notify` | `POST /notify`, and nothing else |
+| `notify` | `POST /notify` and `POST /notify/dismiss` |
 | `display` | what is on the panel now: `/scene`, `/action`, `/frame`, `/streams`, canvas `PATCH` and `DELETE` |
 | `sound` | `POST /sound` |
 | `input` | `POST /input` — **see the warning below** |
@@ -1373,7 +1407,8 @@ read-only storage; connection buffers stay the same size.
 | `GET` | `/scenes` | `status` | | the static catalogue: bases, generators, notification and frame bounds |
 | `PUT` | `/scene` | `display` | `{"base":"clock\|art\|canvas","generator":"popsquares\|plasma\|cube\|terrain"?,"seed":u32?,"clock":{"font","colour_mode","colour","colour2","gradient","spread","digits","fade"}?,"request_id":hex?,"epoch":u32?}` | `{"status":"applied","revision":n,"epoch":n,"request_id":…}` |
 | `POST` | `/action` | `display` | `{"action":"brightness\|reseed\|arm_stream","brightness":1..100?,"seed":u32?,"request_id":hex?,"epoch":u32?}` | as above |
-| `POST` | `/notify` | `notify` | `{"text":"…","colour":"rrggbb"?,"duration_s":1..300?,"request_id":hex?,"epoch":u32?}` (`duration_s` optional, defaults to 5) | as above |
+| `POST` | `/notify` | `notify` | `{"text":"…","colour":"rrggbb"?,"duration_s":1..300?,"name":"door"?,"stack":bool?,"hold":bool?,"request_id":hex?,"epoch":u32?}` (`duration_s` defaults to 5; `stack` and `hold` default false) | as above; `409 queue_full` if appending would exceed eight notifications |
+| `POST` | `/notify/dismiss` | `notify` | `{"name":"door"?,"request_id":hex?,"epoch":u32?}` (omit `name` for current; empty name is invalid) | as above; missing matches are successful no-ops |
 | `POST` | `/frame?duration_s=` (`request_id`, `epoch` optional) | `display` | `application/octet-stream`, exactly 2,496 bytes | as above |
 | `POST` | `/action` (`"action":"power"`) | `display` | `{"action":"power","power":true\|false,"request_id":hex?,"epoch":u32?}` | as above; fades over 600 ms |
 | `POST` | `/input` | `input` | `{"control":"left\|middle\|right\|knob\|rotary","event":"press\|release\|click\|long\|cw\|ccw","steps":1..16?,"request_id":hex?,"epoch":u32?}` | as above. `click` is a request for a press and a release and reports as those two edges, never as a third; `long` is any button; `cw`/`ccw` are the rotary only and take `steps` |
@@ -1566,13 +1601,17 @@ data: {"revision":9,"age_ms":0,"cmd":"brightness","source":"api","brightness":50
 every frame carries `revision`, `age_ms`, `cmd` and `source`, plus whatever that
 `cmd` resolved to. the fields are the api's own vocabulary: `base`, `generator`,
 `seed`, `brightness`, `power`, `ip_mode`, `clock`, and `text`/`colour`/
-`duration_s` for a notification.
+`duration_s`, `name`, `stack` and `hold` for a notification. `dismiss_notify` carries
+`name`; an empty string means the current notification. queue admissions and waiting-item
+dismissals advance the revision without changing the visible message. `overlay_expired`
+advances to the next waiting notification, or clears the overlay when none remains.
+a dismissal with no matching notification is a no-op and emits no statement.
 
 | field | meaning |
 |---|---|
 | `revision` | the revision this statement produced. a mirror applies the same statement and expects to land on the same number; a **gap means it missed one** and should resync from `/status` |
 | `age_ms` | how long ago it was applied. set by the renderer and added to at each hop, exactly as `sample_age_ms` is for `/status`, so a mirror running deliberately behind real time can place it at the right instant |
-| `cmd` | `set_base`, `select_generator`, `notify`, `raw`, `brightness`, `reseed`, `arm_stream`, `power`, `set_clock_style`, `set_ip_mode`, `overlay_expired` |
+| `cmd` | `set_base`, `select_generator`, `notify`, `dismiss_notify`, `raw`, `brightness`, `reseed`, `arm_stream`, `power`, `set_clock_style`, `set_ip_mode`, `overlay_expired` |
 | `source` | `api` (http or mqtt), `ntfy`, `input` (a button or the knob), `local` (the device itself: a menu selection, night brightness, an overlay reaching its deadline) |
 
 **the parameters are resolved, not requested.** the knob asks for "the next
@@ -2041,7 +2080,7 @@ all topics live under `prefix` (default `tc002`):
 | `state` | out, retained | the status document, republished on change at most twice a second |
 | `result` | out | `{"request_id","status","revision","epoch"}` for every command received on `cmd/*`, or `{"status":"rejected","error","message"}` for a body that did not parse |
 | `metrics` | out, every `metrics_interval_s` | the [metrics document](#the-metrics-document) |
-| `cmd/scene`, `cmd/action`, `cmd/notify` | in, qos 1 | exactly the http json bodies |
+| `cmd/scene`, `cmd/action`, `cmd/notify`, `cmd/notify/dismiss` | in, qos 1 | exactly the http json bodies; notify queue capacity and dismissal semantics are the same |
 | `cmd/frame` | in, qos 1 | binary, 2,510 bytes big-endian: `u64 request_id`, `u32 epoch`, `u16 duration_s`, 2,496 rgb bytes. a binary payload cannot leave a field out, so zero says "you pick": a zero id is minted by the device, a zero epoch means the current one; or 2,514 / 2,515 bytes with `u8 effect`, `u8 direction`, `u16 duration_ms` and optionally `u8 exit` before the rgb (see [transitions](#transitions)) |
 | `cmd/config` | in, qos 1 | `brightness`, `base`, `generator` stay transient. with `discovery_controls: true`, the explicitly allowed clock/time/night fields below are durable; other privileged fields are refused |
 | `cmd/input` | in, qos 1 | the `/input` json body; answered on `result` |
@@ -2176,7 +2215,7 @@ controls also receive empty retained records to remove previously advertised ent
 
 | tool | what it does |
 |------|--------------|
-| `tc002ctl.py` | a client for every route: `status`, `scenes`, `scene` (with `--font`, `--colour-mode`, `--colour`, `--colour2`, `--gradient`, `--spread` for the clock), `brightness`, `reseed`, `arm-stream`, `notify`, `frame`, `power`, `input`, `screen` (`--ascii` draws the panel in the terminal, `--out` saves the raw rgb), `logs` (`--follow`), `config`, `config-set`, `config-save`, `mqtt`, `mqtt-set`, `mqtt-status`. takes the pulled token file (`--token-file`) or a hex token, picks the admin token for admin commands, generates request ids and fetches the epoch for you |
+| `tc002ctl.py` | a client for every route: `status`, `scenes`, `scene` (with `--font`, `--colour-mode`, `--colour`, `--colour2`, `--gradient`, `--spread` for the clock), `brightness`, `reseed`, `arm-stream`, `notify` (with `--name`, `--stack`, `--hold`), `dismiss [name]`, `frame`, `power`, `input`, `screen` (`--ascii` draws the panel in the terminal, `--out` saves the raw rgb), `logs` (`--follow`), `config`, `config-set`, `config-save`, `mqtt`, `mqtt-set`, `mqtt-status`. takes the pulled token file (`--token-file`) or a hex token, picks the admin token for admin commands, generates request ids and fetches the epoch for you |
 | `tc002-update.sh` | `--in-place`, the one-shot cold start for a person (`tc002-update.sh --in-place` is its old name; `--flash` is the other kind of update, the one that reboots): connect adb, build and push (`--no-build` to skip the build), start the supervisor with `--tz`, apply and save the timezone, scene, clock font and sntp server, pull the tokens to the repo root for the console, print the status. after a reboot this is the way back |
 | `tc002-demo-*.py` | the demo reels, one per topic, played from this machine over the api: `shapes` (the primitives, clipping, bars), `text` (four fonts, alignment, and all eight animations), `charts` (sparkline styles, autoscale against a fixed range, thresholds, sweep, hex samples, a live feed), `icons` (every built-in glyph, five a page, the set fetched from the device), `images` (sprites generated on the host, uploaded, drawn, animated, deleted), `layout` (absolute placement, tiles and rows, boxes, clipping, draw order), `tiles` (the composite at four widths, so the layout switch is visible), `dashboard` (four realistic dashboards, each pushed once then fed only numbers, printing what the layout and the patches cost in bytes). all take `-s`, a token, `--hold`, `--only`, `--list` and `--loop`, and all put back the scene **and the canvas** they found. `tc002demo.py` is their shared helper, not a demo, and `tc002-demo-lint.py` puts every document all eight would send through the runtime's own rules without a device — the limits and field rules, and where the ink lands: text off the edge of a 52×16 panel, two pieces of text on the same pixels, a tile label too wide for its tile. it is how the shapes reel's 26 elements against a limit of 24 were caught on this machine rather than on the panel, and it now catches the overflows that only showed up once the reels were played on one. a step whose subject is running off an edge names itself in the demo's `LINT_ALLOW`. `tc002-canvas-docs.py` photographs the panel for [`CANVAS.md`](CANVAS.md) -- it drives the device through that page's catalogue and saves a png per still and a gif per motion off `GET /screen`, so the document and the picture of it cannot drift (the gifs need ffmpeg on the host; the stills do not) |
 | `tc002-demo-transitions.py` | a demo reel of every transition, played from this machine over the api: for each effect a clock ↔ art scene change arrives with it, then a labelled notification arrives with it and leaves with the paired exit; `--only` with per-step direction and exit overrides, `--ms`, `--hold`, `--loop`, `--no-scenes`, `--list`; restores the scene it started from and leaves the settings alone |
@@ -2195,6 +2234,10 @@ tools/tc002-run.sh start --profile dev --stats --tz 'AEST-10AEDT,M10.1.0,M4.1.0/
 adb pull /data/tc002/state/credentials/tokens tokens # root over adb; keep the file private
 tools/tc002ctl.py -s <device-ip> --token-file tokens status
 tools/tc002ctl.py -s <device-ip> --token-file tokens notify hello --colour 00ff80 --duration 4
+tools/tc002ctl.py -s <device-ip> --token-file tokens notify doorbell --name door --stack --hold
+tools/tc002ctl.py -s <device-ip> --token-file tokens notify parcel --name delivery --stack --duration 10
+tools/tc002ctl.py -s <device-ip> --token-file tokens dismiss door   # promotes parcel if door is active
+tools/tc002ctl.py -s <device-ip> --token-file tokens dismiss        # dismisses only the current notification
 tools/tc002ctl.py -s <device-ip> --token-file tokens config-set brightness=60 base=clock
 tools/tc002ctl.py -s <device-ip> --token-file tokens config-save
 tools/tc002-run.sh stop

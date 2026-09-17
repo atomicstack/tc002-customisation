@@ -1539,7 +1539,7 @@ const Supervisor = struct {
                 // what a script asked the device to do. relayed with the supervisor's own epoch and
                 // an id from the high half of the space, exactly as an ntfy notification is: a
                 // script has no idea what the renderer's epoch is and should not have to.
-                .set_base, .brightness, .notify => {
+                .set_base, .brightness, .notify, .dismiss_notify => {
                     if (self.child_fd == null or lifecycle.state != .running) continue;
                     var slot: ?*Relay = null;
                     for (&self.relays) |*r| if (!r.used) {
@@ -1853,7 +1853,7 @@ const Supervisor = struct {
                     ring.page(g.after, &page);
                     self.sendNetd(.{ .log_lines = page }, p.request_id);
                 },
-                .set_base, .notify, .frame, .brightness, .reseed, .arm_stream, .screen_get, .inject_input, .power, .clock_style, .ip_mode => {
+                .set_base, .notify, .dismiss_notify, .frame, .brightness, .reseed, .arm_stream, .screen_get, .inject_input, .power, .clock_style, .ip_mode => {
                     // a brightness from an api client or mqtt is as hand-set as the knob is
                     if (p.message == .brightness) self.night.hold(unixNow());
                     if (self.child_fd == null or lifecycle.state != .running) {

@@ -84,12 +84,35 @@ same refusal — `tc002.brightness(0)` raises rather than quietly clamping.
 |---|---|---|
 | `tc002.scene(name)` | `'clock'`, `'art'` or `'canvas'` | |
 | `tc002.brightness(n)` | 1–100 | outside the range it raises |
-| `tc002.notify(text, colour, seconds)` | colour defaults white, seconds defaults 5 | the same overlay `POST /notify` uses |
+| `tc002.notify(text, colour, seconds, name, stack, hold)` | trailing arguments optional: colour defaults white, seconds defaults 5, name defaults absent, stack and hold default false | the same queue and overlay `POST /notify` uses; seconds 1–300, names 1–32 ascii letters/digits/`_`/`-` |
+| `tc002.dismiss(name)` | name optional; omit for current notification | removes the first matching name, active before waiting; a missing match is a successful no-op, an empty name is invalid |
 | `tc002.subscribe(filter[, f])` | an mqtt topic filter, `+` and `#` allowed; optionally a handler | up to thirty-two; see [mqtt](#mqtt) |
 | `tc002.unsubscribe(filter)` | the same filter, exactly as given to `subscribe` | frees its slot, tells the broker, drops its handler |
 | `tc002.publish(topic, payload)` | | through the device's own broker connection |
 | `tc002.play(name, volume, loop)` | volume 1–100 (0 = the setting), loop defaults false | plays a stored sound; see [sound](RUNTIME.md#sound) |
 | `tc002.stop_sound()` | | stops whatever is playing |
+
+notifications replace the active overlay by default, preserving waiting entries.
+pass `true` for `stack` to append in arrival order, up to eight notifications
+including the active one; a full queue rejects the append without changing state.
+each timer starts when its notification becomes active. `hold` disables expiry,
+so the next entry waits until dismissal, replacement or display takeover.
+names are case-sensitive and may repeat: each named dismissal removes only the
+first match, checking the active notification first. dismissing a waiting entry
+does not restart the active timer.
+
+```berry
+tc002.notify('doorbell', 0xffaa00, 5, 'door', true, true)
+tc002.notify('parcel arrived', 0x00ff80, 10, 'delivery', true)
+tc002.dismiss('door')  # parcel now gets its full ten seconds if door was active
+tc002.dismiss()        # dismiss the current notification
+```
+
+scene selection, raw frames, stream takeover and stream arming clear the whole
+notification queue. power-off preserves it, with timed expiry still running.
+the queue is not persistent and is lost on runtime restart. there is no priority
+or queue-listing api. sound playback is unchanged and remains separate:
+`tc002.dismiss()` does not call `tc002.stop_sound()`.
 
 ### `panel` — drawing
 

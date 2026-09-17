@@ -90,7 +90,9 @@ pub fn event(out: []u8, a: messages.Applied, extra_age_ms: u32) []u8 {
         .notify => blk: {
             if (!w.add(out, &n, ",\"text\":")) break :blk false;
             if (!w.str(out, &n, a.textSlice())) break :blk false;
-            break :blk w.fmt(out, &n, ",\"colour\":\"{x:0>2}{x:0>2}{x:0>2}\",\"duration_s\":{d}", .{ a.colour[0], a.colour[1], a.colour[2], a.duration_s });
+            if (!w.add(out, &n, ",\"name\":")) break :blk false;
+            if (!w.str(out, &n, a.name.slice())) break :blk false;
+            break :blk w.fmt(out, &n, ",\"colour\":\"{x:0>2}{x:0>2}{x:0>2}\",\"duration_s\":{d},\"stack\":{},\"hold\":{}", .{ a.colour[0], a.colour[1], a.colour[2], a.duration_s, a.stack, a.hold });
         },
         .raw => w.fmt(out, &n, ",\"duration_s\":{d}", .{a.duration_s}),
         .brightness => w.fmt(out, &n, ",\"brightness\":{d}", .{a.brightness}),
@@ -112,6 +114,7 @@ pub fn event(out: []u8, a: messages.Applied, extra_age_ms: u32) []u8 {
         }),
         // these carry nothing beyond the revision and the fact that they happened
         .arm_stream, .overlay_expired => true,
+        .dismiss_notify => w.add(out, &n, ",\"name\":") and w.str(out, &n, a.name.slice()),
     };
     if (!ok) return out[0..0];
     if (!w.add(out, &n, "}\n\n")) return out[0..0];
@@ -121,7 +124,7 @@ pub fn event(out: []u8, a: messages.Applied, extra_age_ms: u32) []u8 {
 /// the largest event this module can produce, so a caller can size a buffer that never truncates.
 /// the notification statement is the big one: 128 bytes of text, every byte of which can escape to
 /// six (`\u001f`), plus the envelope.
-pub const event_max = 256 + 6 * arbiter.Statement.text_max;
+pub const event_max = 384 + 6 * arbiter.Statement.text_max;
 
 const testing = std.testing;
 

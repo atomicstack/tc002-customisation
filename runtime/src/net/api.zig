@@ -132,7 +132,8 @@ pub const Op = union(enum) {
     sound_stop,
     /// a remote control event: the same paths as a physical press
     input: struct { control: actions.Control, event: actions.InputRequest, steps: u8, request_id: u64, epoch: ?u32 },
-    notify: struct { text: []const u8, colour: [3]u8, duration_s: u16, transition: ?transition.Spec, request_id: u64, epoch: ?u32 },
+    dismiss_notify: struct { name: []const u8, request_id: u64, epoch: ?u32 },
+    notify: struct { text: []const u8, colour: [3]u8, duration_s: u16, name: []const u8, stack: bool, hold: bool, transition: ?transition.Spec, request_id: u64, epoch: ?u32 },
     frame: struct { rgb: *const geometry.Rgb, duration_s: u16, transition: ?transition.Spec, request_id: u64, epoch: ?u32 },
     config_get,
     config_patch: ConfigPatch,
@@ -303,7 +304,8 @@ fn scopeSet(names: []const []const u8) union(enum) { set: clients.Set, err: Scop
 const SceneBody = struct { base: []const u8, generator: ?[]const u8 = null, seed: ?u32 = null, clock: ?ClockBody = null, transition: ?[]const u8 = null, direction: ?[]const u8 = null, transition_ms: ?u32 = null, exit: ?[]const u8 = null, request_id: ?[]const u8 = null, epoch: ?u32 = null };
 const ActionBody = struct { action: []const u8, brightness: ?u8 = null, seed: ?u32 = null, power: ?bool = null, request_id: ?[]const u8 = null, epoch: ?u32 = null };
 const InputBody = struct { control: []const u8, event: []const u8, steps: u8 = 1, request_id: ?[]const u8 = null, epoch: ?u32 = null };
-const NotifyBody = struct { text: []const u8, colour: ?[]const u8 = null, duration_s: u16 = 5, transition: ?[]const u8 = null, direction: ?[]const u8 = null, transition_ms: ?u32 = null, exit: ?[]const u8 = null, request_id: ?[]const u8 = null, epoch: ?u32 = null };
+const DismissNotifyBody = struct { name: ?[]const u8 = null, request_id: ?[]const u8 = null, epoch: ?u32 = null };
+const NotifyBody = struct { name: ?[]const u8 = null, stack: bool = false, hold: bool = false, text: []const u8, colour: ?[]const u8 = null, duration_s: u16 = 5, transition: ?[]const u8 = null, direction: ?[]const u8 = null, transition_ms: ?u32 = null, exit: ?[]const u8 = null, request_id: ?[]const u8 = null, epoch: ?u32 = null };
 /// `{"name":"chime"}` to play, `{"stop":true}` to stop. volume is optional and means "louder or
 /// quieter than the setting, just for this one".
 const SoundBody = struct { name: ?[]const u8 = null, volume: ?u8 = null, loop: ?bool = null, stop: ?bool = null };
@@ -778,6 +780,7 @@ const endpoints = [_]Endpoint{
     .{ .method = .POST, .path = "/api/v1/config/save", .scope = .settings },
     .{ .method = .POST, .path = "/api/v1/reboot", .scope = .reboot },
     .{ .method = .POST, .path = "/api/v1/notify", .scope = .notify },
+    .{ .method = .POST, .path = "/api/v1/notify/dismiss", .scope = .notify },
     .{ .method = .POST, .path = "/api/v1/frame", .scope = .display },
     .{ .method = .GET, .path = "/api/v1/icons", .scope = .status },
     .{ .method = .GET, .path = "/api/v1/sprites", .scope = .status },
@@ -1004,6 +1007,7 @@ pub fn route(req: http.Request, body: []const u8, creds: *const Credentials, sto
     if (!isJson(req.content_type)) return .{ .reject = .{ .status = 415, .code = "unsupported_media_type", .message = "this route takes application/json" } };
     if (std.mem.eql(u8, ep.path, "/api/v1/scene")) return parseBody(.scene, body, arena, generated_id);
     if (std.mem.eql(u8, ep.path, "/api/v1/action")) return parseBody(.action, body, arena, generated_id);
+    if (std.mem.eql(u8, ep.path, "/api/v1/notify/dismiss")) return parseBody(.dismiss_notify, body, arena, generated_id);
     if (std.mem.eql(u8, ep.path, "/api/v1/notify")) return parseBody(.notify, body, arena, generated_id);
     if (std.mem.eql(u8, ep.path, "/api/v1/config")) return parseBody(.config_patch, body, arena, generated_id);
     if (std.mem.eql(u8, ep.path, "/api/v1/config/save")) return parseBody(.config_save, body, arena, generated_id);
@@ -1014,7 +1018,7 @@ pub fn route(req: http.Request, body: []const u8, creds: *const Credentials, sto
     return .{ .reject = .{ .status = 404, .code = "not_found", .message = "no such route" } };
 }
 
-pub const BodyKind = enum { scene, action, notify, config_patch, config_save, mqtt_put, ntfy_put, input, canvas_put, canvas_patch, sound };
+pub const BodyKind = enum { scene, action, notify, dismiss_notify, config_patch, config_save, mqtt_put, ntfy_put, input, canvas_put, canvas_patch, sound };
 
 pub fn enumByName(comptime E: type, text: []const u8) ?E {
     inline for (@typeInfo(E).@"enum".fields) |f| if (std.mem.eql(u8, text, f.name)) return @enumFromInt(f.value);
@@ -1127,8 +1131,15 @@ pub fn parseBody(kind: BodyKind, body: []const u8, arena: *Arena, generated_id: 
             if (b.volume) |v| if (v < 1 or v > 100) return bad("invalid_volume", "volume must be 1..100");
             return .{ .op = .{ .sound_play = .{ .name = name, .volume = b.volume, .loop = b.loop orelse false } } };
         },
+        .dismiss_notify => {
+            const b = json.parse(DismissNotifyBody, body, arena, &where) catch |e| return jsonError(e, where, arena);
+            if (b.name) |name| if (!arbiter.notification.validName(name)) return bad("invalid_name", "a notification name is 1..32 letters, digits, _ or -");
+            const rid = if (b.request_id) |t| (parseRequestId(t) orelse return bad("invalid_request_id", "request_id must be 1..16 hex digits")) else generated_id;
+            return .{ .op = .{ .dismiss_notify = .{ .name = b.name orelse "", .request_id = rid, .epoch = b.epoch } } };
+        },
         .notify => {
             const b = json.parse(NotifyBody, body, arena, &where) catch |e| return jsonError(e, where, arena);
+            if (b.name) |name| if (!arbiter.notification.validName(name)) return bad("invalid_name", "a notification name is 1..32 letters, digits, _ or -");
             if (b.text.len == 0 or b.text.len > 128) return bad("invalid_text", "text must be 1..128 printable ascii characters");
             for (b.text) |c| if (c < 0x20 or c > 0x7e) return bad("invalid_text", "text must be 1..128 printable ascii characters");
             if (b.duration_s < 1 or b.duration_s > 300) return bad("invalid_duration", "duration_s must be 1..300");
@@ -1138,7 +1149,7 @@ pub fn parseBody(kind: BodyKind, body: []const u8, arena: *Arena, generated_id: 
                 .reject => |j| return .{ .reject = j },
                 .op => |t| t,
             };
-            return .{ .op = .{ .notify = .{ .text = b.text, .colour = colour, .duration_s = b.duration_s, .transition = spec, .request_id = rid, .epoch = b.epoch } } };
+            return .{ .op = .{ .notify = .{ .text = b.text, .colour = colour, .duration_s = b.duration_s, .name = b.name orelse "", .stack = b.stack, .hold = b.hold, .transition = spec, .request_id = rid, .epoch = b.epoch } } };
         },
         .config_patch => {
             const b = json.parse(ConfigBody, body, arena, &where) catch |e| return jsonError(e, where, arena);
@@ -1419,6 +1430,22 @@ const admin_header = "Bearer " ++ "22" ** 32;
 
 fn testReq(method: http.Method, path: []const u8, query: []const u8, auth: ?[]const u8, ct: ?[]const u8, origin: ?[]const u8) http.Request {
     return .{ .method = method, .path = path, .query = query, .authorization = auth, .content_type = ct, .origin = origin, .head_len = 0 };
+}
+
+test "notification queue options are accepted by the public route" {
+    const c = testCreds();
+    var arena: Arena = undefined;
+    var origins = OriginPolicy{};
+    const r = route(testReq(.POST, "/api/v1/notify", "", control_header, "application/json", null), "{\"text\":\"door open\",\"name\":\"door\",\"stack\":true,\"hold\":true}", &c, &no_clients, &origins, &arena, test_minted);
+    try std.testing.expect(r == .op);
+}
+
+test "notification dismissal is accepted by the public route" {
+    const c = testCreds();
+    var arena: Arena = undefined;
+    var origins = OriginPolicy{};
+    const r = route(testReq(.POST, "/api/v1/notify/dismiss", "", control_header, "application/json", null), "{\"name\":\"door\"}", &c, &no_clients, &origins, &arena, test_minted);
+    try std.testing.expect(r == .op);
 }
 
 fn expectReject(r: Route, status: u16, code: []const u8) !void {
@@ -2232,4 +2259,40 @@ test "the device docs can execute same-origin authenticated browser requests" {
     req.authorization = control_header;
     req.origin = "http://evil.example";
     try expectReject(route(req, "{}", &testCreds(), &no_clients, &.{}, &arena, test_minted), 403, "origin_denied");
+}
+
+test "notification options validate names types durations and preserve defaults" {
+    var arena: Arena = undefined;
+    const legacy = parseBody(.notify, "{\"text\":\"hello\"}", &arena, test_minted).op.notify;
+    try std.testing.expect(!legacy.stack and !legacy.hold);
+    try std.testing.expectEqualStrings("", legacy.name);
+    try std.testing.expectEqual(@as(u16, 5), legacy.duration_s);
+    const queued = parseBody(.notify, "{\"text\":\"hello\",\"name\":\"door-1\",\"stack\":true,\"hold\":true}", &arena, test_minted).op.notify;
+    try std.testing.expect(queued.stack and queued.hold);
+    try std.testing.expectEqualStrings("door-1", queued.name);
+    for ([_][]const u8{ "", "bad/name", "a b", "123456789012345678901234567890123" ++ "45" }) |name| {
+        var buf: [256]u8 = undefined;
+        const body = try std.fmt.bufPrint(&buf, "{{\"text\":\"x\",\"name\":\"{s}\"}}", .{name});
+        try expectReject(parseBody(.notify, body, &arena, test_minted), 400, "invalid_name");
+        const dismiss = try std.fmt.bufPrint(&buf, "{{\"name\":\"{s}\"}}", .{name});
+        try expectReject(parseBody(.dismiss_notify, dismiss, &arena, test_minted), 400, "invalid_name");
+    }
+    const wrong_type = parseBody(.notify, "{\"text\":\"hello\",\"stack\":\"yes\"}", &arena, test_minted);
+    try std.testing.expect(wrong_type == .reject);
+    try expectReject(parseBody(.notify, "{\"text\":\"x\",\"hold\":true,\"duration_s\":0}", &arena, test_minted), 400, "invalid_duration");
+    const current = parseBody(.dismiss_notify, "{}", &arena, test_minted).op.dismiss_notify;
+    try std.testing.expectEqualStrings("", current.name);
+    try std.testing.expectEqual(test_minted, current.request_id);
+}
+
+test "notification dismissal requires notify scope" {
+    const c = testCreds();
+    var store = clients.Store{};
+    var origins = OriginPolicy{};
+    var arena: Arena = undefined;
+    try store.add("notifier", clients.Scope.notify.bit(), [_]u8{0x33} ** 32, 1000);
+    const auth = "Bearer " ++ ("33" ** 32);
+    const r = route(testReq(.POST, "/api/v1/notify/dismiss", "", auth, "application/json", null), "{}", &c, &store, &origins, &arena, test_minted);
+    try std.testing.expect(r == .op);
+    try expectReject(route(testReq(.POST, "/api/v1/notify/dismiss", "", null, "application/json", null), "{}", &c, &store, &origins, &arena, test_minted), 401, "unauthorized");
 }

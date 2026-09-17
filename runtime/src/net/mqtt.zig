@@ -554,7 +554,7 @@ test "subscribing needs more room than the packet it produces" {
 }
 
 /// the topics the device answers commands on, under whatever prefix is configured.
-pub const command_suffixes = [_][]const u8{ "cmd/frame", "cmd/screen", "cmd/scene", "cmd/action", "cmd/notify", "cmd/config", "cmd/input", "cmd/sound" };
+pub const command_suffixes = [_][]const u8{ "cmd/frame", "cmd/screen", "cmd/scene", "cmd/action", "cmd/notify", "cmd/notify/dismiss", "cmd/config", "cmd/input", "cmd/sound" };
 
 /// would a script's filter take delivery of the device's own commands? netd hands a matching
 /// arrival to the script and returns, so `tc002/cmd/#` -- or a bare `#` -- would quietly swallow

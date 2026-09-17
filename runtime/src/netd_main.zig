@@ -5,6 +5,7 @@
 //! forwards it to the live renderer and returns the renderer's own result.
 const build_options = @import("build_options");
 const std = @import("std");
+const notification = @import("scene/notification.zig");
 const sys = @import("sys/linux.zig");
 const log = @import("sys/log.zig");
 const http = @import("net/http.zig");
@@ -602,7 +603,8 @@ const Netd = struct {
             },
             .logs => |l| self.ask(c, .{ .log_get = .{ .after = l.after } }, .logs, now),
             .input => |i| self.relay(c, .{ .inject_input = .{ .control = @intFromEnum(i.control), .event = @intFromEnum(i.event), .steps = i.steps } }, i.request_id, i.epoch orelse 0, now),
-            .notify => |n| self.relay(c, .{ .notify = messages.Notify.init(n.text, n.colour, n.duration_s, messages.Transition.fromSpec(n.transition)) }, n.request_id, n.epoch orelse 0, now),
+            .dismiss_notify => |n| self.relay(c, .{ .dismiss_notify = notification.Name.init(n.name) }, n.request_id, n.epoch orelse 0, now),
+            .notify => |n| self.relay(c, .{ .notify = messages.Notify.init(n.text, n.colour, n.duration_s, messages.Transition.fromSpec(n.transition)).withOptions(n.name, n.stack, n.hold) }, n.request_id, n.epoch orelse 0, now),
             .frame => |f| {
                 if (!self.frameAllowed(now)) {
                     c.client_id = f.request_id;
@@ -770,6 +772,7 @@ const Netd = struct {
                 .unavailable => self.respondError(c, 503, "renderer_unavailable", "no renderer is running"),
                 .timeout => self.respondError(c, 504, "timeout", "the renderer did not answer within two seconds; retry with the same request id"),
                 .conflict => self.respondError(c, 409, "conflict", "conflict"),
+                .queue_full => self.respondError(c, 409, "queue_full", "the notification queue is full"),
             }
             self.flushConn(c, now);
             return;
@@ -1878,7 +1881,7 @@ const Netd = struct {
             self.mqttRelay(.screen_get, self.newId(), 0, now);
             return;
         }
-        const kind: api.BodyKind = if (std.mem.eql(u8, suffix, "scene")) .scene else if (std.mem.eql(u8, suffix, "action")) .action else if (std.mem.eql(u8, suffix, "notify")) .notify else if (std.mem.eql(u8, suffix, "config")) .config_patch else if (std.mem.eql(u8, suffix, "input")) .input else if (std.mem.eql(u8, suffix, "sound")) .sound else return;
+        const kind: api.BodyKind = if (std.mem.eql(u8, suffix, "scene")) .scene else if (std.mem.eql(u8, suffix, "action")) .action else if (std.mem.eql(u8, suffix, "notify/dismiss")) .dismiss_notify else if (std.mem.eql(u8, suffix, "notify")) .notify else if (std.mem.eql(u8, suffix, "config")) .config_patch else if (std.mem.eql(u8, suffix, "input")) .input else if (std.mem.eql(u8, suffix, "sound")) .sound else return;
         switch (api.parseBody(kind, p.payload, &arena, self.newId())) {
             .reject => |j| {
                 var o = Out{ .buf = &json_buf };
@@ -1900,7 +1903,8 @@ const Netd = struct {
                 // request_id field, so there is nothing of the caller's to echo back.
                 .sound_play => |sp| self.mqttRelay(.{ .sound_cmd = messages.SoundCmd.init(.play, sp.name, sp.volume orelse 0, sp.loop) }, self.newId(), 0, now),
                 .sound_stop => self.mqttRelay(.{ .sound_cmd = messages.SoundCmd.init(.stop, "", 0, false) }, self.newId(), 0, now),
-                .notify => |n| self.mqttRelay(.{ .notify = messages.Notify.init(n.text, n.colour, n.duration_s, messages.Transition.fromSpec(n.transition)) }, n.request_id, n.epoch orelse 0, now),
+                .dismiss_notify => |n| self.mqttRelay(.{ .dismiss_notify = notification.Name.init(n.name) }, n.request_id, n.epoch orelse 0, now),
+                .notify => |n| self.mqttRelay(.{ .notify = messages.Notify.init(n.text, n.colour, n.duration_s, messages.Transition.fromSpec(n.transition)).withOptions(n.name, n.stack, n.hold) }, n.request_id, n.epoch orelse 0, now),
                 .config_patch => |cp| {
                     switch (ha.patchPolicy(cp, self.cfg.discovery_controls)) {
                         .rejected => {
