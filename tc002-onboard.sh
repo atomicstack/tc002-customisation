@@ -2,7 +2,7 @@
 # tc002-onboard.sh: take a tc002 from its box to the custom runtime, in one command.
 #
 #   ./tc002-onboard.sh [--wifi-ssid NAME] [--device IP[:PORT]] [--flash] [--yes]
-#                      [--work DIR] [--no-adopt]
+#                      [--work DIR] [--no-adopt] [--ntp IP|auto|none] [--tz ZONE]
 #
 # by default this does everything EXCEPT write to flash: it finds or adopts the
 # device, checks it is what these notes were written against, records a
@@ -39,6 +39,12 @@ WIFI_SSID=""
 DO_FLASH=0
 ASSUME_YES=0
 NO_ADOPT=0
+NTP=auto
+TZ_EXPLICIT=0
+# a freshly flashed runtime has no settings at all, so without this it has no
+# timezone and no ntp server, and the panel sits on a blinking separator with no
+# digits forever. default to whatever this machine is set to.
+TZONE=$(readlink /etc/localtime 2>/dev/null | sed 's#.*/zoneinfo/##')
 OS=$(uname -s)
 
 while [ $# -gt 0 ]; do
@@ -49,6 +55,8 @@ while [ $# -gt 0 ]; do
     --flash)     DO_FLASH=1; shift ;;
     --yes)       ASSUME_YES=1; shift ;;
     --no-adopt)  NO_ADOPT=1; shift ;;
+    --ntp)       NTP="$2"; shift 2 ;;
+    --tz)        TZONE="$2"; TZ_EXPLICIT=1; shift 2 ;;
     -h|--help)   sed -n '2,28p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "unknown argument: $1" >&2; exit 2 ;;
   esac
@@ -95,6 +103,23 @@ if [ -f "$SELF/MANIFEST.sha256" ]; then
 fi
 mkdir -p "$WORK" || die "cannot create $WORK"
 say "workdir    $WORK"
+
+# the timezone is the one thing here that cannot be discovered or defaulted
+# safely: the clock is a clock, and a wrong zone is wrong all day. this machine's
+# setting is only a suggestion, so ask.
+if [ "$TZ_EXPLICIT" != "1" ] && [ "$ASSUME_YES" != "1" ] && [ -r /dev/tty ]; then
+  while :; do
+    printf '\n   timezone for the clock [%s]: ' "${TZONE:-UTC}"
+    read -r REPLY_TZ </dev/tty || REPLY_TZ=""
+    [ -n "$REPLY_TZ" ] || REPLY_TZ="${TZONE:-UTC}"
+    if [ -e "/usr/share/zoneinfo/$REPLY_TZ" ]; then
+      TZONE="$REPLY_TZ"; break
+    fi
+    printf '   no such zone. use an iana name, e.g. Europe/Amsterdam, America/New_York, UTC.\n'
+  done
+fi
+[ -n "$TZONE" ] || TZONE=UTC
+say "timezone   $TZONE"
 
 # ------------------------------------------------------------- find the device
 step "find the device"
@@ -253,6 +278,11 @@ if [ "$DO_FLASH" != "1" ]; then
   say "to flash, run:"
   say "  $TOOLS/tc002-flash.sh $IMG"
   say ""
+  say "after flashing, set a timezone and an ntp server or the panel will show a"
+  say "blinking separator and no digits -- a fresh runtime has no settings at all,"
+  say "and it has no dns, so the server must be a dotted ipv4:"
+  say "  $TOOLS/tc002ctl.py -s ${DEV%%:*} --token-file <tokens> config-set timezone=$TZONE ntp_server=<ip>"
+  say ""
   say "or re-run this script with --flash to do it in one go."
   say "your way back, if you ever want the stock app: $BACKUP"
   exit 0
@@ -269,6 +299,68 @@ if [ "$ASSUME_YES" != "1" ]; then
 fi
 "$TOOLS/tc002-flash.sh" "$IMG" --yes || die "the flash reported a failure. your backup is at $BACKUP"
 
+# ----------------------------------------------------------------- provision
+# the runtime ships with NO durable settings. until a timezone and an ntp server
+# are set it cannot know the time, and a clock that cannot know the time shows a
+# blinking separator and nothing else -- which reads as a failed flash and is not
+# one. the runtime has no dns resolver, so ntp_server must be a dotted ipv4.
+step "provision timezone and ntp"
+TOKENS="$WORK/tokens"
+for i in 1 2 3 4 5 6 7 8 9 10; do
+  "$ADB" connect "$DEV" >/dev/null 2>&1
+  "$ADB" -s "$DEV" pull /data/tc002/state/credentials/tokens "$TOKENS" >/dev/null 2>&1 && break
+  sleep 10
+done
+if [ ! -s "$TOKENS" ]; then
+  say "could not read the device's api tokens yet; set these by hand later:"
+  say "  runtime/tools/tc002ctl.py -s ${DEV%%:*} --token-file <tokens> config-set timezone=$TZONE ntp_server=<ip>"
+else
+  chmod 600 "$TOKENS"
+  if [ "$NTP" = "auto" ]; then
+    # public first, deliberately. a router that answers ntp is not necessarily a
+    # router that knows the time, and consumer gateways are a common source of
+    # confidently wrong clocks. the gateway stays as a fallback for lans with no
+    # route out. these are dotted ipv4 because the runtime has no dns resolver:
+    #   162.159.200.123  time.cloudflare.com anycast
+    #   216.239.35.0     time.google.com
+    # both are us-operated anycast. (the stock firmware carries no ntp hostname
+    # in any of its binaries -- it appears to take its time from ulanzi's cloud
+    # service, which is one more thing the runtime does not phone home for.)
+    GW=$(dsh '/tmp/busybox route -n 2>/dev/null' | awk '$1=="0.0.0.0"{print $2; exit}')
+    NTP=""
+    for cand in 162.159.200.123 216.239.35.0 $GW; do
+      [ -n "$cand" ] || continue
+      if "$PY" - "$cand" <<'PYEOF'
+import socket, sys
+s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM); s.settimeout(3)
+try:
+    s.sendto(b'\x1b' + 47*b'\0', (sys.argv[1], 123)); s.recvfrom(48); sys.exit(0)
+except Exception: sys.exit(1)
+finally: s.close()
+PYEOF
+      then NTP="$cand"; break; fi
+    done
+    case "$NTP" in
+      "")               say "no reachable ntp server found (tried two public ones and your gateway)."
+                        say "the clock cannot show a time until you set one: --ntp <dotted ipv4>" ;;
+      162.159.200.123)  say "using time.cloudflare.com (anycast). override with --ntp <ip>." ;;
+      216.239.35.0)     say "cloudflare unreachable; using time.google.com. override with --ntp <ip>." ;;
+      *)                say "no public ntp reachable; falling back to your gateway $NTP" ;;
+    esac
+  fi
+  if [ -n "$NTP" ] && [ "$NTP" != "none" ]; then
+    "$PY" "$TOOLS/tc002ctl.py" -s "${DEV%%:*}" --token-file "$TOKENS" \
+        config-set "timezone=$TZONE" "ntp_server=$NTP" >/dev/null 2>&1 \
+      && say "timezone $TZONE, ntp $NTP" || say "could not apply the settings; set them by hand"
+  else
+    "$PY" "$TOOLS/tc002ctl.py" -s "${DEV%%:*}" --token-file "$TOKENS" \
+        config-set "timezone=$TZONE" >/dev/null 2>&1 && say "timezone $TZONE, ntp left unset"
+  fi
+  "$PY" "$TOOLS/tc002ctl.py" -s "${DEV%%:*}" --token-file "$TOKENS" config-save >/dev/null 2>&1 \
+    && say "settings written to /data (they survive a power cycle; the binaries do not)"
+  say "api tokens saved to $TOKENS -- the console needs them"
+fi
+
 # -------------------------------------------------------------------- verify
 step "verify"
 sleep 5
@@ -281,6 +373,5 @@ for i in 1 2 3 4 5 6 7 8; do
   sleep 10
 done
 say ""
-say "done. the console is panel-v2/start-panel.sh, and the api tokens live on"
-say "the device at /data/tc002/state/. keep $BACKUP somewhere safe -- it is the"
-say "only copy of your unit's stock application."
+say "done. the console is panel-v2/start-panel.sh. keep $BACKUP somewhere safe"
+say "-- it is the only copy of your unit's stock application."

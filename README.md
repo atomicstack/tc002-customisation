@@ -129,7 +129,12 @@ That finds the clock — adopting it off its `U-Clock` setup AP if it is still
 factory-fresh — checks it is the hardware these notes describe, records a
 fingerprint, takes a **verified backup of the `res` partition**, and builds your
 image from it. It writes nothing to flash; it prints the one command that does.
-Add `--flash` to go all the way. See [`SETUP.md`](SETUP.md).
+Add `--flash` to go all the way.
+
+**[`INSTALL.md`](INSTALL.md) is the full walkthrough** — dependencies, every
+step, getting back to stock, and the things that look broken and are not (a
+blinking separator with no digits means no timezone/NTP, not a failed flash).
+[`SETUP.md`](SETUP.md) covers adoption on its own.
 
 A release tarball needs no compiler — only `adb`, `python3` and
 `squashfs-tools`. Build one with `./tc002-mkrelease.sh`; the armv7 binaries go in

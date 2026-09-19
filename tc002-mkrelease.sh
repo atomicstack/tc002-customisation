@@ -73,7 +73,8 @@ cp "$HERE"/runtime/zig-out/bin/tc002-supervisor "$HERE"/runtime/zig-out/bin/tc00
    "$HERE"/runtime/zig-out/bin/busybox "$HERE"/runtime/zig-out/bin/busybox.applets \
    "$STAGE/runtime/zig-out/bin/"
 cp "$HERE/runtime/zig-out/lib/libtc002-bootstrap.so" "$STAGE/runtime/zig-out/lib/"
-cp "$HERE/SETUP.md" "$HERE/FINGERPRINTS.md" "$HERE/DEVICE.md" "$HERE/SECURITY.md" "$STAGE/docs/"
+cp "$HERE/INSTALL.md" "$HERE/SETUP.md" "$HERE/FINGERPRINTS.md" "$HERE/DEVICE.md" \
+   "$HERE/SECURITY.md" "$STAGE/docs/"
 chmod 755 "$STAGE"/*.sh "$STAGE"/runtime/tools/*.sh "$STAGE"/runtime/zig-out/bin/* 2>/dev/null || true
 
 cat > "$STAGE/README-FIRST.md" <<EOF
@@ -94,12 +95,17 @@ in \`runtime/zig-out/\` are prebuilt.
 
     ./tc002-onboard.sh --wifi-ssid <your 2.4 GHz network>
 
-That finds your clock — adopting it off its \`U-Clock\` setup AP if it is still
+It asks for your timezone, then finds your clock — adopting it off its \`U-Clock\` setup AP if it is still
 factory-fresh — checks it over, records a fingerprint, takes a **verified backup
 of your \`res\` partition**, and builds your image. It writes nothing to flash.
 It then prints the one command that does. Add \`--flash\` to go all the way.
 
 The clock has no 5 GHz radio, so give it a 2.4 GHz SSID.
+
+**\`docs/INSTALL.md\` is the full walkthrough.** Read it if anything is unclear
+— in particular, a freshly flashed clock has no timezone and no NTP server, and
+until both are set it shows a blinking separator and no digits. That is not a
+failed flash. \`--flash\` sets them for you.
 
 ## Why the image is built on your machine
 
