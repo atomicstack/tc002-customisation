@@ -553,6 +553,69 @@ pub fn uartOpen(path: [*:0]const u8, baud: u32) Error!Fd {
 
 // udp and the wall clock (the sntp client)
 
+// mdns needs the unconnected forms of udp: a socket bound to a well-known port,
+// joined to a multicast group, that answers whoever asked. the numbers are from
+// linux/in.h -- zig's std does not expose them for this target.
+const IP_MULTICAST_IF: u32 = 32;
+const IP_MULTICAST_TTL: u32 = 33;
+const IP_MULTICAST_LOOP: u32 = 34;
+const IP_ADD_MEMBERSHIP: u32 = 35;
+const SO_REUSEPORT: u32 = 15;
+
+const ip_mreq = extern struct { multiaddr: u32, interface: u32 };
+
+/// a nonblocking udp socket bound to 0.0.0.0:port. both reuse options are set
+/// because 5353 is a shared port by design: rfc 6762 expects several responders
+/// on one host, and without SO_REUSEPORT a second one fails to bind instead of
+/// joining in.
+pub fn udpBind(port: u16) Error!Fd {
+    const fd: Fd = @intCast(try check(linux.socket(linux.AF.INET, linux.SOCK.DGRAM | linux.SOCK.CLOEXEC | linux.SOCK.NONBLOCK, 0)));
+    errdefer close(fd);
+    const one: u32 = 1;
+    _ = try check(linux.setsockopt(fd, linux.SOL.SOCKET, linux.SO.REUSEADDR, @ptrCast(&one), @sizeOf(u32)));
+    // not fatal: an older kernel without it still works for a single responder
+    _ = linux.setsockopt(fd, linux.SOL.SOCKET, SO_REUSEPORT, @ptrCast(&one), @sizeOf(u32));
+    const sa = inetAddr(.{ 0, 0, 0, 0 }, port);
+    _ = try check(linux.bind(fd, @ptrCast(&sa), @sizeOf(linux.sockaddr.in)));
+    return fd;
+}
+
+/// join `group` on the interface holding `iface`, and set the outbound multicast
+/// path to the same interface. ttl 255 is what rfc 6762 requires; loop is left on
+/// so anything else on this host still hears us.
+pub fn mcastJoin(fd: Fd, group: [4]u8, iface: [4]u8) Error!void {
+    const mreq = ip_mreq{ .multiaddr = @bitCast(group), .interface = @bitCast(iface) };
+    _ = try check(linux.setsockopt(fd, linux.IPPROTO.IP, IP_ADD_MEMBERSHIP, @ptrCast(&mreq), @sizeOf(ip_mreq)));
+    const ifaddr: u32 = @bitCast(iface);
+    _ = linux.setsockopt(fd, linux.IPPROTO.IP, IP_MULTICAST_IF, @ptrCast(&ifaddr), @sizeOf(u32));
+    const ttl: u32 = 255;
+    _ = linux.setsockopt(fd, linux.IPPROTO.IP, IP_MULTICAST_TTL, @ptrCast(&ttl), @sizeOf(u32));
+    const loop: u32 = 1;
+    _ = linux.setsockopt(fd, linux.IPPROTO.IP, IP_MULTICAST_LOOP, @ptrCast(&loop), @sizeOf(u32));
+}
+
+/// one datagram and who sent it, or null when none is waiting.
+pub fn udpRecvFrom(fd: Fd, buf: []u8, from: *[4]u8, from_port: *u16) Error!?[]u8 {
+    var sa: linux.sockaddr.in = undefined;
+    var salen: linux.socklen_t = @sizeOf(linux.sockaddr.in);
+    const rc = linux.recvfrom(fd, buf.ptr, buf.len, linux.MSG.DONTWAIT, @ptrCast(&sa), &salen);
+    return switch (errno(rc)) {
+        .SUCCESS => blk: {
+            from.* = @bitCast(sa.addr);
+            from_port.* = std.mem.bigToNative(u16, sa.port);
+            break :blk buf[0..rc];
+        },
+        .AGAIN, .INTR => null,
+        else => error.Unexpected,
+    };
+}
+
+pub fn udpSendTo(fd: Fd, addr: [4]u8, port: u16, bytes: []const u8) Error!void {
+    const sa = inetAddr(addr, port);
+    const n = try check(linux.sendto(fd, bytes.ptr, bytes.len, linux.MSG.NOSIGNAL | linux.MSG.DONTWAIT, @ptrCast(&sa), @sizeOf(linux.sockaddr.in)));
+    if (n != bytes.len) return error.Truncated;
+}
+
 /// a nonblocking udp socket connected to one peer: the kernel then delivers only that peer's
 /// datagrams and reports icmp unreachable as an error on the next send or receive.
 pub fn udpConnect(addr: [4]u8, port: u16) Error!Fd {

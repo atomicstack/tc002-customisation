@@ -18,7 +18,7 @@ It finds both kinds, which need different probes:
 it prints it and exits 0; if there are none or several it prints the table on
 stderr and exits 2, so the caller stops instead of picking.
 """
-import argparse, json, re, socket, subprocess, sys
+import argparse, json, re, socket, subprocess, sys, time
 from concurrent.futures import ThreadPoolExecutor
 
 ADB = "adb"
@@ -67,6 +67,137 @@ def identify(host):
     return None
 
 
+def mdns_query(timeout=2.0):
+    """ask the lan for `_tc002._tcp.local` and read the answers.
+
+    this is the discovery that actually scales to more than one clock: the runtime answers mdns
+    for a name derived from its own mac, so two devices are two names rather than two addresses
+    that have to be told apart. no dependencies -- mdns is just udp and a dns message.
+    """
+    q = bytearray([0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0])
+    for label in (b"_tc002", b"_tcp", b"local"):
+        q.append(len(label)); q += label
+    q += bytes([0, 0, 12, 0, 1])                    # root, QTYPE=PTR, QCLASS=IN
+
+    # the responder always answers to the group, never unicast to the asker (it ignores the QU
+    # bit on purpose), so a client has to be bound to 5353 and joined to the group or it never
+    # hears the reply. 5353 is already held by mDNSResponder on macos, hence both reuse options.
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    try:
+        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
+    except (AttributeError, OSError):
+        pass
+    s.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_TTL, 255)
+    try:
+        s.bind(("", 5353))
+        mreq = socket.inet_aton("224.0.0.251") + socket.inet_aton("0.0.0.0")
+        s.setsockopt(socket.IPPROTO_IP, socket.IP_ADD_MEMBERSHIP, mreq)
+    except OSError:
+        s.close()
+        return {}
+    s.settimeout(0.4)
+    found = {}
+    try:
+        # the group membership is not effective the instant setsockopt returns, and a query sent
+        # into that gap gets an answer we are not yet subscribed to hear. give igmp a moment, then
+        # ask twice: one lost query otherwise reads as "no clocks on this network".
+        time.sleep(0.15)
+        s.sendto(bytes(q), ("224.0.0.251", 5353))
+        resent = False
+        end_at = time.time() + timeout
+        while time.time() < end_at:
+            try:
+                data, addr = s.recvfrom(4096)
+            except socket.timeout:
+                if not resent:
+                    resent = True
+                    try:
+                        s.sendto(bytes(q), ("224.0.0.251", 5353))
+                    except OSError:
+                        pass
+                continue
+            except OSError:
+                break
+            if len(data) < 12 or not (data[2] & 0x80):
+                continue                       # queries, including our own, are not answers
+            records = list(_parse_answers(data))
+            # bound to the group, we hear every mdns responder on the lan. only a packet that
+            # actually answers for our service type is a clock; without this check a hue bridge
+            # announcing itself is reported as a tc002.
+            inst = None
+            for name, _ in records:
+                if name.endswith("._tc002._tcp.local"):
+                    inst = name.split(".")[0]
+                    break
+            if inst is None:
+                continue
+            entry = found.setdefault(inst, {"instance": inst, "ip": addr[0]})
+            # prefer the A record for our own host name over the packet's source address
+            for name, ip in records:
+                if ip and name.split(".")[0] == inst:
+                    entry["ip"] = ip
+    finally:
+        s.close()
+    return found
+
+
+def _name_at(buf, off, depth=0):
+    """decode a dns name, following compression pointers. returns (name, offset-after)."""
+    parts = []
+    after = None
+    while depth < 8:
+        if off >= len(buf):
+            return "", off
+        n = buf[off]
+        if n == 0:
+            off += 1
+            break
+        if n & 0xC0 == 0xC0:
+            if off + 1 >= len(buf):
+                return "", off
+            ptr = ((n & 0x3F) << 8) | buf[off + 1]
+            if after is None:
+                after = off + 2
+            if ptr >= off:
+                return "", off
+            off = ptr
+            depth += 1
+            continue
+        if off + 1 + n > len(buf):
+            return "", off
+        parts.append(buf[off + 1: off + 1 + n].decode("utf-8", "replace"))
+        off += 1 + n
+    return ".".join(parts), (after if after is not None else off)
+
+
+def _parse_answers(buf):
+    """yield (name, ipv4-or-None) for every answer record."""
+    if len(buf) < 12:
+        return
+    qd = int.from_bytes(buf[4:6], "big")
+    an = int.from_bytes(buf[6:8], "big") + int.from_bytes(buf[8:10], "big") + int.from_bytes(buf[10:12], "big")
+    off = 12
+    for _ in range(qd):
+        _, off = _name_at(buf, off)
+        off += 4
+    for _ in range(an):
+        name, off = _name_at(buf, off)
+        if off + 10 > len(buf):
+            return
+        rtype = int.from_bytes(buf[off:off + 2], "big")
+        rdlen = int.from_bytes(buf[off + 8:off + 10], "big")
+        rdata = buf[off + 10: off + 10 + rdlen]
+        off += 10 + rdlen
+        if rtype == 12 and rdlen:                    # PTR -> the instance name
+            target, _ = _name_at(buf, off - rdlen)
+            yield target, None
+        elif rtype == 1 and rdlen == 4:              # A
+            yield name, ".".join(str(b) for b in rdata)
+        else:
+            yield name, None
+
+
 def adb_transports():
     out = sh([ADB, "devices"])
     return [l.split()[0] for l in out.splitlines()[1:] if l.strip().endswith("device")]
@@ -95,10 +226,21 @@ def main():
     ap.add_argument("--one", action="store_true", help="print one adb address, or fail if ambiguous")
     ap.add_argument("--json", action="store_true")
     ap.add_argument("--adb", default="adb")
+    ap.add_argument("--no-mdns", action="store_true", help="skip the mdns probe")
     a = ap.parse_args()
     ADB = a.adb
 
     rows = {}
+
+    # mdns first: it needs no adb transport, no subnet guess and no sweep, and it is the only
+    # probe that returns a *name* rather than an address to be disambiguated later.
+    if not a.no_mdns:
+        for inst, d in mdns_query().items():
+            if not d.get("ip"):
+                continue
+            rows[d["ip"]] = {"transport": f'{d["ip"]}:5555', "ip": d["ip"], "mac": "",
+                             "kind": "runtime", "name": f"{inst}.local"}
+
     for serial in adb_transports():
         d = describe_adb(serial)
         if not d["mac"]:
@@ -151,10 +293,10 @@ def main():
     if not out:
         print("no tc002 found. is one connected over adb, or try --sweep 10.0.0")
         return 1
-    print(f'  {"address":<20} {"mac":<18} {"running":<8} transport')
+    print(f'  {"address":<16} {"mdns name":<20} {"mac":<18} running')
     for r in out:
         addr = r.get("ip") or "-"
-        print(f'  {addr:<20} {r.get("mac",""):<18} {r["kind"]:<8} {r["transport"]}')
+        print(f'  {addr:<16} {r.get("name","-"):<20} {r.get("mac",""):<18} {r["kind"]}')
     return 0
 
 

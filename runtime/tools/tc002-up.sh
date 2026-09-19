@@ -58,6 +58,20 @@ ip=${device%%:*}
 die() { echo "tc002-up.sh: $*" >&2; exit 1; }
 say() { echo "== $*"; }
 
+# every adb call has to name the device. with two clocks attached a bare
+# `adb shell` fails with "more than one device/emulator", and this script
+# reported that as the clock being off the network -- which it was not.
+# connect/disconnect take an address as an argument instead, never -s.
+adb() {
+    case "${1:-}" in
+        connect|disconnect|start-server|kill-server|devices) command adb "$@" ;;
+        *) command adb -s "$device" "$@" ;;
+    esac
+}
+
+# tc002-run.sh does the pushing and starting; it needs to know the same device
+export TC002_DEVICE="$device"
+
 say "adb"
 if ! adb get-state >/dev/null 2>&1; then
     adb connect "$device" >/dev/null 2>&1 || true

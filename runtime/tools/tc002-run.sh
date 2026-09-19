@@ -16,7 +16,21 @@ LOCK=$HERE/tc002-lock.sh
 DEV=/tmp/tc002
 
 die() { echo "$*" >&2; exit 1; }
-need_adb() { adb get-state >/dev/null 2>&1 || die "no adb device: adb connect <device-ip> first"; }
+
+# with two clocks attached a bare `adb shell` fails with "more than one
+# device/emulator". TC002_DEVICE names the one meant; without it the old
+# single-device behaviour is kept, which is right when there is only one.
+adb() {
+    case "${1:-}" in
+        connect|disconnect|start-server|kill-server|devices) command adb "$@" ;;
+        *) if [ -n "${TC002_DEVICE:-}" ]; then command adb -s "$TC002_DEVICE" "$@"; else command adb "$@"; fi ;;
+    esac
+}
+
+need_adb() {
+    adb get-state >/dev/null 2>&1 || die "no adb device${TC002_DEVICE:+ at $TC002_DEVICE}: adb connect <device-ip> first${TC002_DEVICE:+
+(several clocks attached? export TC002_DEVICE=<ip>:5555 to name one)}"
+}
 dsh() { adb shell "$@" | tr -d '\r'; }
 
 wait_for() { # wait_for <seconds> <shell-test>
@@ -52,7 +66,12 @@ case "${1:-status}" in
     # replacing the binaries under another agent's live run truncates mapped executables on tmpfs
     # (netd died that way on 2026-09-07), so the push itself runs under the lock
     "$LOCK" acquire "tc002-run.sh push: replacing binaries in $DEV" 120 || exit 1
-    adb shell "mkdir -p $DEV" >/dev/null
+    # 0711, not the 0700 a root-owned mkdir leaves behind: netd, ntfy and berryd
+    # run as uid 1001 and have to *search* this directory to exec themselves out
+    # of it. without the x bit the exec fails with 127 and the supervisor respawns
+    # them forever, which reads as a crash loop in a binary that is fine. not
+    # 0755: the credentials fallback lives under here, so it stays unlistable.
+    adb shell "mkdir -p $DEV && chmod 711 $DEV" >/dev/null
     for f in bin/tc002d bin/tc002-supervisor bin/tc002-netd bin/tc002-ntfy bin/tc002-berryd bin/tc002-audiod lib/libtc002-bootstrap.so; do
         adb push "$RUNTIME/zig-out/$f" "$DEV/$(basename "$f")" >/dev/null || { "$LOCK" release "push of $f failed"; die "push of $f failed"; }
     done
