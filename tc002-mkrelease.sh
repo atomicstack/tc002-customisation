@@ -60,7 +60,8 @@ mkdir -p "$STAGE/runtime/tools" "$STAGE/runtime/boot" \
          "$STAGE/runtime/zig-out/bin" "$STAGE/runtime/zig-out/lib" "$STAGE/docs"
 
 # the driver, and the two scripts it calls
-cp "$HERE/tc002-onboard.sh" "$HERE/tc002-adopt.py" "$HERE/tc002-ap-probe.sh" "$STAGE/"
+cp "$HERE/tc002-onboard.sh" "$HERE/tc002-adopt.py" "$HERE/tc002-ap-probe.sh" \
+   "$HERE/tc002-devices.py" "$STAGE/"
 # both mkimage and flash resolve this as $ROOT/tc002-update-img.py
 cp "$HERE/tc002-update-img.py" "$STAGE/"
 cp "$HERE/runtime/tools/tc002-mkimage.sh" "$HERE/runtime/tools/tc002-flash.sh" \

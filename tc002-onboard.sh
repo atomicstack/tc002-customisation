@@ -4,6 +4,10 @@
 #   ./tc002-onboard.sh [--wifi-ssid NAME] [--device IP[:PORT]] [--flash] [--yes]
 #                      [--work DIR] [--no-adopt] [--ntp IP|auto|none] [--tz ZONE]
 #
+# --device is required once more than one clock is reachable: this refuses to
+# guess rather than flash the wrong one. ./tc002-devices.py lists every clock
+# this machine can see, of either kind.
+#
 # by default this does everything EXCEPT write to flash: it finds or adopts the
 # device, checks it is what these notes were written against, records a
 # fingerprint you can keep, takes a verified backup of the `res` partition and
@@ -123,13 +127,41 @@ say "timezone   $TZONE"
 
 # ------------------------------------------------------------- find the device
 step "find the device"
-find_device() {
-  "$PY" "$SELF/tc002-adopt.py" discover 2>/dev/null \
-    | grep -oE '([0-9]{1,3}\.){3}[0-9]{1,3}' | head -1
+# one clock needs no discovery; two make "the device" ambiguous, and picking the
+# first is how a tool silently flashes the wrong one. tc002-devices.py finds
+# both kinds -- stock answers GET /getBase, a flashed runtime answers
+# /api/v1/status with 401 -- and this refuses when more than one turns up.
+#
+# do NOT scrape tc002-adopt.py's prose for an address: it prints the subnet it
+# is sweeping ("sweeping 10.0.0.0/24"), which greps out as a device called
+# 10.0.0.0 and is then dutifully connected to.
+find_devices() {
+  local subnet
+  subnet=$(ipconfig getifaddr en0 2>/dev/null || true)
+  [ -n "$subnet" ] || subnet=$(ip route get 1.1.1.1 2>/dev/null | sed -n 's/.*src \([0-9.]*\).*/\1/p')
+  subnet=${subnet%.*}
+  "$PY" "$SELF/tc002-devices.py" --adb "$ADB" ${subnet:+--sweep "$subnet"} --json 2>/dev/null \
+    | "$PY" -c 'import json,sys
+try:
+    for d in json.load(sys.stdin):
+        if d.get("ip"): print(d["ip"])
+except Exception:
+    pass'
 }
+# NOTE: never call die() from inside $( ), which is a subshell -- it kills only
+# the subshell and its message is captured as the value. the caller counts.
+find_device() { find_devices | grep . | head -1; }
 if [ -z "$DEV" ]; then
   say "listening for a tc002 already on this network..."
-  FOUND=$(find_device)
+  ALL=$(find_devices | grep . | sort -u || true)
+  NFOUND=$(printf '%s\n' "$ALL" | grep -c . || true)
+  if [ "${NFOUND:-0}" -gt 1 ]; then
+    say "more than one tc002 answered:"
+    printf '%s\n' "$ALL" | sed 's/^/     /'
+    die "name the one you mean with --device <ip>[:5555].
+     ./tc002-devices.py lists every clock this machine can reach, of either kind."
+  fi
+  FOUND=$(printf '%s\n' "$ALL" | grep . | head -1 || true)
   if [ -n "$FOUND" ]; then
     DEV="$FOUND:5555"
     say "found $FOUND"
