@@ -12,14 +12,25 @@ A factory-fresh TC002 with no stored wifi credentials boots into **setup-AP
 mode** instead of joining a network:
 
 - It runs `hostapd` + `dnsmasq` and hosts a WPA2 access point **`U-Clock`**
-  (channel 6, broadcast SSID). The AP name is in `getprop` as
+  (channel 6, `hw_mode=g`, broadcast SSID). The AP name is in `getprop` as
   `persist.sys.softap.ssid`; `persist.softap.on` is `1` in this mode, `0` once
   joined.
-- On that AP it is the gateway at **`192.168.1.1`** and hands out DHCP leases
-  from `192.168.1.101`-`192.168.1.200` (`/etc/dnsmasq.conf`). This is the
-  `192.168.1.x` address shown on the display at first power-on.
-- The same HTTP server runs, so the setup pages `wifiConfig.html` /
-  `wifiSave.html` are reachable at `http://192.168.1.1/`.
+- **The passphrase is `12345678`, on every unit.** `libzknet.so` stores no key:
+  it derives one with `PKCS5_PBKDF2_HMAC_SHA1` from `persist.sys.softap.pwd`
+  over the SSID, and falls back to `12345678` when that property is empty —
+  which is how it ships. Since the SSID is fixed too, the derived 64-hex
+  `wpa_psk` in `/data/misc/wifi/hostapd.conf` is **identical on every TC002**,
+  which is why the key is a literal in no binary yet opens any clock's AP. See
+  "The setup AP is not a security boundary" below.
+- On that AP it is the gateway at **`192.168.100.1`** and hands out DHCP leases
+  from `192.168.100.x` with a one-hour lease, serving itself as both router and
+  DNS. **`/etc/dnsmasq.conf` is not what runs** — it says
+  `192.168.1.101`-`192.168.1.200`, and `libzknet.so` carries both subnets; the
+  measured one is `192.168.100.x`.
+- The same HTTP server runs, so the setup pages are reachable — but in setup-AP
+  mode **every** request answers `301`, captive-portal style, so a client has to
+  follow redirects. A bare `GET` that does not is how you get a row of empty
+  `301`s and learn nothing.
 
 **Join it to a network** — `POST /setWifiConfig`:
 
@@ -27,8 +38,18 @@ mode** instead of joining a network:
 {"ssid": "<your-wifi>", "password": "<your-wifi-password>"}
 ```
 
-Returns `{"code":200}` on success, after which the device drops the AP and
-joins the target network. The web UI then redirects to `/wifi/result`.
+Verified against a factory-fresh unit on 2026-09-19. The reply carries more
+than the `code` the setup page checks:
+
+```json
+{"code":200,"message":"WiFi config accepted","data":{"ssid":"zero","accepted":true}}
+```
+
+The device then drops the AP and joins the target network, flipping
+`persist.softap.on` to `0` and `persist.wifi.on` to `1`. The web UI redirects to
+`/wifi/result`. The clock is 2.4 GHz only, so the target must be a 2.4 GHz
+network — pointing it at a 5 GHz-only SSID fails after the call has already
+returned `200`.
 
 **Discovery once on the LAN.** A joined device **announces itself by UDP
 broadcast**: about once a second it sends, from an ephemeral source port, a
@@ -64,11 +85,28 @@ answering `/getBase` with `{devSn, mac, mcuVer, appVer, ssid, ip}` is a TC002.
 /usr/bin/python3 tc002-adopt.py adopt --ssid <your-wifi>
 ```
 
-Whether the device also broadcasts while in setup-AP mode was not checked.
+**It does not broadcast while in setup-AP mode.** Measured 2026-09-19: 25 s of
+silence on udp/55555 while joined to `U-Clock` (udp/6666 and 9999 as controls),
+then the announcements start within seconds of it joining the target network. So
+discovery is only ever useful *after* adoption; there is nothing to listen for
+before it. A `dns-sd` browse on the AP turned up only the listening host's own
+services, consistent with there being no mDNS here either.
 
-The macOS side of joining the `U-Clock` AP is manual (or scriptable with
-`networksetup -setairportnetwork`), because the device's on-AP `wpa_psk` is a
-pre-derived 64-hex key rather than a passphrase.
+Joining the `U-Clock` AP needs no special handling: the passphrase is
+`12345678` (above), so `networksetup -setairportnetwork en0 U-Clock 12345678`
+does it, as does typing it into any wifi menu. `tc002-ap-probe.sh` automates the
+whole visit — join, probe, fingerprint, adopt, and put the host's own wifi back.
+
+## The setup AP is not a security boundary
+
+It looks like WPA2 and it is not one in practice. The passphrase is a firmware
+constant, the SSID is a firmware constant, so the derived key is the same on
+every TC002 ever shipped, and a fresh clock hosts that AP by default until it is
+adopted. Anyone in range can join it and reach the full HTTP API, which is
+unauthenticated — including `setWifiConfig`, which lets them move the clock onto
+a network they control. The owner's own adoption then hands over their wifi
+password in cleartext over plain HTTP. Treat adoption as something to do
+promptly, and on a network you trust.
 
 > **Verification status:** discovery is verified end-to-end against a live
 > device. The `setWifiConfig` call is documented from the firmware's own

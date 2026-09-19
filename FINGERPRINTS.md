@@ -11,10 +11,12 @@ work can answer the question that actually matters before flashing anything:
 > **before** your first flash, because afterwards the original is gone from the
 > device and no amount of checking can bring it back.
 
-It is worth checking. The unit these were taken from does **not** match the
-`update.img` that ships on its own UDISK partition — that image is an older
-firmware revision. Two TC002s bought at different times are not necessarily
-running the same `res`.
+It is worth checking, and a second unit has now proved why. A factory-fresh
+TC002 measured on 2026-09-19 is **bit-identical to this one in bootloader,
+kernel, rootfs and MISC, and carries a different `res`** — an application build
+sixteen days older. Two TC002s bought at different times are not necessarily
+running the same `res`. The unit here also does **not** match the `update.img`
+that ships on its own UDISK partition, which is older still.
 
 Identity of the reference unit:
 
@@ -49,6 +51,46 @@ A different inode count or mkfs timestamp means a different `res` revision from
 this one, and every `res`-derived hash below will differ for you. That is not a
 fault — it just means these notes describe a different build than yours, and you
 should take your own baseline before flashing.
+
+## Two units, side by side
+
+Unit A is the reference throughout this file. Unit B is a factory-fresh unit
+bought later and measured on 2026-09-19, before anything was written to it.
+
+| | unit A | unit B |
+|---|---|---|
+| `ro.build.date` / kernel `#1624` build stamp | `20260527` / `Wed May 27 13:08:02 UTC 2026` | **identical** |
+| mtd0 `BOOT0` | `abbf8b99…` | **identical** |
+| mtd1 `KERNEL` | `e244f7b4…` | **identical** |
+| mtd2 `rootfs` | `76f51deb…` | **identical** |
+| mtd5 `MISC` | `5c4e0bbf…` | **identical** |
+| `res` inode count | 234 | **233** |
+| `res` mkfs timestamp | `0x6a882f3d` (2026-08-21) | **`0x6a72b2cb` (2026-08-05)** |
+| `res` bytes used | 2,787,758 | **2,781,142** |
+| files in `/res` | 222 | **221** |
+| `/res` aggregate md5 | `41296ccc…` | **`b42e7f2e…`** |
+| `lib/libzkgui.so` | 7,484,524 / `64d7dc6f…` | **7,464,044 / `de15dd84…`** |
+| `etc/EasyUI.cfg` | `e0c101f7…` | **identical** |
+| UDISK `update.img` | 2,781,756 / `ba255466…` | **identical** |
+| `appVer` / `mcuVer` (`GET /getBase`) | — | `1.0.8` / `V1.0.17` |
+
+Two conclusions worth keeping:
+
+- **The base system is stable across units.** Bootloader, kernel, rootfs and
+  MISC matched byte for byte, so those four hashes are meaningful comparisons
+  and a mismatch in any of them means something genuinely differs.
+- **`res` is not.** Of the 222/221 files, 220 are common; unit A has
+  `ui/app_icons/tools_focus_clock.png` and `ui/font_image/t_9_L.png`, unit B has
+  `ui/font_image/t_10_L.png` instead. `etc/EasyUI.cfg` — the loader config the
+  custom runtime's takeover depends on — is identical on both, which is the one
+  piece of good news for portability.
+
+> **So never flash a `res` image built for one unit to another.** The image
+> carries `lib/libzkgui.so`, the vendor application, and that file differs
+> between these two units. Doing so silently swaps the app for a build the
+> device never shipped with. Build every image from **that device's own** `res`
+> dump — which is exactly the backup `runtime/tools/tc002-flash.sh` takes before
+> it writes anything.
 
 ## Partitions
 
@@ -106,6 +148,18 @@ aggregate md5 of all 222 files     41296ccc5acce7b0a4314d14d6145ea7
 cd /res && busybox find . -type f | busybox sort | busybox xargs busybox md5sum | busybox md5sum
 ```
 
+> **Push that busybox under the name `busybox`.** It is a multi-call binary and
+> dispatches on `argv[0]`, so a copy pushed to `/tmp/bb` answers every single
+> invocation with `bb: applet not found` — which looks like a broken upload
+> rather than a naming mistake, and cost a full measurement run here.
+
+> Comparing the file *list* against an `unsquashfs`-extracted reference on macOS
+> will report differences that are not there: the default filesystem is
+> case-insensitive, so `a_5_L.png` and `A_5_L.png` collapse into one file on
+> extraction. Use `unsquashfs -ll` to list the image without extracting it, and
+> compare with `LC_ALL=C sort` — the device's busybox sorts in byte order and
+> macOS `sort` does not.
+
 Individual files worth pinning, because the flashing work depends on them:
 
 | file | bytes | sha256 |
@@ -134,13 +188,20 @@ actually running (234 / 0x6a882f3d / 2787758, above). Unpacked, the two differ
 by four changed files (`lib/libzkgui.so` and three `ui/web/*.html`) and three
 that exist on one side only.
 
-**A second unit, for comparison.** aquarat's fork records the same file on
-their device as **2,773,564 bytes, md5 `f318f036651d6ab95ce05b25a7211c7e`,
-sha256 `4a5db0fe78d1be91c101e6aee7766a59d60136cd68dde2540e99a7b6fb87fc82`** —
+**Other units, for comparison.** Unit B carries this file *identically* —
+2,781,756 bytes, md5 `ba255466…`, sha256 `708c7844…` — so the stale UDISK image
+is at least common to these two. aquarat's fork records it on their device as
+**2,773,564 bytes, md5 `f318f036651d6ab95ce05b25a7211c7e`, sha256
+`4a5db0fe78d1be91c101e6aee7766a59d60136cd68dde2540e99a7b6fb87fc82`** —
 different size, different content, different unit. Their notes suggest pulling
 it to "confirm you have the same base this work was built on"; that check fails
-against the device here. Two TC002s are not necessarily carrying the same
+against both devices here. Two TC002s are not necessarily carrying the same
 factory image, which is the whole reason this file exists.
+
+On unit B, fresh from the box, `persist.zkupgrade.dir` and `sys.zkupgrade.dir`
+are both **empty** — so the default applies and a reset-button reflash installs
+`/mnt/storage/update.img`, whose payload is dated 2026-06-27. On a unit shipped
+with a 2026-08-05 `res`, that recovery path is a six-week downgrade.
 
 `/mnt/storage` is the **default** `sys.zkupgrade.dir`. So an upgrade triggered
 without overriding the directory — the reset-button reflash, a `flag=255` recipe
