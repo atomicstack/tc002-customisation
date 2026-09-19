@@ -450,7 +450,10 @@ kernel.
 > (2026-09-16).** it said *"the otg controller boots in **host** mode ... one
 > write of `usb_device` and a replug takes it to `CONFIGURED`"*. measured on two
 > boots: the controller comes up in **device** mode and the gadget enumerates by
-> itself at t≈2.7 s. the port then flips to host at t≈3.7 s and back at t≈6.8 s.
+> itself at t≈2.7 s. (scoped 2026-09-19: that holds for a unit with a stored
+> `sys_usb_mode_key`, which is what restores the role. a factory-fresh unit has
+> none, so nothing undoes the walk below and it settles in `usb_host` with no
+> gadget — see `DEVICE.md`.) the port then flips to host at t≈3.7 s and back at t≈6.8 s.
 > that excursion — not the boot role — is what leaves a host holding a dead
 > device object, and it happens before any of our code is loaded.
 >

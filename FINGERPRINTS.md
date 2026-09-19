@@ -153,12 +153,16 @@ cd /res && busybox find . -type f | busybox sort | busybox xargs busybox md5sum 
 > invocation with `bb: applet not found` — which looks like a broken upload
 > rather than a naming mistake, and cost a full measurement run here.
 
-> Comparing the file *list* against an `unsquashfs`-extracted reference on macOS
-> will report differences that are not there: the default filesystem is
-> case-insensitive, so `a_5_L.png` and `A_5_L.png` collapse into one file on
-> extraction. Use `unsquashfs -ll` to list the image without extracting it, and
-> compare with `LC_ALL=C sort` — the device's busybox sorts in byte order and
-> macOS `sort` does not.
+> Comparing the file *list* against an `unsquashfs`-extracted reference will
+> report differences that are not there, because the device's busybox sorts in
+> byte order and macOS `sort` does not. Use `unsquashfs -ll` to list the image
+> without extracting it, and compare with `LC_ALL=C sort`.
+>
+> A macOS filesystem is case-insensitive by default, so extracting a squashfs
+> on one *could* lose files whose names differ only in case — but this image has
+> none. The glyph names pair case with an `_L`/`_U` suffix (`a_5_L.png` beside
+> `A_5_U.png`), so nothing collides; checked on both units, 147 `font_image`
+> entries in and 147 out.
 
 Individual files worth pinning, because the flashing work depends on them:
 

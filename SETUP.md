@@ -115,8 +115,8 @@ a network they control. The owner's own adoption then hands over their wifi
 password in cleartext over plain HTTP. Treat adoption as something to do
 promptly, and on a network you trust.
 
-> **Verification status:** discovery is verified end-to-end against a live
-> device. The `setWifiConfig` call is documented from the firmware's own
-> `wifiConfig.html` (payload shape, `code==200`, `/wifi/result` redirect) but
-> has **not** been executed here, since it would drop the test device off the
-> network. Confirm against a factory-fresh unit before relying on it.
+> **Verification status:** discovery and `setWifiConfig` are both verified
+> end-to-end against a live device — the latter on a factory-fresh second unit
+> on 2026-09-19, which is also where the AP passphrase, the `192.168.100.x`
+> subnet, the `301` behaviour and the absence of setup-mode broadcasts were
+> measured. The raw run is reproducible with `tc002-ap-probe.sh`.

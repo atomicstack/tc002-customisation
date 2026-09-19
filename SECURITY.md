@@ -6,7 +6,24 @@ policy for this repository.
 
 These are properties of the device, not of anything installed on the Mac:
 
-1. **No authentication on any endpoint.** Anyone on the LAN can read and write
+1. **The setup AP is not a security boundary, and its key is the same on every
+   unit.** A factory-fresh device hosts a WPA2 access point `U-Clock` until it
+   is adopted. `libzknet.so` stores no key: it derives one with
+   `PKCS5_PBKDF2_HMAC_SHA1` from `persist.sys.softap.pwd` over
+   `persist.sys.softap.ssid`, and falls back to the constant **`12345678`** when
+   that property is empty — which is how it ships. Both inputs are firmware
+   constants, so the derived 64-hex `wpa_psk` in `/data/misc/wifi/hostapd.conf`
+   is **identical on every TC002**, which is why the key appears as a literal in
+   no binary yet opens any unit's AP. Anyone **in radio range** — no LAN access
+   needed — can join and reach the whole unauthenticated HTTP API on
+   `192.168.100.1`, including `POST /setWifiConfig`, which moves the clock onto
+   a network they control. Recovered by deriving candidates against one unit's
+   stored key and confirmed by opening a different unit's AP
+   ([`SETUP.md`](SETUP.md)). Adopt promptly, on a network you trust; flashing
+   the runtime ([`INSTALL.md`](INSTALL.md)) removes the stock setup flow
+   entirely.
+
+2. **No authentication on any endpoint.** Anyone on the LAN can read and write
    every setting, including triggering `/resetConfig` and `/update`. `/update`
    takes the firmware **download URL and checksum from the request body**, so
    it will fetch and flash whatever it is pointed at, and the flasher
@@ -14,19 +31,21 @@ These are properties of the device, not of anything installed on the Mac:
    can compute ([`FIRMWARE.md`](FIRMWARE.md#the-updateimg-container)), so a
    LAN neighbour can put arbitrary code on the device. `/setSn` likewise
    lets anyone rewrite the device serial.
-2. **Credentials are returned in plaintext.** `/getCalendar` returns calendar
+3. **Credentials are returned in plaintext.** `/getCalendar` returns calendar
    `password` fields and `/getSocial` returns OAuth `token` values in clear
    text over unencrypted HTTP.
-3. **No TLS.** Everything is plain HTTP on port 80.
-4. **adb is open on 5555, and over the usb cable** with no pairing step, and `adbd` runs as **root** —
+4. **No TLS.** Everything is plain HTTP on port 80.
+5. **adb is open on 5555, and over the usb cable** with no pairing step, and `adbd` runs as **root** —
    everything on the device runs as uid 0 with no privilege separation.
-5. **The wifi PSK is stored in cleartext** in `/data/setting.ini` at mode `0666`
+6. **The wifi PSK is stored in cleartext** in `/data/setting.ini` at mode `0666`
    (world readable and writable), alongside the device serial and social tokens,
    and the `/setWifiConfig` handler **also logs it in clear to `logcat`**
    (`Saving WiFi - SSID: %s, pwd = %s`). It is *not* exposed over HTTP — every
    endpoint was checked for the literal value — but anyone who can reach port
-   5555 gets a root shell and can read both.
-6. **Writes are forgeable from any web page.** The device ignores `Origin`,
+   5555 gets a root shell and can read both. Note also that it is not readable
+   *back* over HTTP but it is **sent** in the clear during adoption, over the
+   shared-key AP in item 1.
+7. **Writes are forgeable from any web page.** The device ignores `Origin`,
    accepts JSON bodies sent as `text/plain`, and approves `POST` in its CORS
    preflight (see [HTTP-API.md](HTTP-API.md#http-api)). So a page on any
    website can fire `/resetConfig`, `/update`, `/setWifiConfig` or
@@ -40,12 +59,12 @@ These are properties of the device, not of anything installed on the Mac:
    [HTTP-API.md](HTTP-API.md#custom-apps)) lets any LAN host — or any web page
    a LAN user visits — put arbitrary text or images on the clock, or wipe a
    custom app by posting `{}`.
-7. **All cloud traffic is plain HTTP.** Device registration, bearer tokens,
+8. **All cloud traffic is plain HTTP.** Device registration, bearer tokens,
    and any CalDAV username/password you configure go to
    `api.ulanzistudio.com` unencrypted. See `CLOUD.md`.
-8. **The cloud secret key is logged in cleartext** to `logcat`, which is
+9. **The cloud secret key is logged in cleartext** to `logcat`, which is
    readable over the unauthenticated adb.
-9. **Cloud registration is unauthenticated.** It needs only the serial and
+10. **Cloud registration is unauthenticated.** It needs only the serial and
    MAC, which `/getBase` gives to anyone on the LAN, and which the device
    also **broadcasts to the whole segment every second** on udp/55555 (see
    `SETUP.md`), so no request is even needed. The consequence of a

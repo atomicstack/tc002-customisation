@@ -775,9 +775,12 @@ This is what actually worked on 2026-09-15, not a proposal.
    > changes it~~ **✗ corrected 2026-09-16: it boots in device mode and
    > enumerates by itself; the kernel's own `usb-scan` kthread flips the port to
    > host for about three seconds early in the boot, and that is what strands the
-   > host.** The role write is still worth doing — it is cheap
-   > and it is the guarantee — but it is not what turns the gadget on, and no
-   > write can substitute for the replug. See
+   > host.** **Scoped 2026-09-19:** that describes a unit with a stored
+   > `sys_usb_mode_key`, which is what restores device mode at t≈6.8 s. A
+   > factory-fresh unit has none, settles in `usb_host` with no gadget at all,
+   > and there a single role write **does** turn the gadget on, immediately and
+   > with no replug. The replug is only needed once a reboot has stranded a
+   > host's view of a port that was already in device mode. See
    > [`DEVICE.md`](DEVICE.md#what-happens-to-usb-across-a-reboot).
 
 3. **Flash:**

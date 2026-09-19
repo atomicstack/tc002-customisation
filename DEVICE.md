@@ -202,6 +202,21 @@ only by reflashing the kernel partition — see "what a fix would take" below.
 > direction that makes the real fault harder to find: the host **does**
 > re-enumerate, promptly, and still cannot talk to the device.
 
+> **scoped 2026-09-19, against a second unit that was factory-fresh.** Both
+> readings above are correct, for different devices, and the difference is the
+> `sys_usb_mode_key` guard already disassembled below: `UsbSwitchHelper`'s ctor
+> reads it with a default of `-1` and **only calls `setUsbMode` when it is not
+> `-1`**. On a unit that has ever had a usb mode stored, that restore runs at
+> t≈6.8 s and the port settles in **device** mode — the timeline measured on the
+> first unit. On a unit fresh from the box nothing is stored, the restore never
+> runs, nothing undoes the kernel kthread's walk to host, and the port settles
+> in **`usb_host`** presenting no gadget at all. Measured on the second unit:
+> `otg_role` read `usb_host`, no gadget was on the bus, and a single write of
+> `usb_device` brought one up **immediately, with no replug** — the replug is
+> only ever needed after a reboot has stranded a host's view of a port that was
+> already in device mode. The guard is read from the disassembly; the two
+> end states are measured.
+
 > **corrected again 2026-09-16**, by disassembling the binaries rather than
 > reasoning from the log. This section then said *"the excursion belongs to
 > `/bin/zkgui`"* and that `libzkhardware.so` *"runs the scan before it `dlopen`s
@@ -410,4 +425,4 @@ image must respect are in [`FIRMWARE.md`](FIRMWARE.md);
 
 Note that on this unit the USB gadget is configured as `adb`
 (`/sys/class/zkswe_usb/zkswe0/functions`), not mass storage, and adb over the
-cable **works** — see [adb](#adb) for the one write and the replug it needs.
+cable **works** — see [adb](#adb) for the one write it needs.

@@ -323,9 +323,15 @@ else
     # route out. these are dotted ipv4 because the runtime has no dns resolver:
     #   162.159.200.123  time.cloudflare.com anycast
     #   216.239.35.0     time.google.com
-    # both are us-operated anycast. (the stock firmware carries no ntp hostname
-    # in any of its binaries -- it appears to take its time from ulanzi's cloud
-    # service, which is one more thing the runtime does not phone home for.)
+    # these are well-known public time services, chosen deliberately: both are
+    # anycast, so the nearest instance answers wherever the clock ends up, and
+    # both publish stable addresses that do not move. they are dotted quads
+    # because the runtime has no dns resolver.
+    #
+    # the stock firmware does not use them: it carries its own list of seven
+    # hardcoded ipv4 literals parsed with inet_addr, which is why grepping the
+    # binaries for a hostname finds nothing (DEVICE.md#time). the runtime picks
+    # widely-used public servers rather than inheriting that list.
     GW=$(dsh '/tmp/busybox route -n 2>/dev/null' | awk '$1=="0.0.0.0"{print $2; exit}')
     NTP=""
     for cand in 162.159.200.123 216.239.35.0 $GW; do

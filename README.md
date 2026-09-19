@@ -299,7 +299,7 @@ dead console. `--mock` points it at `mock-device.py` for a shape check, and
 **adopt a factory-fresh device**
 
 a device with no stored wifi credentials hosts a wpa2 ap called `U-Clock` and
-serves `192.168.1.x`. join that network, then:
+serves `192.168.100.x`. join that network, then:
 
 ```bash
 /usr/bin/python3 tc002-adopt.py adopt --ssid <your-wifi>
@@ -356,7 +356,7 @@ the device:
   custom-app topic `[prefix]/custom/[app]` with the same `{duration,text,image,draw}`
   payload as `api/custom`. ([`MQTT.md`](MQTT.md), [`CUSTOM-APP.md`](CUSTOM-APP.md))
 - **setup / discovery** — factory-fresh devices come up as the `U-Clock`
-  softap on `192.168.1.1`; `POST /setWifiConfig` joins them to a network. once
+  softap on `192.168.100.1`; `POST /setWifiConfig` joins them to a network. once
   joined, the device broadcasts `Ulanzi TC002 <tail>:<mac>:<serial>:<flag>` to
   udp/55555 every second, which is how ulanzi studio finds it.
   ([`SETUP.md`](SETUP.md))
@@ -465,7 +465,7 @@ sigmastar mi api is used instead.
 | charging | **usb-c, 5 v ⎓ 3 a** (*spec*), or the pogo-pin charging dock. *measured 2026-09-14:* the dock registers on the same `vin` the mcu reports for usb-c, so undocking reads as loss of usb power |
 | monitoring | done by the mcu: the app polls pack millivolts and `vin` (usb present). firmware thresholds: **low battery below 3600 mv**, **emergency below 3550 mv** → 30 s countdown → shutdown (skipped while on usb power) |
 | shutdown | the custom runtime reproduces those thresholds — see [`RUNTIME.md`](RUNTIME.md#the-low-battery-shutdown) — and powers off through the mcu's own `powerOff` command rather than halting the soc, which would leave the rails up |
-| usb | the soc has both an ehci **host** (with `vold` ready to mount a stick at `/mnt/usb1`, used for factory-test configs) and a device controller (`Sstar-udc`, msb250x). the gadget is configured as **adb** (`18d1:d002`), not mass storage. ~~the otg controller boots in `usb_host` mode, so nothing enumerates until `usb_device` is written to otg_role~~ **✗ corrected: it boots in device mode and enumerates on its own; the kernel's `zkswe,sstar-otg` driver then flips the port to host for ~3 s, and that excursion is what strands the host's view of the port across a reboot** ([`DEVICE.md`](DEVICE.md#what-happens-to-usb-across-a-reboot)) |
+| usb | the soc has both an ehci **host** (with `vold` ready to mount a stick at `/mnt/usb1`, used for factory-test configs) and a device controller (`Sstar-udc`, msb250x). the gadget is configured as **adb** (`18d1:d002`), not mass storage. ~~the otg controller boots in `usb_host` mode, so nothing enumerates until `usb_device` is written to otg_role~~ **✗ corrected: it boots in device mode and enumerates on its own; the kernel's `zkswe,sstar-otg` driver then flips the port to host for ~3 s, and that excursion is what strands the host's view of the port across a reboot** — but that is a unit with a stored `sys_usb_mode_key`; one fresh from the box settles in `usb_host` with no gadget, and a single write of `usb_device` brings it up with no replug ([`DEVICE.md`](DEVICE.md#what-happens-to-usb-across-a-reboot)) |
 | rtc | **none usable**: the soc's rtc block is enabled in the device tree but no driver is bound, so there is no `/dev/rtc` and the clock is set purely by sntp ([`DEVICE.md`](DEVICE.md#time)) |
 
 ### also on the soc, unused
@@ -509,9 +509,8 @@ open "x-apple.systempreferences:com.apple.preference.security?Privacy_LocalNetwo
 
 - discovery, the control panel, the mqtt checker, and all documented read
   endpoints are **verified against a live device**.
-- the `adopt` / `setWifiConfig` write path is documented from the firmware's own
-  setup page but **not executed** here, since it would drop the test device off
-  the network. confirm it against a factory-fresh unit before relying on it.
+- the `adopt` / `setWifiConfig` write path is **verified**, executed against a
+  factory-fresh second unit on 2026-09-19 ([SETUP.md](SETUP.md)).
 - the custom runtime in `runtime/` is **flashed to the `res` partition and boots
   on its own**, unattended from cold: it loads the wifi driver, brings the
   network up, exports the panel latch and draws, with no stock app involved.
