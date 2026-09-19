@@ -53,6 +53,11 @@ while [ $# -gt 0 ]; do
     esac
 done
 export TC002_AGENT=${TC002_AGENT:-$(id -un)}
+# adb connect supplies this default itself; -s and child scripts need it explicitly.
+case "$device" in
+    *:*) ;;
+    *) device="$device:5555" ;;
+esac
 ip=${device%%:*}
 
 die() { echo "tc002-up.sh: $*" >&2; exit 1; }

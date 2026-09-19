@@ -556,6 +556,8 @@ pub fn uartOpen(path: [*:0]const u8, baud: u32) Error!Fd {
 // mdns needs the unconnected forms of udp: a socket bound to a well-known port,
 // joined to a multicast group, that answers whoever asked. the numbers are from
 // linux/in.h -- zig's std does not expose them for this target.
+const IP_TTL: u32 = 2;
+const IP_RECVTTL: u32 = 12;
 const IP_MULTICAST_IF: u32 = 32;
 const IP_MULTICAST_TTL: u32 = 33;
 const IP_MULTICAST_LOOP: u32 = 34;
@@ -575,6 +577,9 @@ pub fn udpBind(port: u16) Error!Fd {
     _ = try check(linux.setsockopt(fd, linux.SOL.SOCKET, linux.SO.REUSEADDR, @ptrCast(&one), @sizeOf(u32)));
     // not fatal: an older kernel without it still works for a single responder
     _ = linux.setsockopt(fd, linux.SOL.SOCKET, SO_REUSEPORT, @ptrCast(&one), @sizeOf(u32));
+    _ = try check(linux.setsockopt(fd, linux.IPPROTO.IP, IP_RECVTTL, @ptrCast(&one), @sizeOf(u32)));
+    const ttl: u32 = 255;
+    _ = try check(linux.setsockopt(fd, linux.IPPROTO.IP, IP_TTL, @ptrCast(&ttl), @sizeOf(u32)));
     const sa = inetAddr(.{ 0, 0, 0, 0 }, port);
     _ = try check(linux.bind(fd, @ptrCast(&sa), @sizeOf(linux.sockaddr.in)));
     return fd;
@@ -595,14 +600,26 @@ pub fn mcastJoin(fd: Fd, group: [4]u8, iface: [4]u8) Error!void {
 }
 
 /// one datagram and who sent it, or null when none is waiting.
-pub fn udpRecvFrom(fd: Fd, buf: []u8, from: *[4]u8, from_port: *u16) Error!?[]u8 {
+pub fn udpRecvFrom(fd: Fd, buf: []u8, from: *[4]u8, from_port: *u16, ttl: *?u8) Error!?[]u8 {
     var sa: linux.sockaddr.in = undefined;
-    var salen: linux.socklen_t = @sizeOf(linux.sockaddr.in);
-    const rc = linux.recvfrom(fd, buf.ptr, buf.len, linux.MSG.DONTWAIT, @ptrCast(&sa), &salen);
+    var control: @import("udp_control.zig").TtlControl = .{};
+    var vectors = [_]std.posix.iovec{.{ .base = buf.ptr, .len = buf.len }};
+    var msg = linux.msghdr{
+        .name = @ptrCast(&sa),
+        .namelen = @sizeOf(linux.sockaddr.in),
+        .iov = &vectors,
+        .iovlen = 1,
+        .control = &control,
+        .controllen = @sizeOf(@TypeOf(control)),
+        .flags = 0,
+    };
+    const rc = linux.recvmsg(fd, &msg, linux.MSG.DONTWAIT);
     return switch (errno(rc)) {
         .SUCCESS => blk: {
+            if (msg.flags & linux.MSG.TRUNC != 0 or rc > buf.len) return error.Truncated;
             from.* = @bitCast(sa.addr);
             from_port.* = std.mem.bigToNative(u16, sa.port);
+            ttl.* = control.ttl(msg.controllen, msg.flags);
             break :blk buf[0..rc];
         },
         .AGAIN, .INTR => null,

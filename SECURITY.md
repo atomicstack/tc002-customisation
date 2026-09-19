@@ -37,12 +37,13 @@ These are properties of the device, not of anything installed on the Mac:
 4. **No TLS.** Everything is plain HTTP on port 80.
 
 5. **The runtime advertises itself over mDNS.** `netd` answers for
-   `tc002-<mac tail>.local` and `_tc002._tcp`, so anyone on the LAN can
-   enumerate the clocks on it and learn each one's MAC tail and address without
+   `tc002-<full mac>.local` and `_tc002._tcp`, so anyone on the LAN can
+   enumerate the clocks on it and learn each one's full MAC and IP address without
    authenticating — `dns-sd -B _tc002._tcp` is enough. That is the point of the
-   feature, and it discloses nothing the unauthenticated API and the stock
-   firmware's udp/55555 broadcast did not already, but it is one more reason
-   the clock belongs on a network you control. It is always on in this version;
+   feature. the stock firmware also broadcasts its identity on udp/55555;
+   runtime discovery likewise belongs on a network you control. ownership
+   claims require an observed ipv4 ttl of 255, but this is not authentication
+   and does not prevent another host on the same link from claiming a name. It is always on in this version;
    there is no setting to turn it off. See [`RUNTIME.md`](RUNTIME.md#discovery-mdns).
 6. **adb is open on 5555, and over the usb cable** with no pairing step, and `adbd` runs as **root** —
    everything on the device runs as uid 0 with no privilege separation.

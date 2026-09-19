@@ -18,6 +18,7 @@ const berry_store = @import("berry/store.zig");
 const json = @import("net/json.zig");
 const mqtt = @import("net/mqtt.zig");
 const mdns = @import("net/mdns.zig");
+const mdns_owner = @import("net/mdns_owner.zig");
 const identity = @import("net/identity.zig");
 const messages = @import("ipc/messages.zig");
 const codec = @import("ipc/codec.zig");
@@ -182,13 +183,9 @@ const Netd = struct {
     have_cfg: bool = false,
     status: messages.StatusSnapshot = .{},
     status_at_ns: u64 = 0,
-    /// the mdns responder: a bound socket, and the identity it answers for. both the name and the
-    /// address come from the supervisor's status, so neither exists until the first snapshot.
     mdns_fd: sys.Fd = -1,
-    mdns_joined: bool = false,
-    mdns_name: [16]u8 = undefined,
-    mdns_name_len: usize = 0,
-    mdns_ip: ?[4]u8 = null,
+    mdns_owner: mdns_owner.Owner = .{},
+    mdns_retry_ns: u64 = 0,
     next_id: u64 = 0x8000_0000_0000_0000,
     /// named client tokens, replaced wholesale whenever the supervisor pushes the set
     clients: clients.Store = .{},
@@ -840,7 +837,7 @@ const Netd = struct {
         self.status = st;
         self.status_at_ns = now;
         if (changed) self.state_dirty = true;
-        self.mdnsOnStatus();
+        self.mdnsOnStatus(now);
         // a late mac must clear discovery under the previous boot identity first.
         if (self.discovery.id_len > 0 and self.cfg.discovery) {
             var id: [identity.max]u8 = undefined;
@@ -1947,75 +1944,77 @@ const Netd = struct {
     const Entity = ha.Entity;
     const entities = ha.entities;
 
-    /// the stable device identity: the wlan0 mac, or the boot id when there is none. never the ip.
     // ------------------------------------------------------------------ mdns
-    //
-    // the responder answers for one name, `tc002-<mac tail>.local`, so two clocks on a lan can be
-    // told apart without either of them being "the device". it lives here rather than in the
-    // supervisor for one reason: it parses packets off the network, and the supervisor is the
-    // process that deliberately parses nothing.
 
-    fn mdnsResponder(self: *Netd) ?mdns.Responder {
-        if (self.mdns_name_len == 0) return null;
-        const addr = self.mdns_ip orelse return null;
-        return .{ .instance = self.mdns_name[0..self.mdns_name_len], .ip = addr, .port = 80 };
+    fn mdnsClose(self: *Netd) void {
+        if (self.mdns_fd >= 0) {
+            sys.epollDel(self.ep, self.mdns_fd);
+            sys.close(self.mdns_fd);
+            self.mdns_fd = -1;
+        }
     }
 
-    /// the name and the address both come from the supervisor. the join waits for the address
-    /// because a membership added before wlan0 has one is added to the wrong interface.
-    fn mdnsOnStatus(self: *Netd) void {
+    /// bind/join only with a current wlan address. recreate the socket on address
+    /// loss/change, so the membership and outbound address cannot remain stale.
+    fn mdnsOnStatus(self: *Netd, now: u64) void {
         const st = self.status;
-        if (st.mac_present == 0 or st.ip_present == 0) return;
-        if (self.mdns_fd < 0) return;
-
-        var name_buf: [16]u8 = undefined;
-        const name = mdns.instanceFromMacBytes(st.mac, &name_buf);
-        const name_changed = self.mdns_name_len != name.len or !std.mem.eql(u8, self.mdns_name[0..self.mdns_name_len], name);
-        if (name_changed) {
-            @memcpy(self.mdns_name[0..name.len], name);
-            self.mdns_name_len = name.len;
+        if (st.mac_present == 0 or st.ip_present == 0) {
+            self.mdnsClose();
+            self.mdns_owner.configure(st.mac, null, now);
+            return;
         }
-        const ip_changed = self.mdns_ip == null or !std.meta.eql(self.mdns_ip.?, st.ip);
-        self.mdns_ip = st.ip;
-
-        if (!self.mdns_joined) {
-            sys.mcastJoin(self.mdns_fd, mdns.mcast_addr, st.ip) catch |e| {
-                log.warn("mdns: could not join the multicast group: {s}", .{@errorName(e)});
-                return;
-            };
-            self.mdns_joined = true;
-            log.info("mdns: answering for {s}.local at {d}.{d}.{d}.{d}", .{ name, st.ip[0], st.ip[1], st.ip[2], st.ip[3] });
-        }
-        if (name_changed or ip_changed) self.mdnsAnnounce();
-    }
-
-    /// an unsolicited announcement, so caches learn the new address without waiting to be asked.
-    fn mdnsAnnounce(self: *Netd) void {
-        const r = self.mdnsResponder() orelse return;
-        var out: [512]u8 = undefined;
-        const n = r.announce(&out) orelse return;
-        sys.udpSendTo(self.mdns_fd, mdns.mcast_addr, mdns.mcast_port, out[0..n]) catch |e| {
-            log.warn("mdns: announce failed: {s}", .{@errorName(e)});
+        if (self.mdns_fd >= 0 and std.meta.eql(self.mdns_owner.ip, @as(?[4]u8, st.ip)) and
+            std.meta.eql(self.mdns_owner.mac, st.mac)) return;
+        self.mdnsClose();
+        self.mdns_owner.configure(st.mac, null, now);
+        if (now < self.mdns_retry_ns) return;
+        self.mdns_retry_ns = now + ns_per_s;
+        const fd = sys.udpBind(mdns.mcast_port) catch |e| {
+            log.warn("mdns: could not bind: {s}", .{@errorName(e)});
+            return;
         };
+        sys.mcastJoin(fd, mdns.mcast_addr, st.ip) catch |e| {
+            sys.close(fd);
+            log.warn("mdns: could not join the multicast group: {s}", .{@errorName(e)});
+            return;
+        };
+        sys.epollAdd(self.ep, fd, linux.EPOLL.IN, @intFromEnum(Tag.mdns)) catch {
+            sys.close(fd);
+            return;
+        };
+        self.mdns_fd = fd;
+        self.mdns_owner.configure(st.mac, st.ip, now);
+        log.info("mdns: probing {s}.local", .{self.mdns_owner.responder().?.instance});
     }
 
-    /// drain the socket. a datagram that asks for nothing we own costs a parse and no reply, which
-    /// is most of the traffic on a busy lan.
-    fn mdnsReadable(self: *Netd) void {
+    fn mdnsTick(self: *Netd, now: u64) void {
+        self.mdnsOnStatus(now);
+        if (self.mdns_fd < 0) return;
+        var out: [512]u8 = undefined;
+        const n = self.mdns_owner.packet(now, &out) orelse return;
+        sys.udpSendTo(self.mdns_fd, mdns.mcast_addr, mdns.mcast_port, out[0..n]) catch return;
+        self.mdns_owner.sent(now);
+    }
+
+    fn mdnsReadable(self: *Netd, now: u64) void {
+        if (self.mdns_fd < 0) return;
         var buf: [1500]u8 = undefined;
         var out: [512]u8 = undefined;
         var from: [4]u8 = undefined;
         var from_port: u16 = 0;
+        var ttl: ?u8 = null;
         var guard: usize = 0;
         while (guard < 16) : (guard += 1) {
-            const msg = (sys.udpRecvFrom(self.mdns_fd, &buf, &from, &from_port) catch return) orelse return;
-            const r = self.mdnsResponder() orelse continue;
-            const n = r.respond(msg, &out) orelse continue;
-            // always to the group, never unicast: the QU bit is deliberately ignored
-            sys.udpSendTo(self.mdns_fd, mdns.mcast_addr, mdns.mcast_port, out[0..n]) catch {};
+            const msg = (sys.udpRecvFrom(self.mdns_fd, &buf, &from, &from_port, &ttl) catch return) orelse return;
+            self.mdns_owner.observeLocal(msg, from_port, ttl, now);
+            if (!self.mdns_owner.ready()) continue;
+            const r = self.mdns_owner.responder() orelse continue;
+            const reply = r.reply(msg, from, from_port, &out) orelse continue;
+            sys.udpSendTo(self.mdns_fd, reply.addr, reply.port, out[0..reply.len]) catch {};
         }
     }
 
+    /// the stable device identity: the wlan0 mac, or the boot id when there is none. never the ip.
     fn deviceId(self: *Netd, buf: *[identity.max]u8) []const u8 {
         const st = self.status;
         return identity.deviceId(buf, st.mac_present != 0, st.mac, st.boot_id);
@@ -2153,6 +2152,7 @@ const Netd = struct {
     }
 
     fn tick(self: *Netd, now: u64) void {
+        self.mdnsTick(now);
         for (&conns) |*c| {
             switch (c.state) {
                 .free => {},
@@ -2185,17 +2185,6 @@ fn run(stats: bool) !u8 {
     const sigfd = try sys.signalfdFor(&.{ .TERM, .INT });
     sys.setSignalDisposition(.PIPE, linux.SIG.IGN);
     var n = Netd{ .ep = ep, .timer = timer, .stats = stats };
-    // bind now, join later: the group membership needs wlan0's address, which arrives with the
-    // first status snapshot. a failure here is not fatal -- it costs discovery, not the api.
-    if (sys.udpBind(mdns.mcast_port)) |fd| {
-        n.mdns_fd = fd;
-        sys.epollAdd(ep, fd, linux.EPOLL.IN, @intFromEnum(Tag.mdns)) catch {
-            sys.close(fd);
-            n.mdns_fd = -1;
-        };
-    } else |e| {
-        log.warn("mdns: no socket on udp/{d}: {s}", .{ mdns.mcast_port, @errorName(e) });
-    }
     log.info("netd up: uid {d}, plaintext http on the inherited listener, mqtt on demand", .{linux.getuid()});
     var events: [16]sys.Event = undefined;
     var next_tick = sys.monotonicNs();
@@ -2224,7 +2213,7 @@ fn run(stats: bool) !u8 {
             } else if (tag == @intFromEnum(Tag.supervisor)) {
                 n.drainSupervisor(t);
             } else if (tag == @intFromEnum(Tag.mdns)) {
-                n.mdnsReadable();
+                n.mdnsReadable(t);
             } else if (tag == @intFromEnum(Tag.listener)) {
                 n.acceptAll(t);
             } else if (tag == @intFromEnum(Tag.mqtt)) {

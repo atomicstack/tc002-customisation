@@ -79,26 +79,23 @@ def mdns_query(timeout=2.0):
         q.append(len(label)); q += label
     q += bytes([0, 0, 12, 0, 1])                    # root, QTYPE=PTR, QCLASS=IN
 
-    # the responder always answers to the group, never unicast to the asker (it ignores the QU
-    # bit on purpose), so a client has to be bound to 5353 and joined to the group or it never
-    # hears the reply. 5353 is already held by mDNSResponder on macos, hence both reuse options.
-    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    # browse from 5353 to receive multicast replies, including those from older firmware
+    # without legacy unicast support. 5353 is already held by mDNSResponder on macos,
+    # hence both reuse options.
+    s = None
+    found = {}
     try:
-        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
-    except (AttributeError, OSError):
-        pass
-    s.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_TTL, 255)
-    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        try:
+            s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
+        except (AttributeError, OSError):
+            pass
+        s.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_TTL, 255)
         s.bind(("", 5353))
         mreq = socket.inet_aton("224.0.0.251") + socket.inet_aton("0.0.0.0")
         s.setsockopt(socket.IPPROTO_IP, socket.IP_ADD_MEMBERSHIP, mreq)
-    except OSError:
-        s.close()
-        return {}
-    s.settimeout(0.4)
-    found = {}
-    try:
+        s.settimeout(0.4)
         # the group membership is not effective the instant setsockopt returns, and a query sent
         # into that gap gets an answer we are not yet subscribed to hear. give igmp a moment, then
         # ask twice: one lost query otherwise reads as "no clocks on this network".
@@ -132,13 +129,18 @@ def mdns_query(timeout=2.0):
                     break
             if inst is None:
                 continue
-            entry = found.setdefault(inst, {"instance": inst, "ip": addr[0]})
+            host_ip = addr[0]
             # prefer the A record for our own host name over the packet's source address
             for name, ip in records:
                 if ip and name.split(".")[0] == inst:
-                    entry["ip"] = ip
+                    host_ip = ip
+            # old firmware may reuse an instance name: never let that hide another clock.
+            found[(inst, host_ip)] = {"instance": inst, "ip": host_ip}
+    except OSError:
+        pass                            # discovery is optional; adb and sweep still work
     finally:
-        s.close()
+        if s is not None:
+            s.close()
     return found
 
 
@@ -235,11 +237,11 @@ def main():
     # mdns first: it needs no adb transport, no subnet guess and no sweep, and it is the only
     # probe that returns a *name* rather than an address to be disambiguated later.
     if not a.no_mdns:
-        for inst, d in mdns_query().items():
+        for d in mdns_query().values():
             if not d.get("ip"):
                 continue
             rows[d["ip"]] = {"transport": f'{d["ip"]}:5555', "ip": d["ip"], "mac": "",
-                             "kind": "runtime", "name": f"{inst}.local"}
+                             "kind": "runtime", "name": f'{d["instance"]}.local'}
 
     for serial in adb_transports():
         d = describe_adb(serial)
@@ -270,8 +272,7 @@ def main():
         if ip and ip in merged:
             keep = merged[ip]
             if not keep.get("mac") and r.get("mac"):
-                r.setdefault("transport", keep.get("transport"))
-                merged[ip] = r
+                merged[ip] = {**keep, **r}
             continue
         merged[ip or r["transport"]] = r
     out = sorted(merged.values(), key=lambda r: r.get("ip") or "")

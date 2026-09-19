@@ -1597,49 +1597,65 @@ the file is left alone). the mqtt password is in that file in clear, mode
 
 ## discovery (mdns)
 
-One clock on a LAN needs no discovery, and every tool in this repository grew up assuming there
-was only one: they take the first transport that answers. Two clocks make "the device" ambiguous,
-and the failure is silent — the tool talks to whichever one it found first.
+netd advertises one ipv4 dns-sd service, `_tc002._tcp`, on udp/5353. the host and
+service instance use the whole wlan mac: `cc:c4:b2:77:9e:85` becomes
+`tc002-ccc4b2779e85.local`. the old four-digit suffix was not unique across devices;
+short hostnames from the first mdns branch are no longer advertised.
 
-`netd` answers multicast DNS for one name, derived from the device's own MAC:
-
+```text
+tc002-ccc4b2779e85.local                     A     10.0.0.68
+_tc002._tcp.local                            PTR   tc002-ccc4b2779e85._tc002._tcp.local
+tc002-ccc4b2779e85._tc002._tcp.local          SRV   0 0 80 tc002-ccc4b2779e85.local
+tc002-ccc4b2779e85._tc002._tcp.local          TXT   (empty)
+_services._dns-sd._udp.local                 PTR   _tc002._tcp.local
 ```
-tc002-9e85.local                        A     10.0.0.68
-_tc002._tcp.local                       PTR   tc002-9e85._tc002._tcp.local
-tc002-9e85._tc002._tcp.local            SRV   0 0 80 tc002-9e85.local
-tc002-9e85._tc002._tcp.local            TXT   (empty)
-_services._dns-sd._udp.local            PTR   _tc002._tcp.local
-```
 
-So `dns-sd -B _tc002._tcp` lists every clock on the network, and `http://tc002-9e85.local/`
-reaches one of them by name on macOS with nothing installed. Measured against two clocks at once:
-`tc002-9e85` at `10.0.0.68` and `tc002-a282` at `10.0.0.111`, each resolving to its own address.
+`dns-sd -B _tc002._tcp` browses the service, and
+`http://tc002-ccc4b2779e85.local/` addresses this example clock. service discovery
+is implemented in netd, keeping network packet parsing outside the supervisor.
+`src/net/mdns.zig` handles packets; `src/net/mdns_owner.zig` handles ownership and
+startup timing. both have host tests.
 
-It lives in `netd` rather than the supervisor for one reason: it parses packets off the network,
-and the supervisor is the process that deliberately parses nothing. The responder itself
-(`src/net/mdns.zig`) is pure — bytes in, bytes out — so all of it is exercised on the host; only
-the socket is in `netd`.
+once status supplies a mac and ipv4 address, netd joins the multicast group on
+that interface. it sends three probes 250 ms apart after an initial 0–250 ms
+jitter, then two announcements at least one second apart. replies are withheld
+until probing and the first successful announcement complete. failed sends do
+not advance ownership. a losing simultaneous proposal waits before re-probing;
+a conflict with an established responder selects a numeric suffix such as `-2`
+and re-probes after a five-second backoff. an already established clock first
+re-probes its current name before deciding to rename. suffixes survive address
+changes within netd, but are not persisted across netd restarts.
 
-The name comes from `status.mac`, which the supervisor already reports, and the address from
-`status.ip`. Neither exists before the first status snapshot, so the multicast group is joined
-lazily: a membership added before `wlan0` has an address is added to the wrong interface. An
-announcement goes out when the name or the address changes, and queries are answered as they
-arrive.
+address loss closes the multicast socket and withdraws local ownership. an
+address change recreates membership and outbound routing before probing again.
+bind/join failures retry, without preventing the http api from running.
 
-**What it deliberately does not do**, each one a thing a full responder does:
+queries from ephemeral ports receive legacy unicast responses with their query
+id and question section, no cache-flush bits, and record ttls capped at ten
+seconds. port-5353 queries receive multicast responses. ownership decisions
+require a source port of 5353 and an observed ipv4 ttl of 255; this deliberately
+strict local-link check ignores ownership claims from responders that send lower
+ttls. ordinary legacy queries still work with lower ttls. all outgoing replies
+use an ipv4 ttl of 255.
 
-- **no name compression.** Every name is written out in full. The parser *does* understand
-  pointers, because queries arrive compressed.
-- **responses always go to the multicast group.** The QU unicast-response bit (RFC 6762 §5.4) is
-  ignored, which costs a little LAN traffic and removes a branch.
-- **no probing or conflict detection** (RFC 6762 §8). The name carries the last four hex digits of
-  the MAC, so two clocks do not collide by construction. This is the simplification to revisit
-  first if that ever stops being true.
-- **no known-answer suppression**, and no response delay.
+remaining limitations:
 
-It is always on and has no setting. Adding one means threading it through the API body, the IPC
-`ConfigPatch` and its `has` bits, `config.Config`, and `GET /config` — see the settings invariant
-— and that was left out of the first version deliberately.
+- ipv4 only; no reverse-address or negative-answer records.
+- outgoing names are uncompressed; incoming compression pointers are supported.
+- qu questions from port 5353 still receive multicast replies.
+- no known-answer suppression or randomized multicast response delay.
+- no shutdown goodbye packet; stale records expire through their normal ttls.
+- discovery is always on; there is no configuration setting.
+
+`tc002-devices.py` treats multicast discovery as optional and still tries adb and
+an explicitly requested sweep when it is unavailable. names survive merging with
+adb metadata. conflicting instance names at different addresses remain separate,
+so `--one` refuses to select one silently. `tc002-up.sh --device` accepts bare ips
+or hostnames (default adb port 5555) and explicit ports.
+
+validation commands: `zig build test` and `zig build` from `runtime`, plus
+`python3 -m unittest -v test_tc002_devices` from the repository root. live device
+and resolver acceptance testing is separate from those offline checks.
 
 ## the low-battery shutdown
 

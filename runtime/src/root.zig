@@ -44,6 +44,8 @@ test {
     _ = @import("net/docs.zig");
     _ = @import("net/sse.zig");
     _ = @import("net/mdns.zig");
+    _ = @import("net/mdns_owner.zig");
+    _ = @import("sys/udp_control.zig");
     _ = @import("sound/wav.zig");
     _ = @import("sound/store.zig");
     _ = @import("sound/mi.zig");
