@@ -119,6 +119,30 @@ and `plugins/` are the source for most of [`CUSTOM-APP.md`](CUSTOM-APP.md).
 
 ## quick start
 
+**from the box to the replacement runtime, in one command**
+
+```bash
+./tc002-onboard.sh --wifi-ssid <your 2.4 GHz network>
+```
+
+That finds the clock — adopting it off its `U-Clock` setup AP if it is still
+factory-fresh — checks it is the hardware these notes describe, records a
+fingerprint, takes a **verified backup of the `res` partition**, and builds your
+image from it. It writes nothing to flash; it prints the one command that does.
+Add `--flash` to go all the way. See [`SETUP.md`](SETUP.md).
+
+A release tarball needs no compiler — only `adb`, `python3` and
+`squashfs-tools`. Build one with `./tc002-mkrelease.sh`; the armv7 binaries go in
+prebuilt.
+
+> **Your image is built on your machine, and cannot be shipped prebuilt.** The
+> `res` partition carries the vendor application `lib/libzkgui.so`, and that file
+> **differs between units** — the two clocks measured for these notes run
+> application builds sixteen days apart. A prebuilt image would install another
+> device's vendor app onto yours. So the image is assembled from a dump of your
+> own device, and that dump is also your way back.
+> See [`FINGERPRINTS.md`](FINGERPRINTS.md).
+
 everything uses apple's `/usr/bin/python3` deliberately — see
 [the local network gotcha](#a-note-on-macos) below.
 

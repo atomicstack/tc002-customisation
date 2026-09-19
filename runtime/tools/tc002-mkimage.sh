@@ -48,12 +48,30 @@ unsquashfs -d "$RES" "$SQSH" >/dev/null
 # only `--from-bootstrap`, and the supervisor spawns five children by absolute path, so a flashed
 # runtime never sees a command-line argument: every path it uses is compiled in here. -Dnetup turns
 # on the bring-up a flashed install has to do for itself, the loader we replace being what used to.
-say "build the runtime for /res/bin"
-( cd "$RUNTIME" && "$ZIG" build -Dbin_dir=/res/bin -Dnetup=true && "$ZIG" build -Dbin_dir=/res/bin -Dnetup=true check )
+# a release tarball ships the payload prebuilt and carries no build.zig, because
+# the whole point of it is that nobody downstream needs a compiler.
+if [ -f "$RUNTIME/build.zig" ]; then
+    say "build the runtime for /res/bin"
+    ( cd "$RUNTIME" && "$ZIG" build -Dbin_dir=/res/bin -Dnetup=true && "$ZIG" build -Dbin_dir=/res/bin -Dnetup=true check )
+else
+    say "use the prebuilt runtime (no build.zig -- this is a release tree)"
+    # -Dbin_dir COMPILES the child paths in; a payload built without it flashes
+    # fine and then cannot find its own children, with nothing to say so. the
+    # string is the cheapest proof the right flag was used.
+    LC_ALL=C grep -qa '/res/bin' "$RUNTIME/zig-out/bin/tc002-supervisor" || {
+        echo "the prebuilt supervisor has no /res/bin in it: this payload was not built with" >&2
+        echo "-Dbin_dir=/res/bin and would not work from flash. rebuild the release." >&2
+        exit 1; }
+fi
 
-say "build busybox from source"
 BB="$WORK/busybox/busybox-armv7"
-[ -f "$BB" ] || "$HERE/tc002-mkbusybox.sh" "$WORK/busybox" "$BB" >/dev/null
+if [ -f "$RUNTIME/zig-out/bin/busybox" ] && [ -s "$RUNTIME/zig-out/bin/busybox.applets" ]; then
+    say "use the prebuilt busybox"
+    BB="$RUNTIME/zig-out/bin/busybox"
+elif [ ! -f "$BB" ]; then
+    say "build busybox from source"
+    "$HERE/tc002-mkbusybox.sh" "$WORK/busybox" "$BB" >/dev/null
+fi
 
 # all six, not four: audiod and berryd are spawned by absolute path like the rest, and an image
 # missing them is one where `sound.enabled` and `berry.enabled` fail at the exec with no other sign.

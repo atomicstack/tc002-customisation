@@ -8,6 +8,11 @@ endpoints involved are in `HTTP-API.md`.
 
 ---
 
+**If you just want it adopted and running the custom runtime**, none of the
+below has to be done by hand — `./tc002-onboard.sh --wifi-ssid <your network>`
+does the adoption, the safety checks, the backup and the image build in one
+command. The rest of this file is what it is doing, and how to do it yourself.
+
 A factory-fresh TC002 with no stored wifi credentials boots into **setup-AP
 mode** instead of joining a network:
 

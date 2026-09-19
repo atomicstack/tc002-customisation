@@ -8,3 +8,6 @@ __pycache__/
 *.img
 *.sqsh
 *.bin
+
+# release tarballs built by tc002-mkrelease.sh
+dist/

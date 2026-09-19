@@ -23,6 +23,9 @@
 #                no argument and no second device at all
 #   --wifi-ssid  the network to adopt onto; omit it to probe only and leave the
 #                unit factory-fresh
+#   --adopt-only skip the measurement phases and just join, adopt and restore.
+#                this is what tc002-onboard.sh calls: it needs the ap visit and
+#                the wifi restore, not the survey
 #
 # --psk-from / --adopt-from are shortcuts for the case where you ALREADY have an
 # adopted tc002 on the lan: they lift the softap key and the target network's
@@ -58,6 +61,7 @@ AP_PASS="$AP_PASS_DEFAULT"
 W_SSID=""
 PSK_FROM=""
 ADOPT_FROM=""
+ADOPT_ONLY=0
 ADB=/opt/homebrew/bin/adb
 PY=/usr/bin/python3
 CURL=/usr/bin/curl
@@ -68,6 +72,7 @@ while [[ $# -gt 0 ]]; do
     --out)      OUT="$2"; shift 2 ;;
     --ap-pass)   AP_PASS="$2"; shift 2 ;;
     --wifi-ssid) W_SSID="$2"; shift 2 ;;
+    --adopt-only) ADOPT_ONLY=1; shift ;;
     --psk-from)   PSK_FROM="$2"; shift 2 ;;
     --adopt-from) ADOPT_FROM="$2"; shift 2 ;;
     --iface)    IFACE="$2"; shift 2 ;;
@@ -259,6 +264,7 @@ say "  arp table on this subnet:"
 arp -an 2>/dev/null | grep -E '192\.168\.(1|100)\.' | sed 's/^/    /'
 
 # ------------------------------------------------- the open question: broadcasts
+if [[ $ADOPT_ONLY -eq 0 ]]; then
 say ""
 hr "does it broadcast in setup-ap mode? (SETUP.md: 'not checked')"
 say "  listening on udp/55555 for 25s, and on udp/6666+9999 as controls"
@@ -423,6 +429,8 @@ dsh '/tmp/busybox rm -f /tmp/busybox && echo "  removed /tmp/busybox"'
 
 "$ADB" disconnect "$TARGET" >/dev/null 2>&1
 fi
+
+fi   # end of the measurement phases
 
 if [[ -n "$W_SSID" && -n "$W_PSK" ]]; then
   say ""
