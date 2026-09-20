@@ -299,10 +299,14 @@ server with stratum 1..15, carries nonzero server timestamps, a date within
 twenty years of the client's build date (the era reference: a 1970 clock after
 a cold boot still resolves the 32-bit ntp seconds to the right era) and a round
 trip under one second. offset and delay are computed from all four timestamps.
-an offset of 128 ms or more is stepped with `clock_settime` and the renderer
-receives `time_corrected` so the clock scene rearms its wall-clock deadline; a
-smaller one is slewed by the kernel (`adjtimex` single-shot at 500 ppm, so
-128 ms takes about four minutes). failures back off 2, 4, 8 … seconds up to the
+an offset of 128 ms or more is stepped with `clock_settime`; a smaller one is
+slewed by the kernel (`adjtimex` single-shot at 500 ppm, so 128 ms takes about
+four minutes). either way the renderer receives `time_corrected`: a step makes
+the clock scene rearm its wall-clock deadline, and every correction pulses the
+face's separators once, one 600 ms breath down to a dim floor and back, so a
+sync is visible on the glass without being a notification. the digits are never
+touched, an unset clock keeps its own breathing instead, and the console
+preview does not mirror the pulse, because a correction is not an event. failures back off 2, 4, 8 … seconds up to the
 interval; a kiss-o'-death `RATE` doubles the wait and `DENY`/`RSTR` stop
 polling until the settings change. the status `time.state` is `unsynced`
 until the first success, `synced` after it and `stale` when no success arrived

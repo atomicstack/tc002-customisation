@@ -434,9 +434,14 @@ const SntpLink = struct {
                 };
                 s.send(.time_corrected);
             },
-            .slew => sys.adjtimeOffset(@intCast(@divTrunc(r.offset_ns, 1000))) catch |e| {
-                log.err("sntp: adjtimex failed: {s}", .{sys.errText(e)});
-                return;
+            .slew => {
+                sys.adjtimeOffset(@intCast(@divTrunc(r.offset_ns, 1000))) catch |e| {
+                    log.err("sntp: adjtimex failed: {s}", .{sys.errText(e)});
+                    return;
+                };
+                // a slew moves nothing the renderer can see, but the sync itself is worth a
+                // wink: the clock face pulses its separators once on every correction
+                s.send(.time_corrected);
             },
         }
         log.info("sntp: offset {d} ms, delay {d} ms, stratum {d}, {s}", .{ @divTrunc(r.offset_ns, 1_000_000), @divTrunc(r.delay_ns, 1_000_000), r.stratum, if (how == .step) "stepped" else "slewing" });

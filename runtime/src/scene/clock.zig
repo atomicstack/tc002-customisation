@@ -136,6 +136,22 @@ pub fn blankDigits(text: []u8) void {
     }
 }
 
+/// the separator pulse on a time sync: one breath, 600 ms long, down to a floor and back. it is
+/// a wink rather than a notification, and it never reaches black for the same reason the unset
+/// clock's breathing does not: a separator that vanishes reads as a fault.
+pub const pulse_ns: u64 = 600 * std.time.ns_per_ms;
+pub const pulse_floor: u8 = 24;
+
+/// the separators' alpha `elapsed_ns` into a pulse: 255 at both ends, `pulse_floor` in the middle,
+/// straight lines between (no libm here), and 255 for good once the pulse is over.
+pub fn pulseAlpha(elapsed_ns: u64) u8 {
+    if (elapsed_ns >= pulse_ns) return 255;
+    const half = pulse_ns / 2;
+    const from_mid = if (elapsed_ns < half) half - elapsed_ns else elapsed_ns - half;
+    const span: u64 = 255 - pulse_floor;
+    return @intCast(pulse_floor + span * from_mid / half);
+}
+
 /// the pulse the separators breathe at while the clock is unset: one turn a second, 0..255.
 ///
 /// deeper than the canvas `pulse` (which floors at 65%) because this is the only thing on the
@@ -189,6 +205,9 @@ const GradientPainter = struct {
 
 /// one line of text, where it goes and which glyphs draw it.
 const Line = struct { x: i32, y: i32, text: []const u8, font: Font };
+
+/// two colons in the time and a slash in the mini date line; room for one more
+const max_separators = 4;
 
 /// the hires layout: the time on rows 0..6, a bar on row 8 filling through each second, the
 /// milliseconds in mini digits on rows 10..14
@@ -244,6 +263,64 @@ pub const State = struct {
 
     pub fn render(self: *const State, wall_ns: u64, rgb: *geometry.Rgb) void {
         self.renderWith(self.style, wall_ns, rgb);
+    }
+
+    /// the face with its separators at `alpha`: 255 is the plain face, anything less is a moment of
+    /// a sync pulse. the digits are never touched; an unset clock has its own breathing and no pulse.
+    pub fn renderPulsed(self: *const State, style: Style, wall_ns: u64, alpha: u8, rgb: *geometry.Rgb) void {
+        self.renderWith(style, wall_ns, rgb);
+        if (alpha == 255 or isUnset(wall_ns)) return;
+        var boxes: [max_separators]Box = undefined;
+        for (boxes[0..self.separatorBoxes(style, wall_ns, &boxes)]) |b| {
+            var y = @max(b.y0, 0);
+            while (y <= @min(b.y1, geometry.height - 1)) : (y += 1) {
+                var x = @max(b.x0, 0);
+                while (x <= @min(b.x1, geometry.width - 1)) : (x += 1) {
+                    const p = rgb[geometry.pixelOffset(@intCast(x), @intCast(y))..][0..3];
+                    p.* = clockfont.scaled(p.*, alpha);
+                }
+            }
+        }
+    }
+
+    /// is this led part of a separator glyph (`:` or `/`) of the face at this instant
+    pub fn inSeparator(self: *const State, wall_ns: u64, x: i32, y: i32) bool {
+        var boxes: [max_separators]Box = undefined;
+        for (boxes[0..self.separatorBoxes(self.style, wall_ns, &boxes)]) |b| {
+            if (x >= b.x0 and x <= b.x1 and y >= b.y0 and y <= b.y1) return true;
+        }
+        return false;
+    }
+
+    /// the boxes the separators are drawn in, in panel coordinates: each `:` or `/` of each line,
+    /// one led wider and taller when the digit style casts a shadow, since the shadow is drawn
+    /// one led down and right of the glyph.
+    fn separatorBoxes(self: *const State, style: Style, wall_ns: u64, out: *[max_separators]Box) usize {
+        const utc_s: i64 = @intCast(wall_ns / std.time.ns_per_s);
+        const local_s = tz.localFromUtc(self.rule, utc_s);
+        var tbuf: [8]u8 = undefined;
+        var dbuf: [5]u8 = undefined;
+        var mbuf: [3]u8 = undefined;
+        const time_text = formatTime(local_s, &tbuf);
+        const date_text = formatDate(local_s, &dbuf);
+        const ms: u32 = @intCast((wall_ns % std.time.ns_per_s) / std.time.ns_per_ms);
+        const ms_text = std.fmt.bufPrint(&mbuf, "{d:0>3}", .{ms}) catch unreachable;
+        var storage: [2]Line = undefined;
+        const lines = layout(style, time_text, date_text, ms_text, &storage);
+        const shadow: i32 = if (style.digit == .shadow) 1 else 0;
+        var n: usize = 0;
+        for (lines) |l| {
+            for (l.text, 0..) |ch, i| {
+                if (ch != ':' and ch != '/') continue;
+                if (n == out.len) return n;
+                const before = clockfont.textWidth(l.font, l.text[0..i]) + if (i > 0) @as(u32, clockfont.gap(l.font)) else 0;
+                const g = clockfont.glyph(l.font, ch);
+                const x0 = l.x + @as(i32, @intCast(before));
+                out[n] = .{ .x0 = x0, .y0 = l.y, .x1 = x0 + @as(i32, g.w) - 1 + shadow, .y1 = l.y + @as(i32, g.h) - 1 + shadow };
+                n += 1;
+            }
+        }
+        return n;
     }
 
     /// render with a given style: the outgoing layer of a restyle transition keeps the old one
@@ -510,4 +587,38 @@ test "an unset clock redraws every frame so the pulse moves; a set one waits for
     try std.testing.expectEqual(scene.Cadence{ .continuous = scene.frame_period_ns }, s.cadence(0));
     const synced = @as(u64, 1_789_000_000) * std.time.ns_per_s;
     try std.testing.expectEqual(scene.Cadence{ .at_wall_ns = nextBoundaryWallNs(synced) }, s.cadence(synced));
+}
+
+test "a separator pulse dims only the separators, and full strength is no pulse at all" {
+    const rule = try tz.parse("JST-9");
+    var c = State.init(rule);
+    const wall_ns: u64 = test_wall_base + (4 * 3600 + 5 * 60 + 6) * std.time.ns_per_s + 700_000_000;
+    for ([_]Font{ .classic, .mini, .big, .block }) |f| {
+        c.style.font = f;
+        var plain = geometry.black_rgb;
+        c.render(wall_ns, &plain);
+        var full = geometry.black_rgb;
+        c.renderPulsed(c.style, wall_ns, 255, &full);
+        try std.testing.expectEqualSlices(u8, &plain, &full);
+        var dark = geometry.black_rgb;
+        c.renderPulsed(c.style, wall_ns, 0, &dark);
+        // something changed, and everything that changed sits inside a separator glyph's box
+        var changed: usize = 0;
+        for (0..geometry.height) |y| for (0..geometry.width) |x| {
+            const i = (y * geometry.width + x) * 3;
+            if (std.mem.eql(u8, plain[i..][0..3], dark[i..][0..3])) continue;
+            changed += 1;
+            try std.testing.expect(c.inSeparator(wall_ns, @intCast(x), @intCast(y)));
+            try std.testing.expectEqualSlices(u8, &.{ 0, 0, 0 }, dark[i..][0..3]); // alpha 0 is black
+        };
+        try std.testing.expect(changed > 0);
+    }
+}
+
+test "the pulse is one breath: full, down to the floor, and back within its length" {
+    try std.testing.expectEqual(@as(u8, 255), pulseAlpha(0));
+    try std.testing.expectEqual(pulse_floor, pulseAlpha(pulse_ns / 2));
+    try std.testing.expectEqual(@as(u8, 255), pulseAlpha(pulse_ns));
+    try std.testing.expectEqual(@as(u8, 255), pulseAlpha(pulse_ns * 10));
+    try std.testing.expect(pulseAlpha(pulse_ns / 4) < 255 and pulseAlpha(pulse_ns / 4) > pulse_floor);
 }

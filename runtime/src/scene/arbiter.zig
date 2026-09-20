@@ -786,6 +786,8 @@ pub const Arbiter = struct {
     device: menu.Status = .{},
     /// when the dial last changed the page of the showing scene; the indicator fades from here
     pages_at: ?u64 = null,
+    /// when the clock was last synced; the clock face's separators pulse once from here
+    separator_pulse_at: ?u64 = null,
 
     pub fn init(base: Base, generator: scene.Generator, seed: u32, rule: tz.Rule) Arbiter {
         return .{ .base = base, .art = scene.Art.init(generator, seed), .clock = clock.State.init(rule) };
@@ -1004,7 +1006,10 @@ pub const Arbiter = struct {
                 return .{ .applied = self.bump() };
             },
             .time_corrected => {
+                // a redraw, never a state change; and one pulse of the separators, so a sync is
+                // visible on the face without being a notification
                 self.dirty = true;
+                self.separator_pulse_at = now_ns;
                 return .{ .applied = self.revision };
             },
             .ip_changed => |addr| {
@@ -1080,6 +1085,18 @@ pub const Arbiter = struct {
     fn pagesAlpha(self: *const Arbiter, now_ns: u64) u8 {
         const at = self.pages_at orelse return 0;
         return pages.alphaAt(now_ns -| at);
+    }
+
+    /// the separators' alpha at this instant: 255 unless a sync pulse is running
+    fn separatorAlpha(self: *const Arbiter, now_ns: u64) u8 {
+        const at = self.separator_pulse_at orelse return 255;
+        return clock.pulseAlpha(now_ns -| at);
+    }
+
+    /// frames are wanted for the whole pulse, including the one that settles the face after it
+    fn separatorPulsing(self: *const Arbiter, now_ns: u64) bool {
+        const at = self.separator_pulse_at orelse return false;
+        return now_ns -| at < clock.pulse_ns;
     }
 
     /// what the showing scene can be told. art puts its generator first, then that generator's own.
@@ -1293,7 +1310,7 @@ pub const Arbiter = struct {
     fn renderBase(self: *Arbiter, wall_ns: u64, rgb: *geometry.Rgb) void {
         switch (self.base) {
             .art => self.art.render(rgb),
-            .clock => self.clock.render(wall_ns, rgb),
+            .clock => self.clock.renderPulsed(self.clock.style, wall_ns, self.separatorAlpha(self.last_tick_ns), rgb),
             .canvas => {
                 self.canvas.render(self.last_tick_ns, rgb);
                 self.canvas_frame = rgb.*;
@@ -1334,6 +1351,8 @@ pub const Arbiter = struct {
         if (self.menu_state != null) return .{ .continuous = 40 * std.time.ns_per_ms };
         // a fading page indicator needs frames of its own, whatever the scene underneath wants
         if (self.pagesAlpha(self.last_tick_ns) > 0) return .{ .continuous = 40 * std.time.ns_per_ms };
+        // so does a separator pulse, which the clock's own once-a-second cadence would miss entirely
+        if (self.base == .clock and self.separatorPulsing(self.last_tick_ns)) return .{ .continuous = scene.frame_period_ns };
         return switch (self.overlay) {
             .notify => |n| if (font.textWidth(n.text[0..n.len]) > geometry.width) .{ .continuous = scroll_period_ns } else .idle,
             .raw => .idle,
@@ -1416,4 +1435,27 @@ test "answering no to a reboot leaves the menu open, and asks for nothing" {
     a.action(.knob_short, 10 * std.time.ns_per_ms); // the dialogue defaults to no
     try std.testing.expect(a.takeMenuRequest() == null);
     try std.testing.expect(a.menu_state != null);
+}
+
+test "a time correction pulses the clock's separators once and then leaves the face as it was" {
+    var a = Arbiter.init(.clock, .popsquares, 1, tz.utc);
+    const wall: u64 = 1_800_000_000 * std.time.ns_per_s + 300 * std.time.ns_per_ms;
+    const t0: u64 = 10 * std.time.ns_per_s;
+    a.tick(t0, wall);
+    var before = geometry.black_rgb;
+    a.render(wall, &before);
+    try std.testing.expectEqual(scene.Cadence{ .at_wall_ns = clock.nextBoundaryWallNs(wall) }, a.cadence(wall));
+    _ = a.apply(.time_corrected, t0);
+    // mid-pulse: frames every period, and the face differs from the steady one
+    a.tick(t0 + clock.pulse_ns / 2, wall);
+    try std.testing.expectEqual(scene.Cadence{ .continuous = scene.frame_period_ns }, a.cadence(wall));
+    var mid = geometry.black_rgb;
+    a.render(wall, &mid);
+    try std.testing.expect(!std.mem.eql(u8, &before, &mid));
+    // over: back to the boundary cadence and the identical frame
+    a.tick(t0 + clock.pulse_ns + std.time.ns_per_ms, wall);
+    try std.testing.expectEqual(scene.Cadence{ .at_wall_ns = clock.nextBoundaryWallNs(wall) }, a.cadence(wall));
+    var after = geometry.black_rgb;
+    a.render(wall, &after);
+    try std.testing.expectEqualSlices(u8, &before, &after);
 }
