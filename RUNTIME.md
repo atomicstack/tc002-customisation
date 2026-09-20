@@ -1648,8 +1648,17 @@ remaining limitations:
 - outgoing names are uncompressed; incoming compression pointers are supported.
 - qu questions from port 5353 still receive multicast replies.
 - no known-answer suppression or randomized multicast response delay.
-- no shutdown goodbye packet; stale records expire through their normal ttls.
 - discovery is always on; there is no configuration setting.
+
+a name that is given up is withdrawn with a goodbye (rfc 6762 s10.1: the same
+records with every ttl at zero), so caches drop it within a second instead of at
+expiry, which is 75 minutes for the service pointer. that happens on a rename,
+before the new name is probed, and on a clean exit of netd (a signal, or the
+supervisor going away). like an announcement it is sent twice, a second apart,
+because multicast over wifi drops frames and one lost goodbye was observed on
+the bench; the exit takes a second longer for it. a crash or a power cut sends
+nothing, and those names expire by ttl. a name that was never announced is not
+withdrawn: nothing holds it.
 
 `tc002-devices.py` treats multicast discovery as optional and still tries adb and
 an explicitly requested sweep when it is unavailable. names survive merging with

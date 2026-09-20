@@ -10,6 +10,17 @@ pub const Owner = struct {
     probes: u8 = 0,
     announcements: u8 = 0,
     next_ns: u64 = 0,
+    /// the current name has been announced at least once, so caches on the lan hold it and it
+    /// has to be withdrawn if we give it up
+    claimed: bool = false,
+    /// a goodbye for a name we have just given up, waiting for the socket; sent before anything
+    /// else and outside the backoff, because the caches holding the old name are wrong now.
+    /// twice, a second apart, like an announcement (rfc 6762 s8.3): multicast over wifi drops
+    /// frames, and a lost goodbye leaves the old name cached for 75 minutes.
+    farewell: [512]u8 = undefined,
+    farewell_len: usize = 0,
+    farewell_left: u8 = 0,
+    farewell_next_ns: u64 = 0,
 
     pub fn configure(self: *Owner, address_mac: [6]u8, ip: ?[4]u8, now: u64) void {
         if (std.meta.eql(self.mac, address_mac) and std.meta.eql(self.ip, ip)) return;
@@ -23,6 +34,12 @@ pub const Owner = struct {
     }
 
     fn setName(self: *Owner) void {
+        if (self.claimed) {
+            if (self.responder()) |old| self.farewell_len = old.goodbye(&self.farewell) orelse 0;
+            self.farewell_left = if (self.farewell_len > 0) 2 else 0;
+            self.farewell_next_ns = 0;
+            self.claimed = false;
+        }
         const base = mdns.instanceFromMacBytes(self.mac, &self.name);
         self.name_len = base.len;
         if (self.attempt > 1) {
@@ -49,19 +66,44 @@ pub const Owner = struct {
     /// packet generation does not advance time or ownership: only a successful
     /// socket send commits a probe/announcement, so transient failures retry.
     pub fn packet(self: *const Owner, now: u64, out: []u8) ?usize {
+        if (self.farewell_left > 0) {
+            // nothing else goes out while a name is being withdrawn; the new name's probes start
+            // after a five-second backoff anyway
+            if (now < self.farewell_next_ns or out.len < self.farewell_len) return null;
+            @memcpy(out[0..self.farewell_len], self.farewell[0..self.farewell_len]);
+            return self.farewell_len;
+        }
         if (now < self.next_ns or self.announcements >= 2) return null;
         const r = self.responder() orelse return null;
         return if (self.probes < 3) r.probe(out) else r.announce(out);
     }
 
     pub fn sent(self: *Owner, now: u64) void {
+        if (self.farewell_left > 0) {
+            self.farewell_left -= 1;
+            self.farewell_next_ns = now + std.time.ns_per_s;
+            return;
+        }
         if (self.probes < 3) {
             self.probes += 1;
             self.next_ns = now + 250 * std.time.ns_per_ms;
         } else {
             self.announcements += 1;
+            self.claimed = true;
             self.next_ns = now + std.time.ns_per_s;
         }
+    }
+
+    /// a goodbye for a name just given up is waiting to be sent
+    pub fn withdrawing(self: *const Owner) bool {
+        return self.farewell_left > 0;
+    }
+
+    /// the goodbye for a clean exit: only a name that was announced is held by anyone.
+    pub fn goodbye(self: *const Owner, out: []u8) ?usize {
+        if (!self.claimed) return null;
+        const r = self.responder() orelse return null;
+        return r.goodbye(out);
     }
 
     /// ownership accepts only packets whose ttl proves they did not cross a router.
@@ -224,4 +266,134 @@ test "off-link or missing hop limit cannot change ownership" {
     }
     owner.observeLocal(buf[0..n], 5353, 255, now + ms);
     try testing.expectEqualStrings("tc002-ccc4b2779e85-2", owner.responder().?.instance);
+}
+
+fn isResponse(pkt: []const u8) bool {
+    return std.mem.readInt(u16, pkt[2..4], .big) & 0x8000 != 0;
+}
+
+/// the ptr target of the first answer: which instance a packet is talking about.
+fn firstPtrTarget(pkt: []const u8, out: *mdns.Name) bool {
+    var owner_name: mdns.Name = .{};
+    const off = mdns.parseName(pkt, 12, &owner_name) orelse return false;
+    if (std.mem.readInt(u32, pkt[off + 4 ..][0..4], .big) != 0) return false; // must be a goodbye
+    return mdns.parseName(pkt, off + 10, out) != null;
+}
+
+fn establish(owner: *Owner, out: []u8) void {
+    for (0..4) |_| {
+        const now = owner.next_ns;
+        _ = owner.packet(now, out).?;
+        owner.sent(now);
+    }
+}
+
+test "losing an announced name says goodbye to it before probing the new one" {
+    var owner: Owner = .{};
+    owner.configure(mac, .{ 192, 0, 2, 10 }, 0);
+    var out: [512]u8 = undefined;
+    establish(&owner, &out);
+    try testing.expect(owner.ready());
+    var other = owner.responder().?;
+    other.ip = .{ 192, 0, 2, 11 };
+    var pkt: [512]u8 = undefined;
+    const n = other.announce(&pkt).?;
+    owner.observeLocal(pkt[0..n], 5353, 255, 2000 * ms); // an established conflict: re-probe first
+    const retry = owner.next_ns;
+    _ = owner.packet(retry, &out).?;
+    owner.sent(retry);
+    owner.observeLocal(pkt[0..n], 5353, 255, retry + ms); // still contested: rename
+    try testing.expectEqualStrings("tc002-ccc4b2779e85-2", owner.responder().?.instance);
+    // the goodbye goes out at once, inside the backoff, and withdraws the old instance
+    const g = owner.packet(retry + 2 * ms, &out).?;
+    try testing.expect(isResponse(out[0..g]));
+    var target: mdns.Name = .{};
+    try testing.expect(firstPtrTarget(out[0..g], &target));
+    try testing.expect(target.eql(&.{ "tc002-ccc4b2779e85", "_tc002", "_tcp", "local" }));
+    owner.sent(retry + 2 * ms);
+    // the goodbye repeats a second later, then the backoff holds and a probe for the new name follows
+    try testing.expect(owner.packet(retry + 3 * ms, &out) == null);
+    const g2 = owner.packet(retry + 1002 * ms, &out).?;
+    try testing.expect(isResponse(out[0..g2]));
+    owner.sent(retry + 1002 * ms);
+    try testing.expect(owner.packet(retry + 1003 * ms, &out) == null);
+    const next = owner.next_ns;
+    try testing.expect(next >= retry + 5000 * ms);
+    const p = owner.packet(next, &out).?;
+    try testing.expect(!isResponse(out[0..p]));
+}
+
+test "a name that was never announced is not withdrawn" {
+    var owner: Owner = .{};
+    owner.configure(mac, .{ 192, 0, 2, 10 }, 0);
+    var out: [512]u8 = undefined;
+    const initial = owner.next_ns;
+    _ = owner.packet(initial, &out).?;
+    owner.sent(initial); // one probe, nothing announced
+    var peer = owner.responder().?;
+    peer.ip = .{ 192, 0, 2, 11 };
+    var pkt: [512]u8 = undefined;
+    const n = peer.announce(&pkt).?;
+    owner.observeLocal(pkt[0..n], 5353, 255, initial + ms);
+    try testing.expectEqualStrings("tc002-ccc4b2779e85-2", owner.responder().?.instance);
+    // no cache holds the old name, so there is nothing to say: the backoff holds and a probe follows
+    try testing.expect(owner.packet(initial + 2 * ms, &out) == null);
+    const p = owner.packet(owner.next_ns, &out).?;
+    try testing.expect(!isResponse(out[0..p]));
+}
+
+test "shutdown withdraws the name only once it has been announced" {
+    var owner: Owner = .{};
+    owner.configure(mac, .{ 192, 0, 2, 10 }, 0);
+    var out: [512]u8 = undefined;
+    try testing.expect(owner.goodbye(&out) == null);
+    for (0..3) |_| {
+        const now = owner.next_ns;
+        _ = owner.packet(now, &out).?;
+        owner.sent(now);
+    }
+    try testing.expect(owner.goodbye(&out) == null); // still probing
+    const now = owner.next_ns;
+    _ = owner.packet(now, &out).?;
+    owner.sent(now); // the first announcement
+    const g = owner.goodbye(&out).?;
+    try testing.expect(isResponse(out[0..g]));
+    var target: mdns.Name = .{};
+    try testing.expect(firstPtrTarget(out[0..g], &target));
+    try testing.expect(target.eql(&.{ "tc002-ccc4b2779e85", "_tc002", "_tcp", "local" }));
+    // with the address gone the socket is gone too; nothing to send
+    owner.configure(mac, null, now + ms);
+    try testing.expect(owner.goodbye(&out) == null);
+}
+
+test "a goodbye is repeated a second later, because multicast on wifi drops frames" {
+    var owner: Owner = .{};
+    owner.configure(mac, .{ 192, 0, 2, 10 }, 0);
+    var out: [512]u8 = undefined;
+    establish(&owner, &out);
+    var other = owner.responder().?;
+    other.ip = .{ 192, 0, 2, 11 };
+    var pkt: [512]u8 = undefined;
+    const n = other.announce(&pkt).?;
+    owner.observeLocal(pkt[0..n], 5353, 255, 2000 * ms);
+    const retry = owner.next_ns;
+    _ = owner.packet(retry, &out).?;
+    owner.sent(retry);
+    owner.observeLocal(pkt[0..n], 5353, 255, retry + ms);
+    const t = retry + 2 * ms;
+    const g1 = owner.packet(t, &out).?;
+    try testing.expect(isResponse(out[0..g1]));
+    owner.sent(t);
+    // not again straight away, and not lost in the backoff either: once more, one second on
+    try testing.expect(owner.packet(t + 500 * ms, &out) == null);
+    const g2 = owner.packet(t + 1000 * ms, &out).?;
+    try testing.expect(isResponse(out[0..g2]));
+    var target: mdns.Name = .{};
+    try testing.expect(firstPtrTarget(out[0..g2], &target));
+    try testing.expect(target.eql(&.{ "tc002-ccc4b2779e85", "_tc002", "_tcp", "local" }));
+    owner.sent(t + 1000 * ms);
+    // and that is all: the new name's probes follow on their own schedule
+    try testing.expect(owner.packet(t + 1100 * ms, &out) == null);
+    const p = owner.packet(owner.next_ns, &out).?;
+    try testing.expect(!isResponse(out[0..p]));
 }

@@ -91,12 +91,15 @@ const Writer = struct {
     overflow: bool = false,
     legacy: bool = false,
     flush: bool = true,
+    /// rfc 6762 s10.1: a goodbye is the same records with every ttl at zero, which tells caches
+    /// to drop them within a second instead of at expiry.
+    goodbye: bool = false,
 
     fn uniqueClass(self: Writer) u16 {
         return if (self.legacy or !self.flush) CLASS_IN else CLASS_IN | CLASS_FLUSH;
     }
     fn ttl(self: *Writer, seconds: u32) void {
-        self.u32v(if (self.legacy) @min(seconds, 10) else seconds);
+        self.u32v(if (self.goodbye) 0 else if (self.legacy) @min(seconds, 10) else seconds);
     }
 
     fn u8v(self: *Writer, v: u8) void {
@@ -287,6 +290,17 @@ pub const Responder = struct {
     /// same packet a full PTR query would get back.
     pub fn announce(self: Responder, out: []u8) ?usize {
         var w = Writer{ .buf = out };
+        return self.announceWith(&w);
+    }
+
+    /// the announcement with every ttl at zero: sent when a name is given up, on a rename or a
+    /// clean exit, so caches forget it now rather than in 75 minutes (the service pointer's ttl).
+    pub fn goodbye(self: Responder, out: []u8) ?usize {
+        var w = Writer{ .buf = out, .goodbye = true };
+        return self.announceWith(&w);
+    }
+
+    fn announceWith(self: Responder, w: *Writer) ?usize {
         w.u16v(0); // id: always 0 in mdns
         w.u16v(0x8400); // response, authoritative
         w.u16v(0); // qdcount
@@ -295,10 +309,10 @@ pub const Responder = struct {
         w.u16v(0);
         const svc = self.serviceName();
         const inst = self.instanceName();
-        self.putPtr(&w, &svc, &inst, ttl_ptr);
-        self.putSrv(&w);
-        self.putTxt(&w);
-        self.putA(&w);
+        self.putPtr(w, &svc, &inst, ttl_ptr);
+        self.putSrv(w);
+        self.putTxt(w);
+        self.putA(w);
         if (w.overflow) return null;
         return w.at;
     }
@@ -854,4 +868,33 @@ test "truncated conflict packets never alter ownership" {
     for (0..n) |len| try testing.expectEqual(Conflict.none, ours.conflict(buf[0..len], true));
     const k = peer.probe(&buf).?;
     for (0..k) |len| try testing.expectEqual(Conflict.none, ours.conflict(buf[0..len], true));
+}
+
+/// walk every answer and return how many carry a zero ttl; a goodbye is all of them.
+fn zeroTtlCount(pkt: []const u8) usize {
+    var off: usize = 12;
+    var zeros: usize = 0;
+    var i: usize = 0;
+    while (i < answerCount(pkt)) : (i += 1) {
+        var name: Name = .{};
+        off = parseName(pkt, off, &name) orelse return zeros;
+        if (std.mem.readInt(u32, pkt[off + 4 ..][0..4], .big) == 0) zeros += 1;
+        off += 10 + std.mem.readInt(u16, pkt[off + 8 ..][0..2], .big);
+    }
+    return zeros;
+}
+
+test "a goodbye is the announcement with every ttl at zero" {
+    const r = Responder{ .instance = "tc002-ccc4b2779e85", .ip = .{ 10, 0, 0, 68 } };
+    var out: [512]u8 = undefined;
+    const n = r.goodbye(&out).?;
+    const pkt = out[0..n];
+    try testing.expectEqual(@as(u16, 0x8400), std.mem.readInt(u16, pkt[2..4], .big));
+    var types: [8]u16 = undefined;
+    try testing.expectEqual(@as(usize, 4), answerTypes(pkt, &types));
+    try testing.expectEqualSlices(u16, &.{ TYPE_PTR, TYPE_SRV, TYPE_TXT, TYPE_A }, types[0..4]);
+    try testing.expectEqual(@as(usize, 4), zeroTtlCount(pkt));
+    // and the announcement itself is untouched
+    const a = r.announce(&out).?;
+    try testing.expectEqual(@as(usize, 0), zeroTtlCount(out[0..a]));
 }

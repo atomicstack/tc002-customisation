@@ -1995,13 +1995,32 @@ const Netd = struct {
         log.info("mdns: probing {s}.local", .{self.mdns_owner.responder().?.instance});
     }
 
+    /// on the way out, tell the caches the name is gone rather than leaving it to expire. twice,
+    /// a second apart, like an announcement: multicast over wifi drops frames, and a lost goodbye
+    /// costs 75 minutes of a stale name. the second is worth the second of exit latency.
+    fn mdnsGoodbye(self: *Netd) void {
+        if (self.mdns_fd < 0) return;
+        var out: [512]u8 = undefined;
+        const n = self.mdns_owner.goodbye(&out) orelse return;
+        sys.udpSendTo(self.mdns_fd, mdns.mcast_addr, mdns.mcast_port, out[0..n]) catch return;
+        log.info("mdns: goodbye {s}.local", .{self.mdns_owner.responder().?.instance});
+        sys.nanosleep(ns_per_s);
+        sys.udpSendTo(self.mdns_fd, mdns.mcast_addr, mdns.mcast_port, out[0..n]) catch {};
+    }
+
     fn mdnsTick(self: *Netd, now: u64) void {
         self.mdnsOnStatus(now);
         if (self.mdns_fd < 0) return;
         var out: [512]u8 = undefined;
         const n = self.mdns_owner.packet(now, &out) orelse return;
-        sys.udpSendTo(self.mdns_fd, mdns.mcast_addr, mdns.mcast_port, out[0..n]) catch return;
+        const bye = self.mdns_owner.withdrawing();
+        sys.udpSendTo(self.mdns_fd, mdns.mcast_addr, mdns.mcast_port, out[0..n]) catch |e| {
+            if (!self.mdns_fail_logged) log.warn("mdns: send failed: {s} (retrying quietly)", .{@errorName(e)});
+            self.mdns_fail_logged = true;
+            return;
+        };
         self.mdns_owner.sent(now);
+        if (bye) log.info("mdns: goodbye sent for the name given up", .{});
     }
 
     fn mdnsReadable(self: *Netd, now: u64) void {
@@ -2014,7 +2033,13 @@ const Netd = struct {
         var guard: usize = 0;
         while (guard < 16) : (guard += 1) {
             const msg = (sys.udpRecvFrom(self.mdns_fd, &buf, &from, &from_port, &ttl) catch return) orelse return;
+            var before: [mdns.name_capacity]u8 = undefined;
+            const before_len = self.mdns_owner.name_len;
+            @memcpy(before[0..before_len], self.mdns_owner.name[0..before_len]);
             self.mdns_owner.observeLocal(msg, from_port, ttl, now);
+            if (!std.mem.eql(u8, before[0..before_len], self.mdns_owner.name[0..self.mdns_owner.name_len])) {
+                log.info("mdns: {s}.local is claimed by {d}.{d}.{d}.{d}; withdrawing it and probing {s}.local", .{ before[0..before_len], from[0], from[1], from[2], from[3], self.mdns_owner.name[0..self.mdns_owner.name_len] });
+            }
             if (!self.mdns_owner.ready()) continue;
             const r = self.mdns_owner.responder() orelse continue;
             const reply = r.reply(msg, from, from_port, &out) orelse continue;
@@ -2201,6 +2226,7 @@ fn run(stats: bool) !u8 {
         const now = sys.monotonicNs();
         if (sys.readSignal(sigfd) catch null) |_| {
             log.info("signal, exiting", .{});
+            n.mdnsGoodbye();
             break;
         }
         if (now >= next_tick) {
@@ -2259,6 +2285,7 @@ fn run(stats: bool) !u8 {
         }
         if (n.supervisor_dead) {
             log.warn("exiting: no supervisor", .{});
+            n.mdnsGoodbye();
             return 1;
         }
     }

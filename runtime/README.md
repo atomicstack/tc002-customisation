@@ -202,9 +202,10 @@ normal firmware builds embed the checked-in artifacts and do not require python 
   there is none on the device, and the two-clock problem it solves is small. it implements the parts
   of rfc 6762 that matter on a lan of a few clocks: probing and conflict recovery with a numeric
   suffix, two announcements, legacy unicast replies for one-shot resolvers, cache-flush on the unique
-  records, and a socket that is recreated whenever the address changes. it deliberately leaves out
-  known-answer suppression, the randomised response delay for shared records, name compression on
-  output, goodbye packets on shutdown, ipv6, and any setting to turn it off. cost: about 28 kb of
+  records, and a socket that is recreated whenever the address changes. it says goodbye (every record with ttl zero) when it gives a name up, on a rename or a clean exit,
+  so caches forget it at once. it deliberately leaves out known-answer suppression, the randomised
+  response delay for shared records, name compression on output, ipv6, and any setting to turn it
+  off. cost: about 28 kb of
   `.text` in netd over main (1,097 kb to 1,125 kb) and one udp socket; gain: a clock is reachable by
   name with nothing installed on the host, and two clocks are two names.
 
