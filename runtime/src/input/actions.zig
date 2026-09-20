@@ -69,13 +69,28 @@ test "unknown keys and repeats are ignored and the queue is bounded" {
     m.feed(key(999, 0), 1, &q, &e);
     m.feed(key(108, 2), 2, &q, &e); // autorepeat
     try std.testing.expectEqual(@as(usize, 0), q.len);
+    const over = 4;   // enough past the bound to prove it holds, whatever the bound is
     var i: u32 = 0;
-    while (i < 12) : (i += 1) {
+    while (i < ActionQueue.capacity + over) : (i += 1) {
         m.feed(key(108, 1), i * 10, &q, &e);
         m.feed(key(108, 0), i * 10 + 1, &q, &e);
     }
     try std.testing.expectEqual(@as(usize, ActionQueue.capacity), q.len);
-    try std.testing.expectEqual(@as(u32, 12 - ActionQueue.capacity), q.dropped);
+    try std.testing.expectEqual(@as(u32, over), q.dropped);
+}
+
+test "a whole turn is applied: the steps the api accepts all reach the arbiter" {
+    var m = Mapper.init(.{});
+    var q = ActionQueue{};
+    var e = EdgeQueue{};
+    // `POST /api/v1/input` accepts a turn of up to `max_steps` detents and answers `applied`. a
+    // queue too small for one holds the first few, counts the rest as dropped and says nothing
+    // further, so the panel stops short of where the caller asked for and the reply still reads
+    // as success
+    try std.testing.expect(m.inject(.rotary, .cw, max_steps, 0, &q, &e));
+    try std.testing.expectEqual(@as(usize, max_steps), q.len);
+    try std.testing.expectEqual(@as(u32, 0), q.dropped);
+    try std.testing.expectEqual(@as(i32, max_steps), m.position);
 }
 
 fn key(code: u16, value: i32) evdev.Event {
@@ -118,6 +133,10 @@ pub const InputRequest = enum(u8) { release = 0, press = 1, click = 2, long = 3,
 /// one outward event: the control, what it did, and the rotary position after it.
 pub const Edge = struct { control: Control, event: EdgeEvent, position: i32 };
 
+/// the most detents one injected turn may ask for. the api validates against this and the mapper
+/// enforces it, so the two bounds cannot drift apart.
+pub const max_steps: u8 = 16;
+
 /// a bounded queue of edges from one batch of events; overflow drops and counts.
 pub const EdgeQueue = struct {
     pub const capacity = 16;
@@ -141,7 +160,10 @@ pub const EdgeQueue = struct {
 
 /// a small fixed queue of actions produced by one batch of events; overflow drops and counts.
 pub const ActionQueue = struct {
-    pub const capacity = 8;
+    /// a whole injected turn has to fit: `POST /api/v1/input` accepts up to `max_steps` detents
+    /// and answers `applied`, so a queue shorter than that would drop the rest of a turn the
+    /// caller was told had been applied. at eight it did, silently, for every turn past eight
+    pub const capacity = max_steps;
     items: [capacity]scene.Action = undefined,
     len: usize = 0,
     dropped: u32 = 0,
@@ -310,7 +332,7 @@ pub const Mapper = struct {
                 self.feed(key(code, 0), now_ns, out, edges);
             },
             .cw, .ccw => {
-                if (control != .rotary or steps == 0 or steps > 16) return false;
+                if (control != .rotary or steps == 0 or steps > max_steps) return false;
                 var n: u8 = 0;
                 while (n < steps) : (n += 1) self.step(event == .cw, out, edges);
             },

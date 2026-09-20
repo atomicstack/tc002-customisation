@@ -1105,7 +1105,7 @@ pub fn parseBody(kind: BodyKind, body: []const u8, arena: *Arena, generated_id: 
             const rotary = control == .rotary;
             const turning = event == .cw or event == .ccw;
             if (rotary != turning) return bad("invalid_event", "cw and ccw belong to the rotary; buttons take press, release, click or long");
-            if (b.steps < 1 or b.steps > 16) return bad("invalid_steps", "steps must be 1..16");
+            if (b.steps < 1 or b.steps > actions.max_steps) return bad("invalid_steps", "steps must be 1..16");
             if (b.steps != 1 and !turning) return bad("invalid_steps", "steps applies to cw and ccw only");
             const rid = if (b.request_id) |t| (parseRequestId(t) orelse return bad("invalid_request_id", "request_id must be 1..16 hex digits")) else generated_id;
             return .{ .op = .{ .input = .{ .control = control, .event = event, .steps = b.steps, .request_id = rid, .epoch = b.epoch } } };
