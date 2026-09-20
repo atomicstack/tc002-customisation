@@ -1014,7 +1014,8 @@ test "json persistence round-trips and rejects junk" {
     try std.testing.expectError(error.Invalid, fromJson("{\"schema\":1,\"clock_colour\":\"red\"}", &arena));
     try std.testing.expectError(error.Invalid, fromJson("{\"schema\":1,\"brightness\":0}", &arena));
     try std.testing.expectError(error.Invalid, fromJson("not json", &arena));
-    try std.testing.expectError(error.Invalid, fromJson("{\"schema\":1,\"bogus\":1}", &arena));
+    // a field this build does not know is a newer build's setting, not junk: it loads with defaults
+    try std.testing.expectEqual(@as(u8, 100), (try fromJson("{\"schema\":1,\"bogus\":1}", &arena)).brightness);
 }
 
 test "a cold start with no settings file shows the clock, never art" {
