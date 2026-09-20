@@ -1736,6 +1736,32 @@ test "screen, logs and input routes" {
     try expectReject(route(testReq(.POST, "/api/v1/input", "", control_header, "application/json", null), "{\"control\":\"pedal\",\"event\":\"click\",\"request_id\":\"c\",\"epoch\":1}", &c, &no_clients, &origins, &arena, test_minted), 400, "invalid_control");
 }
 
+test "a turn asked for over the api arrives at the arbiter whole" {
+    // the route, the mapper and the arbiter in one line, because the bound that matters is the
+    // one that spans them: the body says how many detents, the mapper turns them into actions and
+    // the arbiter walks a page per action. the queue between the last two used to be shorter than
+    // the number the route accepts, so a turn was answered `applied` and half of it thrown away.
+    const c = testCreds();
+    var arena: Arena = undefined;
+    var origins = OriginPolicy{};
+    const body = "{\"control\":\"rotary\",\"event\":\"cw\",\"steps\":16,\"request_id\":\"c\",\"epoch\":1}";
+    const r = route(testReq(.POST, "/api/v1/input", "", control_header, "application/json", null), body, &c, &no_clients, &origins, &arena, test_minted);
+    try std.testing.expectEqual(@as(u8, actions.max_steps), r.op.input.steps);
+
+    var m = actions.Mapper.init(.{});
+    var queue = actions.ActionQueue{};
+    var edges = actions.EdgeQueue{};
+    try std.testing.expect(m.inject(r.op.input.control, r.op.input.event, r.op.input.steps, 0, &queue, &edges));
+    try std.testing.expectEqual(@as(u32, 0), queue.dropped);
+
+    var a = arbiter.Arbiter.init(.art, .popsquares, 1, @import("../scene/tz.zig").utc);
+    const before = a.revision;
+    for (queue.slice()) |act| a.action(act, 0);
+    // one revision per detent: the art base pages through its generators, and every page is a
+    // statement of its own
+    try std.testing.expectEqual(@as(u32, before + actions.max_steps), a.revision);
+}
+
 test "samples given as a json string are refused, rather than read as the bytes of the digits" {
     // zig's json parser fills a `[]const u8` from a json *string* exactly as readily as from an
     // array of numbers, so `{"data":"1,2,3"}` used to become five samples of 49,44,50,44,51 -- the
