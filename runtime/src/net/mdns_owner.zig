@@ -21,6 +21,9 @@ pub const Owner = struct {
     farewell_len: usize = 0,
     farewell_left: u8 = 0,
     farewell_next_ns: u64 = 0,
+    /// switched off: the name has been withdrawn (or never announced) and nothing more goes out.
+    /// turning mdns back on is a fresh owner, not a flag flip.
+    retired: bool = false,
 
     pub fn configure(self: *Owner, address_mac: [6]u8, ip: ?[4]u8, now: u64) void {
         if (std.meta.eql(self.mac, address_mac) and std.meta.eql(self.ip, ip)) return;
@@ -33,13 +36,24 @@ pub const Owner = struct {
         self.restart(now, 0);
     }
 
+    /// queue the goodbye for the current name if anyone can hold it (it was announced).
+    fn withdrawName(self: *Owner) void {
+        if (!self.claimed) return;
+        if (self.responder()) |old| self.farewell_len = old.goodbye(&self.farewell) orelse 0;
+        self.farewell_left = if (self.farewell_len > 0) 2 else 0;
+        self.farewell_next_ns = 0;
+        self.claimed = false;
+    }
+
+    /// mdns switched off: withdraw the name and go quiet for good.
+    pub fn retire(self: *Owner, now: u64) void {
+        _ = now;
+        self.withdrawName();
+        self.retired = true;
+    }
+
     fn setName(self: *Owner) void {
-        if (self.claimed) {
-            if (self.responder()) |old| self.farewell_len = old.goodbye(&self.farewell) orelse 0;
-            self.farewell_left = if (self.farewell_len > 0) 2 else 0;
-            self.farewell_next_ns = 0;
-            self.claimed = false;
-        }
+        self.withdrawName();
         const base = mdns.instanceFromMacBytes(self.mac, &self.name);
         self.name_len = base.len;
         if (self.attempt > 1) {
@@ -56,7 +70,7 @@ pub const Owner = struct {
     }
 
     pub fn ready(self: *const Owner) bool {
-        return self.ip != null and self.announcements > 0;
+        return !self.retired and self.ip != null and self.announcements > 0;
     }
 
     pub fn responder(self: *const Owner) ?mdns.Responder {
@@ -73,6 +87,7 @@ pub const Owner = struct {
             @memcpy(out[0..self.farewell_len], self.farewell[0..self.farewell_len]);
             return self.farewell_len;
         }
+        if (self.retired) return null;
         if (now < self.next_ns or self.announcements >= 2) return null;
         const r = self.responder() orelse return null;
         return if (self.probes < 3) r.probe(out) else r.announce(out);
@@ -396,4 +411,41 @@ test "a goodbye is repeated a second later, because multicast on wifi drops fram
     try testing.expect(owner.packet(t + 1100 * ms, &out) == null);
     const p = owner.packet(owner.next_ns, &out).?;
     try testing.expect(!isResponse(out[0..p]));
+}
+
+test "switching mdns off withdraws an announced name, then nothing more is sent" {
+    var owner: Owner = .{};
+    owner.configure(mac, .{ 192, 0, 2, 10 }, 0);
+    var out: [512]u8 = undefined;
+    establish(&owner, &out);
+    const t = owner.next_ns + 10 * ms;
+    owner.retire(t);
+    try testing.expect(!owner.ready()); // no replies while the name is being withdrawn, or after
+    const g1 = owner.packet(t, &out).?;
+    try testing.expect(isResponse(out[0..g1]));
+    var target: mdns.Name = .{};
+    try testing.expect(firstPtrTarget(out[0..g1], &target));
+    try testing.expect(target.eql(&.{ "tc002-ccc4b2779e85", "_tc002", "_tcp", "local" }));
+    owner.sent(t);
+    const g2 = owner.packet(t + 1000 * ms, &out).?;
+    try testing.expect(isResponse(out[0..g2]));
+    owner.sent(t + 1000 * ms);
+    try testing.expect(!owner.withdrawing());
+    // and then silence: no probes, no announcements, however long it waits
+    try testing.expect(owner.packet(t + 2000 * ms, &out) == null);
+    try testing.expect(owner.packet(t + 600_000 * ms, &out) == null);
+    try testing.expect(owner.goodbye(&out) == null);
+}
+
+test "switching mdns off before the name was announced sends nothing" {
+    var owner: Owner = .{};
+    owner.configure(mac, .{ 192, 0, 2, 10 }, 0);
+    var out: [512]u8 = undefined;
+    const t = owner.next_ns;
+    _ = owner.packet(t, &out).?;
+    owner.sent(t); // one probe out, nothing announced
+    owner.retire(t + ms);
+    try testing.expect(!owner.withdrawing());
+    try testing.expect(owner.packet(t + 500 * ms, &out) == null);
+    try testing.expect(owner.packet(t + 600_000 * ms, &out) == null);
 }

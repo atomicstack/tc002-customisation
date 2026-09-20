@@ -203,9 +203,9 @@ normal firmware builds embed the checked-in artifacts and do not require python 
   of rfc 6762 that matter on a lan of a few clocks: probing and conflict recovery with a numeric
   suffix, two announcements, legacy unicast replies for one-shot resolvers, cache-flush on the unique
   records, and a socket that is recreated whenever the address changes. it says goodbye (every record with ttl zero) when it gives a name up, on a rename or a clean exit,
-  so caches forget it at once. it deliberately leaves out known-answer suppression, the randomised
-  response delay for shared records, name compression on output, ipv6, and any setting to turn it
-  off. cost: about 28 kb of
+  so caches forget it at once, and the `mdns` setting turns it off the same way. it deliberately leaves
+  out known-answer suppression, the randomised response delay for shared records, name compression
+  on output, and ipv6. cost: about 28 kb of
   `.text` in netd over main (1,097 kb to 1,125 kb) and one udp socket; gain: a clock is reachable by
   name with nothing installed on the host, and two clocks are two names.
 

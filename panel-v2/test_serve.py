@@ -169,6 +169,17 @@ class MockDeviceTests(unittest.TestCase):
         with self.assertRaises(mod.Reject):
             device.patch_config({"discovery_controls": "true"})
 
+    def test_mdns_is_on_by_default_and_switchable(self):
+        mod = load_mock()
+        device = mod.Device(control="c" * 64, admin="a" * 64)
+        self.assertTrue(device.config_doc()["mdns"])
+        device.patch_config({"mdns": False})
+        self.assertFalse(device.config_doc()["mdns"])
+        device.patch_config({"mdns": True})
+        self.assertTrue(device.config_doc()["mdns"])
+        with self.assertRaises(mod.Reject):
+            device.patch_config({"mdns": "off"})
+
     def test_log_ring_caps_at_64_and_keeps_the_sequence_counting(self):
         mod = load_mock()
         device = mod.Device(control="c" * 64, admin="a" * 64)

@@ -402,6 +402,7 @@ input[type=file]{font:12px var(--body);color:var(--muted);max-width:220px}
         <div class="field"><label for="ccontrols">home assistant controls<span class="key">discovery_controls</span></label><input type="checkbox" class="sw" id="ccontrols"></div>
         <p class="hint">enables writable discovery and lets mqtt publishers change clock, time and night settings.</p>
         <div class="field"><label for="cdp">Discovery prefix<span class="key">discovery_prefix</span></label><input type="text" id="cdp" placeholder="homeassistant"></div>
+        <div class="field"><label for="cmdns">mdns name<span class="key">mdns · tc002-&lt;mac&gt;.local, browsable as _tc002._tcp</span></label><input type="checkbox" class="sw" id="cmdns"></div>
       </div>
       <div class="actions">
         <button class="btn" id="capply">Apply</button>
@@ -1267,6 +1268,7 @@ function showConfig(c) {
   $('cft').value = c.frame_timeout_ms; $('cmi').value = c.metrics_interval_s;
   $('ccontrols').checked = !!c.discovery.controls;
   $('cdisc').checked = !!c.discovery.enabled; $('cdp').value = c.discovery.prefix;
+  $('cmdns').checked = c.mdns !== false;
   const k = c.clock || S.DEFAULT_CLOCK_STYLE;   // a runtime without clock styles: show the defaults, patch nothing
   $('cfont').value = k.font; $('cmode').value = k.colour_mode; $('ccolour').value = '#' + k.colour; $('ccolour2').value = '#' + k.colour2; $('cgrad').value = k.gradient;
   if (typeof k.spread === 'number') $('cspread').value = k.spread;
@@ -1325,6 +1327,7 @@ $('capply').addEventListener('click', async () => {
   if ($('ccontrols').checked !== !!CONFIG.discovery.controls) patch.discovery_controls = $('ccontrols').checked;
   if ($('cdisc').checked !== !!CONFIG.discovery.enabled) patch.discovery = $('cdisc').checked;
   const dp = $('cdp').value.trim(); if (dp !== CONFIG.discovery.prefix) patch.discovery_prefix = dp;
+  if ($('cmdns').checked !== (CONFIG.mdns !== false)) patch.mdns = $('cmdns').checked;
   if (CONFIG.clock) {
     const k = CONFIG.clock;
     if ($('cfont').value !== k.font) patch.clock_font = $('cfont').value;

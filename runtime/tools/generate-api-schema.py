@@ -148,6 +148,8 @@ def request_schemas():
     update('ConfigBody', sound_volume=integer(1, 100))
     if 'discovery_controls' in schemas['ConfigBody']['properties']:
         update('ConfigBody', discovery_controls=dict(BOOL, default=False, description='opt in to writable home assistant discovery and the restricted mqtt settings command; discovery must also be enabled for entities'))
+    if 'mdns' in schemas['ConfigBody']['properties']:
+        update('ConfigBody', mdns=dict(BOOL, default=True, description='the mdns responder: while on the clock answers for tc002-<mac>.local and _tc002._tcp; off withdraws the name'))
     for key, val in clock_fields.items():
         update('ConfigBody', **{'clock_' + ('digit' if key == 'digits' else key): val})
     schemas['ConfigBody']['allOf'] = [{'if': nonnull('latitude'), 'then': nonnull('longitude')}, {'if': nonnull('longitude'), 'then': nonnull('latitude')}]

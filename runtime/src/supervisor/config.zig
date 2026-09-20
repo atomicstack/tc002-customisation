@@ -87,6 +87,9 @@ pub const Config = struct {
     discovery: bool = false,
     discovery_controls: bool = false,
     discovery_prefix: Text = Text.init("homeassistant"),
+    /// the mdns responder: the clock answers for `tc002-<mac>.local` while this is on. on by
+    /// default, because one clock finding another by name is the point; off withdraws the name.
+    mdns: bool = true,
     origins: [api.max_origins]Text = .{ .{}, .{}, .{}, .{} },
     origin_count: u8 = 0,
     mqtt: Mqtt = .{},
@@ -183,6 +186,7 @@ pub const Config = struct {
         if (p.metrics_interval_s) |v| next.metrics_interval_s = v;
         if (p.discovery) |v| next.discovery = v;
         if (p.discovery_controls) |v| next.discovery_controls = v;
+        if (p.mdns) |v| next.mdns = v;
         if (p.discovery_prefix) |v| try next.discovery_prefix.set(v);
         if (p.clock_font) |v| next.clock_font = @intFromEnum(v);
         if (p.clock_colour_mode) |v| next.clock_colour_mode = @intFromEnum(v);
@@ -334,10 +338,51 @@ fn getText(in: []const u8, off: *usize) error{BadPayload}!Text {
     return t;
 }
 
-const text_wire = 1 + text_max;
-/// schema, revisions, brightness/base/generator, timezone, ntp, intervals, discovery, origins,
-/// mqtt, the clock style, the night schedule
-pub const encoded_len = 2 + 4 + 4 + 3 + text_wire + 5 + 4 + 2 + 4 + 1 + text_wire + 1 + api.max_origins * text_wire + 1 + text_wire + 2 + 4 * text_wire + 1 + 12 + 8 + 1 + 5 * text_wire + 2 + 1 + param.owner_count * param.max_per_owner * 4 + (1 + 2 + 2) + (1 + 1) + (1 + 2 + 2);
+/// a text on the wire: one length byte, then `text_max` bytes whatever the length
+pub const text_wire = 1 + text_max;
+
+/// the wire layout of `encode`: one named term per write, in the order it writes them, so the
+/// total is read off the encoder rather than recounted. `encode` asserts it lands exactly on
+/// `encoded_len`, and the round-trip tests catch a term that drifts from its writer. a new field
+/// is a new term at the end, and a new line in `encode` and `decode`.
+const Wire = struct {
+    const schema = 1;
+    const revision = 4;
+    const saved_revision = 4;
+    const brightness_base_generator = 3;
+    const timezone = text_wire;
+    const ntp_server = 1 + 4; // a present flag, then the address
+    const ntp_interval_s = 4;
+    const frame_timeout_ms = 2;
+    const metrics_interval_s = 4;
+    const discovery_flags = 2; // discovery, discovery_controls
+    const discovery_prefix = text_wire;
+    const origin_count = 1;
+    const origins = api.max_origins * text_wire;
+    const mqtt_enabled = 1;
+    const mqtt_host = text_wire;
+    const mqtt_port = 2;
+    const mqtt_texts = 4 * text_wire; // username, password, client id, prefix
+    const mqtt_tls = 1;
+    const clock_style = 12; // font, colour mode, two colours, gradient, spread, ip mode, digit
+    const night = 8; // enabled, brightness, lead, a location flag, latitude, longitude
+    const ntfy_enabled = 1;
+    const ntfy_texts = 5 * text_wire; // url, topic, token, username, password
+    const ntfy_duration_s = 2;
+    const ntfy_insecure = 1;
+    const generator_params = param.owner_count * param.max_per_owner * 4;
+    const berry = 1 + 2 + 2; // enabled, heap kb, handler ms
+    const battery = 1 + 2 + 2; // shutdown, shutdown mv, grace s
+    const sound = 1 + 1; // enabled, volume
+    const mdns = 1;
+};
+pub const encoded_len = Wire.schema + Wire.revision + Wire.saved_revision + Wire.brightness_base_generator +
+    Wire.timezone + Wire.ntp_server + Wire.ntp_interval_s + Wire.frame_timeout_ms + Wire.metrics_interval_s +
+    Wire.discovery_flags + Wire.discovery_prefix + Wire.origin_count + Wire.origins +
+    Wire.mqtt_enabled + Wire.mqtt_host + Wire.mqtt_port + Wire.mqtt_texts + Wire.mqtt_tls +
+    Wire.clock_style + Wire.night +
+    Wire.ntfy_enabled + Wire.ntfy_texts + Wire.ntfy_duration_s + Wire.ntfy_insecure +
+    Wire.generator_params + Wire.berry + Wire.battery + Wire.sound + Wire.mdns;
 
 pub fn encode(c: *const Config, out: *[encoded_len]u8) void {
     var o: usize = 0;
@@ -427,6 +472,8 @@ pub fn encode(c: *const Config, out: *[encoded_len]u8) void {
     out[o] = @intFromBool(c.sound.enabled);
     o += 1;
     out[o] = c.sound.volume;
+    o += 1;
+    out[o] = @intFromBool(c.mdns);
     o += 1;
     std.debug.assert(o == encoded_len);
 }
@@ -522,6 +569,8 @@ pub fn decode(in: []const u8) error{BadPayload}!Config {
     o += 1;
     c.sound.volume = in[o];
     o += 1;
+    c.mdns = in[o] != 0;
+    o += 1;
     return c;
 }
 
@@ -541,6 +590,7 @@ const FileForm = struct {
     discovery: bool = false,
     discovery_controls: bool = false,
     discovery_prefix: []const u8 = "homeassistant",
+    mdns: bool = true,
     origins: []const []const u8 = &.{},
     clock_font: []const u8 = "classic",
     clock_colour_mode: []const u8 = "solid",
@@ -661,6 +711,7 @@ pub fn toJson(c: *const Config, out: []u8) error{Overflow}![]u8 {
         .discovery = c.discovery,
         .discovery_controls = c.discovery_controls,
         .discovery_prefix = c.discovery_prefix.slice(),
+        .mdns = c.mdns,
         .origins = origins_buf[0..c.origin_count],
         .mqtt = .{
             .enabled = c.mqtt.enabled,
@@ -713,6 +764,7 @@ pub fn fromJson(bytes: []const u8, arena: []u8) error{ Invalid, TooLong }!Config
     c.metrics_interval_s = f.metrics_interval_s;
     c.discovery = f.discovery;
     c.discovery_controls = f.discovery_controls;
+    c.mdns = f.mdns;
     c.night = f.night;
     if (f.night_brightness < 1 or f.night_brightness > 100) return error.Invalid;
     c.night_brightness = f.night_brightness;
@@ -1210,4 +1262,19 @@ test "ha controls require an explicit persisted opt in" {
         try std.testing.expect((try fromJson(try toJson(&c, &out), &arena)).discovery_controls);
         try std.testing.expect(!(try fromJson("{\"schema\":1}", &arena)).discovery_controls);
     }
+}
+
+test "mdns is on unless turned off, and the choice round-trips" {
+    var c = Config{};
+    try std.testing.expect(c.mdns);
+    try c.patch(.{ .mdns = false });
+    try std.testing.expect(!c.mdns);
+    var wire: [encoded_len]u8 = undefined;
+    encode(&c, &wire);
+    try std.testing.expect(!(try decode(&wire)).mdns);
+    var out: [file_max]u8 = undefined;
+    var arena: [8192]u8 = undefined;
+    try std.testing.expect(!(try fromJson(try toJson(&c, &out), &arena)).mdns);
+    // a settings file written before the switch existed means on, the default
+    try std.testing.expect((try fromJson("{\"schema\":1}", &arena)).mdns);
 }

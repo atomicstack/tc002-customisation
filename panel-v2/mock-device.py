@@ -279,7 +279,7 @@ class Device:
             self._append_log(line)
         self.config = {"revision": 0, "saved_revision": 0, "brightness": 100, "base": "art", "generator": "popsquares",
                        "timezone": "UTC0", "ntp_server": None, "ntp_interval_s": 300, "frame_timeout_ms": 500,
-                       "metrics_interval_s": 30, "discovery": False, "discovery_controls": False, "discovery_prefix": "homeassistant", "origins": [],
+                       "metrics_interval_s": 30, "discovery": False, "discovery_controls": False, "discovery_prefix": "homeassistant", "mdns": True, "origins": [],
                        "clock": dict(DEFAULT_CLOCK), "ip_mode": "lines",
                        "night": False, "night_brightness": 5, "night_lead_min": 30,
                        "latitude": None, "longitude": None,
@@ -400,7 +400,7 @@ class Device:
                 "base": c["base"], "generator": c["generator"], "timezone": c["timezone"],
                 "ntp": {"server": c["ntp_server"], "interval_s": c["ntp_interval_s"]},
                 "frame_timeout_ms": c["frame_timeout_ms"], "metrics_interval_s": c["metrics_interval_s"],
-                "discovery": {"enabled": c["discovery"], "controls": c["discovery_controls"], "prefix": c["discovery_prefix"]}, "clock": dict(c["clock"]),
+                "discovery": {"enabled": c["discovery"], "controls": c["discovery_controls"], "prefix": c["discovery_prefix"]}, "mdns": c["mdns"], "clock": dict(c["clock"]),
                 "night": {"enabled": c["night"], "brightness": c["night_brightness"], "lead_min": c["night_lead_min"]},
                 "latitude": c["latitude"], "longitude": c["longitude"],
                 "location": {"latitude": self.point()[0], "longitude": self.point()[1], "source": self.point()[2]},
@@ -766,6 +766,10 @@ class Device:
             if not isinstance(body["discovery"], bool):
                 raise Reject(400, "invalid_json", "the body is not valid json for this schema")
             nxt["discovery"] = body["discovery"]
+        if "mdns" in body:
+            if not isinstance(body["mdns"], bool):
+                raise Reject(400, "invalid_type", "mdns must be boolean")
+            nxt["mdns"] = body["mdns"]
         if "discovery_prefix" in body:
             if not isinstance(body["discovery_prefix"], str) or not 1 <= len(body["discovery_prefix"]) <= 64:
                 raise Reject(400, "invalid_discovery_prefix", "discovery_prefix must be 1..64 characters")
@@ -866,7 +870,7 @@ SCHEMAS = {
     "input": ({"control", "event", "steps", "request_id", "epoch"}, {"control", "event"}),
     "notify": ({"text", "colour", "duration_s", "transition", "direction", "transition_ms", "exit", "request_id", "epoch"}, {"text"}),
     "config": ({"brightness", "base", "generator", "timezone", "ntp_server", "ntp_interval_s", "frame_timeout_ms",
-                "metrics_interval_s", "discovery", "discovery_controls", "discovery_prefix", "expected_revision",
+                "metrics_interval_s", "discovery", "discovery_controls", "discovery_prefix", "mdns", "expected_revision",
                 "clock_font", "clock_colour_mode", "clock_colour", "clock_colour2", "clock_gradient", "clock_spread",
                 "clock_digit", "ip_mode", "generator_params",
                 "night", "night_brightness", "night_lead_min", "latitude", "longitude", "location_auto",

@@ -1459,7 +1459,8 @@ cannot answer anyway.
 {"epoch":1,"revision":12,"renderer":"running","base":"art","generator":"popsquares","seed":3735928559,
  "overlay":"none","brightness":100,"power":true,"presented":35990,"fps":59.9,
  "uptime_s":600,"memory_available_kb":16084,"cpu_pct":5,"restarts":0,
- "network":{"ip":"10.0.0.111"},"time":{"state":"unsynced","age_s":null},
+ "network":{"ip":"10.0.0.111"},"mdns":{"enabled":true,"name":"tc002-ccc4b277a282.local","state":"announced"},
+ "time":{"state":"unsynced","age_s":null},
  "menu":{"open":true,"kind":"device","state":"browsing","item":"ip","index":1,"items":11},
  "night":{"enabled":true,"phase":"to_night","held":false,
           "today":{"dawn":1789101184,"sunrise":1789103263,"sunset":1789150014,"dusk":1789152094,"sun_up":false}},
@@ -1572,6 +1573,7 @@ shows up as a revision gap, and the gap is the signal to resync.
 | `battery.shutdown`, `battery.shutdown_mv`, `battery.grace_s` (patch as `battery_shutdown`, `battery_shutdown_mv`, `battery_grace_s`) | bool, default **true**; 3000–4000 mv, default 3550; 0–300 s, default 30 | [low-battery shutdown](#the-low-battery-shutdown). the warning threshold is `shutdown_mv + 50` and is not a setting of its own |
 | `metrics_interval_s` | 0 (off) or 10–3600 | mqtt `metrics` cadence |
 | `discovery.enabled`, `discovery.controls`, `discovery.prefix` (patch as `discovery`, `discovery_controls`, `discovery_prefix`) | bool; bool default false; ≤ 64 characters | opt-in discovery, with a separate opt-in for writable controls |
+| `mdns` | bool, default **true** | the [mdns responder](#discovery-mdns): the clock answers for `tc002-<mac>.local` and `_tc002._tcp` while on. turning it off withdraws the name (a goodbye, twice) and closes the socket; on again probes and announces afresh |
 | `allowed_origins` | up to four exact origins | read from the file only |
 | `expected_revision` (patch only) | | the patch is refused with `409 revision_conflict` unless the current revision matches |
 
@@ -1588,7 +1590,7 @@ the file itself is the same document in a slightly different shape, with
 {"schema":1,"revision":1,"brightness":60,"base":"clock","generator":"popsquares",
  "timezone":"AEST-10AEDT,M10.1.0,M4.1.0/3","ntp_server":null,"ntp_interval_s":300,
  "frame_timeout_ms":500,"metrics_interval_s":30,"discovery":false,"discovery_prefix":"homeassistant",
- "origins":[],"mqtt":{"enabled":false,"host":"","port":1883,"username":"","password":"","client_id":"","prefix":"","tls":false}}
+ "mdns":true,"origins":[],"mqtt":{"enabled":false,"host":"","port":1883,"username":"","password":"","client_id":"","prefix":"","tls":false}}
 ```
 
 an invalid or unknown file is ignored with a warning (defaults are used and
@@ -1648,7 +1650,13 @@ remaining limitations:
 - outgoing names are uncompressed; incoming compression pointers are supported.
 - qu questions from port 5353 still receive multicast replies.
 - no known-answer suppression or randomized multicast response delay.
-- discovery is always on; there is no configuration setting.
+
+it is on by default and off with the `mdns` setting (`PATCH /config
+{"mdns":false}`, admin token, durable once saved). off withdraws the name with
+the goodbye below and closes the socket; on again is a fresh start, probing and
+announcing as at boot. `GET /status` reports it as `mdns: {enabled, name, state}`
+with `state` one of `off`, `waiting` (on, but no address yet), `probing`,
+`announced` or `withdrawing`.
 
 a name that is given up is withdrawn with a goodbye (rfc 6762 s10.1: the same
 records with every ttl at zero), so caches drop it within a second instead of at
@@ -2366,11 +2374,6 @@ all on a warm device that had been up for days, under the lock, on
 - **input on hardware.** the outward events and remote injection are tested
   through the api; the buttons have been pressed under this runtime (see the
   keymap above), the knob's push has not.
-- **a switch for discovery.** mdns is always on; turning it off means threading
-  a setting through the api body, the ipc `ConfigPatch` and its `has` bits,
-  `config.Config` and `GET /config`, which is the settings invariant and was
-  left for a second pass. see [discovery](#discovery-mdns) for what the
-  responder also leaves out.
 
 ## design notes
 

@@ -1428,6 +1428,8 @@ pub const ConfigPatch = struct {
     battery_shutdown: u8 = 0,
     battery_shutdown_mv: u16 = 0,
     battery_grace_s: u16 = 0,
+    /// the mdns responder on or off
+    mdns: u8 = 0,
 
     pub const F = struct {
         pub const brightness: u64 = 1 << 0;
@@ -1439,6 +1441,7 @@ pub const ConfigPatch = struct {
         pub const frame_timeout_ms: u64 = 1 << 6;
         pub const metrics_interval_s: u64 = 1 << 7;
         pub const discovery_controls: u64 = 1 << 32;
+        pub const mdns: u64 = 1 << 33;
         pub const discovery: u64 = 1 << 8;
         pub const discovery_prefix: u64 = 1 << 9;
         pub const expected_revision: u64 = 1 << 10;
@@ -1465,8 +1468,34 @@ pub const ConfigPatch = struct {
         pub const sound_volume: u64 = 1 << 28;
     };
 
-    pub const fixed_len = 8 + 3 + 65 + 4 + 4 + 2 + 4 + 2 + 65 + 4 + 12 + 7 + (1 + 2 + 2) + (1 + 1) + (1 + 2 + 2) + 1;
-    pub const wire_len = fixed_len + api.max_params_per_patch * 6;
+    /// the wire layout of the patch's fixed part: one named term per write, in the order
+    /// `encodePacket` writes them; the generator parameters follow, `param_count` of them.
+    /// a new field is a new term before `param_count`, and a line each in encode and decode.
+    const Wire = struct {
+        const has = 8;
+        const brightness_base_generator = 3;
+        const timezone = config.text_wire;
+        const ntp_server = 4;
+        const ntp_interval_s = 4;
+        const frame_timeout_ms = 2;
+        const metrics_interval_s = 4;
+        const discovery_flags = 2; // discovery, discovery_controls
+        const discovery_prefix = config.text_wire;
+        const expected_revision = 4;
+        const clock_style = 12; // font, colour mode, two colours, gradient, spread, ip mode, digit
+        const night = 7; // enabled, brightness, lead, latitude, longitude
+        const berry = 1 + 2 + 2; // enabled, heap kb, handler ms
+        const sound = 1 + 1; // enabled, volume
+        const battery = 1 + 2 + 2; // shutdown, shutdown mv, grace s
+        const mdns = 1;
+        const param_count = 1;
+        const generator_param = 1 + 1 + 4; // owner, slot, value
+    };
+    pub const fixed_len = Wire.has + Wire.brightness_base_generator + Wire.timezone + Wire.ntp_server +
+        Wire.ntp_interval_s + Wire.frame_timeout_ms + Wire.metrics_interval_s + Wire.discovery_flags +
+        Wire.discovery_prefix + Wire.expected_revision + Wire.clock_style + Wire.night +
+        Wire.berry + Wire.sound + Wire.battery + Wire.mdns + Wire.param_count;
+    pub const wire_len = fixed_len + api.max_params_per_patch * Wire.generator_param;
 
     pub fn fromApi(p: api.ConfigPatch) error{TooLong}!ConfigPatch {
         var w = ConfigPatch{};
@@ -1505,6 +1534,10 @@ pub const ConfigPatch = struct {
         if (p.discovery_controls) |v| {
             w.has |= F.discovery_controls;
             w.discovery_controls = @intFromBool(v);
+        }
+        if (p.mdns) |v| {
+            w.has |= F.mdns;
+            w.mdns = @intFromBool(v);
         }
         if (p.discovery) |v| {
             w.has |= F.discovery;
@@ -1620,6 +1653,7 @@ pub const ConfigPatch = struct {
             .frame_timeout_ms = if (h & F.frame_timeout_ms != 0) self.frame_timeout_ms else null,
             .metrics_interval_s = if (h & F.metrics_interval_s != 0) self.metrics_interval_s else null,
             .discovery_controls = if (h & F.discovery_controls != 0) self.discovery_controls != 0 else null,
+            .mdns = if (h & F.mdns != 0) self.mdns != 0 else null,
             .discovery = if (h & F.discovery != 0) self.discovery != 0 else null,
             .discovery_prefix = if (h & F.discovery_prefix != 0) self.discovery_prefix.slice() else null,
             .expected_revision = if (h & F.expected_revision != 0) self.expected_revision else null,
@@ -2412,6 +2446,8 @@ fn encodePayload(msg: Message, out: []u8) usize {
             std.mem.writeInt(u16, out[o + 1 ..][0..2], p.battery_shutdown_mv, .little);
             std.mem.writeInt(u16, out[o + 3 ..][0..2], p.battery_grace_s, .little);
             o += 5;
+            out[o] = p.mdns;
+            o += 1;
             out[o] = p.param_count;
             o += 1;
             for (p.params[0..p.param_count]) |rp| {
@@ -2972,6 +3008,8 @@ pub fn decodePacket(bytes: []const u8) Error!Packet {
             w.battery_shutdown_mv = std.mem.readInt(u16, b[o + 1 ..][0..2], .little);
             w.battery_grace_s = std.mem.readInt(u16, b[o + 3 ..][0..2], .little);
             o += 5;
+            w.mdns = b[o];
+            o += 1;
             if (b.len < o + 1) return error.BadPayload;
             w.param_count = @min(b[o], w.params.len);
             o += 1;
@@ -3251,4 +3289,14 @@ test "config patch fixed length covers every scalar before generator parameters"
     var buf: [codec.max_message]u8 = undefined;
     const packet = try encodePacket(.{ .config_patch = .{} }, 1, 0, &buf);
     try std.testing.expectEqual(ConfigPatch.fixed_len, packet.len - codec.header_len);
+}
+
+test "the mdns switch survives the config patch wire including explicit false" {
+    for ([_]?bool{ null, false, true }) |value| {
+        const w = try ConfigPatch.fromApi(.{ .mdns = value, .battery_grace_s = 12 });
+        var buf: [codec.max_message]u8 = undefined;
+        const back = try decodePacket(try encodePacket(.{ .config_patch = w }, 7, 0, &buf));
+        try std.testing.expectEqual(value, back.message.config_patch.toApi().mdns);
+        try std.testing.expectEqual(@as(?u16, 12), back.message.config_patch.toApi().battery_grace_s);
+    }
 }

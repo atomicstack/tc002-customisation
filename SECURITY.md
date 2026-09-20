@@ -90,8 +90,9 @@ the stock app and its unauthenticated api are not, and the picture changes:
   but it is one more reason the clock belongs on a network you control. the
   responder's ownership rules (a source port of 5353 and an observed ttl of 255)
   keep off-link packets from renaming it, and are not authentication: another
-  host on the same link can claim the name. it is always on in this version;
-  there is no setting to turn it off. see [`RUNTIME.md`](RUNTIME.md#discovery-mdns).
+  host on the same link can claim the name. it is on by default; the `mdns`
+  setting turns it off, which withdraws the name from every cache on the lan.
+  see [`RUNTIME.md`](RUNTIME.md#discovery-mdns).
 - **every api route needs a bearer token**, including reads. two random
   256-bit tokens (control and admin) are generated per runtime directory,
   compared in constant time, stored at mode 0600 under `/data/tc002/state/credentials/`

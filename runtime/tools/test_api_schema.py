@@ -75,6 +75,7 @@ class ApiContractTests(unittest.TestCase):
             ('InputBody', {'control': 'rotary', 'event': 'cw', 'steps': 3}, {'control': 'left', 'event': 'cw'}),
             ('NotifyBody', {'text': 'hello', 'colour': 'ff0088'}, {'text': 'hello', 'duration_s': 301}),
             ('ConfigBody', {'discovery_controls': True}, {'brightness': 101}),
+            ('ConfigBody', {'mdns': False}, {'mdns': 'off'}),
             ('ConfigBody', {'latitude': 52.1, 'longitude': 4.3}, {'latitude': 52.1}),
             ('MqttBody', {'host': '192.168.1.2'}, {'port': 0}),
             ('MqttBody', {'host': '192.168.001.002'}, {'host': '999.168.1.2'}),

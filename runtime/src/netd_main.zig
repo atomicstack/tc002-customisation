@@ -861,7 +861,19 @@ const Netd = struct {
         const mqtt_changed = !std.meta.eql(cfg.mqtt, self.cfg.mqtt);
         const discovery_changed = self.cfg.discovery != cfg.discovery or self.cfg.discovery_controls != cfg.discovery_controls;
         const prefix_changed = !std.mem.eql(u8, cfg.discovery_prefix.slice(), self.cfg.discovery_prefix.slice());
+        const mdns_was_off = !self.cfg.mdns;
         self.cfg = cfg;
+        if (!cfg.mdns and !self.mdns_owner.retired) {
+            // withdraw the name first; the tick sends the goodbyes and then closes the socket
+            self.mdns_owner.retire(now);
+            if (self.mdns_fd >= 0) log.info("mdns: off; withdrawing {s}.local", .{self.mdns_owner.name[0..self.mdns_owner.name_len]});
+        } else if (cfg.mdns and mdns_was_off) {
+            // a fresh owner: probe and announce as if netd had just started
+            self.mdnsClose();
+            self.mdns_owner = .{};
+            self.mdns_retry_ns = 0;
+            log.info("mdns: on", .{});
+        }
         if (self.have_cfg and (discovery_changed or prefix_changed)) self.discoveryStart(now);
         self.have_cfg = true;
         if (mqtt_changed or discovery_changed or prefix_changed or !self.client.enabled) self.applyMqttSettings(now);
@@ -1310,7 +1322,9 @@ const Netd = struct {
         if (st.cpu_pct == 255) o.add("\"cpu_pct\":null,") else o.fmt("\"cpu_pct\":{d},", .{st.cpu_pct});
         o.fmt("\"restarts\":{d},\"network\":{{\"ip\":", .{st.restarts});
         if (st.ip_present != 0) o.fmt("\"{d}.{d}.{d}.{d}\"", .{ st.ip[0], st.ip[1], st.ip[2], st.ip[3] }) else o.add("null");
-        o.fmt("}},\"time\":{{\"state\":\"{s}\",\"age_s\":", .{timeStateName(st.time_state)});
+        o.add("},\"mdns\":");
+        self.mdnsStatusJson(o);
+        o.fmt(",\"time\":{{\"state\":\"{s}\",\"age_s\":", .{timeStateName(st.time_state)});
         if (st.time_age_s == 0xffffffff) o.add("null") else o.fmt("{d}", .{st.time_age_s});
         o.add("},\"clock\":");
         clockJson(o, st.clock);
@@ -1381,7 +1395,7 @@ const Netd = struct {
         if (c.ntp_server) |s| o.fmt("\"{d}.{d}.{d}.{d}\"", .{ s[0], s[1], s[2], s[3] }) else o.add("null");
         o.fmt(",\"interval_s\":{d}}},\"frame_timeout_ms\":{d},\"metrics_interval_s\":{d},\"discovery\":{{\"enabled\":{},\"controls\":{},\"prefix\":", .{ c.ntp_interval_s, c.frame_timeout_ms, c.metrics_interval_s, c.discovery, c.discovery_controls });
         o.str(c.discovery_prefix.slice());
-        o.add("},\"clock\":");
+        o.fmt("}},\"mdns\":{},\"clock\":", .{c.mdns});
         clockJson(o, messages.ClockStyle.full(c.clockStyle()));
         o.fmt(",\"ip_mode\":\"{s}\"", .{enumName(ip.Mode, c.ip_mode)});
         o.fmt(",\"night\":{{\"enabled\":{},\"brightness\":{d},\"lead_min\":{d}}},\"latitude\":", .{ c.night, c.night_brightness, c.night_lead_min });
@@ -1960,6 +1974,11 @@ const Netd = struct {
     /// loss/change, so the membership and outbound address cannot remain stale.
     fn mdnsOnStatus(self: *Netd, now: u64) void {
         const st = self.status;
+        if (!self.cfg.mdns) {
+            // off: keep the socket only while the goodbyes are still going out
+            if (self.mdns_fd >= 0 and !self.mdns_owner.withdrawing()) self.mdnsClose();
+            return;
+        }
         if (st.mac_present == 0 or st.ip_present == 0) {
             self.mdnsClose();
             self.mdns_owner.configure(st.mac, null, now);
@@ -1993,6 +2012,19 @@ const Netd = struct {
         if (self.mdns_fail_logged) log.info("mdns: socket recovered", .{});
         self.mdns_fail_logged = false;
         log.info("mdns: probing {s}.local", .{self.mdns_owner.responder().?.instance});
+    }
+
+    /// `{"enabled":..,"name":..,"state":..}`: what the clock is called on the lan right now.
+    fn mdnsStatusJson(self: *Netd, o: *Out) void {
+        const owner = &self.mdns_owner;
+        const state: []const u8 = if (!self.cfg.mdns and !owner.withdrawing()) "off" else if (owner.withdrawing()) "withdrawing" else if (self.mdns_fd < 0) "waiting" else if (owner.ready()) "announced" else "probing";
+        o.fmt("{{\"enabled\":{},\"name\":", .{self.cfg.mdns});
+        if (self.mdns_fd >= 0 and owner.name_len > 0 and !owner.retired) {
+            var name_buf: [mdns.name_capacity + 6]u8 = undefined;
+            const name = std.fmt.bufPrint(&name_buf, "{s}.local", .{owner.name[0..owner.name_len]}) catch "";
+            o.str(name);
+        } else o.add("null");
+        o.fmt(",\"state\":\"{s}\"}}", .{state});
     }
 
     /// on the way out, tell the caches the name is gone rather than leaving it to expire. twice,
