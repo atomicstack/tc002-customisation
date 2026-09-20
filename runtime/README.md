@@ -238,7 +238,10 @@ hostname gets `:5555` appended, since that is the serial adb gives a tcp transpo
 otherwise, which is right with one clock and fails with "more than one device/emulator" with two. so
 with two clocks attached, `export TC002_DEVICE=<ip>:5555` before `tc002-run.sh`, and give
 `tc002-up.sh --device`. `tc002-up.sh` no longer falls back to "whichever single clock is connected".
-`tc002-devices.py` lists them, by mdns name where the runtime is running.
+`tc002-devices.py` lists them, by mdns name where the runtime is running. tokens are per clock:
+`tc002-up.sh` writes `tokens-<host>` beside `tokens` (the last clock deployed), `tc002ctl.py
+--token-file tokens-<host>` picks one, and the console's proxy reads every `tokens-<host>` file
+beside the one it was started with, so `?host=` switches clocks with the right tokens.
 
 ```bash
 tools/tc002-run.sh push                     # build, check, push to /tmp/tc002/

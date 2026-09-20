@@ -33,8 +33,9 @@ what ulanzi ships, driven from your own machine instead of ulanzi studio:
   built-in apps, custom app frames, brightness, wifi, the lot. unauthenticated,
   so anything on the network can drive it.
 - **mqtt**, for the same display control through a broker you run.
-- **`tc002-adopt.py`**, which finds a factory-fresh clock on its setup ap and
-  joins it to your wifi, replacing ulanzi studio's onboarding.
+- **`tc002-adopt.py`**, which finds stock clocks on the lan and joins a
+  factory-fresh one to your wifi from its setup ap, replacing ulanzi studio's
+  onboarding; **`tc002-ap-probe.sh`** does the ap visit unattended on macos.
 - **`panel/`**, a browser console for the stock app (the stock ui is
   chinese-only).
 - **`tc002-ntp-patch.py`**, which makes the clock sync from your own ntp server
@@ -65,6 +66,11 @@ authenticated api of its own. around it:
   and a berry script editor, with the device's own renderer compiled to wasm so
   the preview draws the device's pixels rather than an approximation of them.
 - **`api-client-v2/`**, a go command-line client for the runtime's `/api/v1`.
+- **`tc002-onboard.sh`**, the path from the box to the runtime in one command,
+  and **`tc002-mkrelease.sh`**, the tarball that path runs from on a machine
+  with no compiler.
+- **`tc002-devices.py`**, which lists every clock on the lan by name, so two
+  clocks are never "the device".
 - **`tc002ctl.py`** for driving the api by hand, and **`tc002-run.sh`** /
   **`tc002-up.sh`** for volatile development installs over adb.
 - **`led/`** and **`led-zig/`**, standalone generative-art renderers that talk
@@ -99,13 +105,19 @@ tools:
 
 | file | what it is |
 |------|-----------|
-| [`tc002-adopt.py`](tc002-adopt.py) | discover tc002 devices on the lan and join a factory-fresh one to wifi — replaces ulanzi studio for setup |
+| [`INSTALL.md`](INSTALL.md) | the walkthrough from the box to the replacement runtime: dependencies, every step, getting back to stock, and what looks broken but is not |
+| [`tc002-onboard.sh`](tc002-onboard.sh) | that walkthrough as one command: find or adopt the clock, check it against `FINGERPRINTS.md`, take a verified backup of `res`, build your image, and flash only with `--flash` |
+| [`tc002-devices.py`](tc002-devices.py) | list every clock this machine can reach, by mdns name where the runtime runs and by adb or http where it does not; `--one` for scripts, which refuses to guess between two |
+| [`tc002-adopt.py`](tc002-adopt.py) | discover stock clocks on the lan (their udp/55555 broadcast, `--sweep` for the /24) and join a factory-fresh one to wifi from its setup ap — replaces ulanzi studio for setup, and works on linux |
+| [`tc002-ap-probe.sh`](tc002-ap-probe.sh) | macos only: join the `U-Clock` setup ap, survey it, adopt the clock, and put this machine's wifi back on every exit path; `--adopt-only` is what the onboarding script calls |
+| [`tc002-mkrelease.sh`](tc002-mkrelease.sh) | build the release tarball: the armv7 binaries, the static busybox, the scripts and the docs, for a machine with no compiler |
 | [`panel/`](panel/) | an english web control panel for the device (the stock ui is chinese-only) |
 | [`mqtt-check.py`](mqtt-check.py) | verify mosquitto broker credentials from the raw mqtt connack code |
 | [`tc002-ntp-patch.py`](tc002-ntp-patch.py) | make the clock sync every n minutes instead of every 2 h, and/or from your own ntp server — patches the app library in tmpfs, nothing in flash |
 | [`runtime/tools/tc002-flash.sh`](runtime/tools/tc002-flash.sh) | flash an `UPDATE.img` to the `res` partition: backs up `mtd3` first, refuses to continue unless the backup unpacks, prefers usb, and puts a notice on the panel. the only thing here that writes to flash |
 | [`runtime/tools/tc002-mkimage.sh`](runtime/tools/tc002-mkimage.sh) | assemble that image from your device's own `res` plus the runtime, the bootstrap, busybox and the boot scripts |
 | [`runtime/tools/tc002-mkbusybox.sh`](runtime/tools/tc002-mkbusybox.sh) | build the static armv7 busybox the image needs, from a pinned upstream tarball — the vendor's own has no `udhcpc` |
+| [`runtime/tools/`](runtime/README.md) | `tc002-up.sh` (bring the runtime up over adb, volatile), `tc002-run.sh`, `tc002ctl.py` (drive the api by hand), `tc002-lock.sh` (the device lock agents share), and the demo and doc generators — described in [`runtime/README.md`](runtime/README.md) |
 | [`tc002-update-img.py`](tc002-update-img.py) | inspect, unpack and build the device's `update.img` (the `res` partition squashfs in the vendor's `ZKSWEV1.0` container): `inspect` runs the same checks the flasher does, `pack` rebuilds the vendor image byte for byte. see [`FIRMWARE.md`](FIRMWARE.md) |
 | [`api-client-v2/`](api-client-v2/README.md) | `tc002`, a go command-line client for the custom runtime's `/api/v1` — the scriptable counterpart to `panel-v2/`. not for the stock firmware |
 | [`led/`](led/) | popsquares generative art running on the device at 60 fps, straight to the panel over spi — static armv7 binary built with zig, plus an adb start/stop wrapper |
@@ -208,7 +220,16 @@ panel-v2/start-panel.sh --mock     # no device: mock-device.py plus the proxy, f
 
 `start-panel.sh` prints the console url (`http://127.0.0.1:8777/?host=<device-ip>`)
 and runs the proxy until ctrl-c; `--port`, `--token-file` and `--serial` cover
-the rest. by hand it is:
+the rest.
+
+**two clocks.** each clock has its own tokens. `tc002-up.sh` writes them to
+`tokens-<host>` as well as `tokens` (which is always the last clock deployed),
+and the proxy reads every `tokens-<host>` file beside the one it was started
+with, so one `start-panel.sh` serves both: change `?host=` in the url and each
+request carries that clock's tokens. a proxy started with only `tokens` for one
+clock answers 401 for the other, which is what "cannot connect" looks like.
+
+by hand it is:
 
 ```bash
 adb pull /data/tc002/state/credentials/tokens tokens # or let serve.py do it with --adb-pull

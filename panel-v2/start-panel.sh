@@ -8,9 +8,12 @@
 #                  address is read from it
 #   --port N       local port for the proxy (default 8777)
 #   --token-file   the token file pulled from /data/tc002/state/credentials/tokens; when
-#                  omitted, ./tokens or ../tokens is used if present, otherwise the tokens are
+#                  omitted, tokens-<host> (the file tc002-up.sh writes per clock) is used if
+#                  present in . or .., then ./tokens or ../tokens, otherwise the tokens are
 #                  pulled over adb into memory (nothing written to disk). they are durable, so a
-#                  pulled file keeps working across reboots
+#                  pulled file keeps working across reboots. the proxy also reads every
+#                  tokens-<host> file beside the one it was given, so the page can switch clocks
+#                  with ?host= and each request carries that clock's tokens
 #   --serial S     adb serial when several devices are attached
 #   --mock         no device: start mock-device.py (default port 18080, --mock-port to change) with
 #                  a shared token file and point the console at it
@@ -70,8 +73,11 @@ if [ "$mock" = 1 ]; then
   for _ in $(seq 1 50); do [ -s "$token_file" ] && break; sleep 0.1; done
   serve_args+=(--token-file "$token_file")
 else
-  if [ -z "$token_file" ]; then
-    for f in tokens ../tokens; do [ -s "$f" ] && token_file="$f" && break; done
+  if [[ -z $token_file ]]; then
+    bare_host=${host%%:*}
+    candidates=(tokens ../tokens)
+    [[ -n $bare_host ]] && candidates=("tokens-$bare_host" "../tokens-$bare_host" "${candidates[@]}")
+    for f in "${candidates[@]}"; do [[ -s $f ]] && token_file=$f && break; done
   fi
   if [ -n "$token_file" ]; then
     serve_args+=(--token-file "$token_file")

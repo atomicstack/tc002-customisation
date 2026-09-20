@@ -81,6 +81,27 @@ class PureTests(unittest.TestCase):
                 "client=kitchen,notify|display," + "c" * 64 + "\n")
         self.assertEqual(serve.parse_tokens(text.encode()), ("a" * 64, "b" * 64))
 
+    def test_per_host_token_files_override_the_default(self):
+        # two clocks, one proxy: the bring-up script writes tokens-<host> per clock, and the proxy
+        # picks the file for the host each request names, falling back to the single default pair.
+        with tempfile.TemporaryDirectory() as d:
+            default = {"control": "a" * 64, "admin": "b" * 64}
+            raw68 = secrets.token_bytes(64)
+            with open(os.path.join(d, "tokens-10.0.0.68"), "wb") as f:
+                f.write(raw68)
+            raw_port = secrets.token_bytes(64)
+            with open(os.path.join(d, "tokens-127.0.0.1:18081"), "wb") as f:
+                f.write(raw_port)
+            store = serve.TokenStore(default, d)
+            self.assertEqual(store.for_host("10.0.0.68"), {"control": raw68[:32].hex(), "admin": raw68[32:].hex()})
+            self.assertEqual(store.for_host("10.0.0.68:5555"), {"control": raw68[:32].hex(), "admin": raw68[32:].hex()})
+            self.assertEqual(store.for_host("10.0.0.111"), default)
+            # a host:port file wins over the bare host, so two mocks on localhost can differ
+            self.assertEqual(store.for_host("127.0.0.1:18081")["control"], raw_port[:32].hex())
+            self.assertEqual(store.for_host("127.0.0.1:18082"), default)
+            # no directory at all: always the default
+            self.assertEqual(serve.TokenStore(default, None).for_host("10.0.0.68"), default)
+
     def test_token_for(self):
         self.assertEqual(serve.token_for("PATCH", "config"), "admin")
         self.assertEqual(serve.token_for("POST", "config/save"), "admin")
@@ -253,6 +274,37 @@ class EndToEndTests(unittest.TestCase):
             self.assertEqual(json.loads(r.read()), {"control": True, "admin": True})
         with urllib.request.urlopen(f"http://127.0.0.1:{self.bare_port}/tokens") as r:
             self.assertEqual(json.loads(r.read()), {"control": False, "admin": False})
+
+    def test_a_second_clock_is_reached_with_its_own_tokens(self):
+        # a second mock with different tokens; the proxy's default pair is the first mock's, and a
+        # tokens-<host:port> file in its token directory carries the second's
+        control2, admin2 = secrets.token_hex(32), secrets.token_hex(32)
+        device2 = self.mock_mod.Device(control2, admin2)
+        mock2 = self.mock_mod.make_server(0, device2)
+        port2 = mock2.server_address[1]
+        threading.Thread(target=mock2.serve_forever, daemon=True).start()
+        try:
+            with tempfile.TemporaryDirectory() as d:
+                with open(os.path.join(d, f"tokens-127.0.0.1:{port2}"), "w") as f:
+                    f.write(f"control={control2}\nadmin={admin2}\n")
+                proxy = serve.make_server(0, {"control": self.control, "admin": self.admin}, HERE, token_dir=d)
+                pport = proxy.server_address[1]
+                threading.Thread(target=proxy.serve_forever, daemon=True).start()
+                try:
+                    for mport in (self.mock_port, port2):
+                        url = f"http://127.0.0.1:{pport}/api/127.0.0.1:{mport}/v1/status"
+                        with urllib.request.urlopen(url, timeout=5) as r:
+                            self.assertEqual(r.status, 200, f"mock on {mport}")
+                    # and the admin route on the second clock uses the second clock's admin token
+                    req = urllib.request.Request(f"http://127.0.0.1:{pport}/api/127.0.0.1:{port2}/v1/config",
+                                                 data=json.dumps({"brightness": 42}).encode(), method="PATCH",
+                                                 headers={"Content-Type": "application/json"})
+                    with urllib.request.urlopen(req, timeout=5) as r:
+                        self.assertEqual(r.status, 200)
+                finally:
+                    proxy.shutdown(); proxy.server_close()
+        finally:
+            mock2.shutdown(); mock2.server_close()
 
     def test_static_serving_is_allow_listed(self):
         # the proxy must never hand back its own source, or another file that happens to sit

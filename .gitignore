@@ -2,6 +2,7 @@
 *.dmg
 .DS_Store
 /tokens
+/tokens-*
 panel-v2/mock-tokens
 __pycache__/
 # vendor firmware images and partition dumps are ulanzi's, not ours

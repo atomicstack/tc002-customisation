@@ -254,6 +254,10 @@ if len(sys.argv) > 3 and sys.argv[3] == "pull":
                         self.assertEqual(call["args"][:2], ["-s", expected])
                 self.assertTrue(any(call["command"] == "tc002-run.sh" for call in calls))
                 self.assertEqual({call["device"] for call in calls}, {expected})
+                # the tokens land in the shared file and in one named for the clock, so two clocks
+                # do not overwrite each other's and the console can pick the right one per host
+                self.assertTrue((root / "tokens").exists())
+                self.assertTrue((root / f"tokens-{given.split(':')[0]}").exists(), sorted(os.listdir(root)))
 
 
 class DecoderTests(unittest.TestCase):

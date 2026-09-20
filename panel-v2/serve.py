@@ -7,6 +7,8 @@ origin (the runtime emits no cors headers, so direct browser->device fetches are
 
 tokens: --token-file FILE   the 64 raw bytes the supervisor writes (control token, then admin),
                             as pulled with `adb pull /data/tc002/state/credentials/tokens`
+        --token-dir DIR     per-clock files `tokens-<host>` here override --token-file for that
+                            host, so one proxy serves several clocks (default: --token-file's dir)
         --adb-pull          pull that file over adb at startup into memory (nothing on disk)
         --serial S          the adb serial/host:port to pull from, when several are connected
 without either the page loads but every proxied call fails 503 no_token.
@@ -73,6 +75,35 @@ def load_token_file(path):
     with open(path, "rb") as f:
         control, admin = parse_tokens(f.read())
     return {"control": control, "admin": admin}
+
+
+class TokenStore:
+    """one token pair per clock. `default` is the pair from --token-file or --adb-pull; a file
+    `tokens-<host:port>` or `tokens-<host>` in `token_dir` overrides it for that host, which is how one
+    proxy serves two clocks: the page names the clock with ?host= and the proxy picks its tokens.
+    tc002-up.sh writes `tokens-<host>` beside `tokens` for exactly this."""
+
+    def __init__(self, default, token_dir):
+        self.default = default
+        self.token_dir = token_dir
+        self._cache = {}     # path -> (mtime, pair)
+
+    def for_host(self, host):
+        if not self.token_dir:
+            return self.default
+        bare = host.rsplit(":", 1)[0] if ":" in host else host
+        for name in ((f"tokens-{host}",) if host != bare else ()) + (f"tokens-{bare}",):
+            path = os.path.join(self.token_dir, name)
+            try:
+                mtime = os.stat(path).st_mtime
+            except OSError:
+                continue
+            hit = self._cache.get(path)
+            if hit is None or hit[0] != mtime:
+                hit = (mtime, load_token_file(path))
+                self._cache[path] = hit
+            return hit[1]
+        return self.default
 
 
 # where the runtime keeps its credentials: the durable state directory first, then the volatile
@@ -174,9 +205,12 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             return self._json(400, {"error": "bad_proxy_path", "message": "expected /api/<host>/v1/<endpoint>"})
         host, endpoint, query = parts
         kind = token_for(method, endpoint)
-        token = self.server.tokens[kind]
+        try:
+            token = self.server.token_store.for_host(host)[kind]
+        except (OSError, ValueError) as e:
+            return self._json(503, {"error": "no_token", "message": f"the token file for {host} could not be read: {e}"})
         if token is None:
-            return self._json(503, {"error": "no_token", "message": f"serve.py has no {kind} token; restart it with --token-file or --adb-pull"})
+            return self._json(503, {"error": "no_token", "message": f"serve.py has no {kind} token for {host}; restart it with --token-file or --adb-pull, or write tokens-{host} in its token directory"})
         url = f"http://{host}/api/v1/{endpoint}" + (f"?{query}" if query else "")
         n = int(self.headers.get("Content-Length") or 0)
         body = self.rfile.read(n) if n else None
@@ -262,10 +296,11 @@ class Server(socketserver.ThreadingTCPServer):
     daemon_threads = True
 
 
-def make_server(port, tokens, directory=HERE):
+def make_server(port, tokens, directory=HERE, token_dir=None):
     handler = functools.partial(Handler, directory=directory)
     server = Server(("127.0.0.1", port), handler)
     server.tokens = tokens
+    server.token_store = TokenStore(tokens, token_dir)
     return server
 
 
@@ -273,6 +308,9 @@ def parse_args(argv):
     p = argparse.ArgumentParser(prog="serve.py", description="local server for the tc002 custom-runtime console")
     p.add_argument("port", nargs="?", type=int, default=8777)
     p.add_argument("--token-file", metavar="FILE")
+    p.add_argument("--token-dir", metavar="DIR",
+                   help="per-clock files tokens-<host> (or tokens-<host:port>) here override --token-file "
+                        "for that host; default: the directory of --token-file")
     p.add_argument("--adb-pull", action="store_true")
     p.add_argument("--serial", metavar="S")
     return p.parse_args(argv)
@@ -285,9 +323,11 @@ def main(argv):
         tokens = load_token_file(args.token_file)
     elif args.adb_pull:
         tokens = adb_pull(args.serial)
-    with make_server(args.port, tokens) as httpd:
+    token_dir = args.token_dir or (os.path.dirname(os.path.abspath(args.token_file)) if args.token_file else None)
+    with make_server(args.port, tokens, token_dir=token_dir) as httpd:
         have = ", ".join(k for k in ("control", "admin") if tokens[k]) or "none"
-        print(f"panel-v2 on http://127.0.0.1:{args.port}  (proxying /api/<device-ip>/v1/<endpoint>; tokens: {have})", flush=True)
+        per_host = f"; per-clock tokens-<host> files in {token_dir}" if token_dir else ""
+        print(f"panel-v2 on http://127.0.0.1:{args.port}  (proxying /api/<device-ip>/v1/<endpoint>; tokens: {have}{per_host})", flush=True)
         httpd.serve_forever()
 
 

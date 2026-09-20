@@ -105,11 +105,18 @@ say "start (tz $tz)"
 "$RUN" start --profile dev --tz "$tz" 2>&1 | grep -E 'supervisor running|ready|exited|error' | sed 's/^/   /'
 sleep 2
 
-say "tokens -> $ROOT/tokens (mode 0600; the console's start-panel.sh finds them there)"
+# two files: `tokens` is the last clock deployed, which is what a one-clock setup has always
+# used; `tokens-<host>` is this clock's own, which two clocks need so the second deploy does
+# not overwrite the first's, and which the console picks per host.
+say "tokens -> $ROOT/tokens and $ROOT/tokens-$ip (mode 0600; the console's start-panel.sh finds them there)"
 adb pull /data/tc002/state/credentials/tokens "$ROOT/tokens" >/dev/null 2>&1 ||
     adb pull /tmp/tc002/credentials/tokens "$ROOT/tokens" >/dev/null 2>&1 ||
     die "could not pull the tokens (did the supervisor start?)"
 chmod 600 "$ROOT/tokens"
+adb pull /data/tc002/state/credentials/tokens "$ROOT/tokens-$ip" >/dev/null 2>&1 ||
+    adb pull /tmp/tc002/credentials/tokens "$ROOT/tokens-$ip" >/dev/null 2>&1 ||
+    die "could not pull the tokens a second time"
+chmod 600 "$ROOT/tokens-$ip"
 
 if [ "$settings" = 1 ] && [ -n "$(adb shell "ls /data/tc002/state/config/config.json 2>/dev/null" | tr -d '\r\n')" ]; then
     settings=0
