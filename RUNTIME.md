@@ -28,7 +28,7 @@ does; how to build and run it is in [`runtime/README.md`](runtime/README.md).
 | `libtc002-bootstrap.so` | inside the vendor loader | 4.3 kb | the "startup library" the loader `dlopen`s. its constructor `execve`s the supervisor in place, passing `--from-bootstrap` and the loader's environment. no libc, no `DT_NEEDED`. if the exec fails it prints one line and exits 1; it never touches the anti-brick property |
 | `tc002-supervisor` | root | 1,078 kb | sets `sys.zkapp.state=running` first, then owns everything privileged: spawns and watches the renderer, binds port 80, generates the api tokens, keeps the settings file, reads the maintenance gesture, polls `wlan0`, relays api commands, samples `/proc` |
 | `tc002d` | root | 534 kb | the renderer. the only process that opens `/dev/spidev0.0` and the latch gpio. scenes, overlays, physical input, paced presentation, heartbeats |
-| `tc002-netd` | uid 1001 | 873 kb | the network daemon: an http/1.1 server for `/api/v1` and an mqtt 3.1.1 client. holds no authoritative state; every command is relayed through the supervisor to the live renderer |
+| `tc002-netd` | uid 1001 | 873 kb | the network daemon: an http/1.1 server for `/api/v1`, an mqtt 3.1.1 client and an mdns responder for the clock's own name ([discovery](#discovery-mdns)). holds no authoritative state; every command is relayed through the supervisor to the live renderer |
 | `tc002-ntfy` | uid 1001 | 1,231 kb | the ntfy subscriber: dns, tcp, tls 1.3 with the standard library (that is the size), the json stream; sends `notify` to the supervisor. only runs while `ntfy.enabled` |
 | `tc002-berryd` | uid 1001 | 749 kb | the [script interpreter](#scripting-berry): one berry vm on a fixed heap. the only binary that links libc. no network descriptor at all. only runs while `berry.enabled` |
 | `tc002-audiod` | root | 397 kb | the speaker: one sound at a time from the store, decoded and handed to the audio-out. root because `/dev/mi_ao` is `crw-------`, the same trade the renderer makes for spidev. only runs while `sound.enabled` |
@@ -1628,7 +1628,11 @@ changes within netd, but are not persisted across netd restarts.
 
 address loss closes the multicast socket and withdraws local ownership. an
 address change recreates membership and outbound routing before probing again.
-bind/join failures retry, without preventing the http api from running.
+bind/join failures retry once a second, without preventing the http api from
+running; the failure is logged once per episode and the recovery once, so a
+persistent failure cannot turn the log ring over. multicast loopback is off:
+netd is the only 5353 listener on the device, and its ownership logic does not
+need to hear its own probes.
 
 queries from ephemeral ports receive legacy unicast responses with their query
 id and question section, no cache-flush bits, and record ttls capped at ten
@@ -1653,9 +1657,14 @@ adb metadata. conflicting instance names at different addresses remain separate,
 so `--one` refuses to select one silently. `tc002-up.sh --device` accepts bare ips
 or hostnames (default adb port 5555) and explicit ports.
 
+`tc002-devices.py` asks on every ipv4 interface the host has, runs the probe
+alongside the adb probes and any sweep, and stops 300 ms after the last answer
+rather than waiting out its two-second window. a clock any probe saw running the
+runtime is reported as `runtime`, whether the binaries are in `/res/bin` or `/tmp`.
+
 validation commands: `zig build test` and `zig build` from `runtime`, plus
-`python3 -m unittest -v test_tc002_devices` from the repository root. live device
-and resolver acceptance testing is separate from those offline checks.
+`/usr/bin/python3 -m unittest -v test_tc002_devices` from the repository root.
+live device and resolver acceptance testing is separate from those offline checks.
 
 ## the low-battery shutdown
 
@@ -2348,6 +2357,11 @@ all on a warm device that had been up for days, under the lock, on
 - **input on hardware.** the outward events and remote injection are tested
   through the api; the buttons have been pressed under this runtime (see the
   keymap above), the knob's push has not.
+- **a switch for discovery.** mdns is always on; turning it off means threading
+  a setting through the api body, the ipc `ConfigPatch` and its `has` bits,
+  `config.Config` and `GET /config`, which is the settings invariant and was
+  left for a second pass. see [discovery](#discovery-mdns) for what the
+  responder also leaves out.
 
 ## design notes
 
@@ -2359,6 +2373,8 @@ design, all deliberate and reported rather than hidden: an own http parser
 and mqtt codec instead of a library (bounded memory, narrower protocol), the
 netd relay through the supervisor instead of a direct channel to the renderer
 (no descriptor passing across renderer restarts), `std.json` for bodies
-rather than a hand parser (correctness over code size), and ReleaseSafe by
+rather than a hand parser (correctness over code size), an own mdns responder
+rather than a library (there is none on the device; see
+[discovery](#discovery-mdns) for what it leaves out), and ReleaseSafe by
 default (bounds checks on in a network-facing parser, at about 0.7 mb of
 tmpfs).

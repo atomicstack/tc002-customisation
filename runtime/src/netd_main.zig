@@ -186,6 +186,8 @@ const Netd = struct {
     mdns_fd: sys.Fd = -1,
     mdns_owner: mdns_owner.Owner = .{},
     mdns_retry_ns: u64 = 0,
+    /// set while the socket cannot be made; the warn is logged on the first failure only
+    mdns_fail_logged: bool = false,
     next_id: u64 = 0x8000_0000_0000_0000,
     /// named client tokens, replaced wholesale whenever the supervisor pushes the set
     clients: clients.Store = .{},
@@ -1969,13 +1971,17 @@ const Netd = struct {
         self.mdns_owner.configure(st.mac, null, now);
         if (now < self.mdns_retry_ns) return;
         self.mdns_retry_ns = now + ns_per_s;
+        // the retry runs every second; the log line runs once per failure episode, the way
+        // the supervisor's sntp link does it, or the ring turns over in a minute.
         const fd = sys.udpBind(mdns.mcast_port) catch |e| {
-            log.warn("mdns: could not bind: {s}", .{@errorName(e)});
+            if (!self.mdns_fail_logged) log.warn("mdns: could not bind: {s} (retrying quietly)", .{@errorName(e)});
+            self.mdns_fail_logged = true;
             return;
         };
         sys.mcastJoin(fd, mdns.mcast_addr, st.ip) catch |e| {
             sys.close(fd);
-            log.warn("mdns: could not join the multicast group: {s}", .{@errorName(e)});
+            if (!self.mdns_fail_logged) log.warn("mdns: could not join the multicast group: {s} (retrying quietly)", .{@errorName(e)});
+            self.mdns_fail_logged = true;
             return;
         };
         sys.epollAdd(self.ep, fd, linux.EPOLL.IN, @intFromEnum(Tag.mdns)) catch {
@@ -1984,6 +1990,8 @@ const Netd = struct {
         };
         self.mdns_fd = fd;
         self.mdns_owner.configure(st.mac, st.ip, now);
+        if (self.mdns_fail_logged) log.info("mdns: socket recovered", .{});
+        self.mdns_fail_logged = false;
         log.info("mdns: probing {s}.local", .{self.mdns_owner.responder().?.instance});
     }
 

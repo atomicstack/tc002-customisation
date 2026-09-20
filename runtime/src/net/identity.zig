@@ -24,6 +24,13 @@ pub fn deviceId(buf: *[max]u8, mac_present: bool, mac: [6]u8, boot_id: u32) []co
     return std.fmt.bufPrint(buf, "tc002-boot{x:0>8}", .{boot_id}) catch buf[0..0];
 }
 
+/// the mdns host and instance name: the same string as `deviceId` once the mac is known, so a
+/// clock is `tc002-ccc4b2779e85` on the broker, in home assistant and as `.local`. one name for
+/// one device; the responder never runs without a mac, so there is no boot-id fallback here.
+pub fn hostName(buf: *[max]u8, mac: [6]u8) []const u8 {
+    return deviceId(buf, true, mac, 0);
+}
+
 /// the mqtt client id: whatever the settings say, else the device's own name. deliberately the
 /// same string as `deviceId` rather than a second scheme -- one name for one device.
 pub fn clientId(buf: *[max]u8, configured: []const u8, mac_present: bool, mac: [6]u8, boot_id: u32) []const u8 {
@@ -83,6 +90,14 @@ test "without a mac it falls back to the boot id, and says so" {
 test "a configured client id wins, and is not copied into the buffer" {
     var a: [max]u8 = undefined;
     try std.testing.expectEqualStrings("my-clock", clientId(&a, "my-clock", true, .{ 1, 2, 3, 4, 5, 6 }, 7));
+}
+
+test "the mdns host name is the device id, not a second scheme" {
+    var a: [max]u8 = undefined;
+    var b: [max]u8 = undefined;
+    const mac = [6]u8{ 0xcc, 0xc4, 0xb2, 0x77, 0x9e, 0x85 };
+    try std.testing.expectEqualStrings("tc002-ccc4b2779e85", hostName(&a, mac));
+    try std.testing.expectEqualStrings(deviceId(&b, true, mac, 0xdeadbeef), hostName(&a, mac));
 }
 
 test "every id fits the buffer" {

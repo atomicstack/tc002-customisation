@@ -595,7 +595,10 @@ pub fn mcastJoin(fd: Fd, group: [4]u8, iface: [4]u8) Error!void {
     _ = linux.setsockopt(fd, linux.IPPROTO.IP, IP_MULTICAST_IF, @ptrCast(&ifaddr), @sizeOf(u32));
     const ttl: u32 = 255;
     _ = linux.setsockopt(fd, linux.IPPROTO.IP, IP_MULTICAST_TTL, @ptrCast(&ttl), @sizeOf(u32));
-    const loop: u32 = 1;
+    // no loopback: netd is the only 5353 listener on the device once the stock app is gone,
+    // so a looped packet is one wakeup and one copy for nothing. ownership does not rely on
+    // hearing its own probes (an identical looped answer is not a conflict).
+    const loop: u32 = 0;
     _ = linux.setsockopt(fd, linux.IPPROTO.IP, IP_MULTICAST_LOOP, @ptrCast(&loop), @sizeOf(u32));
 }
 

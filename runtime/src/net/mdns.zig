@@ -11,6 +11,7 @@
 //! known-answer suppression and multicast response delays are not implemented.
 
 const std = @import("std");
+const identity = @import("identity.zig");
 
 pub const mcast_addr: [4]u8 = .{ 224, 0, 0, 251 };
 pub const mcast_port: u16 = 5353;
@@ -490,29 +491,11 @@ const Claims = struct {
     }
 };
 
-/// use the whole hardware identity: a 16-bit tail is not unique across devices.
+/// the whole hardware identity, and the same string the device uses everywhere else
+/// (`identity.deviceId`): a 16-bit tail is not unique across devices. `name_capacity` leaves
+/// room after it for the `-2` suffix conflict recovery may add.
 pub fn instanceFromMacBytes(mac: [6]u8, out: *[name_capacity]u8) []const u8 {
-    const hex = "0123456789abcdef";
-    const prefix = "tc002-";
-    @memcpy(out[0..prefix.len], prefix);
-    for (mac, 0..) |byte, i| {
-        out[prefix.len + 2 * i] = hex[byte >> 4];
-        out[prefix.len + 2 * i + 1] = hex[byte & 0xf];
-    }
-    return out[0 .. prefix.len + 12];
-}
-
-pub fn instanceFromMac(mac: []const u8, out: *[name_capacity]u8) []const u8 {
-    const prefix = "tc002-";
-    @memcpy(out[0..prefix.len], prefix);
-    var n: usize = prefix.len;
-    for (mac) |c| {
-        if (std.ascii.isHex(c) and n < prefix.len + 12) {
-            out[n] = std.ascii.toLower(c);
-            n += 1;
-        }
-    }
-    return out[0..n];
+    return identity.hostName(out[0..identity.max], mac);
 }
 
 // ---------------------------------------------------------------------------- tests
@@ -560,21 +543,13 @@ fn answerTypes(pkt: []const u8, out: *[8]u16) usize {
     return seen;
 }
 
-test "an instance name contains the whole mac" {
-    var buf: [name_capacity]u8 = undefined;
-    try testing.expectEqualStrings("tc002-ccc4b2779e85", instanceFromMac("cc:c4:b2:77:9e:85", &buf));
-    try testing.expectEqualStrings("tc002-ccc4b277a282", instanceFromMac("CC:C4:B2:77:A2:82", &buf));
-    try testing.expectEqualStrings("tc002-ccc4b2779e85", instanceFromMac("ccc4b2779e85", &buf));
-}
-
-test "an instance name from the raw mac bytes agrees with the text form" {
+test "an instance name contains the whole mac and is the device id" {
     var a: [name_capacity]u8 = undefined;
-    var b: [name_capacity]u8 = undefined;
-    try testing.expectEqualStrings(
-        instanceFromMac("cc:c4:b2:77:9e:85", &a),
-        instanceFromMacBytes(.{ 0xcc, 0xc4, 0xb2, 0x77, 0x9e, 0x85 }, &b),
-    );
-    try testing.expectEqualStrings("tc002-000000000001", instanceFromMacBytes(.{ 0, 0, 0, 0, 0x00, 0x01 }, &b));
+    var b: [identity.max]u8 = undefined;
+    const mac = [6]u8{ 0xcc, 0xc4, 0xb2, 0x77, 0x9e, 0x85 };
+    try testing.expectEqualStrings("tc002-ccc4b2779e85", instanceFromMacBytes(mac, &a));
+    try testing.expectEqualStrings(identity.deviceId(&b, true, mac, 0), instanceFromMacBytes(mac, &a));
+    try testing.expectEqualStrings("tc002-000000000001", instanceFromMacBytes(.{ 0, 0, 0, 0, 0x00, 0x01 }, &a));
 }
 
 test "the announcement carries ptr, srv, txt and a, and every record parses" {

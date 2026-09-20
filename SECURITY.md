@@ -36,18 +36,9 @@ These are properties of the device, not of anything installed on the Mac:
    text over unencrypted HTTP.
 4. **No TLS.** Everything is plain HTTP on port 80.
 
-5. **The runtime advertises itself over mDNS.** `netd` answers for
-   `tc002-<full mac>.local` and `_tc002._tcp`, so anyone on the LAN can
-   enumerate the clocks on it and learn each one's full MAC and IP address without
-   authenticating — `dns-sd -B _tc002._tcp` is enough. That is the point of the
-   feature. the stock firmware also broadcasts its identity on udp/55555;
-   runtime discovery likewise belongs on a network you control. ownership
-   claims require an observed ipv4 ttl of 255, but this is not authentication
-   and does not prevent another host on the same link from claiming a name. It is always on in this version;
-   there is no setting to turn it off. See [`RUNTIME.md`](RUNTIME.md#discovery-mdns).
-6. **adb is open on 5555, and over the usb cable** with no pairing step, and `adbd` runs as **root** —
+5. **adb is open on 5555, and over the usb cable** with no pairing step, and `adbd` runs as **root** —
    everything on the device runs as uid 0 with no privilege separation.
-7. **The wifi PSK is stored in cleartext** in `/data/setting.ini` at mode `0666`
+6. **The wifi PSK is stored in cleartext** in `/data/setting.ini` at mode `0666`
    (world readable and writable), alongside the device serial and social tokens,
    and the `/setWifiConfig` handler **also logs it in clear to `logcat`**
    (`Saving WiFi - SSID: %s, pwd = %s`). It is *not* exposed over HTTP — every
@@ -55,7 +46,7 @@ These are properties of the device, not of anything installed on the Mac:
    5555 gets a root shell and can read both. Note also that it is not readable
    *back* over HTTP but it is **sent** in the clear during adoption, over the
    shared-key AP in item 1.
-8. **Writes are forgeable from any web page.** The device ignores `Origin`,
+7. **Writes are forgeable from any web page.** The device ignores `Origin`,
    accepts JSON bodies sent as `text/plain`, and approves `POST` in its CORS
    preflight (see [HTTP-API.md](HTTP-API.md#http-api)). So a page on any
    website can fire `/resetConfig`, `/update`, `/setWifiConfig` or
@@ -69,12 +60,12 @@ These are properties of the device, not of anything installed on the Mac:
    [HTTP-API.md](HTTP-API.md#custom-apps)) lets any LAN host — or any web page
    a LAN user visits — put arbitrary text or images on the clock, or wipe a
    custom app by posting `{}`.
-9. **All cloud traffic is plain HTTP.** Device registration, bearer tokens,
+8. **All cloud traffic is plain HTTP.** Device registration, bearer tokens,
    and any CalDAV username/password you configure go to
    `api.ulanzistudio.com` unencrypted. See `CLOUD.md`.
-10. **The cloud secret key is logged in cleartext** to `logcat`, which is
+9. **The cloud secret key is logged in cleartext** to `logcat`, which is
    readable over the unauthenticated adb.
-11. **Cloud registration is unauthenticated.** It needs only the serial and
+10. **Cloud registration is unauthenticated.** It needs only the serial and
    MAC, which `/getBase` gives to anyone on the LAN, and which the device
    also **broadcasts to the whole segment every second** on udp/55555 (see
    `SETUP.md`), so no request is even needed. The consequence of a
@@ -91,6 +82,16 @@ calendar credentials you care about.
 while the custom runtime described in [`RUNTIME.md`](RUNTIME.md) is running,
 the stock app and its unauthenticated api are not, and the picture changes:
 
+- **the clock advertises itself over mdns.** `netd` answers for
+  `tc002-<full mac>.local` and `_tc002._tcp`, so anyone on the lan can enumerate
+  the clocks on it and learn each one's mac and address without authenticating;
+  `dns-sd -B _tc002._tcp` is enough. that is the point of the feature, and it
+  discloses nothing the stock firmware's udp/55555 broadcast did not already,
+  but it is one more reason the clock belongs on a network you control. the
+  responder's ownership rules (a source port of 5353 and an observed ttl of 255)
+  keep off-link packets from renaming it, and are not authentication: another
+  host on the same link can claim the name. it is always on in this version;
+  there is no setting to turn it off. see [`RUNTIME.md`](RUNTIME.md#discovery-mdns).
 - **every api route needs a bearer token**, including reads. two random
   256-bit tokens (control and admin) are generated per runtime directory,
   compared in constant time, stored at mode 0600 under `/data/tc002/state/credentials/`

@@ -28,7 +28,9 @@ adb() {
 }
 
 need_adb() {
-    adb get-state >/dev/null 2>&1 || die "no adb device${TC002_DEVICE:+ at $TC002_DEVICE}: adb connect <device-ip> first${TC002_DEVICE:+
+    # the hint is for the case where the variable is *unset*: with two clocks attached a bare
+    # adb call fails, and naming one is the fix. when it is set, say which clock was meant.
+    adb get-state >/dev/null 2>&1 || die "no adb device${TC002_DEVICE:+ at $TC002_DEVICE}: adb connect <device-ip> first${TC002_DEVICE:-
 (several clocks attached? export TC002_DEVICE=<ip>:5555 to name one)}"
 }
 dsh() { adb shell "$@" | tr -d '\r'; }
@@ -66,11 +68,12 @@ case "${1:-status}" in
     # replacing the binaries under another agent's live run truncates mapped executables on tmpfs
     # (netd died that way on 2026-09-07), so the push itself runs under the lock
     "$LOCK" acquire "tc002-run.sh push: replacing binaries in $DEV" 120 || exit 1
-    # 0711, not the 0700 a root-owned mkdir leaves behind: netd, ntfy and berryd
-    # run as uid 1001 and have to *search* this directory to exec themselves out
-    # of it. without the x bit the exec fails with 127 and the supervisor respawns
-    # them forever, which reads as a crash loop in a binary that is fine. not
-    # 0755: the credentials fallback lives under here, so it stays unlistable.
+    # 0711: netd, ntfy and berryd run as uid 1001 and have to *search* this
+    # directory to exec themselves out of it. without the x bit the exec fails
+    # with 127 and the supervisor respawns them forever, which reads as a crash
+    # loop in a binary that is fine. the supervisor creates it 0711 too, but a
+    # directory left by an older flashed runtime is 0700, and mkdir -p keeps it.
+    # not 0755: the credentials fallback lives under here, so it stays unlistable.
     adb shell "mkdir -p $DEV && chmod 711 $DEV" >/dev/null
     for f in bin/tc002d bin/tc002-supervisor bin/tc002-netd bin/tc002-ntfy bin/tc002-berryd bin/tc002-audiod lib/libtc002-bootstrap.so; do
         adb push "$RUNTIME/zig-out/$f" "$DEV/$(basename "$f")" >/dev/null || { "$LOCK" release "push of $f failed"; die "push of $f failed"; }

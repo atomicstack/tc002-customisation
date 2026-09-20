@@ -72,8 +72,10 @@ default MQTT prefix uses), `<mac>` is the full 12-hex MAC, `<serial>` is
 Bluetooth service; it read `true` here with BLE up, and its exact meaning is
 not established). This is what Ulanzi Studio's `discoverTC002` listens for.
 The port is a literal in the firmware's `UdpBroadcaster` constructor, and the
-format was confirmed by capturing packets on the LAN. There is **no**
-mDNS/Bonjour.
+format was confirmed by capturing packets on the LAN. The stock firmware has
+**no** mDNS/Bonjour; the custom runtime does (`tc002-<mac>.local`, see
+[`RUNTIME.md`](RUNTIME.md#discovery-mdns)), but it is not running on a
+factory-fresh device, so nothing here changes for adoption.
 
 `tc002-adopt.py discover` listens on udp/55555 for a few seconds, then confirms
 each announced device with `GET /getBase` (which adds the IP, SSID and firmware
@@ -97,7 +99,7 @@ silence on udp/55555 while joined to `U-Clock` (udp/6666 and 9999 as controls),
 then the announcements start within seconds of it joining the target network. So
 discovery is only ever useful *after* adoption; there is nothing to listen for
 before it. A `dns-sd` browse on the AP turned up only the listening host's own
-services, consistent with there being no mDNS here either.
+services, consistent with the stock firmware having no mDNS either.
 
 Joining the `U-Clock` AP needs no special handling: the passphrase is
 `12345678` (above), so `networksetup -setairportnetwork en0 U-Clock 12345678`

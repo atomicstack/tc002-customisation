@@ -3188,7 +3188,7 @@ fn audit(environ: anytype, args: []const [:0]const u8, close_inherited: bool) vo
 fn redirectLog(cfg: cli.Config) void {
     var path_buf: [128]u8 = undefined;
     const path = std.fmt.bufPrintZ(&path_buf, "{s}/supervisor.log", .{cfg.dir}) catch return;
-    sys.mkdir(cfg.dir, 0o700) catch {};
+    sys.mkdir(cfg.dir, 0o711) catch {};
     const fd = sys.open(path, .{ .ACCMODE = .WRONLY, .CREAT = true, .APPEND = true, .CLOEXEC = true }, 0o644) catch return;
     sys.dup2(fd, 1) catch {};
     sys.dup2(fd, 2) catch {};
@@ -3302,8 +3302,10 @@ fn run(cfg_in: cli.Config, environ: anytype, args: []const [:0]const u8) !u8 {
     if (cfg.profile == .hardened) {
         props.set("persist.sys.zkdebug", "0", property_timeout_ns) catch |e| log.err("persist.sys.zkdebug=0 failed: {s}", .{@errorName(e)});
     }
-    // 4. runtime directory and the panel lock file, created once and never unlinked
-    sys.mkdir(cfg.dir, 0o700) catch |e| {
+    // 4. runtime directory and the panel lock file, created once and never unlinked.
+    // 0711, not 0700: on the volatile path the uid-1001 children are exec'd out of this
+    // directory and need the search bit; the credentials fallback under it is 0700 on its own.
+    sys.mkdir(cfg.dir, 0o711) catch |e| {
         log.err("cannot create {s}: {s}", .{ cfg.dir, sys.errText(e) });
         return 1;
     };

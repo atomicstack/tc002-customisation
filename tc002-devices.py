@@ -1,7 +1,11 @@
-#!/usr/bin/env python3
+#!/usr/bin/python3
 """tc002-devices.py: list every TC002 this machine can reach, so tools stop guessing.
 
-  tc002-devices.py [--sweep 10.0.0] [--one] [--json] [--adb PATH]
+  tc002-devices.py [--sweep 10.0.0] [--one] [--json] [--adb PATH] [--no-mdns]
+
+apple's /usr/bin/python3 on purpose: macos 15 gates lan access per binary, and the mdns probe
+below sends lan multicast, which a homebrew python cannot without a permission change (it fails
+as "no clocks", never as a permission error).
 
 One clock on a LAN needs no discovery and every tool here grew up assuming it.
 With two, "the device" is ambiguous and the failure is silent: a tool picks the
@@ -10,9 +14,14 @@ to choose.
 
 It finds both kinds, which need different probes:
 
+  custom runtime   mdns browse for _tc002._tcp  -> one name per clock, tc002-<mac>.local,
+                                                  no adb and no subnet guess (--no-mdns skips it)
   stock firmware   GET /getBase      -> 200 and a json body with devSn/mac
   custom runtime   GET /api/v1/status -> 401 (auth required, but the route
                                          exists, which nothing else answers)
+
+the mdns probe runs alongside the adb probes and any sweep, and stops as soon as the lan has
+gone quiet after the last answer.
 
 `--one` prints a single adb address for scripts. If there is exactly one device
 it prints it and exits 0; if there are none or several it prints the table on
@@ -67,12 +76,23 @@ def identify(host):
     return None
 
 
-def mdns_query(timeout=2.0):
+def _local_ipv4s():
+    """every ipv4 address this host has, so the query goes out on every lan rather than only the
+    default route's. `ifconfig` exists on macos and on busybox; without it, the kernel picks."""
+    addrs = [m for m in re.findall(r"\binet (?:addr:)?(\d+\.\d+\.\d+\.\d+)", sh(["ifconfig"]))
+             if not m.startswith("127.")]
+    return addrs or ["0.0.0.0"]
+
+
+def mdns_query(timeout=2.0, quiet=0.3):
     """ask the lan for `_tc002._tcp.local` and read the answers.
 
     this is the discovery that actually scales to more than one clock: the runtime answers mdns
     for a name derived from its own mac, so two devices are two names rather than two addresses
     that have to be told apart. no dependencies -- mdns is just udp and a dns message.
+
+    waits at most `timeout`, and once something has answered, returns after `quiet` seconds
+    without another answer: two clocks reply within milliseconds, so most runs are short.
     """
     q = bytearray([0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0])
     for label in (b"_tc002", b"_tcp", b"local"):
@@ -93,24 +113,37 @@ def mdns_query(timeout=2.0):
             pass
         s.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_TTL, 255)
         s.bind(("", 5353))
-        mreq = socket.inet_aton("224.0.0.251") + socket.inet_aton("0.0.0.0")
-        s.setsockopt(socket.IPPROTO_IP, socket.IP_ADD_MEMBERSHIP, mreq)
-        s.settimeout(0.4)
+        # join on every interface, not just the default route's: a mac on wifi and a wired lan
+        # hears only one of them otherwise, and the clocks may be on the other.
+        ifaces = _local_ipv4s()
+        for iface in ifaces:
+            s.setsockopt(socket.IPPROTO_IP, socket.IP_ADD_MEMBERSHIP,
+                         socket.inet_aton("224.0.0.251") + socket.inet_aton(iface))
+        s.settimeout(0.2)
+
+        def ask():
+            for iface in ifaces:
+                s.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_IF, socket.inet_aton(iface))
+                s.sendto(bytes(q), ("224.0.0.251", 5353))
+
         # the group membership is not effective the instant setsockopt returns, and a query sent
         # into that gap gets an answer we are not yet subscribed to hear. give igmp a moment, then
         # ask twice: one lost query otherwise reads as "no clocks on this network".
         time.sleep(0.15)
-        s.sendto(bytes(q), ("224.0.0.251", 5353))
+        ask()
         resent = False
         end_at = time.time() + timeout
+        last_answer = None
         while time.time() < end_at:
+            if last_answer is not None and time.time() - last_answer > quiet:
+                break
             try:
                 data, addr = s.recvfrom(4096)
             except socket.timeout:
                 if not resent:
                     resent = True
                     try:
-                        s.sendto(bytes(q), ("224.0.0.251", 5353))
+                        ask()
                     except OSError:
                         pass
                 continue
@@ -136,6 +169,7 @@ def mdns_query(timeout=2.0):
                     host_ip = ip
             # old firmware may reuse an instance name: never let that hide another clock.
             found[(inst, host_ip)] = {"instance": inst, "ip": host_ip}
+            last_answer = time.time()
     except OSError:
         pass                            # discovery is optional; adb and sweep still work
     finally:
@@ -214,10 +248,35 @@ def describe_adb(serial):
     m = re.search(r"inet addr:([0-9.]+)", ifc)
     if m:
         ip = m.group(1)
+    # flashed to /res, or pushed to /tmp for development: both are the runtime
     runtime = "tc002-supervisor" in sh(
-        [ADB, "-s", serial, "shell", "ls /res/bin/tc002-supervisor 2>/dev/null"], timeout=10)
+        [ADB, "-s", serial, "shell", "ls /res/bin/tc002-supervisor /tmp/tc002/tc002-supervisor 2>/dev/null"], timeout=10)
     return {"transport": serial, "ip": ip, "mac": mac,
             "kind": "runtime" if runtime else "stock"}
+
+
+def merge_rows(rows):
+    """one row per address, whatever order the probes finished in.
+
+    adb rows know the mac and the transport, mdns rows know the name, sweep rows know the kind;
+    the row with a mac wins where they disagree, and every other field falls through. a clock
+    that any probe saw running the runtime is a runtime: `describe_adb` cannot tell a /tmp run
+    from the stock app once the binaries are gone, but an mdns answer settles it.
+    """
+    merged = {}
+    for r in rows:
+        ip = r.get("ip") or ""
+        key = ip or r["transport"]
+        if key not in merged:
+            merged[key] = dict(r)
+            continue
+        keep = merged[key]
+        primary, other = (r, keep) if r.get("mac") and not keep.get("mac") else (keep, r)
+        combined = {**other, **{k: v for k, v in primary.items() if v}}
+        if "runtime" in (keep.get("kind"), r.get("kind")):
+            combined["kind"] = "runtime"
+        merged[key] = combined
+    return sorted(merged.values(), key=lambda r: r.get("ip") or "")
 
 
 def main():
@@ -234,24 +293,20 @@ def main():
 
     rows = {}
 
-    # mdns first: it needs no adb transport, no subnet guess and no sweep, and it is the only
-    # probe that returns a *name* rather than an address to be disambiguated later.
-    if not a.no_mdns:
-        for d in mdns_query().values():
-            if not d.get("ip"):
-                continue
-            rows[d["ip"]] = {"transport": f'{d["ip"]}:5555', "ip": d["ip"], "mac": "",
-                             "kind": "runtime", "name": f'{d["instance"]}.local'}
+    with ThreadPoolExecutor(max_workers=64) as ex:
+        # mdns in parallel with everything else: it needs no adb transport, no subnet guess and
+        # no sweep, and it is the only probe that returns a *name* rather than an address to be
+        # disambiguated later. `merge_rows` does not care which probe finished first.
+        mdns_future = None if a.no_mdns else ex.submit(mdns_query)
 
-    for serial in adb_transports():
-        d = describe_adb(serial)
-        if not d["mac"]:
-            continue                      # not a tc002, or not answering
-        rows[d["mac"]] = d
+        for serial in adb_transports():
+            d = describe_adb(serial)
+            if not d["mac"]:
+                continue                      # not a tc002, or not answering
+            rows[d["mac"]] = d
 
-    if a.sweep:
-        hosts = [f"{a.sweep}.{i}" for i in range(1, 255)]
-        with ThreadPoolExecutor(max_workers=64) as ex:
+        if a.sweep:
+            hosts = [f"{a.sweep}.{i}" for i in range(1, 255)]
             for host, info in zip(hosts, ex.map(identify, hosts)):
                 if not info:
                     continue
@@ -263,19 +318,13 @@ def main():
                                  "mac": info.get("mac", ""), "kind": info["kind"],
                                  "serial": info.get("serial", "")}
 
-    # adb rows are keyed by mac, sweep rows by ip when the runtime returns no
-    # mac. the same clock therefore arrives twice. merge on ip, keeping the adb
-    # row, which is the one that knows the mac and the transport.
-    merged = {}
-    for r in rows.values():
-        ip = r.get("ip") or ""
-        if ip and ip in merged:
-            keep = merged[ip]
-            if not keep.get("mac") and r.get("mac"):
-                merged[ip] = {**keep, **r}
-            continue
-        merged[ip or r["transport"]] = r
-    out = sorted(merged.values(), key=lambda r: r.get("ip") or "")
+        for d in (mdns_future.result() if mdns_future else {}).values():
+            if not d.get("ip"):
+                continue
+            rows[("mdns", d["instance"], d["ip"])] = {"transport": f'{d["ip"]}:5555', "ip": d["ip"], "mac": "",
+                                                      "kind": "runtime", "name": f'{d["instance"]}.local'}
+
+    out = merge_rows(rows.values())
 
     if a.one:
         if len(out) == 1:
@@ -284,7 +333,7 @@ def main():
             return 0
         print(f"tc002-devices: found {len(out)} devices; name one with --device", file=sys.stderr)
         for r in out:
-            print(f'  {r.get("ip",""):15} {r.get("mac",""):18} {r["kind"]}', file=sys.stderr)
+            print(f'  {r.get("ip",""):15} {r.get("name","-"):24} {r.get("mac",""):18} {r["kind"]}', file=sys.stderr)
         return 2
 
     if a.json:

@@ -64,8 +64,11 @@ opens spidev/gpio, writing `/tmp`, setprop) happens under the lock; read-only ad
 ## the network api (`tc002-netd`)
 
 `tc002-netd` serves `/api/v1` over plain http on port 80 (the design's `isolated-lan` profile; there is
-no tls in this build, see the tradeoffs below) and runs an mqtt 3.1.1 client. it runs as uid 1001 with
-two inherited descriptors: the supervisor's channel and a listener that root bound for it. bearer
+no tls in this build, see the tradeoffs below), runs an mqtt 3.1.1 client, and answers mdns for the
+clock's own name, `tc002-<mac>.local` and `_tc002._tcp` (see
+[discovery](../RUNTIME.md#discovery-mdns)). it runs as uid 1001 with two inherited descriptors, the
+supervisor's channel and a listener that root bound for it, plus one socket it opens itself, udp/5353,
+which is unprivileged. bearer
 tokens (control and admin, 32 random bytes each) are generated once by the supervisor into
 `<state>/credentials/tokens` (default `/data/tc002/state`) (mode 0600) and handed over the channel; nothing on disk is readable by netd.
 
@@ -194,6 +197,16 @@ normal firmware builds embed the checked-in artifacts and do not require python 
   ReleaseSafe zig program linking static musl, and 262,144 bytes of that is zig's
   `Thread.maybeAttachSignalStack` signal stack in `.bss`, demand-zero and not resident. the numbers
   that matter are the ones the berry daemon produces when it exists.
+- **an own mdns responder** (`src/net/mdns.zig`, the packet side, and `src/net/mdns_owner.zig`, the
+  ownership state machine; both pure, both host-tested) instead of a library or the vendor's stack:
+  there is none on the device, and the two-clock problem it solves is small. it implements the parts
+  of rfc 6762 that matter on a lan of a few clocks: probing and conflict recovery with a numeric
+  suffix, two announcements, legacy unicast replies for one-shot resolvers, cache-flush on the unique
+  records, and a socket that is recreated whenever the address changes. it deliberately leaves out
+  known-answer suppression, the randomised response delay for shared records, name compression on
+  output, goodbye packets on shutdown, ipv6, and any setting to turn it off. cost: about 28 kb of
+  `.text` in netd over main (1,097 kb to 1,125 kb) and one udp socket; gain: a clock is reachable by
+  name with nothing installed on the host, and two clocks are two names.
 
 ## running it on the device (volatile)
 
@@ -216,6 +229,15 @@ runtime/tools/tc002-run.sh stop                    # back to the stock app
 
 the defaults (device `10.0.0.111:5555`, `Europe/Amsterdam`, sntp from `10.0.0.136`, the `block`
 clock) can be changed with options or the `TC002_*` environment variables listed in the script.
+
+**two clocks.** every adb call in `tc002-up.sh` and `tc002-run.sh` names the device with `-s`:
+`tc002-up.sh` always targets `--device` (or `TC002_DEVICE`, default `10.0.0.111:5555`; a bare ip or
+hostname gets `:5555` appended, since that is the serial adb gives a tcp transport) and exports it as
+`TC002_DEVICE` for the scripts it calls; `tc002-run.sh` uses `TC002_DEVICE` when set and a bare `adb`
+otherwise, which is right with one clock and fails with "more than one device/emulator" with two. so
+with two clocks attached, `export TC002_DEVICE=<ip>:5555` before `tc002-run.sh`, and give
+`tc002-up.sh --device`. `tc002-up.sh` no longer falls back to "whichever single clock is connected".
+`tc002-devices.py` lists them, by mdns name where the runtime is running.
 
 ```bash
 tools/tc002-run.sh push                     # build, check, push to /tmp/tc002/
