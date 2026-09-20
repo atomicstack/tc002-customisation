@@ -1,7 +1,8 @@
 #!/bin/bash
-# advisory lock shared with another agent working on the same tc002.
+# advisory lock shared with other agents potentially working on the same tc002 devices.
 # append-only records in /tmp/tc002-lock.txt: "<utc-iso> <agent> <ACQUIRE|RELEASE|NOTE> <text>".
 # an agent holds the lock while its last ACQUIRE/RELEASE record is an ACQUIRE younger than 30 min.
+# there are now two clocks so make sure you note which of the two you're locking.
 # usage: tc002-lock.sh acquire "<intent>" [timeout-seconds]   (default 900)
 #        tc002-lock.sh release ["<text>"] | status | note "<text>"
 set -u
