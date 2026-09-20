@@ -80,15 +80,18 @@ factory-fresh device, so nothing here changes for adoption.
 `tc002-adopt.py discover` listens on udp/55555 for a few seconds, then confirms
 each announced device with `GET /getBase` (which adds the IP, SSID and firmware
 versions). If nothing is heard, because the host is on another VLAN or the AP
-filters broadcasts, it falls back to an HTTP sweep of the subnet: any host
+filters broadcasts, `--sweep` probes every host on the /24 over HTTP: any host
 answering `/getBase` with `{devSn, mac, mcuVer, appVer, ssid, ip}` is a TC002.
+The sweep is opt-in, never a silent fallback: it is 254 connections that every
+device on the network sees. (A clock running the custom runtime needs none of
+this: it answers mDNS, see [`RUNTIME.md`](RUNTIME.md#discovery-mdns).)
 
 ```bash
 # find devices already on your wifi (listen, then confirm; ~3 s)
 /usr/bin/python3 tc002-adopt.py discover
 
 # sweep only, e.g. from another vlan (~4 s for a /24)
-/usr/bin/python3 tc002-adopt.py discover --no-listen --subnet 10.0.0
+/usr/bin/python3 tc002-adopt.py discover --sweep --no-listen --subnet 10.0.0
 
 # adopt a factory-fresh device (after joining its "U-Clock" ap)
 /usr/bin/python3 tc002-adopt.py adopt --ssid <your-wifi>

@@ -3,10 +3,14 @@
 #
 #   ./tc002-onboard.sh [--wifi-ssid NAME] [--device IP[:PORT]] [--flash] [--yes]
 #                      [--work DIR] [--no-adopt] [--ntp IP|auto|none] [--tz ZONE]
+#                      [--sweep]
 #
 # --device is required once more than one clock is reachable: this refuses to
 # guess rather than flash the wrong one. ./tc002-devices.py lists every clock
-# this machine can see, of either kind.
+# this machine can see, of either kind. the search asks adb and mdns; --sweep
+# also probes every host on this machine's /24 over http, which finds a stock
+# clock that is not on adb yet, at the cost of 254 connections the whole lan
+# can see. never on by default.
 #
 # by default this does everything EXCEPT write to flash: it finds or adopts the
 # device, checks it is what these notes were written against, records a
@@ -45,6 +49,7 @@ ASSUME_YES=0
 NO_ADOPT=0
 NTP=auto
 TZ_EXPLICIT=0
+SWEEP=0
 # a freshly flashed runtime has no settings at all, so without this it has no
 # timezone and no ntp server, and the panel sits on a blinking separator with no
 # digits forever. default to whatever this machine is set to.
@@ -61,7 +66,8 @@ while [ $# -gt 0 ]; do
     --no-adopt)  NO_ADOPT=1; shift ;;
     --ntp)       NTP="$2"; shift 2 ;;
     --tz)        TZONE="$2"; TZ_EXPLICIT=1; shift 2 ;;
-    -h|--help)   sed -n '2,28p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    --sweep)     SWEEP=1; shift ;;
+    -h|--help)   sed -n '2,32p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "unknown argument: $1" >&2; exit 2 ;;
   esac
 done
@@ -136,10 +142,12 @@ step "find the device"
 # is sweeping ("sweeping 10.0.0.0/24"), which greps out as a device called
 # 10.0.0.0 and is then dutifully connected to.
 find_devices() {
-  local subnet
-  subnet=$(ipconfig getifaddr en0 2>/dev/null || true)
-  [ -n "$subnet" ] || subnet=$(ip route get 1.1.1.1 2>/dev/null | sed -n 's/.*src \([0-9.]*\).*/\1/p')
-  subnet=${subnet%.*}
+  local subnet=""
+  if [ "$SWEEP" = 1 ]; then
+    subnet=$(ipconfig getifaddr en0 2>/dev/null || true)
+    [ -n "$subnet" ] || subnet=$(ip route get 1.1.1.1 2>/dev/null | sed -n 's/.*src \([0-9.]*\).*/\1/p')
+    subnet=${subnet%.*}
+  fi
   "$PY" "$SELF/tc002-devices.py" --adb "$ADB" ${subnet:+--sweep "$subnet"} --json 2>/dev/null \
     | "$PY" -c 'import json,sys
 try:
@@ -168,7 +176,8 @@ if [ -z "$DEV" ]; then
   elif [ "$NO_ADOPT" = "1" ]; then
     die "nothing found, and --no-adopt was given."
   else
-    say "nothing answered. the clock is probably still hosting its setup ap."
+    say "nothing answered over adb or mdns. the clock is probably still hosting its setup ap;"
+    say "if it is already on your wifi but not on adb, --sweep probes the subnet for it."
     [ -n "$WIFI_SSID" ] || die "to adopt it, re-run with --wifi-ssid <your 2.4ghz network>.
      the tc002 has no 5 ghz radio, so a 5 ghz-only ssid will fail after the
      device has already accepted the credentials."

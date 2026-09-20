@@ -9,10 +9,11 @@ Replaces the Ulanzi Studio desktop app for initial setup.
 Discovery:
   A joined TC002 announces itself about once a second by UDP broadcast to
   port 55555 with the payload "Ulanzi TC002 <mac-tail>:<mac>:<serial>:<bool>".
-  'discover' listens for that first (a few seconds), then confirms each
-  device over HTTP. If nothing is heard - a different VLAN, a firewall, or a
-  broadcast-filtering AP - it falls back to sweeping the subnet for hosts
-  answering GET /getBase.
+  'discover' listens for that (a few seconds), then confirms each device
+  over HTTP. If nothing is heard - a different VLAN, a firewall, or a
+  broadcast-filtering AP - pass --sweep to probe every host on the /24 for
+  one answering GET /getBase. The sweep is never automatic: it is 254 http
+  connections, slow, and visible to everything on the network.
 
 Adoption flow:
   A factory-fresh TC002 with no wifi credentials starts a WPA2 access point
@@ -134,7 +135,7 @@ def cmd_discover(args):
                 for ip, base in zip(heard, ex.map(probe, heard)):
                     found.append((ip, base[1] if base else None, heard[ip]))
 
-    if not found and not args.no_sweep:
+    if not found and args.sweep:
         subnet = args.subnet or local_subnet()
         if not subnet:
             print("  nothing heard, and could not determine the local subnet; pass --subnet 10.0.0",
@@ -144,6 +145,9 @@ def cmd_discover(args):
             print("  nothing heard (different vlan, or broadcasts filtered?)")
         print(f"sweeping {subnet}.0/24 for tc002 devices ...")
         found = [(ip, base, None) for ip, base in sweep(subnet)]
+    elif not found:
+        print("  nothing heard (different vlan, or broadcasts filtered?)")
+        print("  --sweep probes every host on the /24 for one answering GET /getBase; --subnet names it")
 
     if not found:
         print("  none found")
@@ -198,9 +202,10 @@ def main():
     d = sub.add_parser("discover", help="find tc002 devices on the lan")
     d.add_argument("--listen", type=float, default=3.0, metavar="SECONDS",
                    help="how long to listen for udp broadcasts (default 3)")
-    d.add_argument("--no-listen", action="store_true", help="skip listening; sweep only")
-    d.add_argument("--no-sweep", action="store_true", help="do not fall back to the subnet sweep")
-    d.add_argument("--subnet", help="first three octets for the sweep, e.g. 10.0.0")
+    d.add_argument("--no-listen", action="store_true", help="skip listening (with --sweep: sweep only)")
+    d.add_argument("--sweep", action="store_true",
+                   help="if nothing is heard, probe every host on the /24 (slow, and visible to the whole lan)")
+    d.add_argument("--subnet", help="first three octets for --sweep, e.g. 10.0.0 (default: this host's)")
     d.set_defaults(func=cmd_discover)
 
     a = sub.add_parser("adopt", help="join a device in setup-ap mode to wifi")

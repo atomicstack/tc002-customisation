@@ -159,8 +159,10 @@ everything uses apple's `/usr/bin/python3` deliberately — see
 
 it listens for the device's own udp broadcast (port 55555, about once a
 second) and confirms over http, so it answers in a few seconds. from another
-vlan, or if your ap filters broadcasts, it falls back to a subnet sweep
-(`--no-listen --subnet 10.0.0` forces that).
+vlan, or if your ap filters broadcasts, add `--sweep` to probe the subnet
+(`--sweep --no-listen --subnet 10.0.0` is sweep only). the sweep is never
+automatic: 254 connections the whole lan can see. a clock running the custom
+runtime answers by name instead: `/usr/bin/python3 tc002-devices.py`.
 
 **control it in english**
 

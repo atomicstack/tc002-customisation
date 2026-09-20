@@ -67,7 +67,7 @@ case "${1:-status}" in
     [ -x "$RUNTIME/zig-out/bin/tc002-supervisor" ] || die "no binaries in $RUNTIME/zig-out; build first"
     # replacing the binaries under another agent's live run truncates mapped executables on tmpfs
     # (netd died that way on 2026-09-07), so the push itself runs under the lock
-    "$LOCK" acquire "tc002-run.sh push: replacing binaries in $DEV" 120 || exit 1
+    "$LOCK" acquire "tc002-run.sh push: replacing binaries in $DEV on ${TC002_DEVICE:-the connected clock}" 120 || exit 1
     # 0711: netd, ntfy and berryd run as uid 1001 and have to *search* this
     # directory to exec themselves out of it. without the x bit the exec fails
     # with 127 and the supervisor respawns them forever, which reads as a crash
@@ -80,12 +80,12 @@ case "${1:-status}" in
     done
     adb shell "chmod 755 $DEV/tc002d $DEV/tc002-supervisor $DEV/tc002-netd $DEV/tc002-ntfy $DEV/tc002-berryd $DEV/tc002-audiod" >/dev/null
     dsh "ls -la $DEV"
-    "$LOCK" release "push done ($(basename "$(cd "$RUNTIME/.." && git branch --show-current 2>/dev/null || echo unknown)"))"
+    "$LOCK" release "push done on ${TC002_DEVICE:-the connected clock} ($(basename "$(cd "$RUNTIME/.." && git branch --show-current 2>/dev/null || echo unknown)"))"
     ;;
   start)
     shift
     need_adb
-    "$LOCK" acquire "tc002-run.sh start: custom runtime on the panel" 300 || exit 1
+    "$LOCK" acquire "tc002-run.sh start: custom runtime on the panel of ${TC002_DEVICE:-the connected clock}" 300 || exit 1
     stock_stop
     adb shell "rm -f $DEV/supervisor.log; trap '' HUP; $DEV/tc002-supervisor $* </dev/null >$DEV/supervisor.log 2>&1 & echo \$! >$DEV/supervisor.pid"
     sleep 2
@@ -95,7 +95,7 @@ case "${1:-status}" in
     else
         echo "the supervisor exited immediately:"; dsh "cat $DEV/supervisor.log"
         stock_start
-        "$LOCK" release "start failed, stock app restarted"
+        "$LOCK" release "start failed on ${TC002_DEVICE:-the connected clock}, stock app restarted"
         exit 1
     fi
     ;;
@@ -120,7 +120,7 @@ case "${1:-status}" in
         echo "removed $DEV and /tmp/EasyUI.cfg"
     fi
     stock_start
-    "$LOCK" release "$1 done, stock app restarted"
+    "$LOCK" release "$1 done on ${TC002_DEVICE:-the connected clock}, stock app restarted"
     ;;
   *)
     echo "usage: tc002-run.sh push | start [supervisor options...] | status | stop | restore" >&2
