@@ -479,7 +479,7 @@ class EndToEndTests(unittest.TestCase):
         # hand-typed catalogue in mock-device.py and had not been true of the runtime for a while
         pops = next(g for g in sc["generators"] if g["name"] == "popsquares")
         self.assertEqual([p["name"] for p in pops["parameters"]],
-                         ["pop ms", "alive", "dim chance", "dim floor", "dim ceiling", "tint", "tint colour"])
+                         ["pop ms", "alive", "dim chance", "dim floor", "dim ceiling", "tint", "tint colour", "cell"])
         self.assertEqual(next(g for g in sc["generators"] if g["name"] == "plasma")["parameters"], [])
         self.assertEqual(sc["clock"]["spread"], [0, 255])
 
@@ -592,7 +592,7 @@ class EndToEndTests(unittest.TestCase):
     CUBE_DEFAULTS = {"palette": "mono", "colour": "30a0ff", "hue drift": 0, "background": "000000",
                      "spin": "parallel", "speed": 6, "zoom": 100}
     POPSQUARES_DEFAULTS = {"pop ms": 2000, "alive": 100, "dim chance": 25, "dim floor": 0,
-                           "dim ceiling": 100, "tint": 15, "tint colour": "3a6ea5"}
+                           "dim ceiling": 100, "tint": 15, "tint colour": "3a6ea5", "cell": "1x1"}
 
     def test_generator_parameters_read_as_an_object_and_write_as_a_list(self):
         # asymmetric on purpose: an object keyed by the scene's own names to read, a list to write,

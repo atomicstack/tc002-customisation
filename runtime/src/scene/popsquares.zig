@@ -2,6 +2,11 @@
 //! and then, to a random dim level) when spent. a fixed per-cell rank decides whether the cell
 //! takes part at all. some pops use the tint colour instead of white.
 //!
+//! a cell is one led by default. the sketch drew squares bigger than that, so `cell` makes a
+//! virtual pixel a 2x2 or 4x4 block: the simulation runs on the coarser grid (26x8 or 13x4) and
+//! the renderer paints each cell as a uniform block. the per-cell arrays stay panel-sized and
+//! the coarser grids use the front of them.
+//!
 //! pure and deterministic for a given seed. ported from led/popsquares.c, itself a port of the
 //! pixdeck plugin and the popsquares_tc002 processing sketch.
 const std = @import("std");
@@ -89,6 +94,28 @@ test "the parameters reach the simulation" {
     try std.testing.expect(lit > 100);
 }
 
+test "a virtual pixel can be a 2x2 or 4x4 block of leds" {
+    // the sketch this came from drew squares bigger than one led; a cell size of 2 or 4 makes the
+    // simulation run on a coarser grid and paints each virtual pixel as a uniform block
+    try std.testing.expectEqual(@as(u8, 1), State.init(1).options().cell);
+    for ([_]struct { value: u32, cell: usize }{ .{ .value = 1, .cell = 2 }, .{ .value = 2, .cell = 4 } }) |c| {
+        var s = State.init(21);
+        s.setParam(7, c.value);
+        try std.testing.expectEqual(@as(u8, @intCast(c.cell)), s.options().cell);
+        s.step(0.01);
+        var rgb: geometry.Rgb = undefined;
+        s.render(&rgb);
+        var blocks_differ = false;
+        for (0..geometry.height) |y| for (0..geometry.width) |x| {
+            const i = y * geometry.width + x;
+            const origin = (y - y % c.cell) * geometry.width + (x - x % c.cell);
+            try std.testing.expectEqualSlices(u8, rgb[origin * 3 ..][0..3], rgb[i * 3 ..][0..3]);
+            if (x >= c.cell and !std.mem.eql(u8, rgb[(origin - c.cell) * 3 ..][0..3], rgb[origin * 3 ..][0..3])) blocks_differ = true;
+        };
+        try std.testing.expect(blocks_differ);
+    }
+}
+
 test "a value out of range is pulled back in" {
     var s = State.init(17);
     s.setParam(0, 1_000_000);
@@ -115,6 +142,8 @@ pub const Options = struct {
     dim_hi: u8 = 127,
     tint_frac: f32 = 0.15,
     tint: [3]u8 = .{ 58, 110, 165 },
+    /// leds per side of one virtual pixel: 1, 2 or 4. all three divide 52 and 16.
+    cell: u8 = 1,
 };
 
 /// the sliders of the `popsquares_tc002` processing sketch, as parameters. the sketch's other
@@ -133,7 +162,20 @@ pub const params = [_]param.Param{
     .{ .name = "dim ceiling", .kind = .number, .min = 0, .max = 100, .step = 5, .default = 100 },
     .{ .name = "tint", .kind = .number, .min = 0, .max = 100, .step = 5, .default = 15 },
     .{ .name = "tint colour", .kind = .colour, .default = 0x3a6ea5 },
+    .{ .name = "cell", .kind = .choice, .choices = &.{ "1x1", "2x2", "4x4" }, .default = 0 },
 };
+
+const cell_sizes = [_]u8{ 1, 2, 4 };
+
+fn cellOf(choice: u32) u8 {
+    return cell_sizes[@min(choice, cell_sizes.len - 1)];
+}
+
+/// how many virtual pixels the panel holds at this cell size
+fn cellCount(cell: u8) usize {
+    const c: usize = cell; // widen first: 52 x 16 does not fit the parameter's u8
+    return (geometry.width / c) * (geometry.height / c);
+}
 
 fn fraction(pct: u32) f32 {
     return @as(f32, @floatFromInt(@min(pct, 100))) / 100.0;
@@ -154,6 +196,7 @@ pub fn optionsOf(v: param.Values) Options {
         .dim_hi = levelOf(v[4]),
         .tint_frac = fraction(v[5]),
         .tint = param.valueRgb(v[6]),
+        .cell = cellOf(v[7]),
     };
 }
 
@@ -209,7 +252,7 @@ pub const State = struct {
         const dt = std.math.clamp(dt_s, 0.0, dt_max);
         const pop: f32 = if (o.pop_s > 0.0) o.pop_s else 1.0;
         const drop = level_max * dt / pop; // a full pop lasts pop_s seconds at any frame rate
-        for (0..geometry.pixels) |i| {
+        for (0..cellCount(o.cell)) |i| {
             if (self.rank[i] >= o.alive) {
                 self.level[i] = 0.0; // this led sits the animation out
                 continue;
@@ -219,14 +262,19 @@ pub const State = struct {
         }
     }
 
-    /// row-major r,g,b: white or tint scaled by level / 127.
+    /// row-major r,g,b: white or tint scaled by level / 127. every led of a virtual pixel reads
+    /// the same cell.
     pub fn render(self: *const State, rgb: *geometry.Rgb) void {
         const o = self.options();
         const white = [3]u8{ 255, 255, 255 };
-        for (0..geometry.pixels) |i| {
+        const cell: usize = o.cell;
+        const columns = geometry.width / cell;
+        for (0..geometry.height) |y| for (0..geometry.width) |x| {
+            const i = (y / cell) * columns + x / cell;
             const f = std.math.clamp(self.level[i] / level_max, 0.0, 1.0);
             const c = if (self.tinted[i]) o.tint else white;
-            inline for (0..3) |k| rgb[i * 3 + k] = @intFromFloat(@as(f32, @floatFromInt(c[k])) * f);
-        }
+            const p = y * geometry.width + x;
+            inline for (0..3) |k| rgb[p * 3 + k] = @intFromFloat(@as(f32, @floatFromInt(c[k])) * f);
+        };
     }
 };

@@ -1128,7 +1128,7 @@ pub const Arbiter = struct {
     /// the settings of whatever is showing, opened by a short press of the knob
     pub fn openSceneMenu(self: *Arbiter, now_ns: u64) void {
         const table = self.sceneParams();
-        var values: param.Values = [_]u32{0} ** param.max_per_owner;
+        var values: param.PageValues = [_]u32{0} ** param.max_per_page;
         for (table, 0..) |_, i| values[i] = self.getSceneParam(i);
         self.menu_state = menu.Menu.openScene(table, values, now_ns);
         self.dirty = true;

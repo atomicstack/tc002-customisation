@@ -938,7 +938,7 @@ is `0x00RRGGBB`, a toggle is 0 or 1.
 |---|---|
 | clock | `face`, `colour`, `shade`, `colour 2`, `gradient`, `spread`, `digits` |
 | art | `scene` (the generator), then the showing generator's own |
-| popsquares | `pop ms`, `alive`, `dim chance`, `dim floor`, `dim ceiling`, `tint`, `tint colour` |
+| popsquares | `pop ms`, `alive`, `dim chance`, `dim floor`, `dim ceiling`, `tint`, `tint colour`, `cell` |
 | cube | `palette`, `colour`, `hue drift`, `background`, `spin`, `speed`, `zoom` |
 | ip | `layout` |
 
@@ -954,7 +954,11 @@ panel that ever lights, `dim chance` how often a spent cell comes back part-lit
 rather than full, `dim floor` and `dim ceiling` the range it comes back into as
 a percentage of full, and `tint` the percentage of pops that use `tint colour`
 instead of white — rolled afresh on every pop, so the colour drifts around the
-panel.
+panel. `cell` is the one parameter the sketch did not have as a slider: the
+size of a virtual pixel in leds, `1x1` (the default, one cell per led), `2x2`
+or `4x4`. the sketch drew its squares bigger than a led, and at `4x4` the panel
+is thirteen by four fat cells popping, which reads from across a room. the
+simulation runs on the coarser grid, so a pop is one block.
 
 **over the api.** `GET /config` reports every generator's parameters as an
 object keyed by the names its table declares, values in the same shape a patch

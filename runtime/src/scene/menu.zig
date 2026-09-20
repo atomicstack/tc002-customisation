@@ -134,7 +134,7 @@ pub const Menu = struct {
     kind: Kind = .device,
     /// scene menus only: the table being walked and the values as they stand
     table: []const param.Param = &.{},
-    values: param.Values = [_]u32{0} ** param.max_per_owner,
+    values: param.PageValues = [_]u32{0} ** param.max_per_page,
     /// scene menus only: which entry is showing; table.len is the exit at the end
     entry: usize = 0,
     item: Item = .brightness,
@@ -160,7 +160,7 @@ pub const Menu = struct {
     }
 
     /// the settings of whatever scene is showing, walked straight off its declared table
-    pub fn openScene(table: []const param.Param, values: param.Values, now: u64) Menu {
+    pub fn openScene(table: []const param.Param, values: param.PageValues, now: u64) Menu {
         return .{ .kind = .scene, .table = table, .values = values, .last_input_ns = now, .scroll_start_ns = now, .pages_at = now };
     }
 
@@ -542,7 +542,7 @@ const demo_table = [_]param.Param{
 };
 
 test "a scene menu walks a table it has never seen before" {
-    var m = Menu.openScene(&demo_table, .{ 0, 2, 0xff0000, 0, 0, 0, 0, 0 }, 0);
+    var m = Menu.openScene(&demo_table, .{ 0, 2, 0xff0000, 0, 0, 0, 0, 0, 0 }, 0);
     try std.testing.expectEqual(@as(usize, 4), m.entries()); // three parameters and the exit
     try std.testing.expectEqualStrings("shape", m.table[m.entry].name);
 
@@ -571,7 +571,7 @@ test "a scene menu walks a table it has never seen before" {
 }
 
 test "a colour parameter draws the colour rather than its digits" {
-    var m = Menu.openScene(&demo_table, .{ 0, 2, 0x00ff00, 0, 0, 0, 0, 0 }, 0);
+    var m = Menu.openScene(&demo_table, .{ 0, 2, 0x00ff00, 0, 0, 0, 0, 0, 0 }, 0);
     m.entry = 2;
     var rgb: geometry.Rgb = undefined;
     m.render(pages.fade_in_ns, &rgb);

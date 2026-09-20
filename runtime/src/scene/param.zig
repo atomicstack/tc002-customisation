@@ -160,6 +160,11 @@ pub fn choicesOf(comptime E: type) []const []const u8 {
 
 /// the values of one owner, as the settings hold them
 pub const Values = [max_per_owner]u32;
+/// a scene menu page: the art page is the generator choice *and* the generator's own parameters,
+/// so it holds one more than an owner. sized apart from `Values` because the storage layout is
+/// per owner, and a generator that declares all eight used to overflow the page.
+pub const max_per_page = max_per_owner + 1;
+pub const PageValues = [max_per_page]u32;
 
 /// fill in every declared default
 pub fn defaults(table: []const Param) Values {
