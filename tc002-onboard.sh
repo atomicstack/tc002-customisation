@@ -143,7 +143,7 @@ step "find the device"
 # 10.0.0.0 and is then dutifully connected to.
 find_devices() {
   local subnet=""
-  if [ "$SWEEP" = 1 ]; then
+  if (( SWEEP )); then
     subnet=$(ipconfig getifaddr en0 2>/dev/null || true)
     [ -n "$subnet" ] || subnet=$(ip route get 1.1.1.1 2>/dev/null | sed -n 's/.*src \([0-9.]*\).*/\1/p')
     subnet=${subnet%.*}
