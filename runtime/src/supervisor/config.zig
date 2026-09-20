@@ -748,7 +748,11 @@ pub fn toJson(c: *const Config, out: []u8) error{Overflow}![]u8 {
 /// parse a config file; unknown or malformed content yields the defaults with an error.
 pub fn fromJson(bytes: []const u8, arena: []u8) error{ Invalid, TooLong }!Config {
     var fba = std.heap.FixedBufferAllocator.init(arena);
-    const f = std.json.parseFromSliceLeaky(FileForm, fba.allocator(), bytes, .{ .duplicate_field_behavior = .@"error", .ignore_unknown_fields = false }) catch return error.Invalid;
+    // unknown fields are skipped, not refused: the flashed image lags the deploys, and a power cycle
+    // boots it against a file a newer build saved. refusing the file meant every setting fell back
+    // to its default (classic face, utc, no ntp) on every reboot. duplicates and bad values still
+    // mean a corrupt file, and the api bodies stay strict.
+    const f = std.json.parseFromSliceLeaky(FileForm, fba.allocator(), bytes, .{ .duplicate_field_behavior = .@"error", .ignore_unknown_fields = true }) catch return error.Invalid;
     if (f.schema != 1) return error.Invalid;
     var c = Config{};
     c.revision = f.revision;
@@ -1277,4 +1281,17 @@ test "mdns is on unless turned off, and the choice round-trips" {
     try std.testing.expect(!(try fromJson(try toJson(&c, &out), &arena)).mdns);
     // a settings file written before the switch existed means on, the default
     try std.testing.expect((try fromJson("{\"schema\":1}", &arena)).mdns);
+}
+
+test "a settings file written by a newer build still loads on this one" {
+    // the flashed image lags the /tmp deploys, and a power cycle boots the flashed image. every
+    // new setting the newer build saved (`discovery_controls`, then `mdns`) made the older
+    // build refuse the whole file and start from defaults: classic face, utc, no ntp. a field
+    // this build does not know is not a corrupt file; it is a setting this build cannot use.
+    var arena: [8192]u8 = undefined;
+    const c = try fromJson("{\"schema\":1,\"clock_font\":\"block\",\"timezone\":\"Europe/Amsterdam\",\"a_setting_from_the_future\":true,\"another\":{\"nested\":[1,2,3]}}", &arena);
+    try std.testing.expectEqual(@as(u8, 4), c.clock_font); // block: the known fields still apply
+    try std.testing.expectEqualStrings("Europe/Amsterdam", c.timezone.slice());
+    // a duplicated known field is still a corrupt file
+    try std.testing.expectError(error.Invalid, fromJson("{\"schema\":1,\"clock_font\":\"block\",\"clock_font\":\"mini\"}", &arena));
 }

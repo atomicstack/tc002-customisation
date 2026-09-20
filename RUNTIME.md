@@ -1597,8 +1597,13 @@ the file itself is the same document in a slightly different shape, with
  "mdns":true,"origins":[],"mqtt":{"enabled":false,"host":"","port":1883,"username":"","password":"","client_id":"","prefix":"","tls":false}}
 ```
 
-an invalid or unknown file is ignored with a warning (defaults are used and
-the file is left alone). the mqtt password is in that file in clear, mode
+an invalid file is ignored with a warning (defaults are used and the file is
+left alone). a field this build does not know is skipped, not refused: the
+flashed image usually lags the `/tmp` deploys, and a power cycle boots it
+against a file a newer build saved, so an older build reads what it can and
+keeps the rest of its defaults. (before 2026-09-20 it refused the whole file,
+which is why a clock came back from a reboot on the classic face in utc after
+`discovery_controls` and then `mdns` were added.) the mqtt password is in that file in clear, mode
 0600, root only; it is never returned by the api.
 
 ## discovery (mdns)
