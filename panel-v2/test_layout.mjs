@@ -648,6 +648,58 @@ for (const width of [1440, 1200, 950, 700, 390]) {
   });
 }
 
+// the preview replays the statements the device publishes; /status is the bootstrap snapshot and
+// the resync, not a second opinion to be applied on top. the replica's revision is the device's:
+// it moves when a statement moves it and at no other time, because a statement that does not land
+// on the revision it carries is how a missed one is noticed. installing a snapshot with the same
+// commands the device applies moves it too — and then every statement afterwards looks missed.
+//
+// a knob turn is where that shows: the device publishes one statement per detent, so a turn of
+// several steps is a burst, and a burst that is thrown away for a resync leaves the preview on
+// whatever /status happened to say when it was sampled rather than where the panel ended up.
+//
+// the stream is stubbed at the seam the page already has: it builds an EventSource and reads
+// `onmessage`, so a fake one delivers real statements without needing the mock to grow /events.
+const STREAM_START = `
+(() => {
+  window.__RealES = window.__RealES || window.EventSource;
+  window.EventSource = class {
+    constructor(url) { this.url = url; this.onopen = null; this.onerror = null; this.onmessage = null; window.__ES = this; }
+    close() { if (window.__ES === this) window.__ES = null; }
+  };
+  startEvents();
+  window.__ES.onopen();
+  return streamState;
+})()`;
+const STREAM_STOP = `(() => { window.EventSource = window.__RealES; startEvents(); return streamState; })()`;
+const statement = ev => `window.__ES.onmessage({ data: ${JSON.stringify(JSON.stringify(ev))} })`;
+
+test('a knob turn published one detent at a time plays out instead of forcing a resync',
+  { skip: chromeAvailable ? false : 'google chrome is not installed' }, async () => {
+  assert.equal(await cdp.eval(STREAM_START), 'live');
+  try {
+    // a resync is the one moment the replica is known to stand exactly where the device does:
+    // it takes a fresh /status and stamps that revision on. everything after this asks whether
+    // it is still standing there
+    const at = await cdp.eval(`resyncFromState('test').then(() => STATUS.revision)`);
+    await sleep(700);   // several paints, each of which installs the snapshot it is given
+    assert.equal(await cdp.eval(`S.revision()`), at,
+      'the preview moved its own revision on without the device applying anything');
+
+    // three detents of one turn, published together as the device publishes them
+    for (const [i, generator] of ['plasma', 'cube', 'popsquares'].entries()) {
+      await cdp.eval(statement({ revision: at + i + 1, age_ms: 0, cmd: 'select_generator', source: 'input', generator }));
+    }
+    await sleep(1500);   // the mirror runs 750 ms behind, and /status is polled every second
+    assert.equal(await cdp.eval(`lastStatement`), 'select_generator \u00b7 input',
+      'the replica resynced instead of playing the turn the device published');
+    assert.equal(await cdp.eval(`S.revision()`), at + 3,
+      'the replica did not land on the revision the last detent carried');
+  } finally {
+    await cdp.eval(STREAM_STOP);
+  }
+});
+
 test('script editor round-trips source through the real proxy and berry mock',
   { skip: chromeAvailable ? false : 'google chrome is not installed' }, async () => {
   await cdp.setWidth(1200);

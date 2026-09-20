@@ -705,6 +705,16 @@ async function refreshStatus(quiet) {
 const MIRROR_DELAY_MS = 750;
 const mirrorNow = () => Date.now() - MIRROR_DELAY_MS;
 let events = null, pending = [], streamState = 'off', lastStatement = '';
+// /status is a picture of the device, not a history of it, but installing it takes the same
+// arbiter commands the device applies and those move the replica's revision — three of them
+// unconditionally, base, generator and seed. so it is installed once, at the bootstrap and after
+// a resync, with the device's revision stamped back on afterwards; from then on the stream owns
+// what it carries. before this the snapshot went in on every paint, the replica sat three or four
+// revisions ahead of the device for ever, and every statement it published looked like one that
+// had been missed: the console resynced on each one and threw away whatever else was queued. a
+// knob turn is where that was visible, because a turn of several detents is a burst of statements
+// and the resync discarded all but the first.
+let snapshotDue = true;
 
 function stopEvents() {
   if (events) { events.close(); events = null; }
@@ -751,6 +761,7 @@ async function resyncFromState(why) {
     STATUS = await call('GET', 'status');
     S.reset(STATUS.base, STATUS.generator, STATUS.seed >>> 0);
     S.setRevision(STATUS.revision);
+    snapshotDue = true;
     showConfig(await call('GET', 'config'));
     if (STATUS.base === 'canvas') await pollCanvas(true);
     lastStatement = `resynced (${why})`;
@@ -847,7 +858,14 @@ function draw() {
       // play whatever the mirror's clock has reached, then draw that instant
       const shown = mirrorNow();
       drainEvents(shown);
-      const c = S.compose(STATUS, local, shown);
+      // follow the stream once it is live and the snapshot has gone in at least once; the two
+      // race at connect, and a paint that skipped the snapshot because the stream won would leave
+      // the preview on the default face with no ip and no canvas
+      const followingStream = streamState === 'live' && !snapshotDue;
+      const c = S.compose(STATUS, local, shown, followingStream);
+      // the snapshot came with a revision of its own: stand where it says, not where installing it
+      // left the replica
+      if (!followingStream) { snapshotDue = false; S.setRevision(STATUS.revision); }
       recentSimFrames.push(c.rgb);
       if (recentSimFrames.length > SIM_FRAME_HISTORY) recentSimFrames.shift();
       const powerOff = STATUS.power === false;
@@ -2175,6 +2193,7 @@ async function loadAll() {
     // event fails its revision check and buys a resync that was never needed
     S.reset(STATUS.base, STATUS.generator, (STATUS.seed >>> 0) || 1);
     S.setRevision(STATUS.revision);
+    snapshotDue = true;
     SCENES = await call('GET', 'scenes');
     fillBaseButtons(SCENES.bases || [], STATUS.base);
     showBaseRows(STATUS.base);
