@@ -111,14 +111,18 @@ input.sw:checked::after{left:19px;background:var(--accent-ink)}
 .note b{color:var(--warn);font-weight:600}
 .list-empty{color:var(--muted);font-size:13px;padding:6px 0}
 
-/* the retract has to clear the box *and* the gap it sits above, so it is written in those two
-   terms rather than as a percentage guessed against them: 140% of a one-line toast was 11 px short
-   and left a sliver of itself along the bottom of the window */
+/* a retracted toast is *gone*, not parked below the fold. sliding it past the bottom edge leaves
+   it in the layout, so whether a sliver of it shows comes down to rounding and to how the browser
+   treats a fixed box hanging off the viewport — it showed, and it could still be scrolled to. so
+   the resting state is display:none, and `display` is transitioned as a discrete property: it
+   holds the box for the length of the retract and drops it at the end. @starting-style gives the
+   slide somewhere to come in from, since the box does not exist until the moment it is shown. */
 #toast{--toast-gap:26px;position:fixed;left:50%;bottom:var(--toast-gap);
   transform:translateX(-50%) translateY(calc(100% + var(--toast-gap)));
   background:var(--ink);color:var(--bg);padding:10px 18px;border-radius:var(--radius);font:13px var(--body);
-  transition:transform .2s;z-index:9;max-width:88vw}
-#toast.show{transform:translateX(-50%) translateY(0)}
+  display:none;transition:transform .2s,display .2s allow-discrete;z-index:9;max-width:88vw}
+#toast.show{display:block;transform:translateX(-50%) translateY(0)}
+@starting-style{#toast.show{transform:translateX(-50%) translateY(calc(100% + var(--toast-gap)))}}
 #toast.err{background:var(--danger);color:#fff}
 
 @container (max-width:860px){

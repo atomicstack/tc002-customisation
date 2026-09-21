@@ -648,29 +648,47 @@ for (const width of [1440, 1200, 950, 700, 390]) {
   });
 }
 
-// the toast retracts by a percentage of its own height, and sits a fixed distance off the bottom
-// of the viewport: those are different units, so the travel has to cover the gap as well as the
-// box. at 140% of a one-line toast it did not, and "connected to the runtime" left a sliver of
-// itself pinned to the bottom of the window for as long as the page was open.
-test('a toast that has retracted is off the bottom of the viewport',
+// a retracted toast must be gone, not merely parked below the fold. sliding it past the bottom
+// edge leaves it in the layout, so whether any of it shows comes down to rounding and to how the
+// browser treats a fixed box hanging off the viewport — it came back twice, and the second time
+// it could still be scrolled to. so the resting state is `display:none`: nothing to round, nothing
+// to scroll to, nothing to hit-test. the slide is kept by transitioning `display` as a discrete
+// property, which holds the box for the length of the retract and then drops it.
+test('a retracted toast is not in the page at all',
   { skip: chromeAvailable ? false : 'google chrome is not installed' }, async () => {
   await cdp.setWidth(1200);
   const geom = await cdp.eval(`(async () => {
     const t = document.getElementById('toast');
+    const de = document.documentElement;
     const settle = () => new Promise(r => setTimeout(r, 400));
-    toast('connected to the runtime');   // the shortest kind: one line, so the gap is the largest share of the travel
+    toast('connected to the runtime');   // the shortest kind: one line, the case that used to strand a sliver
     await settle();
-    const shown = t.getBoundingClientRect();
+    const shownRect = t.getBoundingClientRect();
+    const shown = { display: getComputedStyle(t).display, bottom: shownRect.bottom, height: shownRect.height };
     clearTimeout(t._t); t.className = '';
     await settle();
-    const hidden = t.getBoundingClientRect();
-    return { viewport: window.innerHeight, height: shown.height, shownBottom: shown.bottom, hiddenTop: hidden.top };
+    const rect = t.getBoundingClientRect();
+    // scroll to the very bottom: a box parked below the fold shows up here even when it does not
+    // at the top of the page
+    window.scrollTo(0, de.scrollHeight);
+    await new Promise(r => setTimeout(r, 200));
+    const atBottom = t.getBoundingClientRect();
+    const scrolled = window.scrollY;
+    window.scrollTo(0, 0);
+    return { shown, viewport: window.innerHeight, display: getComputedStyle(t).display,
+             paints: rect.width > 0 || rect.height > 0,
+             // an unrendered element measures as a zero rect at the origin, which is not a sliver
+             // at the top of the screen: nothing is painted, so nothing is showing
+             sliverAtBottom: (atBottom.width || atBottom.height)
+               ? Math.round(Math.max(0, window.innerHeight - atBottom.top)) : 0, scrolled };
   })()`);
-  assert.ok(geom.height > 0, 'the toast measured as nothing, so this test proves nothing');
-  assert.ok(geom.shownBottom <= geom.viewport,
-    `a showing toast should be inside the viewport, but its bottom is at ${geom.shownBottom} of ${geom.viewport}`);
-  assert.ok(geom.hiddenTop >= geom.viewport,
-    `a retracted toast still shows ${Math.round(geom.viewport - geom.hiddenTop)} px above the bottom of the viewport`);
+  assert.equal(geom.shown.display !== 'none', true, 'a showing toast has to be rendered');
+  assert.ok(geom.shown.height > 0 && geom.shown.bottom <= geom.viewport,
+    `a showing toast should be inside the viewport, bottom ${geom.shown.bottom} of ${geom.viewport}`);
+  assert.equal(geom.display, 'none', 'a retracted toast should be taken out of the layout, not parked below the fold');
+  assert.equal(geom.paints, false, 'a retracted toast still has a box');
+  assert.equal(geom.sliverAtBottom, 0,
+    `scrolled to the bottom of the page, ${geom.sliverAtBottom} px of the retracted toast is still on screen`);
 });
 
 // the preview replays the statements the device publishes; /status is the bootstrap snapshot and
