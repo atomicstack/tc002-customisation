@@ -33,9 +33,10 @@ what ulanzi ships, driven from your own machine instead of ulanzi studio:
   built-in apps, custom app frames, brightness, wifi, the lot. unauthenticated,
   so anything on the network can drive it.
 - **mqtt**, for the same display control through a broker you run.
-- **`tc002-adopt.py`**, which finds stock clocks on the lan and joins a
-  factory-fresh one to your wifi from its setup ap, replacing ulanzi studio's
-  onboarding; **`tc002-ap-probe.sh`** does the ap visit unattended on macos.
+- **`tc002-onboard.sh`**, which joins a factory-fresh clock to your wifi from
+  its setup ap, replacing ulanzi studio's onboarding (**`tc002-ap-probe.sh`**
+  does the ap visit unattended on macos), and **`tc002-devices.py`**, which
+  finds every clock on the lan, stock or not.
 - **`panel/`**, a browser console for the stock app (the stock ui is
   chinese-only).
 - **`tc002-ntp-patch.py`**, which makes the clock sync from your own ntp server
@@ -108,8 +109,7 @@ tools:
 |------|-----------|
 | [`INSTALL.md`](INSTALL.md) | the walkthrough from the box to the replacement runtime: dependencies, every step, getting back to stock, and what looks broken but is not |
 | [`tc002-onboard.sh`](tc002-onboard.sh) | that walkthrough as one command: find or adopt the clock, check it against `FINGERPRINTS.md`, take a verified backup of `res`, build your image, and flash only with `--flash` |
-| [`tc002-devices.py`](tc002-devices.py) | list every clock this machine can reach, by mdns name where the runtime runs and by adb or http where it does not; `--one` for scripts, which refuses to guess between two |
-| [`tc002-adopt.py`](tc002-adopt.py) | discover stock clocks on the lan (their udp/55555 broadcast, `--sweep` for the /24) and join a factory-fresh one to wifi from its setup ap — replaces ulanzi studio for setup, and works on linux |
+| [`tc002-devices.py`](tc002-devices.py) | list every clock this machine can reach: runtime clocks by their mdns name, stock clocks by their udp/55555 broadcast, either by adb, and `--sweep` for a /24 over http; `--one` for scripts, which refuses to guess between two |
 | [`tc002-ap-probe.sh`](tc002-ap-probe.sh) | macos only: join the `U-Clock` setup ap, survey it, adopt the clock, and put this machine's wifi back on every exit path; `--adopt-only` is what the onboarding script calls |
 | [`tc002-mkrelease.sh`](tc002-mkrelease.sh) | build the release tarball: the armv7 binaries, the static busybox, the scripts and the docs, for a machine with no compiler |
 | [`panel/`](panel/) | an english web control panel for the device (the stock ui is chinese-only) |
@@ -168,15 +168,15 @@ everything uses apple's `/usr/bin/python3` deliberately — see
 **find a device already on your wifi**
 
 ```bash
-/usr/bin/python3 tc002-adopt.py discover
+/usr/bin/python3 tc002-devices.py
 ```
 
-it listens for the device's own udp broadcast (port 55555, about once a
-second) and confirms over http, so it answers in a few seconds. from another
-vlan, or if your ap filters broadcasts, add `--sweep` to probe the subnet
-(`--sweep --no-listen --subnet 10.0.0` is sweep only). the sweep is never
-automatic: 254 connections the whole lan can see. a clock running the custom
-runtime answers by name instead: `/usr/bin/python3 tc002-devices.py`.
+a stock clock announces itself by udp broadcast (port 55555, about once a
+second) and a clock running the custom runtime answers mdns by name; this
+listens for both, asks adb about anything attached, and prints one row per
+clock in about a second. from another vlan, or if your ap filters broadcasts,
+add `--sweep 10.0.0` to probe the subnet over http. the sweep is never
+automatic: 254 connections the whole lan can see.
 
 **control it in english**
 
@@ -324,13 +324,15 @@ dead console. `--mock` points it at `mock-device.py` for a shape check, and
 **adopt a factory-fresh device**
 
 a device with no stored wifi credentials hosts a wpa2 ap called `U-Clock` and
-serves `192.168.100.x`. join that network, then:
+serves `192.168.100.x`. the onboarding script joins it, hands over your wifi
+credentials and puts this machine back on its own network afterwards:
 
 ```bash
-/usr/bin/python3 tc002-adopt.py adopt --ssid <your-wifi>
+./tc002-onboard.sh --wifi-ssid <your-wifi> --no-adopt   # adoption only, nothing flashed
 ```
 
-the full flow is in [`SETUP.md`](SETUP.md).
+on linux it asks you to join the `U-Clock` network by hand first. the full
+flow, and the http call it makes, is in [`SETUP.md`](SETUP.md).
 
 **verify your mqtt broker credentials**
 

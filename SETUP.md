@@ -1,8 +1,8 @@
 # Ulanzi TC002 — initial setup / adoption (replacing Ulanzi Studio)
 
 How a factory-fresh TC002 gets onto your wifi, how to find it once it's there,
-and how `tc002-adopt.py` does both without the Ulanzi Studio desktop app. The
-endpoints involved are in `HTTP-API.md`.
+and how `tc002-onboard.sh` and `tc002-devices.py` do both without the Ulanzi
+Studio desktop app. The endpoints involved are in `HTTP-API.md`.
 
 > Identifiers (serial, MAC, SSID) are replaced with placeholders.
 
@@ -77,25 +77,33 @@ format was confirmed by capturing packets on the LAN. The stock firmware has
 [`RUNTIME.md`](RUNTIME.md#discovery-mdns)), but it is not running on a
 factory-fresh device, so nothing here changes for adoption.
 
-`tc002-adopt.py discover` listens on udp/55555 for a few seconds, then confirms
-each announced device with `GET /getBase` (which adds the IP, SSID and firmware
-versions). If nothing is heard, because the host is on another VLAN or the AP
-filters broadcasts, `--sweep` probes every host on the /24 over HTTP: any host
-answering `/getBase` with `{devSn, mac, mcuVer, appVer, ssid, ip}` is a TC002.
-The sweep is opt-in, never a silent fallback: it is 254 connections that every
-device on the network sees. (A clock running the custom runtime needs none of
-this: it answers mDNS, see [`RUNTIME.md`](RUNTIME.md#discovery-mdns).)
+`tc002-devices.py` listens on udp/55555 for that announcement, browses mDNS
+for clocks running the custom runtime, and asks adb about anything attached,
+all at once, and prints one row per clock: address, mDNS name, MAC, and which
+firmware. It stops as soon as the network has gone quiet after the last
+answer, so a lan with clocks on it answers in about a second. If nothing is
+heard, because the host is on another VLAN or the AP filters broadcasts,
+`--sweep 10.0.0` probes every host on the /24 over HTTP: any host answering
+`/getBase` with `{devSn, mac, mcuVer, appVer, ssid, ip}` is a stock TC002, and
+one answering `/api/v1/status` with 401 runs the custom runtime. The sweep is
+opt-in, never a silent fallback: it is 254 connections that every device on
+the network sees.
 
 ```bash
-# find devices already on your wifi (listen, then confirm; ~3 s)
-/usr/bin/python3 tc002-adopt.py discover
+# find every clock already on your wifi (~1 s)
+/usr/bin/python3 tc002-devices.py
 
-# sweep only, e.g. from another vlan (~4 s for a /24)
-/usr/bin/python3 tc002-adopt.py discover --sweep --no-listen --subnet 10.0.0
+# from another vlan, or behind an ap that filters broadcasts (~4 s for a /24)
+/usr/bin/python3 tc002-devices.py --sweep 10.0.0
 
-# adopt a factory-fresh device (after joining its "U-Clock" ap)
-/usr/bin/python3 tc002-adopt.py adopt --ssid <your-wifi>
+# adopt a factory-fresh device: joins its "U-Clock" ap for you on macos,
+# asks you to on linux, posts your credentials, and restores your wifi
+./tc002-onboard.sh --wifi-ssid <your-wifi> --no-adopt   # drop --no-adopt to also fingerprint and back up
 ```
+
+The adoption call itself is one `POST /setWifiConfig` with `{"ssid","password"}`
+to `192.168.100.1` while joined to the AP; the onboarding script makes it, and
+so does `tc002-ap-probe.sh --adopt-only`, which the script uses on macOS.
 
 **It does not broadcast while in setup-AP mode.** Measured 2026-09-19: 25 s of
 silence on udp/55555 while joined to `U-Clock` (udp/6666 and 9999 as controls),

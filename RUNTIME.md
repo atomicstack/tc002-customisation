@@ -2348,7 +2348,7 @@ all on a warm device that had been up for days, under the lock, on
   renewing daemon tracked by pidfile) and re-runs it on carrier or address loss.
   measured from a cold boot with the driver removed: everything back in 6 s.
   **the setup-ap flow is still not handled** — a factory-fresh device still
-  needs the stock app or `tc002-adopt.py` to join wifi in the first place.
+  needs the stock app, driven by `tc002-onboard.sh`, to join wifi in the first place.
 - **the mcu.** the supervisor queries the version, battery and usb state
   (see [the pixel mcu link](runtime/README.md#the-pixel-mcu-link)), reports
   them, and uses the power-off command when the cell runs out — see

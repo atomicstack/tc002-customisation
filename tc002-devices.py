@@ -1,7 +1,7 @@
 #!/usr/bin/python3
 """tc002-devices.py: list every TC002 this machine can reach, so tools stop guessing.
 
-  tc002-devices.py [--sweep 10.0.0] [--one] [--json] [--adb PATH] [--no-mdns]
+  tc002-devices.py [--sweep 10.0.0] [--one] [--json] [--adb PATH] [--no-mdns] [--no-listen]
 
 apple's /usr/bin/python3 on purpose: macos 15 gates lan access per binary, and the mdns probe
 below sends lan multicast, which a homebrew python cannot without a permission change (it fails
@@ -16,12 +16,14 @@ It finds both kinds, which need different probes:
 
   custom runtime   mdns browse for _tc002._tcp  -> one name per clock, tc002-<mac>.local,
                                                   no adb and no subnet guess (--no-mdns skips it)
-  stock firmware   GET /getBase      -> 200 and a json body with devSn/mac
-  custom runtime   GET /api/v1/status -> 401 (auth required, but the route
-                                         exists, which nothing else answers)
+  stock firmware   its own udp/55555 broadcast  -> the mac and serial, once a second from every
+                                                  stock clock on the segment (--no-listen skips it)
+  either kind      adb transports               -> the wlan0 mac, and which kind by what is in /res/bin
+  either kind      --sweep: GET /getBase (200 with devSn/mac) or /api/v1/status (401) on every
+                   host of the /24, never on by default
 
-the mdns probe runs alongside the adb probes and any sweep, and stops as soon as the lan has
-gone quiet after the last answer.
+the mdns probe and the broadcast listener run alongside the adb probes and any sweep, and each
+stops as soon as the lan has gone quiet after the last answer.
 
 `--one` prints a single adb address for scripts. If there is exactly one device
 it prints it and exits 0; if there are none or several it prints the table on
@@ -74,6 +76,65 @@ def identify(host):
     if code in (401, 403):
         return {"kind": "runtime", "serial": "", "mac": "", "ssid": "", "app": ""}
     return None
+
+
+BROADCAST_PORT = 55555
+BROADCAST_RE = re.compile(
+    r"^Ulanzi TC002 (?P<tail>[0-9a-f]{4}):(?P<mac>[0-9a-f]{12}):(?P<serial>[A-Za-z0-9]+):(?P<flag>true|false)$")
+
+
+def parse_broadcast(data):
+    """the stock firmware's announcement, `Ulanzi TC002 <mac-tail>:<mac>:<serial>:<flag>`, as a
+    dict with the mac in its usual colon form; None for anything else on the port."""
+    m = BROADCAST_RE.match(data.decode("utf-8", "replace").strip())
+    if not m:
+        return None
+    mac = m.group("mac")
+    return {"tail": m.group("tail"), "mac": ":".join(mac[i:i + 2] for i in range(0, 12, 2)),
+            "serial": m.group("serial"), "flag": m.group("flag")}
+
+
+def listen_broadcasts(seconds=1.5, quiet=1.2):
+    """collect stock clocks from their udp/55555 broadcasts: {ip: {ip, mac, serial}}.
+
+    a stock clock sends about once a second, so a second and a half hears one that is there and
+    costs little when none is, which is the common case on a lan of runtime clocks; the wait
+    ends `quiet` seconds after the last *new* clock. SO_REUSEPORT lets this coexist with ulanzi
+    studio, which listens on the same port. a clock running the custom runtime never sends
+    this; it answers mdns instead.
+    """
+    heard = {}
+    s = None
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        try:
+            s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
+        except (AttributeError, OSError):
+            pass
+        s.bind(("0.0.0.0", BROADCAST_PORT))
+        s.settimeout(0.2)
+        end_at = time.time() + seconds
+        last_new = None
+        while time.time() < end_at:
+            if last_new is not None and time.time() - last_new > quiet:
+                break
+            try:
+                data, (ip, _port) = s.recvfrom(1024)
+            except socket.timeout:
+                continue
+            except OSError:
+                break
+            d = parse_broadcast(data)
+            if d and ip not in heard:
+                heard[ip] = {"ip": ip, "mac": d["mac"], "serial": d["serial"]}
+                last_new = time.time()
+    except OSError:
+        pass                            # the port is optional; the other probes still run
+    finally:
+        if s is not None:
+            s.close()
+    return heard
 
 
 def _local_ipv4s():
@@ -288,6 +349,7 @@ def main():
     ap.add_argument("--json", action="store_true")
     ap.add_argument("--adb", default="adb")
     ap.add_argument("--no-mdns", action="store_true", help="skip the mdns probe")
+    ap.add_argument("--no-listen", action="store_true", help="skip listening for the stock firmware's udp/55555 broadcast")
     a = ap.parse_args()
     ADB = a.adb
 
@@ -298,6 +360,9 @@ def main():
         # no sweep, and it is the only probe that returns a *name* rather than an address to be
         # disambiguated later. `merge_rows` does not care which probe finished first.
         mdns_future = None if a.no_mdns else ex.submit(mdns_query)
+        # the stock firmware's own announcement, in parallel too: the only way to see a stock
+        # clock that is on the wifi but not yet on adb, without sweeping
+        listen_future = None if a.no_listen else ex.submit(listen_broadcasts)
 
         for serial in adb_transports():
             d = describe_adb(serial)
@@ -317,6 +382,10 @@ def main():
                     rows[key] = {"transport": f"{host}:5555", "ip": host,
                                  "mac": info.get("mac", ""), "kind": info["kind"],
                                  "serial": info.get("serial", "")}
+
+        for d in (listen_future.result() if listen_future else {}).values():
+            rows[("broadcast", d["ip"])] = {"transport": f'{d["ip"]}:5555', "ip": d["ip"], "mac": d["mac"],
+                                            "kind": "stock", "serial": d["serial"]}
 
         for d in (mdns_future.result() if mdns_future else {}).values():
             if not d.get("ip"):
@@ -341,7 +410,8 @@ def main():
         return 0
 
     if not out:
-        print("no tc002 found. is one connected over adb, or try --sweep 10.0.0")
+        print("no tc002 found. a runtime clock answers mdns and a stock one broadcasts on udp/55555,")
+        print("so either is on another vlan, or behind an ap that filters broadcasts: try --sweep 10.0.0")
         return 1
     print(f'  {"address":<16} {"mdns name":<20} {"mac":<18} running')
     for r in out:

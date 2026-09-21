@@ -12,6 +12,8 @@
 # clock that is not on adb yet, at the cost of 254 connections the whole lan
 # can see. never on by default.
 #
+# --no-adopt refuses to adopt; without it a clock still on its setup ap is adopted.
+#
 # by default this does everything EXCEPT write to flash: it finds or adopts the
 # device, checks it is what these notes were written against, records a
 # fingerprint you can keep, takes a verified backup of the `res` partition and
@@ -138,9 +140,8 @@ step "find the device"
 # both kinds -- stock answers GET /getBase, a flashed runtime answers
 # /api/v1/status with 401 -- and this refuses when more than one turns up.
 #
-# do NOT scrape tc002-adopt.py's prose for an address: it prints the subnet it
-# is sweeping ("sweeping 10.0.0.0/24"), which greps out as a device called
-# 10.0.0.0 and is then dutifully connected to.
+# tc002-devices.py --json is read, never its table: prose about a sweep once
+# grepped out as a device called 10.0.0.0, which was then dutifully connected to.
 find_devices() {
   local subnet=""
   if (( SWEEP )); then

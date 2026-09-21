@@ -460,7 +460,7 @@ if [[ "${ADOPTED:-0}" -eq 1 ]]; then
   hr "find the adopted device on the lan"
   say "  giving it 25s to associate and take a lease"
   sleep 25
-  to 60 "$PY" "$(dirname "$0")/tc002-adopt.py" discover 2>&1 | redact | sed 's/^/  /'
+  to 60 "$PY" "$(dirname "$0")/tc002-devices.py" 2>&1 | redact | sed 's/^/  /'
 fi
 
 say ""

@@ -124,8 +124,8 @@ client defaults to port 80 and `/events` but both are overridable via
 
 ### `/getBase`
 
-`GET`. The device's identity; also the fingerprint `tc002-adopt.py` uses to
-recognise one. *Source: live.*
+`GET`. The device's identity; also the fingerprint `tc002-devices.py --sweep`
+and the onboarding script use to recognise one. *Source: live.*
 
 ```json
 {"devSn":"<SERIAL>","ssid":"<SSID>","ip":"10.0.0.111",

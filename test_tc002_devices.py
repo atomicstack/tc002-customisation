@@ -50,8 +50,10 @@ class DiscoveryTests(unittest.TestCase):
         with patch.object(devices.socket, "socket", return_value=sock), \
              patch.object(devices.time, "sleep"), \
              patch.object(devices.subprocess, "run", side_effect=adb), \
-             patch.object(sys, "argv", ["tc002-devices.py", *argv]), \
+             patch.object(sys, "argv", ["tc002-devices.py", "--no-listen", *argv]), \
              contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+            # --no-listen: one mock socket cannot serve two listening threads; BroadcastTests
+            # covers the udp/55555 listener on its own
             result = devices.main()
         return result, stdout.getvalue(), stderr.getvalue()
 
@@ -324,6 +326,54 @@ class DeviceSelectionTests(unittest.TestCase):
             self.assertEqual(result.returncode, 1)
             self.assertIn("at 10.0.0.111:5555", result.stderr)
             self.assertNotIn("export TC002_DEVICE", result.stderr)
+
+
+class BroadcastTests(unittest.TestCase):
+    """the stock firmware announces itself on udp/55555 once a second; this is the only way to
+    find a stock clock without adb or a sweep, and it used to live in tc002-adopt.py."""
+
+    def test_the_announcement_is_parsed_and_junk_is_not(self):
+        d = devices.parse_broadcast(b"Ulanzi TC002 9e85:ccc4b2779e85:B0D32I008U3672679:true")
+        self.assertEqual(d, {"tail": "9e85", "mac": "cc:c4:b2:77:9e:85", "serial": "B0D32I008U3672679", "flag": "true"})
+        for junk in (b"", b"Ulanzi TC002", b"hello 9e85:ccc4b2779e85:sn:true", b"Ulanzi TC002 9e85:zz:sn:maybe"):
+            self.assertIsNone(devices.parse_broadcast(junk), junk)
+
+    def test_listening_hears_a_clock_and_stops_after_a_quiet_gap(self):
+        payload = b"Ulanzi TC002 9e85:ccc4b2779e85:B0D32I008U3672679:true"
+        sock = Mock()
+        sock.recvfrom.side_effect = [(payload, ("10.0.0.9", 40001)), (payload, ("10.0.0.9", 40002))] + [socket.timeout()] * 100000
+        with patch.object(devices.socket, "socket", return_value=sock):
+            started = devices.time.time()
+            heard = devices.listen_broadcasts(seconds=5.0, quiet=0.2)
+        self.assertLess(devices.time.time() - started, 2.0)
+        self.assertEqual(list(heard), ["10.0.0.9"])
+        self.assertEqual(heard["10.0.0.9"]["mac"], "cc:c4:b2:77:9e:85")
+        self.assertEqual(heard["10.0.0.9"]["serial"], "B0D32I008U3672679")
+        sock.bind.assert_called_once_with(("0.0.0.0", 55555))
+
+    def test_no_listen_leaves_the_broadcast_port_alone(self):
+        sock = Mock()
+        sock.recvfrom.side_effect = OSError()
+        no_adb = lambda args, **kwargs: subprocess.CompletedProcess(args, 0, stdout="List of devices attached\n", stderr="")
+        stdout = io.StringIO()
+        with patch.object(devices.socket, "socket", return_value=sock), patch.object(devices.time, "sleep"), \
+             patch.object(devices.subprocess, "run", side_effect=no_adb), \
+             patch.object(sys, "argv", ["tc002-devices.py", "--json", "--no-listen"]), contextlib.redirect_stdout(stdout):
+            devices.main()
+        self.assertNotIn(("0.0.0.0", 55555), [c.args[0] for c in sock.bind.call_args_list])
+
+    def test_a_broadcasting_stock_clock_is_listed_as_stock(self):
+        heard = {"10.0.0.9": {"ip": "10.0.0.9", "mac": "cc:c4:b2:77:9e:85", "serial": "B0D32I008U3672679"}}
+        no_adb = lambda args, **kwargs: subprocess.CompletedProcess(args, 0, stdout="List of devices attached\n", stderr="")
+        stdout = io.StringIO()
+        with patch.object(devices, "listen_broadcasts", return_value=heard), \
+             patch.object(devices.subprocess, "run", side_effect=no_adb), \
+             patch.object(sys, "argv", ["tc002-devices.py", "--json", "--no-mdns"]), contextlib.redirect_stdout(stdout):
+            self.assertEqual(devices.main(), 0)
+        rows = json.loads(stdout.getvalue())
+        self.assertEqual(len(rows), 1)
+        self.assertEqual((rows[0]["ip"], rows[0]["kind"], rows[0]["mac"], rows[0].get("serial")),
+                         ("10.0.0.9", "stock", "cc:c4:b2:77:9e:85", "B0D32I008U3672679"))
 
 
 if __name__ == "__main__":

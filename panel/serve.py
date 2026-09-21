@@ -23,7 +23,7 @@ PORT = next((int(a) for a in ARGS if a.isdigit()), 8777)
 # host may carry a port (host:1234) so a mock or a device behind a forward works
 HOST_RE = re.compile(r"^/api/([0-9a-zA-Z.\-]+(?::\d+)?)/(.+)$")
 
-# mirrors tc002-adopt.py; kept inline so the panel stays a single directory
+# mirrors tc002-devices.py's broadcast listener; kept inline so the panel stays a single directory
 BROADCAST_PORT = 55555
 BROADCAST_RE = re.compile(
     r"^Ulanzi TC002 (?P<tail>[0-9a-f]{4}):(?P<mac>[0-9a-f]{12}):(?P<sn>[A-Za-z0-9]+):(?P<flag>true|false)$")
