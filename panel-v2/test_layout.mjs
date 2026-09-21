@@ -648,6 +648,31 @@ for (const width of [1440, 1200, 950, 700, 390]) {
   });
 }
 
+// the toast retracts by a percentage of its own height, and sits a fixed distance off the bottom
+// of the viewport: those are different units, so the travel has to cover the gap as well as the
+// box. at 140% of a one-line toast it did not, and "connected to the runtime" left a sliver of
+// itself pinned to the bottom of the window for as long as the page was open.
+test('a toast that has retracted is off the bottom of the viewport',
+  { skip: chromeAvailable ? false : 'google chrome is not installed' }, async () => {
+  await cdp.setWidth(1200);
+  const geom = await cdp.eval(`(async () => {
+    const t = document.getElementById('toast');
+    const settle = () => new Promise(r => setTimeout(r, 400));
+    toast('connected to the runtime');   // the shortest kind: one line, so the gap is the largest share of the travel
+    await settle();
+    const shown = t.getBoundingClientRect();
+    clearTimeout(t._t); t.className = '';
+    await settle();
+    const hidden = t.getBoundingClientRect();
+    return { viewport: window.innerHeight, height: shown.height, shownBottom: shown.bottom, hiddenTop: hidden.top };
+  })()`);
+  assert.ok(geom.height > 0, 'the toast measured as nothing, so this test proves nothing');
+  assert.ok(geom.shownBottom <= geom.viewport,
+    `a showing toast should be inside the viewport, but its bottom is at ${geom.shownBottom} of ${geom.viewport}`);
+  assert.ok(geom.hiddenTop >= geom.viewport,
+    `a retracted toast still shows ${Math.round(geom.viewport - geom.hiddenTop)} px above the bottom of the viewport`);
+});
+
 // the preview replays the statements the device publishes; /status is the bootstrap snapshot and
 // the resync, not a second opinion to be applied on top. the replica's revision is the device's:
 // it moves when a statement moves it and at no other time, because a statement that does not land
