@@ -462,7 +462,7 @@ class EndToEndTests(unittest.TestCase):
         self.assertEqual([g["name"] for g in sc["generators"]], ["popsquares", "plasma", "cube"])
         self.assertEqual([p["name"] for p in sc["parameters"]["art"]], ["scene"])
         self.assertEqual([p["name"] for p in sc["parameters"]["clock"]],
-                         ["face", "colour", "shade", "colour 2", "gradient", "spread", "digits"])
+                         ["face", "colour", "shade", "colour 2", "gradient", "spread", "digits", "morph"])
         # ip stopped being a base scene (it is a page of the device menu now), so it has no
         # parameter table any more. its four layouts are still published as their own block,
         # which is what the console's layout select reads
@@ -588,6 +588,33 @@ class EndToEndTests(unittest.TestCase):
         self.assertEqual(st3["clock"]["digits"], "shadow")   # a settings change replaces the transient style
         status, doc = self.call("PATCH", "config", {"clock_digit": "embossed"})
         self.assertEqual((status, doc["error"]), (400, "invalid_digits"))
+
+    def test_clock_morph_is_a_toggle_on_both_routes(self):
+        # the block face's morph: `clock.morph` in the scene block, `clock_morph` in the settings,
+        # a bool on both and in every report, off unless asked for
+        _, sc = self.call("GET", "scenes")
+        morph = next(p for p in sc["parameters"]["clock"] if p["name"] == "morph")
+        self.assertEqual((morph["kind"], morph["default"]), ("toggle", 0))
+        _, st = self.call("GET", "status")
+        self.assertIs(st["clock"]["morph"], False)
+        status, _ = self.call("PUT", "scene", {"base": "clock", "clock": {"morph": True},
+                                               "request_id": "e19", "epoch": st["epoch"]})
+        self.assertEqual(status, 200)
+        _, st2 = self.call("GET", "status")
+        self.assertIs(st2["clock"]["morph"], True)
+        status, doc = self.call("PUT", "scene", {"base": "clock", "clock": {"morph": "yes"},
+                                                 "request_id": "e1a", "epoch": st2["epoch"]})
+        self.assertEqual((status, doc["error"]), (400, "invalid_json"))
+        _, cfg = self.call("GET", "config")
+        self.assertIs(cfg["clock"]["morph"], False)
+        status, doc = self.call("PATCH", "config", {"clock_morph": True, "expected_revision": cfg["revision"]})
+        self.assertEqual((status, doc["clock"]["morph"]), (200, True))
+        _, st3 = self.call("GET", "status")
+        self.assertIs(st3["clock"]["morph"], True)
+        status, doc = self.call("PATCH", "config", {"clock_morph": False})
+        self.assertEqual((status, doc["clock"]["morph"]), (200, False))
+        _, st4 = self.call("GET", "status")
+        self.assertIs(st4["clock"]["morph"], False)   # a settings change replaces the transient style
 
     CUBE_DEFAULTS = {"palette": "mono", "colour": "30a0ff", "hue drift": 0, "background": "000000",
                      "spin": "parallel", "speed": 6, "zoom": 100}

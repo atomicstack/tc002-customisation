@@ -158,13 +158,14 @@ export fn setIpMode(v: u32, now_ms: f64) void {
 }
 
 /// every field of the clock style at once; -1 in any slot leaves that field alone.
-export fn setClockStyle(font: i32, mode: i32, gradient: i32, spread: i32, digit: i32, colour: i32, colour2: i32, now_ms: f64) void {
+export fn setClockStyle(font: i32, mode: i32, gradient: i32, spread: i32, digit: i32, colour: i32, colour2: i32, morph: i32, now_ms: f64) void {
     var patch: clock.StylePatch = .{};
     patch.font = enumOf(clockfont.Font, font);
     patch.mode = enumOf(clock.ColourMode, mode);
     patch.gradient = enumOf(clock.Gradient, gradient);
     if (spread >= 0) patch.spread = @intCast(@min(spread, 255));
     patch.digit = enumOf(clockfont.DigitStyle, digit);
+    if (morph >= 0) patch.morph = morph != 0;
     if (colour >= 0) patch.colour = rgbOf(colour);
     if (colour2 >= 0) patch.colour2 = rgbOf(colour2);
     _ = arb.apply(.{ .set_clock_style = patch }, toNs(now_ms));

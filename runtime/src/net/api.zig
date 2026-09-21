@@ -208,6 +208,7 @@ pub const ConfigPatch = struct {
     clock_gradient: ?clock.Gradient = null,
     clock_spread: ?u8 = null,
     clock_digit: ?clock.DigitStyle = null,
+    clock_morph: ?bool = null,
     /// resolved generator parameters: which generator, which slot in its table, and the value
     generator_params: []const ResolvedParam = &.{},
     ip_mode: ?ip.Mode = null,
@@ -265,7 +266,7 @@ pub const Reject = struct { status: u16, code: []const u8, message: []const u8 }
 pub const Arena = [json.arena_size]u8;
 
 // json wire schemas (request bodies)
-const ClockBody = struct { font: ?[]const u8 = null, colour_mode: ?[]const u8 = null, colour: ?[]const u8 = null, colour2: ?[]const u8 = null, gradient: ?[]const u8 = null, spread: ?u8 = null, digits: ?[]const u8 = null };
+const ClockBody = struct { font: ?[]const u8 = null, colour_mode: ?[]const u8 = null, colour: ?[]const u8 = null, colour2: ?[]const u8 = null, gradient: ?[]const u8 = null, spread: ?u8 = null, digits: ?[]const u8 = null, morph: ?bool = null };
 /// one generator parameter in a settings patch. the value is always a string and the scene's own
 /// table says how to read it: a choice by its name, a colour as rrggbb, a number in decimal, a
 /// toggle as on or off. `GET /scenes` publishes the table, so a client needs nothing else.
@@ -324,6 +325,7 @@ const ConfigBody = struct {
     clock_gradient: ?[]const u8 = null,
     clock_spread: ?u8 = null,
     clock_digit: ?[]const u8 = null,
+    clock_morph: ?bool = null,
     generator_params: ?[]const GenParamBody = null,
     ip_mode: ?[]const u8 = null,
     night: ?bool = null,
@@ -1072,7 +1074,7 @@ pub fn parseBody(kind: BodyKind, body: []const u8, arena: *Arena, generated_id: 
             const rid = if (b.request_id) |t| (parseRequestId(t) orelse return bad("invalid_request_id", "request_id must be 1..16 hex digits")) else generated_id;
             var style: ?clock.StylePatch = null;
             if (b.clock) |cb| {
-                switch (parseClockStyle(cb.font, cb.colour_mode, cb.colour, cb.colour2, cb.gradient, cb.spread, cb.digits)) {
+                switch (parseClockStyle(cb.font, cb.colour_mode, cb.colour, cb.colour2, cb.gradient, cb.spread, cb.digits, cb.morph)) {
                     .reject => |j| return .{ .reject = j },
                     .op => |op| style = op,
                 }
@@ -1140,7 +1142,7 @@ pub fn parseBody(kind: BodyKind, body: []const u8, arena: *Arena, generated_id: 
             if (b.metrics_interval_s) |v| if (v != 0 and (v < 10 or v > 3600)) return bad("invalid_metrics_interval", "metrics_interval_s must be 0 (off) or 10..3600");
             if (b.discovery_prefix) |p| if (p.len == 0 or p.len > 64) return bad("invalid_discovery_prefix", "discovery_prefix must be 1..64 characters");
             const ntp: ?[4]u8 = if (b.ntp_server) |s| (parseIpv4(s) orelse return bad("invalid_ntp_server", "ntp_server must be a dotted ipv4 address")) else null;
-            const style = switch (parseClockStyle(b.clock_font, b.clock_colour_mode, b.clock_colour, b.clock_colour2, b.clock_gradient, b.clock_spread, b.clock_digit)) {
+            const style = switch (parseClockStyle(b.clock_font, b.clock_colour_mode, b.clock_colour, b.clock_colour2, b.clock_gradient, b.clock_spread, b.clock_digit, b.clock_morph)) {
                 .reject => |j| return .{ .reject = j },
                 .op => |op| op,
             };
@@ -1169,6 +1171,7 @@ pub fn parseBody(kind: BodyKind, body: []const u8, arena: *Arena, generated_id: 
                 .clock_gradient = style.gradient,
                 .clock_spread = style.spread,
                 .clock_digit = style.digit,
+                .clock_morph = style.morph,
                 .brightness = b.brightness,
                 .base = if (b.base) |t| (parseBase(t) orelse return bad("invalid_base", base_names_message)) else null,
                 .generator = if (b.generator) |g| (parseGenerator(g) orelse return bad("invalid_generator", "unknown generator")) else null,
@@ -1245,7 +1248,7 @@ pub fn parseBody(kind: BodyKind, body: []const u8, arena: *Arena, generated_id: 
     }
 }
 
-/// the five clock style strings, shared by `/scene` and the settings patch.
+/// the clock style fields, shared by `/scene` and the settings patch.
 const StyleRoute = union(enum) { op: clock.StylePatch, reject: Reject };
 /// read a parameter's value the way its own kind says it should be read
 fn parseParamValue(p: param.Param, text: []const u8) ?u32 {
@@ -1286,8 +1289,8 @@ fn parseGeneratorParams(body: []const GenParamBody, out: []ResolvedParam) Params
 
 const ParamsRoute = union(enum) { op: []const ResolvedParam, reject: Reject };
 
-fn parseClockStyle(font_text: ?[]const u8, mode_text: ?[]const u8, colour_text: ?[]const u8, colour2_text: ?[]const u8, gradient_text: ?[]const u8, spread: ?u8, digit_text: ?[]const u8) StyleRoute {
-    var p = clock.StylePatch{ .spread = spread };
+fn parseClockStyle(font_text: ?[]const u8, mode_text: ?[]const u8, colour_text: ?[]const u8, colour2_text: ?[]const u8, gradient_text: ?[]const u8, spread: ?u8, digit_text: ?[]const u8, morph: ?bool) StyleRoute {
+    var p = clock.StylePatch{ .spread = spread, .morph = morph };
     if (font_text) |s| p.font = enumByName(clock.Font, s) orelse return .{ .reject = .{ .status = 400, .code = "invalid_font", .message = font_names_message } };
     if (mode_text) |s| p.mode = enumByName(clock.ColourMode, s) orelse return .{ .reject = .{ .status = 400, .code = "invalid_colour_mode", .message = "colour_mode must be solid or gradient" } };
     if (colour_text) |s| p.colour = parseColour(s) orelse return .{ .reject = .{ .status = 400, .code = "invalid_colour", .message = "colour must be rrggbb hex" } };
@@ -1620,6 +1623,9 @@ test "notify and scene bodies become typed operations with validation" {
     try std.testing.expect(cs.op.set_scene.style.?.spread == null);
     const sp = route(testReq(.PUT, "/api/v1/scene", "", control_header, "application/json", null), "{\"base\":\"clock\",\"clock\":{\"font\":\"block\",\"spread\":120},\"request_id\":\"7\"}", &c, &no_clients, &origins, &arena, test_minted);
     try std.testing.expectEqual(clock.Font.block, sp.op.set_scene.style.?.font.?);
+    const sm = route(testReq(.PUT, "/api/v1/scene", "", control_header, "application/json", null), "{\"base\":\"clock\",\"clock\":{\"morph\":true},\"request_id\":\"7\"}", &c, &no_clients, &origins, &arena, test_minted);
+    try std.testing.expectEqual(@as(?bool, true), sm.op.set_scene.style.?.morph);
+    try std.testing.expectEqual(@as(?clock.Font, null), sm.op.set_scene.style.?.font);
     try std.testing.expectEqual(@as(?u8, 120), sp.op.set_scene.style.?.spread);
     // 300 does not fit spread's u8; the rejection says which field, not just "not valid json"
     try expectRejectSaying(route(testReq(.PUT, "/api/v1/scene", "", control_header, "application/json", null), "{\"base\":\"clock\",\"clock\":{\"spread\":300},\"request_id\":\"7\"}", &c, &no_clients, &origins, &arena, test_minted), 400, "value_out_of_range", "spread");
@@ -1690,6 +1696,9 @@ test "config, mqtt and streams routes" {
     try std.testing.expect(cp.op.config_patch.clock_colour2 == null);
     const sp2 = route(testReq(.PATCH, "/api/v1/config", "", admin_header, "application/json", null), "{\"clock_spread\":64,\"timezone\":\"Europe/Amsterdam\"}", &c, &no_clients, &origins, &arena, test_minted);
     try std.testing.expectEqual(@as(?u8, 64), sp2.op.config_patch.clock_spread);
+    const sm2 = route(testReq(.PATCH, "/api/v1/config", "", admin_header, "application/json", null), "{\"clock_morph\":true}", &c, &no_clients, &origins, &arena, test_minted);
+    try std.testing.expectEqual(@as(?bool, true), sm2.op.config_patch.clock_morph);
+    try std.testing.expectEqual(@as(?bool, null), sp2.op.config_patch.clock_morph);
     try std.testing.expectEqualStrings("Europe/Amsterdam", sp2.op.config_patch.timezone.?);
     try expectReject(route(testReq(.PATCH, "/api/v1/config", "", admin_header, "application/json", null), "{\"clock_colour_mode\":\"rainbow\"}", &c, &no_clients, &origins, &arena, test_minted), 400, "invalid_colour_mode");
     try std.testing.expect(route(testReq(.POST, "/api/v1/config/save", "", admin_header, "application/json", null), "", &c, &no_clients, &origins, &arena, test_minted).op == .config_save);

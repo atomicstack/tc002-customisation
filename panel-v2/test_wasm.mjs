@@ -115,7 +115,7 @@ test('an index past the end of an enum is ignored, not coerced to a neighbour', 
   W.reset('clock', 'popsquares', 1);
   const styled = W.compose(clockStatus({ font: 'big' }), localWith(W), WALL);
   const e = W.exports;
-  e.setClockStyle(99, -1, -1, -1, -1, -1, -1, WALL);   // no such font: leave the style alone
+  e.setClockStyle(99, -1, -1, -1, -1, -1, -1, -1, WALL);   // no such font: leave the style alone
   const after = W.compose(clockStatus({ font: 'big' }), localWith(W), WALL);
   assert.equal(bytesDiffering(styled.rgb, after.rgb), 0, 'a bogus font index changed the render');
   assert.equal(W.renderIpLayout(W.IP_MODES.length - 1, '1.2.3.4', WALL).rgb.length, W.RGB_BYTES);

@@ -306,6 +306,7 @@ input[type=file]{font:12px var(--body);color:var(--muted);max-width:220px}
             <select id="kgrad" aria-label="gradient direction" title="gradient direction"></select>
           </span></div>
         <div class="field" data-base="clock"><label for="kdigits">Clock digits<span class="key">clock.digits · block and big faces have a body to style</span></label><select id="kdigits"></select></div>
+        <div class="field" data-base="clock"><label for="kmorph">Clock morph<span class="key">clock.morph · the block face's digits turn into the next second's</span></label><input type="checkbox" class="sw" id="kmorph"></div>
         <div class="field" data-base="clock"><label for="kspread">Clock spread<span class="key">clock.spread · how far the gradient's end may differ, per channel</span></label>
           <span class="rangewrap"><input type="range" id="kspread" min="0" max="255" step="15" value="255"><span class="val">255</span></span></div>
         <div class="field" data-base="art"><label for="seed">Seed<span class="key">POST /action reseed · empty = random</span></label>
@@ -392,6 +393,7 @@ input[type=file]{font:12px var(--body);color:var(--muted);max-width:220px}
         <div class="field"><label for="ccolour2">Gradient end colour<span class="key">clock_colour2 · pulled towards clock_colour by the spread</span></label><input type="color" id="ccolour2" value="#ffffff"></div>
         <div class="field"><label for="cgrad">Gradient direction<span class="key">clock_gradient</span></label><select id="cgrad"></select></div>
         <div class="field"><label for="cdigits">Clock digits<span class="key">clock_digit · block and big faces have a body to style</span></label><select id="cdigits"></select></div>
+        <div class="field"><label for="cmorph">Clock morph<span class="key">clock_morph · the block face's digits turn into the next second's</span></label><input type="checkbox" class="sw" id="cmorph"></div>
         <div class="field"><label for="cspread">Clock spread<span class="key">clock_spread · 0–255, the gradient's leash</span></label><input type="number" id="cspread" min="0" max="255" step="15"></div>
         <div class="field"><label for="ctz">Timezone<span class="key">timezone · a zone name (Europe/Amsterdam) or a posix rule (AEST-10AEDT,M10.1.0,M4.1.0/3)</span></label><input type="text" id="ctz" placeholder="UTC0" spellcheck="false"></div>
         <div class="field"><label for="cnight">Night dimming<span class="key">night · follows the sun where the device is</span></label><input type="checkbox" class="sw" id="cnight"></div>
@@ -1116,6 +1118,7 @@ function showClockStyle(c) {
   $('kcolour').value = '#' + c.colour; $('kcolour2').value = '#' + c.colour2; $('kgrad').value = c.gradient;
   if (typeof c.spread === 'number') setRange('kspread', c.spread);
   if (c.digits) $('kdigits').value = c.digits;
+  if (typeof c.morph === 'boolean') $('kmorph').checked = c.morph;
 }
 async function setClockStyle(patch, what) {
   if (!STATUS) return;
@@ -1141,6 +1144,7 @@ $('kcolour2').addEventListener('change', () => setClockStyle({ colour2: hexColou
 $('kgrad').addEventListener('change', () => setClockStyle({ gradient: $('kgrad').value }, `gradient: ${$('kgrad').value}`));
 $('kspread').addEventListener('change', () => setClockStyle({ spread: +$('kspread').value }, `spread: ${$('kspread').value}`));
 $('kdigits').addEventListener('change', () => setClockStyle({ digits: $('kdigits').value }, `digits: ${$('kdigits').value}`));
+$('kmorph').addEventListener('change', () => setClockStyle({ morph: $('kmorph').checked }, `morph: ${$('kmorph').checked ? 'on' : 'off'}`));
 function fillClockSelects() {
   const cat = (SCENES && SCENES.clock) || {};
   const fonts = cat.fonts || S.CLOCK_FONTS, modes = cat.colour_modes || ['solid', 'gradient'], grads = cat.gradients || ['horizontal', 'vertical', 'diagonal'];
@@ -1160,6 +1164,9 @@ function fillClockSelects() {
   } else {
     for (const id of ['kdigits', 'cdigits']) $(id).closest('.field').hidden = true;   // an older runtime has no digit styles
   }
+  // likewise the morph: a runtime that declares the toggle has the block face that honours it
+  const morphParam = table.find(p => p.name === 'morph');
+  for (const id of ['kmorph', 'cmorph']) $(id).closest('.field').hidden = !morphParam;
   const range = cat.spread;   // [min, max] from /scenes; the device is the authority on the bounds
   if (Array.isArray(range) && range.length === 2) {
     for (const id of ['kspread', 'cspread']) { $(id).min = range[0]; $(id).max = range[1]; }
@@ -1299,6 +1306,7 @@ function showConfig(c) {
   $('cfont').value = k.font; $('cmode').value = k.colour_mode; $('ccolour').value = '#' + k.colour; $('ccolour2').value = '#' + k.colour2; $('cgrad').value = k.gradient;
   if (typeof k.spread === 'number') $('cspread').value = k.spread;
   if (k.digits) $('cdigits').value = k.digits;
+  if (typeof k.morph === 'boolean') $('cmorph').checked = k.morph;
   if (c.ip_mode) $('cip').value = c.ip_mode;
   // the device persists every accepted write before replying, so the two revisions match unless
   // that write failed: what is on screen is live but would not survive a restart
@@ -1363,6 +1371,7 @@ $('capply').addEventListener('click', async () => {
     if ($('cgrad').value !== k.gradient) patch.clock_gradient = $('cgrad').value;
     if (typeof k.spread === 'number' && +$('cspread').value !== k.spread) patch.clock_spread = +$('cspread').value;
     if (k.digits && $('cdigits').value !== k.digits) patch.clock_digit = $('cdigits').value;
+    if (typeof k.morph === 'boolean' && $('cmorph').checked !== k.morph) patch.clock_morph = $('cmorph').checked;
   }
   if (CONFIG.ip_mode) {
     if ($('cip').value !== CONFIG.ip_mode) patch.ip_mode = $('cip').value;

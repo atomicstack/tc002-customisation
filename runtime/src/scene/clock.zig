@@ -28,6 +28,7 @@ pub const params = [_]param.Param{
     .{ .name = "gradient", .kind = .choice, .choices = param.choicesOf(Gradient), .default = 0 },
     .{ .name = "spread", .kind = .number, .min = 0, .max = 255, .step = 15, .default = default_spread },
     .{ .name = "digits", .kind = .choice, .choices = param.choicesOf(clockfont.DigitStyle), .default = 0 },
+    .{ .name = "morph", .kind = .toggle, .default = 0 },
 };
 
 pub fn getParam(style: Style, index: usize) u32 {
@@ -39,6 +40,7 @@ pub fn getParam(style: Style, index: usize) u32 {
         4 => @intFromEnum(style.gradient),
         5 => style.spread,
         6 => @intFromEnum(style.digit),
+        7 => @intFromBool(style.morph),
         else => 0,
     };
 }
@@ -52,6 +54,7 @@ pub fn setParam(style: *Style, index: usize, value: u32) void {
         4 => style.gradient = @enumFromInt(@min(value, params[4].choices.len - 1)),
         5 => style.spread = @intCast(@min(value, 255)),
         6 => style.digit = @enumFromInt(@min(value, params[6].choices.len - 1)),
+        7 => style.morph = value != 0,
         else => {},
     }
 }
@@ -65,6 +68,9 @@ pub const Style = struct {
     spread: u8 = default_spread,
     /// solid, hollow or with a shadow; only the fonts with a body take any notice
     digit: clockfont.DigitStyle = .solid,
+    /// the block face's digits turn into the next second's over the end of each second, instead
+    /// of switching at the boundary. see `morph_ns`.
+    morph: bool = false,
 
     /// the gradient end after the spread bound.
     pub fn effectiveColour2(self: Style) [3]u8 {
@@ -85,6 +91,7 @@ pub const Style = struct {
         if (p.gradient) |v| self.gradient = v;
         if (p.spread) |v| self.spread = v;
         if (p.digit) |v| self.digit = v;
+        if (p.morph) |v| self.morph = v;
     }
 };
 
@@ -97,6 +104,7 @@ pub const StylePatch = struct {
     gradient: ?Gradient = null,
     spread: ?u8 = null,
     digit: ?clockfont.DigitStyle = null,
+    morph: ?bool = null,
 };
 
 /// "hh:mm:ss" in the classic font is 47 px wide and 7 px tall; centred on the 52x16 panel.
@@ -152,6 +160,38 @@ pub fn pulseAlpha(elapsed_ns: u64) u8 {
     return @intCast(pulse_floor + span * from_mid / half);
 }
 
+// --- the morph ------------------------------------------------------------------------------------
+//
+// with `morph` on, the block face does not switch its digits at the second boundary: over the last
+// `morph_ns` of each second every digit that is about to change turns into the next one, pixel by
+// pixel, and lands on the new time exactly as the second turns. the strokes the two digits share
+// stay lit throughout; only the difference moves. timed to the boundary rather than from it so the
+// panel never reads a stale time: at every instant it shows either the current second or a
+// blend on its way to the next.
+
+/// how long before the second turns the digits start to turn with it
+pub const morph_ns: u64 = 400 * std.time.ns_per_ms;
+
+/// is the face morphing at this wall instant: only the block face, only once the clock is set,
+/// and only inside the window before the next boundary
+pub fn morphActive(style: Style, wall_ns: u64) bool {
+    if (!style.morph or style.font != .block or isUnset(wall_ns)) return false;
+    return wall_ns % std.time.ns_per_s >= std.time.ns_per_s - morph_ns;
+}
+
+/// how far through the window this instant is, 0..255, eased
+pub fn morphProgress(wall_ns: u64) u8 {
+    const into = wall_ns % std.time.ns_per_s -| (std.time.ns_per_s - morph_ns);
+    return morphEase(@intCast(@min(into * 255 / morph_ns, 255)));
+}
+
+/// smoothstep on 0..255: 3t^2 - 2t^3, in integers, so the digits ease out of one shape and into
+/// the next instead of snapping into motion (no libm here)
+pub fn morphEase(t: u8) u8 {
+    const x: u32 = t;
+    return @intCast(x * x * (3 * 255 - 2 * x) / (255 * 255));
+}
+
 /// the pulse the separators breathe at while the clock is unset: one turn a second, 0..255.
 ///
 /// deeper than the canvas `pulse` (which floors at 65%) because this is the only thing on the
@@ -203,8 +243,8 @@ const GradientPainter = struct {
     }
 };
 
-/// one line of text, where it goes and which glyphs draw it.
-const Line = struct { x: i32, y: i32, text: []const u8, font: Font };
+/// one line of text, where it goes and which glyphs draw it; `to` is what it is morphing into
+const Line = struct { x: i32, y: i32, text: []const u8, font: Font, to: ?[]const u8 = null };
 
 /// two colons in the time and a slash in the mini date line; room for one more
 const max_separators = 4;
@@ -253,8 +293,10 @@ pub const State = struct {
     }
 
     /// draw the lines and, for hires, the bar of the current second
-    fn paint(rgb: *geometry.Rgb, lines: []const Line, bar: ?i32, painter: anytype, digit: clockfont.DigitStyle) void {
-        for (lines) |l| clockfont.blitStyled(rgb, l.x, l.y, l.font, l.text, painter, digit);
+    fn paint(rgb: *geometry.Rgb, lines: []const Line, bar: ?i32, painter: anytype, digit: clockfont.DigitStyle, t: u8) void {
+        for (lines) |l| {
+            if (l.to) |to| clockfont.blitMorph(rgb, l.x, l.y, l.font, l.text, to, t, painter, digit) else clockfont.blitStyled(rgb, l.x, l.y, l.font, l.text, painter, digit);
+        }
         if (bar) |fill| {
             var x: i32 = 0;
             while (x < fill) : (x += 1) rgb[geometry.pixelOffset(@intCast(x), @intCast(hires_bar_row))..][0..3].* = painter.at(x, hires_bar_row);
@@ -342,6 +384,13 @@ pub const State = struct {
         }
         var storage: [2]Line = undefined;
         const lines = layout(style, time_text, date_text, ms_text, &storage);
+        // morphing: the time line is on its way to the next second's text
+        var next_buf: [8]u8 = undefined;
+        var t: u8 = 0;
+        if (morphActive(style, wall_ns)) {
+            storage[0].to = formatTime(tz.localFromUtc(self.rule, utc_s + 1), &next_buf);
+            t = morphProgress(wall_ns);
+        }
         rgb.* = geometry.black_rgb;
         const hires = style.font == .hires;
         // the hires bar is the current second drawn as a sweep; with no second worth drawing it is
@@ -351,11 +400,11 @@ pub const State = struct {
             // one flat colour for both modes: a gradient across two colons is not a gradient, and
             // the pulse is the only thing the eye should be reading here.
             const dim = clockfont.scaled(style.colour, unsetAlpha(wall_ns));
-            paint(rgb, lines, bar, clockfont.Solid{ .colour = dim }, style.digit);
+            paint(rgb, lines, bar, clockfont.Solid{ .colour = dim }, style.digit, 0);
             return;
         }
         switch (style.mode) {
-            .solid => paint(rgb, lines, bar, clockfont.Solid{ .colour = style.colour }, style.digit),
+            .solid => paint(rgb, lines, bar, clockfont.Solid{ .colour = style.colour }, style.digit, t),
             .gradient => {
                 var box = Box{ .x0 = geometry.width, .y0 = geometry.height, .x1 = -1, .y1 = -1 };
                 for (lines) |l| {
@@ -366,16 +415,24 @@ pub const State = struct {
                 }
                 if (hires) box = .{ .x0 = 0, .y0 = 0, .x1 = geometry.width - 1, .y1 = hires_ms_y + 4 }; // the bar spans the panel
                 const painter = GradientPainter{ .c1 = style.colour, .c2 = style.effectiveColour2(), .box = box, .dir = style.gradient };
-                paint(rgb, lines, bar, painter, style.digit);
+                paint(rgb, lines, bar, painter, style.digit, t);
             },
         }
     }
 
     /// the clock redraws at the next whole second; the hires layout wants every frame, and so does
-    /// an unset clock, whose separators are breathing rather than ticking
+    /// an unset clock, whose separators are breathing rather than ticking; a morphing block face
+    /// wants them through the end of each second
     pub fn cadence(self: *const State, wall_ns: u64) scene.Cadence {
         if (self.style.font == .hires or isUnset(wall_ns)) return .{ .continuous = scene.frame_period_ns };
-        return .{ .at_wall_ns = nextBoundaryWallNs(wall_ns) };
+        const boundary = nextBoundaryWallNs(wall_ns);
+        // a morphing face draws every frame through the window, and otherwise sleeps until the
+        // window opens rather than until the second turns
+        if (self.style.morph and self.style.font == .block) {
+            if (morphActive(self.style, wall_ns)) return .{ .continuous = scene.frame_period_ns };
+            return .{ .at_wall_ns = boundary - morph_ns };
+        }
+        return .{ .at_wall_ns = boundary };
     }
 };
 
@@ -621,4 +678,102 @@ test "the pulse is one breath: full, down to the floor, and back within its leng
     try std.testing.expectEqual(@as(u8, 255), pulseAlpha(pulse_ns));
     try std.testing.expectEqual(@as(u8, 255), pulseAlpha(pulse_ns * 10));
     try std.testing.expect(pulseAlpha(pulse_ns / 4) < 255 and pulseAlpha(pulse_ns / 4) > pulse_floor);
+}
+
+test "morph is the clock's eighth parameter, a toggle, off by default" {
+    try std.testing.expectEqual(@as(usize, 8), params.len);
+    try std.testing.expectEqualStrings("morph", params[7].name);
+    try std.testing.expectEqual(param.Kind.toggle, params[7].kind);
+    var s = Style{};
+    try std.testing.expect(!s.morph);
+    try std.testing.expectEqual(@as(u32, 0), getParam(s, 7));
+    setParam(&s, 7, 1);
+    try std.testing.expect(s.morph);
+    try std.testing.expectEqual(@as(u32, 1), getParam(s, 7));
+    s.apply(.{ .morph = false });
+    try std.testing.expect(!s.morph);
+}
+
+test "the block face morphs into the next second's digits through the end of the second, and is exactly the next second at the boundary" {
+    var c = State.init(tz.utc);
+    c.style.font = .block;
+    const sec = test_wall_base + (8 * 3600 + 8 * 60 + 9) * std.time.ns_per_s; // 08:08:09 -> 08:08:10: both seconds digits change
+    var plain_09 = geometry.black_rgb;
+    var plain_10 = geometry.black_rgb;
+    c.render(sec + 100 * std.time.ns_per_ms, &plain_09);
+    c.render(sec + std.time.ns_per_s, &plain_10);
+
+    c.style.morph = true;
+    var frame = geometry.black_rgb;
+    c.render(sec + 100 * std.time.ns_per_ms, &frame); // long before the window: the plain face
+    try std.testing.expectEqualSlices(u8, &plain_09, &frame);
+    c.render(sec + std.time.ns_per_s - morph_ns, &frame); // the window opens on the old digits
+    try std.testing.expectEqualSlices(u8, &plain_09, &frame);
+    c.render(sec + std.time.ns_per_s, &frame); // and closes on the new ones, exactly
+    try std.testing.expectEqualSlices(u8, &plain_10, &frame);
+
+    // halfway: neither face, and everything that differs from the old face sits in the two
+    // seconds digits (columns 36..48 of the block layout); the hours, minutes and colons hold still
+    c.render(sec + std.time.ns_per_s - morph_ns / 2, &frame);
+    try std.testing.expect(!std.mem.eql(u8, &plain_09, &frame));
+    try std.testing.expect(!std.mem.eql(u8, &plain_10, &frame));
+    var changed: usize = 0;
+    for (0..geometry.height) |y| for (0..geometry.width) |x| {
+        const i = (y * geometry.width + x) * 3;
+        if (std.mem.eql(u8, plain_09[i..][0..3], frame[i..][0..3])) continue;
+        changed += 1;
+        try std.testing.expect(x >= 36);
+    };
+    try std.testing.expect(changed > 0);
+}
+
+test "the morph moves every frame: two instants inside the window draw differently" {
+    var c = State.init(tz.utc);
+    c.style = .{ .font = .block, .morph = true };
+    const sec = test_wall_base + (8 * 3600 + 8 * 60 + 9) * std.time.ns_per_s;
+    var a = geometry.black_rgb;
+    var b = geometry.black_rgb;
+    c.render(sec + std.time.ns_per_s - morph_ns / 2, &a);
+    c.render(sec + std.time.ns_per_s - morph_ns / 4, &b);
+    try std.testing.expect(!std.mem.eql(u8, &a, &b));
+}
+
+test "morph only touches the block face, and never an unset clock" {
+    const sec = test_wall_base + (8 * 3600 + 8 * 60 + 9) * std.time.ns_per_s;
+    const mid = sec + std.time.ns_per_s - morph_ns / 2;
+    for ([_]Font{ .classic, .mini, .segment, .big, .hires }) |f| {
+        var c = State.init(tz.utc);
+        c.style.font = f;
+        var plain = geometry.black_rgb;
+        c.render(mid, &plain);
+        c.style.morph = true;
+        var morphing = geometry.black_rgb;
+        c.render(mid, &morphing);
+        try std.testing.expectEqualSlices(u8, &plain, &morphing);
+        try std.testing.expectEqual(scene.Cadence{ .at_wall_ns = nextBoundaryWallNs(mid) }, State.init(tz.utc).cadence(mid));
+    }
+    var unset = State.init(tz.utc);
+    unset.style = .{ .font = .block, .morph = true };
+    try std.testing.expect(!morphActive(unset.style, std.time.ns_per_s - morph_ns / 2));
+}
+
+test "a morphing block clock wants one redraw when the window opens, then every frame until the second turns" {
+    var c = State.init(tz.utc);
+    c.style = .{ .font = .block, .morph = true };
+    const sec = test_wall_base + (8 * 3600 + 8 * 60 + 9) * std.time.ns_per_s;
+    const window = sec + std.time.ns_per_s - morph_ns;
+    try std.testing.expectEqual(scene.Cadence{ .at_wall_ns = window }, c.cadence(sec + 100 * std.time.ns_per_ms));
+    try std.testing.expectEqual(scene.Cadence{ .continuous = scene.frame_period_ns }, c.cadence(window));
+    try std.testing.expectEqual(scene.Cadence{ .continuous = scene.frame_period_ns }, c.cadence(sec + std.time.ns_per_s - 10 * std.time.ns_per_ms));
+    try std.testing.expectEqual(scene.Cadence{ .at_wall_ns = window + std.time.ns_per_s }, c.cadence(sec + std.time.ns_per_s));
+    c.style.morph = false;
+    try std.testing.expectEqual(scene.Cadence{ .at_wall_ns = sec + std.time.ns_per_s }, c.cadence(sec + 100 * std.time.ns_per_ms));
+}
+
+test "the morph eases: it starts and ends gently rather than at full speed" {
+    try std.testing.expectEqual(@as(u8, 0), morphEase(0));
+    try std.testing.expectEqual(@as(u8, 255), morphEase(255));
+    try std.testing.expect(morphEase(32) < 32); // slow off the mark
+    try std.testing.expect(morphEase(223) > 223); // and slow into the finish
+    try std.testing.expect(morphEase(128) > 120 and morphEase(128) < 136); // symmetric about the middle
 }

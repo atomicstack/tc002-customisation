@@ -1302,9 +1302,9 @@ const Netd = struct {
         return if (messages.enumFromInt(E, value)) |v| @tagName(v) else "unknown";
     }
 
-    /// the clock style as `{"font","colour_mode","colour","colour2","gradient"}`.
+    /// the clock style as `{"font","colour_mode","colour","colour2","gradient","spread","digits","morph"}`.
     fn clockJson(o: *Out, s: messages.ClockStyle) void {
-        o.fmt("{{\"font\":\"{s}\",\"colour_mode\":\"{s}\",\"colour\":\"{x:0>2}{x:0>2}{x:0>2}\",\"colour2\":\"{x:0>2}{x:0>2}{x:0>2}\",\"gradient\":\"{s}\",\"spread\":{d},\"digits\":\"{s}\"}}", .{ enumName(clock.Font, s.font), enumName(clock.ColourMode, s.mode), s.colour[0], s.colour[1], s.colour[2], s.colour2[0], s.colour2[1], s.colour2[2], enumName(clock.Gradient, s.gradient), s.spread, enumName(clock.DigitStyle, s.digit) });
+        o.fmt("{{\"font\":\"{s}\",\"colour_mode\":\"{s}\",\"colour\":\"{x:0>2}{x:0>2}{x:0>2}\",\"colour2\":\"{x:0>2}{x:0>2}{x:0>2}\",\"gradient\":\"{s}\",\"spread\":{d},\"digits\":\"{s}\",\"morph\":{}}}", .{ enumName(clock.Font, s.font), enumName(clock.ColourMode, s.mode), s.colour[0], s.colour[1], s.colour[2], s.colour2[0], s.colour2[1], s.colour2[2], enumName(clock.Gradient, s.gradient), s.spread, enumName(clock.DigitStyle, s.digit), s.morph != 0 });
     }
 
     /// fps is only meaningful against a continuous cadence: art with no overlay. otherwise null.

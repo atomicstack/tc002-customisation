@@ -735,6 +735,20 @@ they ignore it and stay solid. it is a clock parameter like any other: on the
 panel, over `PUT /scene` as `clock.digits` and in the settings as
 `clock_digit`.
 
+**morph** is a toggle for the `block` face, off by default. with it on, the
+digits do not switch at the second boundary: over the last 400 ms of every
+second, each digit that is about to change turns into the next one pixel by
+pixel, and lands on the new time exactly as the second turns. the strokes the
+two digits share stay lit throughout and only the difference moves, eased so
+it starts and finishes gently, so `3` becoming `4` is the top and bottom bars
+fading out while the upper-left stroke fades in. it is timed to the boundary
+rather than from it so the panel never shows a stale time: at every instant
+it shows either the current second or a blend on its way to the next. the
+face draws at 60 fps through the window and sleeps between windows as it
+always has. the other faces ignore it. on the panel it is the clock's eighth
+parameter, over `PUT /scene` it is `clock.morph`, in the settings
+`clock_morph`, and every report of the style carries `"morph":bool`.
+
 
 a clock style is `{font, colour_mode, colour, colour2, gradient, spread}`:
 
@@ -940,7 +954,7 @@ is `0x00RRGGBB`, a toggle is 0 or 1.
 
 | scene | parameters |
 |---|---|
-| clock | `face`, `colour`, `shade`, `colour 2`, `gradient`, `spread`, `digits` |
+| clock | `face`, `colour`, `shade`, `colour 2`, `gradient`, `spread`, `digits`, `morph` |
 | art | `scene` (the generator), then the showing generator's own |
 | popsquares | `pop ms`, `alive`, `dim chance`, `dim floor`, `dim ceiling`, `tint`, `tint colour`, `cell` |
 | cube | `palette`, `colour`, `hue drift`, `background`, `spin`, `speed`, `zoom` |
@@ -1333,7 +1347,7 @@ read-only storage; connection buffers stay the same size.
 |--------|------|-------|------|-------|
 | `GET` | `/status` | `status` | | the [status document](#the-status-document), including `build` — see [which build is running](#which-build-is-running) |
 | `GET` | `/scenes` | `status` | | the static catalogue: bases, generators, notification and frame bounds |
-| `PUT` | `/scene` | `display` | `{"base":"clock\|art\|canvas","generator":"popsquares\|plasma\|cube"?,"seed":u32?,"clock":{"font","colour_mode","colour","colour2","gradient","spread"}?,"request_id":hex?,"epoch":u32?}` | `{"status":"applied","revision":n,"epoch":n,"request_id":…}` |
+| `PUT` | `/scene` | `display` | `{"base":"clock\|art\|canvas","generator":"popsquares\|plasma\|cube"?,"seed":u32?,"clock":{"font","colour_mode","colour","colour2","gradient","spread","digits","morph"}?,"request_id":hex?,"epoch":u32?}` | `{"status":"applied","revision":n,"epoch":n,"request_id":…}` |
 | `POST` | `/action` | `display` | `{"action":"brightness\|reseed\|arm_stream","brightness":1..100?,"seed":u32?,"request_id":hex?,"epoch":u32?}` | as above |
 | `POST` | `/notify` | `notify` | `{"text":"…","colour":"rrggbb"?,"duration_s":1..300?,"request_id":hex?,"epoch":u32?}` (`duration_s` optional, defaults to 5) | as above |
 | `POST` | `/frame?duration_s=` (`request_id`, `epoch` optional) | `display` | `application/octet-stream`, exactly 2,496 bytes | as above |
@@ -1567,7 +1581,7 @@ shows up as a revision gap, and the gap is the signal to resync.
 | field | range | live effect |
 |-------|-------|-------------|
 | `brightness` | 1–100 | applied to the renderer at once |
-| `clock_font`, `clock_colour_mode`, `clock_colour`, `clock_colour2`, `clock_gradient`, `clock_spread` | `classic\|mini\|segment\|big\|block\|hires`; `solid\|gradient`; `rrggbb`; `rrggbb`; `horizontal\|vertical\|diagonal`; 0–255 | applied at once; reported as a `clock` object in `/config` |
+| `clock_font`, `clock_colour_mode`, `clock_colour`, `clock_colour2`, `clock_gradient`, `clock_spread`, `clock_digit`, `clock_morph` | `classic\|mini\|segment\|big\|block\|hires`; `solid\|gradient`; `rrggbb`; `rrggbb`; `horizontal\|vertical\|diagonal`; 0–255; `solid\|outline\|shadow`; bool | applied at once; reported as a `clock` object in `/config` |
 | `ip_mode` | `lines\|mini\|scroll\|big` | the layout of the device menu's ip page, applied at once; see [ip layouts](#ip-layouts) |
 | `base` | `clock`, `art`, `canvas` | applied at once |
 | `generator` | `popsquares`, `plasma`, `cube` | applied at once |
@@ -2113,13 +2127,13 @@ original read-only entity ids stay unchanged; the 19 additional controls use
 `*_control` keys:
 
 - display power, brightness, base scene, art generator and notification text;
-- clock font, colour mode, both colours, gradient, digit style and spread;
+- clock font, colour mode, both colours, gradient, digit style, spread and morph;
 - ip layout, timezone, ntp server and interval;
 - night dimming, night brightness and night lead.
 
 power/scene/brightness/generator/notification commands are transient. the allowed
 durable fields are `clock_font`, `clock_colour_mode`, `clock_colour`, `clock_colour2`,
-`clock_gradient`, `clock_spread`, `clock_digit`, `ip_mode`, `timezone`, `ntp_server`,
+`clock_gradient`, `clock_spread`, `clock_digit`, `clock_morph`, `ip_mode`, `timezone`, `ntp_server`,
 `ntp_interval_s`, `night`, `night_brightness` and `night_lead_min`; `expected_revision`
 may guard a patch. the supervisor validates and saves these exactly as for http.
 with controls enabled, broker write access is the authority for those settings.

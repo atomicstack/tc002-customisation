@@ -69,7 +69,7 @@ test "every message kind round-trips through a packet" {
         } },
         .config_get,
         .{ .config_patch = try ConfigPatch.fromApi(.{ .brightness = 3, .timezone = "UTC0", .expected_revision = 5 }) },
-        .{ .config_patch = try ConfigPatch.fromApi(.{ .night = true, .night_brightness = 5, .night_lead_min = 60, .location = .{ .lat_c = -3387, .lon_c = 15122 }, .clock_font = .big, .clock_colour_mode = .gradient, .clock_colour = .{ 1, 2, 3 }, .clock_colour2 = .{ 7, 8, 9 }, .clock_gradient = .vertical, .clock_spread = 128, .clock_digit = .shadow, .ip_mode = .big }) },
+        .{ .config_patch = try ConfigPatch.fromApi(.{ .night = true, .night_brightness = 5, .night_lead_min = 60, .location = .{ .lat_c = -3387, .lon_c = 15122 }, .clock_font = .big, .clock_colour_mode = .gradient, .clock_colour = .{ 1, 2, 3 }, .clock_colour2 = .{ 7, 8, 9 }, .clock_gradient = .vertical, .clock_spread = 128, .clock_digit = .shadow, .clock_morph = true, .ip_mode = .big }) },
         .{ .ip_mode = .{ .mode = 2 } },
         .{ .set_base = .{ .base = 2, .generator = 0, .seed = 0 } },
         .{ .config_save = .{ .has_revision = 1, .revision = 6 } },
@@ -130,10 +130,11 @@ test "every message kind round-trips through a packet" {
 
 test "fixed hex vectors" {
     var buf: [codec.max_message]u8 = undefined;
-    // the tail is the v7 seed (four bytes) then the three v8 menu bytes; the length went
-    // 0x1f -> 0x22 when the menu arrived and 0x22 -> 0x26 when the seed did
+    // the clock style is the run from "00" (has) to the morph byte; the tail is the v7 seed (four
+    // bytes) then the three v8 menu bytes. the length went 0x1f -> 0x22 when the menu arrived,
+    // 0x22 -> 0x26 when the seed did, and 0x26 -> 0x27 when the style gained its morph byte
     const hb = try encodePacket(.{ .heartbeat = .{ .presented = 0x1122334455667788, .revision = 7, .state = 2 } }, 1, 2, &buf);
-    try std.testing.expectEqualSlices(u8, &unhex("54434931" ++ "01" ++ "01" ++ "0000" ++ "0000000000000001" ++ "00000002" ++ "0026" ++ "0000" ++ "1122334455667788" ++ "00000007" ++ "02" ++ "00000000" ++ "01" ++ "0000" ++ "00" ++ "ffffff" ++ "ffffff" ++ "00" ++ "ff" ++ "00" ++ "00" ++ "00000000" ++ "00" ++ "00" ++ "00"), hb);
+    try std.testing.expectEqualSlices(u8, &unhex("54434931" ++ "01" ++ "01" ++ "0000" ++ "0000000000000001" ++ "00000002" ++ "0027" ++ "0000" ++ "1122334455667788" ++ "00000007" ++ "02" ++ "00000000" ++ "01" ++ "0000" ++ "00" ++ "ffffff" ++ "ffffff" ++ "00" ++ "ff" ++ "00" ++ "00" ++ "00" ++ "00000000" ++ "00" ++ "00" ++ "00"), hb);
     const hb_seeded = try encodePacket(.{ .heartbeat = .{ .presented = 0, .revision = 0, .state = 0, .seed = 0xdeadbeef } }, 0, 0, &buf);
     try std.testing.expectEqualSlices(u8, &unhex("deadbeef" ++ "00" ++ "00" ++ "00"), hb_seeded[hb_seeded.len - 7 ..]);
     const st = try encodePacket(.stop, 0, 9, &buf);
@@ -204,6 +205,9 @@ test "patch wire forms map back to the api view" {
     try std.testing.expectEqual([3]u8{ 1, 1, 1 }, sp.colour2.?);
     try std.testing.expectEqual(ClockStyle.F.all, ClockStyle.full(.{}).has); // every field, digits included
     try std.testing.expectEqual(@as(?u8, 40), ClockStyle.fromPatch(.{ .spread = 40 }).toPatch().spread);
+    try std.testing.expectEqual(@as(?bool, true), ClockStyle.fromPatch(.{ .morph = true }).toPatch().morph);
+    try std.testing.expectEqual(@as(?bool, null), ClockStyle.fromPatch(.{ .spread = 40 }).toPatch().morph);
+    try std.testing.expectEqual(@as(?bool, true), (try ConfigPatch.fromApi(.{ .clock_morph = true })).toApi().clock_morph);
     try std.testing.expectEqual(@as(?u8, 3), a.brightness);
     try std.testing.expectEqualStrings("JST-9", a.timezone.?);
     try std.testing.expectEqual([4]u8{ 9, 9, 9, 9 }, a.ntp_server.?);
@@ -736,6 +740,7 @@ pub const ClockStyle = struct {
     gradient: u8 = 0,
     spread: u8 = 255,
     digit: u8 = 0,
+    morph: u8 = 0,
 
     pub const F = struct {
         pub const font: u8 = 1 << 0;
@@ -745,10 +750,12 @@ pub const ClockStyle = struct {
         pub const gradient: u8 = 1 << 4;
         pub const spread: u8 = 1 << 5;
         pub const digit: u8 = 1 << 6;
-        pub const all: u8 = 0x7f;
+        pub const morph: u8 = 1 << 7;
+        pub const all: u8 = 0xff;
     };
 
-    pub const wire_len = 12;
+    /// has, font, mode, colour, colour2, gradient, spread, digit, morph
+    pub const wire_len = 1 + 1 + 1 + 3 + 3 + 1 + 1 + 1 + 1;
 
     pub fn fromPatch(p: clock.StylePatch) ClockStyle {
         var w = ClockStyle{};
@@ -780,11 +787,15 @@ pub const ClockStyle = struct {
             w.has |= F.spread;
             w.spread = v;
         }
+        if (p.morph) |v| {
+            w.has |= F.morph;
+            w.morph = @intFromBool(v);
+        }
         return w;
     }
 
     pub fn full(s: clock.Style) ClockStyle {
-        return .{ .has = F.all, .font = @intFromEnum(s.font), .mode = @intFromEnum(s.mode), .colour = s.colour, .colour2 = s.colour2, .gradient = @intFromEnum(s.gradient), .spread = s.spread, .digit = @intFromEnum(s.digit) };
+        return .{ .has = F.all, .font = @intFromEnum(s.font), .mode = @intFromEnum(s.mode), .colour = s.colour, .colour2 = s.colour2, .gradient = @intFromEnum(s.gradient), .spread = s.spread, .digit = @intFromEnum(s.digit), .morph = @intFromBool(s.morph) };
     }
 
     /// the patch view; fields with an unknown enum value are dropped.
@@ -798,6 +809,7 @@ pub const ClockStyle = struct {
             .gradient = if (h & F.gradient != 0) enumFromInt(clock.Gradient, self.gradient) else null,
             .spread = if (h & F.spread != 0) self.spread else null,
             .digit = if (h & F.digit != 0) enumFromInt(clockfont.DigitStyle, self.digit) else null,
+            .morph = if (h & F.morph != 0) self.morph != 0 else null,
         };
     }
 
@@ -810,10 +822,11 @@ pub const ClockStyle = struct {
         out[9] = self.gradient;
         out[10] = self.spread;
         out[11] = self.digit;
+        out[12] = self.morph;
     }
 
     fn get(b: []const u8) ClockStyle {
-        return .{ .has = b[0], .font = b[1], .mode = b[2], .colour = b[3..6].*, .colour2 = b[6..9].*, .gradient = b[9], .spread = b[10], .digit = b[11] };
+        return .{ .has = b[0], .font = b[1], .mode = b[2], .colour = b[3..6].*, .colour2 = b[6..9].*, .gradient = b[9], .spread = b[10], .digit = b[11], .morph = b[12] };
     }
 };
 /// a statement as applied, on its way from the renderer to anything mirroring this device.
@@ -1410,6 +1423,7 @@ pub const ConfigPatch = struct {
     clock_gradient: u8 = 0,
     clock_spread: u8 = 0,
     clock_digit: u8 = 0,
+    clock_morph: u8 = 0,
     /// generator parameters carried with the rest of a settings change, so one request is one
     /// round trip and one revision
     param_count: u8 = 0,
@@ -1442,6 +1456,7 @@ pub const ConfigPatch = struct {
         pub const metrics_interval_s: u64 = 1 << 7;
         pub const discovery_controls: u64 = 1 << 32;
         pub const mdns: u64 = 1 << 33;
+        pub const clock_morph: u64 = 1 << 34;
         pub const discovery: u64 = 1 << 8;
         pub const discovery_prefix: u64 = 1 << 9;
         pub const expected_revision: u64 = 1 << 10;
@@ -1482,7 +1497,7 @@ pub const ConfigPatch = struct {
         const discovery_flags = 2; // discovery, discovery_controls
         const discovery_prefix = config.text_wire;
         const expected_revision = 4;
-        const clock_style = 12; // font, colour mode, two colours, gradient, spread, ip mode, digit
+        const clock_style = 13; // font, colour mode, two colours, gradient, spread, ip mode, digit, morph
         const night = 7; // enabled, brightness, lead, latitude, longitude
         const berry = 1 + 2 + 2; // enabled, heap kb, handler ms
         const sound = 1 + 1; // enabled, volume
@@ -1575,6 +1590,10 @@ pub const ConfigPatch = struct {
             w.has |= F.clock_digit;
             w.clock_digit = @intFromEnum(v);
         }
+        if (p.clock_morph) |v| {
+            w.has |= F.clock_morph;
+            w.clock_morph = @intFromBool(v);
+        }
         w.param_count = @intCast(@min(p.generator_params.len, w.params.len));
         for (p.generator_params[0..w.param_count], 0..) |rp, i| w.params[i] = rp;
         if (p.clock_spread) |v| {
@@ -1664,6 +1683,7 @@ pub const ConfigPatch = struct {
             .clock_gradient = if (h & F.clock_gradient != 0) (enumFromInt(clock.Gradient, self.clock_gradient) orelse null) else null,
             .clock_spread = if (h & F.clock_spread != 0) self.clock_spread else null,
             .clock_digit = if (h & F.clock_digit != 0) enumFromInt(clockfont.DigitStyle, self.clock_digit) else null,
+            .clock_morph = if (h & F.clock_morph != 0) self.clock_morph != 0 else null,
             .generator_params = self.params[0..self.param_count],
             .ip_mode = if (h & F.ip_mode != 0) enumFromInt(ip.Mode, self.ip_mode) else null,
             .night = if (h & F.night != 0) self.night != 0 else null,
@@ -2428,7 +2448,8 @@ fn encodePayload(msg: Message, out: []u8) usize {
             out[o + 9] = p.clock_spread;
             out[o + 10] = p.ip_mode;
             out[o + 11] = p.clock_digit;
-            o += 12;
+            out[o + 12] = p.clock_morph;
+            o += ConfigPatch.Wire.clock_style;
             out[o] = p.night;
             out[o + 1] = p.night_brightness;
             out[o + 2] = p.night_lead_min;
@@ -2990,7 +3011,8 @@ pub fn decodePacket(bytes: []const u8) Error!Packet {
             w.clock_spread = b[o + 9];
             w.ip_mode = b[o + 10];
             w.clock_digit = b[o + 11];
-            o += 12;
+            w.clock_morph = b[o + 12];
+            o += ConfigPatch.Wire.clock_style;
             w.night = b[o];
             w.night_brightness = b[o + 1];
             w.night_lead_min = b[o + 2];

@@ -104,6 +104,8 @@ pub const Config = struct {
     clock_gradient: u8 = 0,
     clock_spread: u8 = clock.default_spread,
     clock_digit: u8 = 0,
+    /// the block face turns its digits into the next second's instead of switching them
+    clock_morph: bool = false,
     ip_mode: u8 = 0,
     /// the night brightness schedule: off by default, so a device that has never been told where
     /// it is behaves exactly as it did before
@@ -133,6 +135,7 @@ pub const Config = struct {
             .gradient = enumOr(clock.Gradient, self.clock_gradient, .horizontal),
             .spread = self.clock_spread,
             .digit = enumOr(clockfont.DigitStyle, self.clock_digit, .solid),
+            .morph = self.clock_morph,
         };
     }
 
@@ -195,6 +198,7 @@ pub const Config = struct {
         if (p.clock_gradient) |v| next.clock_gradient = @intFromEnum(v);
         if (p.clock_spread) |v| next.clock_spread = v;
         if (p.clock_digit) |v| next.clock_digit = @intFromEnum(v);
+        if (p.clock_morph) |v| next.clock_morph = v;
         for (p.generator_params) |rp| {
             if (rp.owner >= param.owner_count or rp.slot >= param.max_per_owner) return error.Invalid;
             next.generator_params[rp.owner][rp.slot] = rp.value;
@@ -364,7 +368,7 @@ const Wire = struct {
     const mqtt_port = 2;
     const mqtt_texts = 4 * text_wire; // username, password, client id, prefix
     const mqtt_tls = 1;
-    const clock_style = 12; // font, colour mode, two colours, gradient, spread, ip mode, digit
+    const clock_style = 13; // font, colour mode, two colours, gradient, spread, ip mode, digit, morph
     const night = 8; // enabled, brightness, lead, a location flag, latitude, longitude
     const ntfy_enabled = 1;
     const ntfy_texts = 5 * text_wire; // url, topic, token, username, password
@@ -432,7 +436,8 @@ pub fn encode(c: *const Config, out: *[encoded_len]u8) void {
     out[o + 9] = c.clock_spread;
     out[o + 10] = c.ip_mode;
     out[o + 11] = c.clock_digit;
-    o += 12;
+    out[o + 12] = @intFromBool(c.clock_morph);
+    o += Wire.clock_style;
     out[o] = @intFromBool(c.night);
     out[o + 1] = c.night_brightness;
     out[o + 2] = c.night_lead_min;
@@ -526,7 +531,8 @@ pub fn decode(in: []const u8) error{BadPayload}!Config {
     c.clock_spread = in[o + 9];
     c.ip_mode = in[o + 10];
     c.clock_digit = in[o + 11];
-    o += 12;
+    c.clock_morph = in[o + 12] != 0;
+    o += Wire.clock_style;
     c.night = in[o] != 0;
     c.night_brightness = in[o + 1];
     c.night_lead_min = in[o + 2];
@@ -599,6 +605,7 @@ const FileForm = struct {
     clock_gradient: []const u8 = "horizontal",
     clock_spread: u8 = clock.default_spread,
     clock_digit: []const u8 = "solid",
+    clock_morph: bool = false,
     generator_params: [param.owner_count]param.Values = scene.generator_defaults,
     ip_mode: []const u8 = "lines",
     night: bool = false,
@@ -692,6 +699,7 @@ pub fn toJson(c: *const Config, out: []u8) error{Overflow}![]u8 {
         .clock_gradient = @tagName(enumOr(clock.Gradient, c.clock_gradient, .horizontal)),
         .clock_spread = c.clock_spread,
         .clock_digit = @tagName(enumOr(clockfont.DigitStyle, c.clock_digit, .solid)),
+        .clock_morph = c.clock_morph,
         .generator_params = c.generator_params,
         .ip_mode = @tagName(enumOr(ip.Mode, c.ip_mode, .lines)),
         .night = c.night,
@@ -807,6 +815,7 @@ pub fn fromJson(bytes: []const u8, arena: []u8) error{ Invalid, TooLong }!Config
     c.clock_gradient = @intFromEnum(api.enumByName(clock.Gradient, f.clock_gradient) orelse return error.Invalid);
     c.clock_spread = f.clock_spread;
     c.clock_digit = @intFromEnum(api.enumByName(clockfont.DigitStyle, f.clock_digit) orelse return error.Invalid);
+    c.clock_morph = f.clock_morph;
     c.generator_params = f.generator_params;
     for (&c.generator_params, 0..) |*slots, i| if (scene.slotsUnset(slots.*)) {
         slots.* = scene.generator_defaults[i];
@@ -955,7 +964,7 @@ test "the night schedule's settings, and where the device thinks it is" {
 
 test "ipc encoding round-trips every field" {
     var c = Config{};
-    try c.patch(.{ .brightness = 7, .base = .clock, .generator = .plasma, .timezone = "EST5EDT,M3.2.0,M11.1.0", .ntp_server = .{ 1, 2, 3, 4 }, .ntp_interval_s = 600, .frame_timeout_ms = 250, .metrics_interval_s = 0, .discovery = true, .discovery_prefix = "ha", .clock_font = .segment, .clock_colour_mode = .gradient, .clock_colour = .{ 1, 2, 3 }, .clock_colour2 = .{ 4, 5, 6 }, .clock_gradient = .diagonal, .clock_spread = 12, .ip_mode = .scroll, .night = true, .night_brightness = 12, .night_lead_min = 35, .location = .{ .lat_c = -3387, .lon_c = 15122 }, .berry_enabled = true, .berry_heap_kb = 64, .berry_handler_ms = 250 });
+    try c.patch(.{ .brightness = 7, .base = .clock, .generator = .plasma, .timezone = "EST5EDT,M3.2.0,M11.1.0", .ntp_server = .{ 1, 2, 3, 4 }, .ntp_interval_s = 600, .frame_timeout_ms = 250, .metrics_interval_s = 0, .discovery = true, .discovery_prefix = "ha", .clock_font = .segment, .clock_colour_mode = .gradient, .clock_colour = .{ 1, 2, 3 }, .clock_colour2 = .{ 4, 5, 6 }, .clock_gradient = .diagonal, .clock_spread = 12, .clock_morph = true, .ip_mode = .scroll, .night = true, .night_brightness = 12, .night_lead_min = 35, .location = .{ .lat_c = -3387, .lon_c = 15122 }, .berry_enabled = true, .berry_heap_kb = 64, .berry_handler_ms = 250 });
     try c.patchMqtt(.{ .enabled = true, .host = "10.0.0.2", .port = 8883, .username = "u", .password = "p", .client_id = "cid", .prefix = "tc002/x", .tls = true });
     c.origins[0] = Text.init("http://panel.local");
     c.origin_count = 1;
@@ -973,7 +982,7 @@ test "ipc encoding round-trips every field" {
 
 test "json persistence round-trips and rejects junk" {
     var c = Config{};
-    try c.patch(.{ .brightness = 33, .base = .canvas, .timezone = "AEST-10AEDT,M10.1.0,M4.1.0/3", .ntp_server = .{ 10, 0, 0, 5 }, .clock_font = .big, .clock_colour = .{ 0xff, 0x80, 0x00 }, .clock_colour_mode = .gradient, .ip_mode = .big, .night = true, .night_brightness = 8, .night_lead_min = 0, .location = .{ .lat_c = 5151, .lon_c = -13 }, .berry_enabled = true, .berry_heap_kb = 128, .berry_handler_ms = 500 });
+    try c.patch(.{ .brightness = 33, .base = .canvas, .timezone = "AEST-10AEDT,M10.1.0,M4.1.0/3", .ntp_server = .{ 10, 0, 0, 5 }, .clock_font = .big, .clock_colour = .{ 0xff, 0x80, 0x00 }, .clock_colour_mode = .gradient, .clock_morph = true, .ip_mode = .big, .night = true, .night_brightness = 8, .night_lead_min = 0, .location = .{ .lat_c = 5151, .lon_c = -13 }, .berry_enabled = true, .berry_heap_kb = 128, .berry_handler_ms = 500 });
     try c.patchMqtt(.{ .enabled = true, .host = "10.0.0.2", .username = "tc002", .password = "Pw1", .prefix = "tc002/dev" });
     c.origins[0] = Text.init("http://panel");
     c.origin_count = 1;
@@ -1007,6 +1016,8 @@ test "json persistence round-trips and rejects junk" {
     try std.testing.expect(back.ntfy.enabled and back.ntfy.insecure);
     try std.testing.expectEqual([3]u8{ 0xff, 0x80, 0x00 }, back.clockStyle().colour);
     try std.testing.expectEqual(clock.default_spread, back.clockStyle().spread);
+    try std.testing.expect(back.clockStyle().morph);
+    try std.testing.expect(std.mem.indexOf(u8, text, "\"clock_morph\":true") != null);
     try std.testing.expectError(error.Invalid, fromJson("{\"schema\":1,\"timezone\":\"Nowhere/Land\"}", &arena));
     try std.testing.expect(std.mem.indexOf(u8, text, "\"clock_colour\":\"ff8000\"") != null);
     try std.testing.expectError(error.Invalid, fromJson("{\"schema\":1,\"clock_font\":\"comic\"}", &arena));

@@ -162,6 +162,7 @@
           indexOf(DIGIT_STYLES, c.digits, -1),
           hexInt(c.colour, 0xffffff),
           hexInt(c.colour2, 0xffffff),
+          c.morph == null ? -1 : (c.morph ? 1 : 0),
           nowMs);
       }
       applied.clock = key;
@@ -403,7 +404,8 @@
       e.setClockStyle(indexOf(CLOCK_FONTS, c.font, -1), indexOf(CLOCK_MODES, c.colour_mode, -1),
                       indexOf(GRADIENTS, c.gradient, -1), c.spread == null ? -1 : c.spread,
                       indexOf(DIGIT_STYLES, c.digits, -1),
-                      hexInt(c.colour, -1), hexInt(c.colour2, -1), ev.at);
+                      hexInt(c.colour, -1), hexInt(c.colour2, -1),
+                      c.morph == null ? -1 : (c.morph ? 1 : 0), ev.at);
     },
     notify: (e, ev) => e.notify(writeScratch(String(ev.text == null ? '' : ev.text)),
                                 hexInt(ev.colour, 0xffffff), ev.duration_s | 0, ev.at),
