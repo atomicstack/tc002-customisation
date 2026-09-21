@@ -64,6 +64,8 @@ cp "$HERE/tc002-onboard.sh" "$HERE/tc002-adopt.py" "$HERE/tc002-ap-probe.sh" \
    "$HERE/tc002-devices.py" "$STAGE/"
 # both mkimage and flash resolve this as $ROOT/tc002-update-img.py
 cp "$HERE/tc002-update-img.py" "$STAGE/"
+cp "$HERE/runtime/tools/tc002-update.sh" "$HERE/runtime/tools/tc002-up.sh" "$HERE/runtime/tools/tc002-run.sh" \
+   "$HERE/runtime/tools/tc002-lock.sh" "$STAGE/runtime/tools/"
 cp "$HERE/runtime/tools/tc002-mkimage.sh" "$HERE/runtime/tools/tc002-flash.sh" \
    "$HERE/runtime/tools/tc002ctl.py" "$STAGE/runtime/tools/"
 # mkimage copies these into the image itself

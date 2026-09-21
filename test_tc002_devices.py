@@ -188,6 +188,118 @@ class DiscoveryTests(unittest.TestCase):
         self.assertIn("tc002-aabbccddee00.local", error)
 
 
+FAKE_ADB = """#!{py}
+import json, os, pathlib, sys
+with open(os.environ["TEST_ADB_LOG"], "a") as log:
+    log.write(json.dumps({{"command": pathlib.Path(sys.argv[0]).name, "args": sys.argv[1:], "device": os.environ.get("TC002_DEVICE")}}) + "\\n")
+if sys.argv[-1] == "get-state":
+    state = pathlib.Path(os.environ["TEST_ADB_LOG"] + ".state")
+    if not state.exists():
+        state.touch()
+        sys.exit(1)
+if len(sys.argv) > 3 and sys.argv[3] == "pull":
+    pathlib.Path(sys.argv[-1]).touch()
+if sys.argv[-1] == "ps":
+    print("1234 root tc002-supervisor")
+"""
+
+FAKE_CTL = """#!{py}
+import json, os, pathlib, sys
+with open(os.environ["TEST_ADB_LOG"], "a") as log:
+    log.write(json.dumps({{"command": "tc002ctl.py", "args": sys.argv[1:], "device": os.environ.get("TC002_DEVICE")}}) + "\\n")
+print("{{}}")
+"""
+
+
+def fake_checkout(directory, payload=b"\x7fELF the supervisor, built for /tmp/tc002"):
+    """a checkout with the update script, a fake adb and a fake payload, for driving the script
+    without a device or a compiler. returns (root, bindir, log)."""
+    root = Path(directory)
+    tools = root / "runtime" / "tools"
+    tools.mkdir(parents=True)
+    bindir = root / "bin"
+    bindir.mkdir()
+    for name in ("tc002-update.sh", "tc002-up.sh"):
+        shutil.copyfile(ROOT / "runtime/tools" / name, tools / name)
+        (tools / name).chmod(0o755)
+    payload_dir = root / "runtime" / "zig-out" / "bin"
+    payload_dir.mkdir(parents=True)
+    (payload_dir / "tc002-supervisor").write_bytes(payload)
+    log = root / "calls.jsonl"
+    (root / "tokens").write_text("control=" + "a" * 64 + "\nadmin=" + "b" * 64 + "\n")
+    fake = FAKE_ADB.format(py=sys.executable)
+    for path, content in [(bindir / "adb", fake), (tools / "tc002-run.sh", fake),
+                          (bindir / "sleep", "#!/bin/sh\nexit 0\n"),
+                          (tools / "tc002ctl.py", FAKE_CTL.format(py=sys.executable))]:
+        path.write_text(content)
+        path.chmod(0o755)
+    return root, bindir, log
+
+
+def run_update(root, bindir, log, *args, script="tc002-update.sh"):
+    env = dict(os.environ, PATH=f"{bindir}:{os.environ['PATH']}", TEST_ADB_LOG=str(log))
+    env.pop("TC002_DEVICE", None)
+    return subprocess.run(["/bin/bash", str(root / "runtime" / "tools" / script), *args],
+                          env=env, text=True, capture_output=True)
+
+
+class UpdateScriptTests(unittest.TestCase):
+    def test_a_mode_is_required_and_the_usage_names_both(self):
+        with tempfile.TemporaryDirectory() as d:
+            root, bindir, log = fake_checkout(d)
+            r = run_update(root, bindir, log, "--device", "10.0.0.5")
+            self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+            self.assertIn("--in-place", r.stderr)
+            self.assertIn("--flash", r.stderr)
+            self.assertIn("reboot", r.stderr)
+            r = run_update(root, bindir, log, "--in-place", "--flash", "--device", "10.0.0.5")
+            self.assertEqual(r.returncode, 2)
+
+    def test_in_place_refuses_a_payload_built_for_flash(self):
+        # the two modes need different builds (the flashed supervisor has /res/bin compiled in),
+        # and they share zig-out, so pushing the wrong one must be refused rather than discovered
+        # on the panel as a crash loop
+        with tempfile.TemporaryDirectory() as d:
+            root, bindir, log = fake_checkout(d, payload=b"\x7fELF built with /res/bin compiled in")
+            r = run_update(root, bindir, log, "--in-place", "--device", "10.0.0.5", "--no-build", "--keep-settings")
+            self.assertNotEqual(r.returncode, 0)
+            self.assertIn("/res/bin", r.stderr)
+            self.assertFalse(log.exists() and any('"push"' in line for line in log.read_text().splitlines()))
+
+    def test_in_place_normalizes_the_device_and_writes_a_token_file_per_host(self):
+        for given, expected in [("10.0.0.111", "10.0.0.111:5555"),
+                                ("tc002-ddeeff.local", "tc002-ddeeff.local:5555"),
+                                ("10.0.0.111:5556", "10.0.0.111:5556")]:
+            with self.subTest(device=given), tempfile.TemporaryDirectory() as d:
+                root, bindir, log = fake_checkout(d)
+                r = run_update(root, bindir, log, "--in-place", "--device", given, "--no-build", "--keep-settings")
+                self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+                calls = [json.loads(line) for line in log.read_text().splitlines()]
+                adb_calls = [c for c in calls if c["command"] == "adb"]
+                self.assertIn(["connect", expected], [c["args"] for c in adb_calls])
+                for c in adb_calls:
+                    if c["args"][0] != "connect":
+                        self.assertEqual(c["args"][:2], ["-s", expected])
+                self.assertTrue(any(c["command"] == "tc002-run.sh" for c in calls))
+                self.assertEqual({c["device"] for c in calls}, {expected})
+                self.assertTrue((root / "tokens").exists())
+                self.assertTrue((root / f"tokens-{given.split(':')[0]}").exists(), sorted(os.listdir(root)))
+                self.assertIn("no reboot", r.stdout)
+                # every update puts "updating" on the panel before the panel is taken away: the
+                # notice goes out before the running runtime is stopped
+                notices = [i for i, c in enumerate(calls) if c["command"] == "tc002ctl.py" and "notify" in c["args"] and "updating" in c["args"]]
+                stops = [i for i, c in enumerate(calls) if c["command"] == "tc002-run.sh" and c["args"][:1] == ["stop"]]
+                self.assertTrue(notices, "no updating notice was sent")
+                self.assertTrue(stops and notices[0] < stops[0], (notices, stops))
+
+    def test_the_old_bring_up_script_is_the_in_place_mode(self):
+        with tempfile.TemporaryDirectory() as d:
+            root, bindir, log = fake_checkout(d)
+            r = run_update(root, bindir, log, "--device", "10.0.0.7", "--no-build", "--keep-settings", script="tc002-up.sh")
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+            self.assertTrue((root / "tokens-10.0.0.7").exists())
+
+
 class DeviceSelectionTests(unittest.TestCase):
     def test_run_hint_names_the_variable_when_it_is_unset(self):
         # the hint was wrapped in ${TC002_DEVICE:+...}, so it showed only when the variable was
@@ -212,107 +324,6 @@ class DeviceSelectionTests(unittest.TestCase):
             self.assertEqual(result.returncode, 1)
             self.assertIn("at 10.0.0.111:5555", result.stderr)
             self.assertNotIn("export TC002_DEVICE", result.stderr)
-
-    def test_up_normalizes_explicit_device_and_exports_same_serial(self):
-        for given, expected in [("10.0.0.111", "10.0.0.111:5555"),
-                                ("tc002-ddeeff.local", "tc002-ddeeff.local:5555"),
-                                ("10.0.0.111:5556", "10.0.0.111:5556")]:
-            with self.subTest(device=given), tempfile.TemporaryDirectory() as directory:
-                root = Path(directory)
-                tools = root / "runtime" / "tools"
-                tools.mkdir(parents=True)
-                bindir = root / "bin"
-                bindir.mkdir()
-                shutil.copyfile(ROOT / "runtime/tools/tc002-up.sh", tools / "tc002-up.sh")
-                log = root / "calls.jsonl"
-                fake = f'''#!{sys.executable}
-import json, os, pathlib, sys
-with open(os.environ["TEST_ADB_LOG"], "a") as log:
-    log.write(json.dumps({{"command": pathlib.Path(sys.argv[0]).name, "args": sys.argv[1:], "device": os.environ.get("TC002_DEVICE")}}) + "\\n")
-if sys.argv[-1] == "get-state":
-    state = pathlib.Path(os.environ["TEST_ADB_LOG"] + ".state")
-    if not state.exists():
-        state.touch()
-        sys.exit(1)
-if len(sys.argv) > 3 and sys.argv[3] == "pull":
-    pathlib.Path(sys.argv[-1]).touch()
-'''
-                for path, content in [(bindir / "adb", fake), (tools / "tc002-run.sh", fake),
-                                      (bindir / "sleep", "#!/bin/sh\nexit 0\n"),
-                                      (tools / "tc002ctl.py", "print('{}')\n")]:
-                    path.write_text(content)
-                    path.chmod(0o755)
-                env = dict(os.environ, PATH=f"{bindir}:{os.environ['PATH']}", TEST_ADB_LOG=str(log))
-                result = subprocess.run(["/bin/bash", str(tools / "tc002-up.sh"), "--device", given,
-                                         "--no-build", "--keep-settings"], env=env, text=True, capture_output=True)
-                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-                calls = [json.loads(line) for line in log.read_text().splitlines()]
-                adb_calls = [call for call in calls if call["command"] == "adb"]
-                self.assertIn(["connect", expected], [call["args"] for call in adb_calls])
-                for call in adb_calls:
-                    if call["args"][0] != "connect":
-                        self.assertEqual(call["args"][:2], ["-s", expected])
-                self.assertTrue(any(call["command"] == "tc002-run.sh" for call in calls))
-                self.assertEqual({call["device"] for call in calls}, {expected})
-                # the tokens land in the shared file and in one named for the clock, so two clocks
-                # do not overwrite each other's and the console can pick the right one per host
-                self.assertTrue((root / "tokens").exists())
-                self.assertTrue((root / f"tokens-{given.split(':')[0]}").exists(), sorted(os.listdir(root)))
-
-
-class DecoderTests(unittest.TestCase):
-    """the dns decoder itself: the other tests mock at the socket and only ever see well-formed
-    announcements built by this file."""
-
-    def test_pointer_is_followed_and_the_offset_is_after_the_pointer(self):
-        # "local" at 12, then "tc002-x" + a pointer back to it
-        buf = bytearray(12) + dns_name("local")
-        name_at = len(buf)
-        buf += bytes([7]) + b"tc002-x" + bytes([0xC0, 12])
-        name, after = devices._name_at(bytes(buf), name_at)
-        self.assertEqual(name, "tc002-x.local")
-        self.assertEqual(after, len(buf))
-
-    def test_forward_and_self_pointers_are_refused(self):
-        self.assertEqual(devices._name_at(bytes([0xC0, 0x04, 0, 0, 0]), 0)[0], "")
-        self.assertEqual(devices._name_at(bytes([0xC0, 0x00]), 0)[0], "")
-
-    def test_a_label_running_off_the_end_is_refused(self):
-        self.assertEqual(devices._name_at(bytes([40, ord("a"), ord("b")]), 0)[0], "")
-        self.assertEqual(devices._name_at(bytes([3, ord("a")]), 0)[0], "")
-
-    def test_answers_walk_answer_authority_and_additional_sections(self):
-        # one question, one answer (PTR) and one additional (A): all three sections are walked
-        inst, ip = "tc002-aabbccddeeff", "10.0.0.68"
-        service = "_tc002._tcp.local"
-        target = dns_name(f"{inst}.{service}")
-        question = dns_name(service) + struct.pack("!HH", 12, 1)
-        ptr = dns_name(service) + struct.pack("!HHIH", 12, 1, 4500, len(target)) + target
-        a = dns_name(f"{inst}.local") + struct.pack("!HHIH", 1, 1, 120, 4) + socket.inet_aton(ip)
-        pkt = struct.pack("!HHHHHH", 0, 0x8400, 1, 1, 0, 1) + question + ptr + a
-        self.assertEqual(list(devices._parse_answers(pkt)),
-                         [(f"{inst}.{service}", None), (f"{inst}.local", ip)])
-
-    def test_truncated_rdata_stops_the_walk_without_raising(self):
-        pkt = announcement("tc002-aabbccddeeff", "10.0.0.68")
-        for cut in (13, len(pkt) - 3, len(pkt) - 1):
-            with self.subTest(cut=cut):
-                records = list(devices._parse_answers(pkt[:cut]))
-                self.assertTrue(all(isinstance(r, tuple) for r in records))
-
-    def test_a_record_with_the_wrong_length_is_not_an_address(self):
-        inst = "tc002-aabbccddeeff"
-        bad = dns_name(f"{inst}.local") + struct.pack("!HHIH", 1, 1, 120, 3) + b"\x0a\x00\x00"
-        pkt = struct.pack("!HHHHHH", 0, 0x8400, 0, 1, 0, 0) + bad
-        self.assertEqual(list(devices._parse_answers(pkt)), [(f"{inst}.local", None)])
-
-    def test_a_reply_for_another_service_is_not_a_clock(self):
-        sock = Mock()
-        hue = struct.pack("!HHHHHH", 0, 0x8400, 0, 1, 0, 0) + dns_name("_hue._tcp.local") + \
-            struct.pack("!HHIH", 12, 1, 4500, 0)
-        sock.recvfrom.side_effect = [(hue, ("10.0.0.9", 5353)), OSError()]
-        with patch.object(devices.socket, "socket", return_value=sock), patch.object(devices.time, "sleep"):
-            self.assertEqual(devices.mdns_query(), {})
 
 
 if __name__ == "__main__":

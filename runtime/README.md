@@ -218,9 +218,19 @@ command brings it up again, with the settings applied and the console's tokens p
 > **not done here** — see [busybox, for a persistent install](#busybox-for-a-persistent-install)
 > for the one piece of groundwork that exists so far.
 
+there are two kinds of update, and `tc002-update.sh` takes a flag saying which. **`--in-place`**
+does not reboot: the binaries go to `/tmp/tc002` and the runtime restarts in place, fifteen seconds
+with the panel dark for three, and the previous build is back on the next power cycle because `/tmp`
+is a ramdisk. **`--flash`** reboots: an image built for the `res` partition is written by the
+vendor's flasher, a minute with the panel blank for ten to fifteen seconds, and permanent. every
+update of either kind puts "updating" on the panel before the panel goes. `tc002-up.sh` is the
+in-place mode under its old name.
+
 ```bash
-runtime/tools/tc002-up.sh                          # adb connect, build, push, start, settings, tokens
-runtime/tools/tc002-up.sh --tz Australia/Melbourne --font classic --no-build
+runtime/tools/tc002-update.sh --in-place                      # build, push to /tmp, restart, settings, tokens
+runtime/tools/tc002-update.sh --in-place --device 10.0.0.68 --tz Australia/Melbourne --font classic --no-build
+runtime/tools/tc002-update.sh --flash --device 10.0.0.68 --lan --yes   # dump res, build the image, flash, verify
+runtime/tools/tc002-update.sh --flash --base-image ~/tc002-firmware/mtd-backup-20260915/mtd3-res.bin  # from a stock dump
 runtime/tools/tc002-demo-transitions.py -s <device-ip> --token-file tokens   # a demo reel of every transition; --only, --ms, --hold, --loop
 runtime/tools/tc002-demo-shapes.py -s <device-ip> --token-file tokens        # the canvas primitives; and -text, -charts, -icons,
                                                                             # -images, -layout, -tiles, -dashboard alongside it
@@ -231,17 +241,17 @@ runtime/tools/tc002-run.sh stop                    # back to the stock app
 the defaults (device `10.0.0.111:5555`, `Europe/Amsterdam`, sntp from `10.0.0.136`, the `block`
 clock) can be changed with options or the `TC002_*` environment variables listed in the script.
 
-**two clocks.** every adb call in `tc002-up.sh` and `tc002-run.sh` names the device with `-s`:
-`tc002-up.sh` always targets `--device` (or `TC002_DEVICE`, default `10.0.0.111:5555`; a bare ip or
-hostname gets `:5555` appended, since that is the serial adb gives a tcp transport) and exports it as
-`TC002_DEVICE` for the scripts it calls; `tc002-run.sh` uses `TC002_DEVICE` when set and a bare `adb`
-otherwise, which is right with one clock and fails with "more than one device/emulator" with two. so
-with two clocks attached, `export TC002_DEVICE=<ip>:5555` before `tc002-run.sh`, and give
-`tc002-up.sh --device`. `tc002-up.sh` no longer falls back to "whichever single clock is connected".
-`tc002-devices.py` lists them, by mdns name where the runtime is running. tokens are per clock:
-`tc002-up.sh` writes `tokens-<host>` beside `tokens` (the last clock deployed), `tc002ctl.py
---token-file tokens-<host>` picks one, and the console's proxy reads every `tokens-<host>` file
-beside the one it was started with, so `?host=` switches clocks with the right tokens.
+**two clocks.** every adb call in `tc002-update.sh` and `tc002-run.sh` names the device with `-s`:
+`tc002-update.sh` always targets `--device` (or `TC002_DEVICE`, default `10.0.0.111:5555`; a bare ip
+or hostname gets `:5555` appended, since that is the serial adb gives a tcp transport) and exports
+it as `TC002_DEVICE` for the scripts it calls; `tc002-run.sh` uses `TC002_DEVICE` when set and a bare
+`adb` otherwise, which is right with one clock and fails with "more than one device/emulator" with
+two. so with two clocks attached, `export TC002_DEVICE=<ip>:5555` before `tc002-run.sh`, and give
+`tc002-update.sh --device`. `tc002-devices.py` lists them, by mdns name where the runtime is
+running. tokens are per clock: an in-place update writes `tokens-<host>` beside `tokens` (the last
+clock updated), `tc002ctl.py --token-file tokens-<host>` picks one, and the console's proxy reads
+every `tokens-<host>` file beside the one it was started with, so `?host=` switches clocks with the
+right tokens.
 
 ```bash
 tools/tc002-run.sh push                     # build, check, push to /tmp/tc002/
