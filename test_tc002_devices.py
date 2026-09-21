@@ -156,6 +156,90 @@ class DiscoveryTests(unittest.TestCase):
                 self.assertEqual(out[0]["name"], "tc002-aabbccddeeff.local")
                 self.assertEqual(out[0]["kind"], "runtime")
 
+    # what `dns-sd -B` prints: a header, then one line per instance. the instance name is the
+    # rest of the line, and may contain spaces, so it cannot be taken as a fixed column.
+    DNSSD_OUTPUT = (
+        "Browsing for _tc002._tcp.local.\n"
+        "DATE: ---Tue 22 Sep 2026---\n"
+        " 1:34:42.338  ...STARTING...\n"
+        "Timestamp     A/R    Flags  if Domain               Service Type         Instance Name\n"
+        " 1:34:42.339  Add        3  14 local.               _tc002._tcp.         tc002-ccc4b2779e85\n"
+        " 1:34:42.339  Add        2  14 local.               _tc002._tcp.         tc002-ccc4b277a282\n"
+    )
+
+    def dnssd(self, output=None, missing=False, as_bytes=False):
+        """stand in for the browse and for resolving the names it returns."""
+        text = self.DNSSD_OUTPUT if output is None else output
+        def run(args, **kwargs):
+            if args[0] != devices.DNSSD:
+                return adb_result(args, **kwargs)
+            # a browse never exits on its own: it is killed, and the partial output comes back on
+            # the exception. python does not decode that one even under text=True
+            raise subprocess.TimeoutExpired(args, 1.5, output=text.encode() if as_bytes else text)
+        addrs = {"tc002-ccc4b2779e85.local": "10.0.0.68", "tc002-ccc4b277a282.local": "10.0.0.111"}
+        def getaddrinfo(name, *a, **k):
+            if name not in addrs:
+                raise socket.gaierror(f"no such host: {name}")
+            return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", (addrs[name], 80))]
+        return run, getaddrinfo, patch.object(devices.os.path, "exists", return_value=not missing)
+
+    def test_mdns_asks_the_daemon_rather_than_competing_with_it_for_5353(self):
+        # mDNSResponder owns udp/5353 and browses continuously; a raw probe has to share the port
+        # with it and take its chances with the one-answer-per-second rule every responder follows.
+        # measured over six runs against two clocks, 2 s apart: the raw probe found both four
+        # times and once found nothing at all, while the daemon answered from cache every time.
+        run, getaddrinfo, exists = self.dnssd()
+        raw = Mock(return_value={})
+        with patch.object(devices.subprocess, "run", side_effect=run), \
+             patch.object(devices.socket, "getaddrinfo", side_effect=getaddrinfo), \
+             patch.object(devices, "mdns_query", raw), exists:
+            found = devices.mdns_discover()
+        self.assertEqual({(d["instance"], d["ip"]) for d in found.values()},
+                         {("tc002-ccc4b2779e85", "10.0.0.68"), ("tc002-ccc4b277a282", "10.0.0.111")})
+        raw.assert_not_called()
+
+    def test_a_killed_browse_still_yields_the_names_it_printed(self):
+        # `text=True` does not reach the output carried on TimeoutExpired: it arrives as bytes,
+        # and reading it as str silently found no clocks
+        run, getaddrinfo, exists = self.dnssd(as_bytes=True)
+        with patch.object(devices.subprocess, "run", side_effect=run), \
+             patch.object(devices.socket, "getaddrinfo", side_effect=getaddrinfo), \
+             patch.object(devices, "mdns_query", Mock(return_value={})), exists:
+            found = devices.mdns_discover()
+        self.assertEqual({d["ip"] for d in found.values()}, {"10.0.0.68", "10.0.0.111"})
+
+    def test_mdns_falls_back_to_the_raw_probe_without_the_daemon(self):
+        run, getaddrinfo, exists = self.dnssd(missing=True)
+        raw = Mock(return_value={("tc002-aabbccddeeff", "10.0.0.9"): {"instance": "tc002-aabbccddeeff", "ip": "10.0.0.9"}})
+        with patch.object(devices.subprocess, "run", side_effect=run), \
+             patch.object(devices.socket, "getaddrinfo", side_effect=getaddrinfo), \
+             patch.object(devices, "mdns_query", raw), exists:
+            found = devices.mdns_discover()
+        self.assertEqual({d["ip"] for d in found.values()}, {"10.0.0.9"})
+        raw.assert_called_once()
+
+    def test_a_daemon_that_finds_nothing_still_falls_back(self):
+        # the daemon may be there and have nothing cached, or be wedged; an empty browse is not
+        # proof there are no clocks, and the raw probe costs two seconds only in that case
+        run, getaddrinfo, exists = self.dnssd(output="Browsing for _tc002._tcp.local.\n")
+        raw = Mock(return_value={("tc002-aabbccddeeff", "10.0.0.9"): {"instance": "tc002-aabbccddeeff", "ip": "10.0.0.9"}})
+        with patch.object(devices.subprocess, "run", side_effect=run), \
+             patch.object(devices.socket, "getaddrinfo", side_effect=getaddrinfo), \
+             patch.object(devices, "mdns_query", raw), exists:
+            found = devices.mdns_discover()
+        self.assertEqual({d["ip"] for d in found.values()}, {"10.0.0.9"})
+        raw.assert_called_once()
+
+    def test_an_instance_that_will_not_resolve_is_dropped_not_guessed(self):
+        run, getaddrinfo, exists = self.dnssd(output=self.DNSSD_OUTPUT +
+            " 1:34:42.340  Add        2  14 local.               _tc002._tcp.         tc002-ghost\n")
+        with patch.object(devices.subprocess, "run", side_effect=run), \
+             patch.object(devices.socket, "getaddrinfo", side_effect=getaddrinfo), \
+             patch.object(devices, "mdns_query", Mock(return_value={})), exists:
+            found = devices.mdns_discover()
+        self.assertEqual({d["instance"] for d in found.values()},
+                         {"tc002-ccc4b2779e85", "tc002-ccc4b277a282"})
+
     def test_mdns_query_stops_after_a_quiet_gap(self):
         sock = Mock()
         sock.recvfrom.side_effect = [(announcement("tc002-aabbccddeeff", "10.0.0.111"), ("10.0.0.111", 5353))] + [socket.timeout()] * 100000

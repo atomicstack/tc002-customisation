@@ -1,11 +1,13 @@
-#!/usr/bin/python3
+#!/usr/bin/env python3
 """tc002-devices.py: list every TC002 this machine can reach, so tools stop guessing.
 
   tc002-devices.py [--sweep 10.0.0] [--one] [--json] [--adb PATH] [--no-mdns] [--no-listen]
 
-apple's /usr/bin/python3 on purpose: macos 15 gates lan access per binary, and the mdns probe
-below sends lan multicast, which a homebrew python cannot without a permission change (it fails
-as "no clocks", never as a permission error).
+mdns discovery goes through mDNSResponder, which does the multicast for us, so that path runs
+under any python3. the rest still touches the lan directly -- the raw probe it falls back to, the
+udp/55555 listener, and --sweep's http -- and macos 15 gates all of that per binary: under a
+binary without the local network grant they fail as "no clocks" or "host down", never as a
+permission error. apple's /usr/bin/python3 is exempt; see README.md's local network section.
 
 One clock on a LAN needs no discovery and every tool here grew up assuming it.
 With two, "the device" is ambiguous and the failure is silent: a tool picks the
@@ -29,7 +31,7 @@ stops as soon as the lan has gone quiet after the last answer.
 it prints it and exits 0; if there are none or several it prints the table on
 stderr and exits 2, so the caller stops instead of picking.
 """
-import argparse, json, re, socket, subprocess, sys, time
+import argparse, json, os, re, socket, subprocess, sys, time
 from concurrent.futures import ThreadPoolExecutor
 
 ADB = "adb"
@@ -143,6 +145,61 @@ def _local_ipv4s():
     addrs = [m for m in re.findall(r"\binet (?:addr:)?(\d+\.\d+\.\d+\.\d+)", sh(["ifconfig"]))
              if not m.startswith("127.")]
     return addrs or ["0.0.0.0"]
+
+
+SERVICE = "_tc002._tcp"
+DNSSD = "/usr/bin/dns-sd"
+
+
+def mdns_via_dnssd(timeout=1.5):
+    """browse through mDNSResponder instead of querying the lan ourselves.
+
+    the daemon is already browsing continuously and holds the answers, so it replies from its
+    cache in milliseconds. `mdns_query` below cannot: it has to share udp/5353 with the daemon,
+    and it is subject to the rule every responder follows of not repeating a record within a
+    second of the last time it sent it. measured against two clocks, six runs each two seconds
+    apart: the raw probe on 5353 found both four times, found one once, and once heard nothing at
+    all for three seconds; this found both every time, in 1-8 ms.
+
+    returns the same shape as `mdns_query`, so the caller cannot tell which one answered.
+    """
+    if not os.path.exists(DNSSD):
+        return {}
+    # a browse runs until it is killed, so the timeout is the method, not a failure. python does
+    # not decode the output it hands back on that path, even under text=True
+    try:
+        p = subprocess.run([DNSSD, "-B", SERVICE, "local."], capture_output=True, text=True, timeout=timeout)
+        out = p.stdout
+    except subprocess.TimeoutExpired as e:
+        out = e.stdout or ""
+    except (OSError, ValueError):
+        return {}
+    if isinstance(out, bytes):
+        out = out.decode("utf-8", "replace")
+
+    # "  1:34:42.339  Add  3  14 local.  _tc002._tcp.  tc002-ccc4b2779e85" -- the instance name is
+    # the rest of the line, not a fixed column: a name may contain spaces
+    line = re.compile(r"^\s*\S+\s+Add\s+\S+\s+\d+\s+\S+\s+" + re.escape(SERVICE) + r"\.\s+(.+?)\s*$")
+    found = {}
+    for instance in (m.group(1) for m in (line.match(l) for l in out.splitlines()) if m):
+        # the runtime's service instance is its host name, which is what the daemon can resolve.
+        # an instance that will not resolve is left out rather than reported at a guessed address
+        try:
+            ip = socket.getaddrinfo(f"{instance}.local", None, socket.AF_INET)[0][4][0]
+        except (socket.gaierror, OSError, IndexError):
+            continue
+        found[(instance, ip)] = {"instance": instance, "ip": ip}
+    return found
+
+
+def mdns_discover(timeout=2.0, quiet=0.3):
+    """the daemon if it can answer, the lan directly if it cannot.
+
+    an empty browse is not proof that there are no clocks -- the daemon may be missing, wedged,
+    or holding nothing yet -- so the raw probe still runs in that case. it costs its two seconds
+    only when nothing was found, which is the one case where waiting is worth it.
+    """
+    return mdns_via_dnssd() or mdns_query(timeout=timeout, quiet=quiet)
 
 
 def mdns_query(timeout=2.0, quiet=0.3):
@@ -359,7 +416,7 @@ def main():
         # mdns in parallel with everything else: it needs no adb transport, no subnet guess and
         # no sweep, and it is the only probe that returns a *name* rather than an address to be
         # disambiguated later. `merge_rows` does not care which probe finished first.
-        mdns_future = None if a.no_mdns else ex.submit(mdns_query)
+        mdns_future = None if a.no_mdns else ex.submit(mdns_discover)
         # the stock firmware's own announcement, in parallel too: the only way to see a stock
         # clock that is on the wifi but not yet on adb, without sweeping
         listen_future = None if a.no_listen else ex.submit(listen_broadcasts)
