@@ -49,7 +49,7 @@ const shadow_alpha: u8 = 90;
 /// the glyph `t`/255 of the way from `a` to `b`: a pixel lit in both stays lit, one lit in only
 /// one of them is at a partial level, so a digit turning into the next one keeps its shared strokes
 /// while the rest fade over. the cell is the larger of the two.
-pub fn morphed(a: Glyph, b: Glyph, t: u8) Glyph {
+pub fn blended(a: Glyph, b: Glyph, t: u8) Glyph {
     var out = blank;
     out.w = @max(a.w, b.w);
     out.h = @max(a.h, b.h);
@@ -300,12 +300,12 @@ pub fn blit(rgb: *geometry.Rgb, x0: i32, y0: i32, f: Font, text: []const u8, pai
 /// the same, drawn in one of the digit styles. a shadow is the glyph again, dimmed and offset,
 /// laid down first so the digit itself sits on top of it.
 pub fn blitStyled(rgb: *geometry.Rgb, x0: i32, y0: i32, f: Font, text: []const u8, painter: anytype, style: DigitStyle) void {
-    blitMorph(rgb, x0, y0, f, text, text, 0, painter, style);
+    blitBlend(rgb, x0, y0, f, text, text, 0, painter, style);
 }
 
 /// `from` and `to` are the same length; every character that differs is drawn `t`/255 of the way
 /// from the one to the other, and the rest as they are. `t` 0 is exactly `from`, 255 exactly `to`.
-pub fn blitMorph(rgb: *geometry.Rgb, x0: i32, y0: i32, f: Font, from: []const u8, to: []const u8, t: u8, painter: anytype, style: DigitStyle) void {
+pub fn blitBlend(rgb: *geometry.Rgb, x0: i32, y0: i32, f: Font, from: []const u8, to: []const u8, t: u8, painter: anytype, style: DigitStyle) void {
     const effective: DigitStyle = if (hasBody(f)) style else .solid;
     if (effective == .shadow) drawRun(rgb, x0 + 1, y0 + 1, f, from, to, t, painter, .solid, shadow_alpha);
     drawRun(rgb, x0, y0, f, from, to, t, painter, effective, 255);
@@ -319,7 +319,7 @@ fn drawRun(rgb: *geometry.Rgb, x0: i32, y0: i32, f: Font, text: []const u8, to: 
         const styled = if (style == .outline) outlined(raw) else raw;
         const g = if (i < to.len and to[i] != c) blk: {
             const target = glyph(f, to[i]);
-            break :blk morphed(styled, if (style == .outline) outlined(target) else target, t);
+            break :blk blended(styled, if (style == .outline) outlined(target) else target, t);
         } else styled;
         for (0..g.h) |r| {
             const y = y0 + @as(i32, @intCast(r));
@@ -555,12 +555,12 @@ test "mini n is not a blob, and is not m with a extra row" {
     try std.testing.expect(differing >= 3);
 }
 
-test "a morph between two glyphs is the first at the start, the second at the end, and only the pixels that differ are ever partial" {
+test "a fade between two glyphs is the first at the start, the second at the end, and only the pixels that differ are ever partial" {
     const three = glyph(.block, '3');
     const four = glyph(.block, '4');
-    try std.testing.expectEqual(three.a, morphed(three, four, 0).a);
-    try std.testing.expectEqual(four.a, morphed(three, four, 255).a);
-    const mid = morphed(three, four, 128);
+    try std.testing.expectEqual(three.a, blended(three, four, 0).a);
+    try std.testing.expectEqual(four.a, blended(three, four, 255).a);
+    const mid = blended(three, four, 128);
     try std.testing.expectEqual(three.w, mid.w);
     try std.testing.expectEqual(three.h, mid.h);
     var partial: usize = 0;
@@ -577,7 +577,7 @@ test "a morph between two glyphs is the first at the start, the second at the en
     try std.testing.expect(partial > 0);
 }
 
-test "a morph blit is the old text at the start and the new text at the end, in every digit style" {
+test "a fade blit is the old text at the start and the new text at the end, in every digit style" {
     const white = Solid{ .colour = .{ 255, 255, 255 } };
     for ([_]DigitStyle{ .solid, .outline, .shadow }) |style| {
         var old_frame: geometry.Rgb = geometry.black_rgb;
@@ -586,12 +586,12 @@ test "a morph blit is the old text at the start and the new text at the end, in 
         blitStyled(&new_frame, 2, 3, .block, "10", white, style);
         var start: geometry.Rgb = geometry.black_rgb;
         var end: geometry.Rgb = geometry.black_rgb;
-        blitMorph(&start, 2, 3, .block, "09", "10", 0, white, style);
-        blitMorph(&end, 2, 3, .block, "09", "10", 255, white, style);
+        blitBlend(&start, 2, 3, .block, "09", "10", 0, white, style);
+        blitBlend(&end, 2, 3, .block, "09", "10", 255, white, style);
         try std.testing.expectEqualSlices(u8, &old_frame, &start);
         try std.testing.expectEqualSlices(u8, &new_frame, &end);
         var mid: geometry.Rgb = geometry.black_rgb;
-        blitMorph(&mid, 2, 3, .block, "09", "10", 128, white, style);
+        blitBlend(&mid, 2, 3, .block, "09", "10", 128, white, style);
         try std.testing.expect(!std.mem.eql(u8, &old_frame, &mid));
         try std.testing.expect(!std.mem.eql(u8, &new_frame, &mid));
     }

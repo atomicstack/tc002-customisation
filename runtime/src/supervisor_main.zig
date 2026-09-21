@@ -880,7 +880,7 @@ const Supervisor = struct {
                 4 => self.cfg.patch(.{ .clock_gradient = messages.enumFromInt(clockscene.Gradient, @as(u8, @truncate(v))) orelse return }),
                 5 => self.cfg.patch(.{ .clock_spread = @as(u8, @truncate(v)) }),
                 6 => self.cfg.patch(.{ .clock_digit = messages.enumFromInt(clockscene.DigitStyle, @as(u8, @truncate(v))) orelse return }),
-                7 => self.cfg.patch(.{ .clock_morph = v != 0 }),
+                7 => self.cfg.patch(.{ .clock_fade = v != 0 }),
                 else => return,
             },
             2 => switch (sp.index) { // ip
