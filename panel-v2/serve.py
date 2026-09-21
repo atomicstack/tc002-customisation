@@ -18,7 +18,7 @@ usage: serve.py [port] [--token-file FILE | --adb-pull [--serial S]]     default
 run with apple's python3 (/usr/bin/python3): homebrew binaries are denied lan access by macos
 local network privacy. binds 127.0.0.1 only.
 """
-import argparse, functools, http.server, json, os, re, socketserver, subprocess, sys, tempfile, urllib.error, urllib.request
+import argparse, functools, http.server, json, os, re, socketserver, subprocess, sys, tempfile, time, urllib.error, urllib.request
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 TOKENS = {"control": None, "admin": None}
@@ -40,6 +40,67 @@ EVENTS_ENDPOINT = "events"
 # the only static files this server will hand back; everything else not under /api/ or /tokens is 404
 STATIC_ALLOW = {"/", "/index.html", "/sim-wasm.js", "/tc002-panel.wasm",
                 "/scripts-model.js", "/scripts-editor.js", "/scripts-editor.css"}
+
+# the lister lives beside the repo root, not in panel-v2; found relative to this file so the
+# proxy can be started from anywhere
+# TC002_LISTER points this somewhere else: a stub in the tests, so they never touch the lan
+LISTER = os.environ.get("TC002_LISTER") or os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "tc002-devices.py")
+DISCOVERY_TIMEOUT_S = 8
+DISCOVERY_CACHE_S = 20        # a probe costs a second and a half; the lan does not change that fast
+DISCOVERY_REMEMBER_S = 120    # how long a clock stays listed after the last probe that saw it
+
+
+def discover_clocks(token_store, cache, now=None):
+    """the clocks on this lan, for the console's device field.
+
+    a browser cannot do mdns, so the proxy asks tc002-devices.py and hands the answer on. only
+    runtime clocks are offered: this console cannot talk to a stock one at all, so listing one
+    would be listing a dead end.
+
+    every failure is an empty list. the field is a text box that a list makes more convenient,
+    never one that stops working when discovery does.
+    """
+    now = time.time() if now is None else now
+    if now - cache.get("at", -DISCOVERY_CACHE_S * 2) < DISCOVERY_CACHE_S:
+        return cache.get("rows", [])
+    try:
+        # sys.executable, not a hardcoded interpreter: the probe follows whatever python was used
+        # to start the proxy
+        # mdns only. the console wants what is advertising itself, and the adb probes would run
+        # `adb shell` against every attached clock every time this field is focused
+        p = subprocess.run([sys.executable, LISTER, "--json", "--no-listen", "--no-adb"],
+                           capture_output=True, text=True, timeout=DISCOVERY_TIMEOUT_S)
+        rows = json.loads(p.stdout or "[]")
+    except Exception:
+        rows = []
+    seen = cache.setdefault("seen", {})
+    for r in rows:
+        ip = r.get("ip")
+        if ip and r.get("kind") == "runtime":
+            # the name is addressed by its ip everywhere else here, tokens-<host> included, so the
+            # `.local` suffix is noise in a list whose values are addresses
+            seen[ip] = (now, (r.get("name") or "").removesuffix(".local"))
+    # a probe is a sample of a lossy medium and a clock can miss one while sitting right there;
+    # dropping it on a single quiet answer makes the field flicker. remember it for a while.
+    for ip in [ip for ip, (at, _) in seen.items() if now - at > DISCOVERY_REMEMBER_S]:
+        del seen[ip]
+    # by octet, not by string: .111 sorts before .68 as text, which reads as a muddle in a list
+    # a person is picking from
+    def numerically(item):
+        parts = item[0].split(".")
+        return [int(p) for p in parts] if len(parts) == 4 and all(p.isdigit() for p in parts) else [999]
+    out = [{"ip": ip, "name": name, "tokens": _has_token(token_store, ip)}
+           for ip, (_, name) in sorted(seen.items(), key=numerically)]
+    cache["at"], cache["rows"] = now, out
+    return out
+
+
+def _has_token(token_store, host):
+    try:
+        return token_store.for_host(host)["control"] is not None
+    except (OSError, ValueError, KeyError, TypeError):
+        return False
 
 
 def parse_tokens(data):
@@ -249,6 +310,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         path = self.path.split("?")[0]
         if path == "/tokens":
             return self._tokens()
+        if path == "/devices":
+            return self._json(200, discover_clocks(self.server.token_store, self.server.discovery))
         if path in STATIC_ALLOW:
             # index.html and sim-wasm.js change together, so a browser holding an old copy of one
             # against a new copy of the other fails in a way that reads as a code bug. drop any
@@ -301,6 +364,7 @@ def make_server(port, tokens, directory=HERE, token_dir=None):
     server = Server(("127.0.0.1", port), handler)
     server.tokens = tokens
     server.token_store = TokenStore(tokens, token_dir)
+    server.discovery = {}      # what the last lan probe found, and when
     return server
 
 

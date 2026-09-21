@@ -406,6 +406,7 @@ def main():
     ap.add_argument("--json", action="store_true")
     ap.add_argument("--adb", default="adb")
     ap.add_argument("--no-mdns", action="store_true", help="skip the mdns probe")
+    ap.add_argument("--no-adb", action="store_true", help="skip the adb probes: no `adb shell` against any clock")
     ap.add_argument("--no-listen", action="store_true", help="skip listening for the stock firmware's udp/55555 broadcast")
     a = ap.parse_args()
     ADB = a.adb
@@ -421,7 +422,7 @@ def main():
         # clock that is on the wifi but not yet on adb, without sweeping
         listen_future = None if a.no_listen else ex.submit(listen_broadcasts)
 
-        for serial in adb_transports():
+        for serial in ([] if a.no_adb else adb_transports()):
             d = describe_adb(serial)
             if not d["mac"]:
                 continue                      # not a tc002, or not answering

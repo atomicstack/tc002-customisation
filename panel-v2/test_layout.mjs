@@ -129,7 +129,12 @@ test.before(async () => {
   const tokens = join(tmp, 'tokens');
   mock = spawn(PYTHON, ['mock-device.py', '--port', String(mockPort), '--token-file', tokens], { cwd: HERE, stdio: 'ignore' });
   await waitFor(async () => { await fetch(`http://127.0.0.1:${mockPort}/api/v1/status`); });
-  proxy = spawn(PYTHON, ['serve.py', String(proxyPort), '--token-file', tokens], { cwd: HERE, stdio: 'ignore' });
+  // the proxy's /devices shells out to the lan lister; point it at a stub so the suite never
+  // probes the real network (and never runs `adb shell` against a clock on this desk)
+  const lister = join(tmp, 'fake-lister.py');
+  writeFileSync(lister, 'import sys; print("[]")\n');
+  proxy = spawn(PYTHON, ['serve.py', String(proxyPort), '--token-file', tokens],
+    { cwd: HERE, stdio: 'ignore', env: { ...process.env, TC002_LISTER: lister } });
   await waitFor(async () => { await fetch(`http://127.0.0.1:${proxyPort}/tokens`); });
   chrome = spawn(CHROME, ['--headless=new', '--disable-gpu', '--no-first-run', '--no-default-browser-check',
     `--user-data-dir=${join(tmp, 'profile')}`, `--remote-debugging-port=${cdpPort}`, 'about:blank'], { stdio: 'ignore' });
@@ -647,6 +652,57 @@ for (const width of [1440, 1200, 950, 700, 390]) {
     }
   });
 }
+
+// the clocks advertise themselves over mdns, so the device field offers what is on the lan
+// instead of asking you to remember an address. a datalist and not a select: the list is a
+// convenience over a text box, and typing an address that discovery never found has to keep
+// working — a clock with its mdns switch off, a clock on another subnet, a fresh one.
+test('the device field offers the clocks discovery found, and still takes a typed address',
+  { skip: chromeAvailable ? false : 'google chrome is not installed' }, async () => {
+  await cdp.setWidth(1200);
+  const field = await cdp.eval(`(() => {
+    const el = document.getElementById('host');
+    const list = el.getAttribute('list');
+    const dl = list && document.getElementById(list);
+    return { list, isDatalist: !!dl && dl.tagName === 'DATALIST', type: el.tagName, readOnly: el.readOnly };
+  })()`);
+  assert.equal(field.type, 'INPUT', 'the device field must stay an input that can be typed into');
+  assert.equal(field.readOnly, false);
+  assert.ok(field.isDatalist, `the device field should name a datalist, its list attribute is ${field.list}`);
+
+  // the proxy answers /devices from the lan; stand in for it so the test does not need one
+  const options = await cdp.eval(`(async () => {
+    const real = window.fetch;
+    window.fetch = (u, o) => String(u) === '/devices'
+      ? Promise.resolve(new Response(JSON.stringify([
+          { ip: '10.0.0.68', name: 'tc002-ccc4b2779e85', tokens: true },
+          { ip: '10.0.0.111', name: 'tc002-ccc4b277a282', tokens: false }]),
+          { headers: { 'content-type': 'application/json' } }))
+      : real(u, o);
+    try { await refreshDevices(); } finally { window.fetch = real; }
+    return [...document.querySelectorAll('#hostlist option')].map(o => ({ value: o.value, label: o.label }));
+  })()`);
+  assert.deepEqual(options.map(o => o.value), ['10.0.0.68', '10.0.0.111'],
+    'the option values must be the addresses, which is what the field and tokens-<host> are keyed on');
+  assert.match(options[0].label, /tc002-ccc4b2779e85/, 'the clock should be offered by name, not only by address');
+  assert.match(options[1].label, /token/i, 'a clock the proxy has no tokens for should say so before it is picked');
+
+  // and discovery failing changes nothing about the field. the device this page is pointed at is
+  // put back afterwards: every test that follows shares this page and talks to that address
+  const afterFailure = await cdp.eval(`(async () => {
+    const el = document.getElementById('host');
+    const was = el.value;
+    const real = window.fetch;
+    window.fetch = (u, o) => String(u) === '/devices' ? Promise.reject(new Error('no proxy')) : real(u, o);
+    try { await refreshDevices(); } finally { window.fetch = real; }
+    el.value = '10.0.0.222';
+    const out = { value: el.value, readOnly: el.readOnly };
+    el.value = was;
+    return out;
+  })()`);
+  assert.equal(afterFailure.value, '10.0.0.222', 'an address typed by hand must survive discovery failing');
+  assert.equal(afterFailure.readOnly, false);
+});
 
 // a retracted toast must be gone, not merely parked below the fold. sliding it past the bottom
 // edge leaves it in the layout, so whether any of it shows comes down to rounding and to how the

@@ -1026,6 +1026,111 @@ class TokenRouteTests(unittest.TestCase):
             self.assertIsNone(serve.PATH_RE.match(f"/api/10.0.0.5/v1/{bad}"), bad)
 
 
+class DiscoveryRouteTests(unittest.TestCase):
+    """`GET /devices` is how the console's device field learns what is on the lan.
+
+    the browser cannot do mdns, so the proxy asks tc002-devices.py and hands back the answer.
+    discovery is a convenience: every way it can fail has to come back as an empty list, because
+    the field has to keep working as a plain text box when there is nothing to offer."""
+
+    ROWS = [
+        {"transport": "10.0.0.68:5555", "ip": "10.0.0.68", "kind": "runtime", "name": "tc002-ccc4b2779e85.local"},
+        {"transport": "10.0.0.111:5555", "ip": "10.0.0.111", "kind": "runtime", "name": "tc002-ccc4b277a282.local"},
+        {"transport": "10.0.0.9:5555", "ip": "10.0.0.9", "kind": "stock", "mac": "aa:bb:cc:dd:ee:ff"},
+    ]
+
+    def lister(self, rows=None, fail=None):
+        def run(args, **kwargs):
+            if fail:
+                raise fail
+            out = json.dumps(self.ROWS if rows is None else rows)
+            return subprocess.CompletedProcess(args, 0, stdout=out, stderr="")
+        return run
+
+    def store(self, with_tokens=("10.0.0.68",)):
+        class S:
+            def for_host(_, host):
+                return {"control": "x" * 64 if host in with_tokens else None, "admin": None}
+        return S()
+
+    def test_only_runtime_clocks_are_offered(self):
+        # panel-v2 is the console for the custom runtime and cannot talk to a stock clock at all,
+        # so offering one would be offering a dead end
+        with mock_attr(serve.subprocess, "run", self.lister()):
+            rows = serve.discover_clocks(self.store(), cache={})
+        self.assertEqual([r["ip"] for r in rows], ["10.0.0.68", "10.0.0.111"])
+
+    def test_each_clock_says_whether_this_proxy_holds_its_tokens(self):
+        # selecting a clock the proxy has no tokens for only fails later, at connect; say so here
+        with mock_attr(serve.subprocess, "run", self.lister()):
+            rows = serve.discover_clocks(self.store(), cache={})
+        self.assertEqual({r["ip"]: r["tokens"] for r in rows},
+                         {"10.0.0.68": True, "10.0.0.111": False})
+
+    def test_the_name_loses_the_local_suffix_it_is_not_addressed_by(self):
+        with mock_attr(serve.subprocess, "run", self.lister()):
+            rows = serve.discover_clocks(self.store(), cache={})
+        self.assertEqual(rows[0]["name"], "tc002-ccc4b2779e85")
+
+    def test_every_failure_is_an_empty_list_not_an_error(self):
+        for fail in (FileNotFoundError("no lister"),
+                     subprocess.TimeoutExpired(["x"], 5),
+                     OSError("boom")):
+            with mock_attr(serve.subprocess, "run", self.lister(fail=fail)):
+                self.assertEqual(serve.discover_clocks(self.store(), cache={}), [], repr(fail))
+
+    def test_output_that_is_not_json_is_an_empty_list(self):
+        def run(args, **kwargs):
+            return subprocess.CompletedProcess(args, 0, stdout="Traceback (most recent call last):", stderr="")
+        with mock_attr(serve.subprocess, "run", run):
+            self.assertEqual(serve.discover_clocks(self.store(), cache={}), [])
+
+    def test_a_clock_that_answered_recently_is_not_dropped_by_a_quiet_probe(self):
+        # a probe is a sample of a lossy medium: a clock can miss one and still be sitting there.
+        # dropping it out of the list on one quiet answer makes the field flicker
+        cache = {}
+        with mock_attr(serve.subprocess, "run", self.lister()):
+            first = serve.discover_clocks(self.store(), cache=cache, now=1000.0)
+        with mock_attr(serve.subprocess, "run", self.lister(rows=[self.ROWS[1]])):
+            second = serve.discover_clocks(self.store(), cache=cache, now=1000.0 + serve.DISCOVERY_CACHE_S + 1)
+        self.assertEqual([r["ip"] for r in first], ["10.0.0.68", "10.0.0.111"])
+        self.assertEqual([r["ip"] for r in second], ["10.0.0.68", "10.0.0.111"])
+
+    def test_a_clock_gone_for_long_enough_does_leave_the_list(self):
+        cache = {}
+        with mock_attr(serve.subprocess, "run", self.lister()):
+            serve.discover_clocks(self.store(), cache=cache, now=1000.0)
+        with mock_attr(serve.subprocess, "run", self.lister(rows=[self.ROWS[1]])):
+            later = serve.discover_clocks(self.store(), cache=cache, now=1000.0 + serve.DISCOVERY_REMEMBER_S + 1)
+        self.assertEqual([r["ip"] for r in later], ["10.0.0.111"])
+
+    def test_a_second_call_inside_the_cache_window_does_not_probe_again(self):
+        calls = []
+        def run(args, **kwargs):
+            calls.append(args)
+            return subprocess.CompletedProcess(args, 0, stdout=json.dumps(self.ROWS), stderr="")
+        cache = {}
+        with mock_attr(serve.subprocess, "run", run):
+            serve.discover_clocks(self.store(), cache=cache, now=1000.0)
+            serve.discover_clocks(self.store(), cache=cache, now=1000.5)
+        self.assertEqual(len(calls), 1)
+
+    def test_the_lister_runs_under_the_interpreter_running_the_proxy(self):
+        # not a hardcoded path: the probe follows whatever python was used to start serve.py
+        seen = []
+        def run(args, **kwargs):
+            seen.append(args)
+            return subprocess.CompletedProcess(args, 0, stdout="[]", stderr="")
+        with mock_attr(serve.subprocess, "run", run):
+            serve.discover_clocks(self.store(), cache={})
+        self.assertEqual(seen[0][0], sys.executable)
+        self.assertTrue(seen[0][1].endswith("tc002-devices.py"), seen[0])
+        # mdns only: this runs every time the device field is focused, and the adb probes would
+        # shell into every attached clock to do it
+        self.assertIn("--no-adb", seen[0])
+        self.assertIn("--no-listen", seen[0])
+
+
 class StaticCacheTests(unittest.TestCase):
     """the console's own files must never be cached.
 

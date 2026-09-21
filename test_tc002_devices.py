@@ -240,6 +240,20 @@ class DiscoveryTests(unittest.TestCase):
         self.assertEqual({d["instance"] for d in found.values()},
                          {"tc002-ccc4b2779e85", "tc002-ccc4b277a282"})
 
+    def test_no_adb_runs_no_adb(self):
+        # the console's device field refreshes whenever it is focused, and the adb probes run
+        # `adb shell` against every attached clock. discovery for a ui has no business doing that
+        calls = []
+        def run(args, **kwargs):
+            calls.append(args)
+            return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
+        with patch.object(devices.subprocess, "run", side_effect=run), \
+             patch.object(devices, "mdns_discover", Mock(return_value={})), \
+             patch.object(sys, "argv", ["tc002-devices.py", "--json", "--no-listen", "--no-adb"]), \
+             contextlib.redirect_stdout(io.StringIO()):
+            devices.main()
+        self.assertEqual([c for c in calls if "adb" in str(c[0]).lower() or "devices" in c[1:]], [])
+
     def test_mdns_query_stops_after_a_quiet_gap(self):
         sock = Mock()
         sock.recvfrom.side_effect = [(announcement("tc002-aabbccddeeff", "10.0.0.111"), ("10.0.0.111", 5353))] + [socket.timeout()] * 100000

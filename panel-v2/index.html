@@ -229,7 +229,10 @@ input[type=file]{font:12px var(--body);color:var(--muted);max-width:220px}
     <div class="brand"><span class="logo">TC002</span><small>runtime console</small></div>
     <div class="devbar">
       <label for="host">Device</label>
-      <input type="text" id="host" placeholder="device ip" autocomplete="off" spellcheck="false">
+      <input type="text" id="host" placeholder="device ip" autocomplete="off" spellcheck="false" list="hostlist">
+      <!-- filled from GET /devices: the clocks this lan is advertising over mdns. a list, not a
+           select, because an address that discovery never found still has to be typeable -->
+      <datalist id="hostlist"></datalist>
       <button class="btn ghost" id="reload">Connect</button>
       <span id="conn" class="pill">not connected</span>
     </div>
@@ -2234,6 +2237,30 @@ async function loadAll() {
     toast(e.message, true);
   }
 }
+/* ---------- the clocks on this lan ----------
+   a browser cannot do mdns, so the proxy browses for us and GET /devices is the answer. this
+   fills the list beside the device field; it never touches the field's value, and a failure
+   leaves an empty list rather than an error, because the field is a text box that a list makes
+   more convenient and not one that stops working when discovery does. */
+let devicesAt = 0;
+const DEVICES_STALE_MS = 20000;
+async function refreshDevices() {
+  try {
+    const rows = await (await fetch('/devices', { cache: 'no-store' })).json();
+    if (!Array.isArray(rows)) return;
+    devicesAt = Date.now();
+    $('hostlist').replaceChildren(...rows.map(r => {
+      const o = document.createElement('option');
+      o.value = r.ip;
+      // the name is what tells two clocks apart at a glance; whether the proxy holds tokens for
+      // one is the other thing worth knowing before picking it rather than after
+      o.label = [r.name || r.ip, r.tokens ? '' : 'no tokens'].filter(Boolean).join(' \u00b7 ');
+      return o;
+    }));
+  } catch { /* no proxy, no lister, no lan: the field is a text box, as it always was */ }
+}
+// on focus rather than on a timer: the list matters at the moment it is about to be opened
+$('host').addEventListener('focus', () => { if (Date.now() - devicesAt > DEVICES_STALE_MS) refreshDevices(); });
 $('reload').addEventListener('click', loadAll);
 $('host').addEventListener('keydown', e => { if (e.key === 'Enter') loadAll(); });
 
@@ -2243,6 +2270,8 @@ $('host').addEventListener('keydown', e => { if (e.key === 'Enter') loadAll(); }
 S.ready().then(() => {
   requestAnimationFrame(draw);
   try { const t = localStorage.getItem('tc002tab-v2'); if (t && document.querySelector(`.tabbar button[data-tab="${t}"]`)) showTab(t); } catch {}
+  // not awaited: a lan probe takes a second or so and the console must not wait on it
+  refreshDevices();
   const q = new URLSearchParams(location.search).get('host');
   if (q) $('host').value = q; else { try { const h = localStorage.getItem('tc002host-v2'); if (h) $('host').value = h; } catch {} }
   loadAll();
