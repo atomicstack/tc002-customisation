@@ -221,9 +221,11 @@ def fake_checkout(directory, payload=b"\x7fELF the supervisor, built for /tmp/tc
     tools.mkdir(parents=True)
     bindir = root / "bin"
     bindir.mkdir()
-    for name in ("tc002-update.sh", "tc002-up.sh"):
+    for name in ("tc002-update.sh", "tc002-up.sh", "tc002-lock.sh"):
         shutil.copyfile(ROOT / "runtime/tools" / name, tools / name)
         (tools / name).chmod(0o755)
+    shutil.copyfile(ROOT / "runtime/tools/tc002-run.sh", tools / "tc002-run.sh.real")
+    (tools / "tc002-run.sh.real").chmod(0o755)
     payload_dir = root / "runtime" / "zig-out" / "bin"
     payload_dir.mkdir(parents=True)
     (payload_dir / "tc002-supervisor").write_bytes(payload)
@@ -290,9 +292,13 @@ class UpdateScriptTests(unittest.TestCase):
                 # every update puts "updating" on the panel before the panel is taken away: the
                 # notice goes out before the running runtime is stopped
                 notices = [i for i, c in enumerate(calls) if c["command"] == "tc002ctl.py" and "notify" in c["args"] and "updating" in c["args"]]
+                halts = [i for i, c in enumerate(calls) if c["command"] == "tc002-run.sh" and c["args"][:1] == ["halt"]]
                 stops = [i for i, c in enumerate(calls) if c["command"] == "tc002-run.sh" and c["args"][:1] == ["stop"]]
                 self.assertTrue(notices, "no updating notice was sent")
-                self.assertTrue(stops and notices[0] < stops[0], (notices, stops))
+                # the old runtime is halted, not stopped: a stop paints a black frame and hands
+                # the panel back, which is exactly what wiped the notice off the glass
+                self.assertTrue(halts and notices[0] < halts[0], (notices, halts))
+                self.assertFalse(stops, "an in-place update must not hand the panel back between runtimes")
 
     def test_the_old_bring_up_script_is_the_in_place_mode(self):
         with tempfile.TemporaryDirectory() as d:
@@ -300,6 +306,24 @@ class UpdateScriptTests(unittest.TestCase):
             r = run_update(root, bindir, log, "--device", "10.0.0.7", "--no-build", "--keep-settings", script="tc002-up.sh")
             self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
             self.assertTrue((root / "tokens-10.0.0.7").exists())
+
+
+class RunScriptTests(unittest.TestCase):
+    def test_halt_kills_the_runtime_without_a_black_frame_or_a_hand_back(self):
+        # `stop` sends sigterm (a paced black frame) and restarts zkswe; `halt` is for an update:
+        # the frame on the glass stays until the next runtime draws, and nothing else is started
+        with tempfile.TemporaryDirectory() as d:
+            root, bindir, log = fake_checkout(d)
+            env = dict(os.environ, PATH=f"{bindir}:{os.environ['PATH']}", TEST_ADB_LOG=str(log),
+                       TC002_LOCK_FILE=str(root / "lock.txt"), TC002_DEVICE="10.0.0.7:5555")
+            Path(str(log) + ".state").touch()   # the fake adb's first get-state fails, as a real cold one does
+            r = subprocess.run(["/bin/bash", str(root / "runtime/tools/tc002-run.sh.real"), "halt"],
+                               env=env, text=True, capture_output=True)
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+            shells = [" ".join(c["args"]) for c in map(json.loads, log.read_text().splitlines()) if c["command"] == "adb" and "shell" in c["args"]]
+            self.assertTrue(any("kill -KILL" in s or "kill -9" in s for s in shells), shells)
+            self.assertFalse(any("TERM" in s for s in shells), shells)
+            self.assertFalse(any("ctl.start zkswe" in s for s in shells), shells)
 
 
 class DeviceSelectionTests(unittest.TestCase):

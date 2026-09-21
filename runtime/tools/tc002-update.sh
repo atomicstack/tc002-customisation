@@ -122,9 +122,10 @@ payload_kind() {
 }
 
 # "updating" on the panel, so nobody watches the clock go dark unexplained. the in-place update
-# stops the runtime a second later and the fresh one comes up on the clock face, which is why a
-# short notification is enough here; the flasher draws its own pulsing "Updating..." for the
-# longer blank it causes. a clock with no token yet (a first run) is told about in the log.
+# gives the notification a moment to fade in, then halts the old runtime without the black frame
+# a stop paints, so the led controller keeps the notice on the glass until the new renderer's
+# first frame replaces it; the flasher draws its own pulsing "Updating..." for the longer blank
+# it causes. a clock with no token yet (a first run) is told about in the log.
 notice() {
     local tf
     if ! tf=$(token_file); then
@@ -164,8 +165,9 @@ in_place() {
     connect
     if dsh "ps" | grep -q 'tc002-supervisor'; then
         notice
-        say "a runtime is running; stopping it"
-        "$RUN" stop >/dev/null 2>&1 || true
+        sleep 1.5   # the notice fades in; from here the glass keeps it through the gap
+        say "halting the running runtime (the notice stays on the panel until the new one draws)"
+        "$RUN" halt >/dev/null 2>&1 || true
     else
         warn "no runtime is running on $ip, so nothing to show the notice on"
     fi

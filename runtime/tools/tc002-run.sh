@@ -6,6 +6,9 @@
 #   tc002-run.sh start [sup-opts...]  lock, stop the stock app, start the supervisor detached (logs in /tmp/tc002/)
 #   tc002-run.sh status               processes, properties, tail of the logs (no lock needed)
 #   tc002-run.sh stop                 sigterm the supervisor, restart the stock app, release the lock
+#   tc002-run.sh halt                 for an update: kill the runtime without the black frame a sigterm
+#                                     paints and without restarting zkswe, so whatever is on the glass
+#                                     (the "updating" notice) stays until the next runtime draws
 #   tc002-run.sh restore              stop, then remove /tmp/tc002 and /tmp/EasyUI.cfg (stock state)
 #
 # nothing here survives a reboot: everything lives in the device's tmpfs.
@@ -106,6 +109,16 @@ case "${1:-status}" in
     dsh "cat $DEV/supervisor.log 2>/dev/null" | tail -n 12
     "$LOCK" status
     ;;
+  halt)
+    # the led controller keeps the last frame it was given. a sigterm makes the renderer paint a
+    # paced black frame on the way out, which is right for handing the panel back and wrong for
+    # an update, where the "updating" notice should sit on the glass through the gap. so: kill,
+    # every process, netd included (it holds port 80, which the next supervisor has to bind).
+    need_adb
+    adb shell "kill -KILL \$(cat $DEV/supervisor.pid 2>/dev/null) 2>/dev/null; kill -KILL \$(ps | grep -v grep | grep -E 'tc002d|tc002-netd|tc002-ntfy|tc002-audiod|tc002-berryd' | while read p rest; do echo \$p; done) 2>/dev/null; true" >/dev/null 2>&1
+    wait_for 3 "[ -z \"\$(ps | grep -v grep | grep -E 'tc002-supervisor|tc002-netd')\" ]" || echo "warning: the runtime did not go away" >&2
+    "$LOCK" release "halt done on ${TC002_DEVICE:-the connected clock}: runtime killed, panel left as it was"
+    ;;
   stop|restore)
     need_adb
     if adb shell "kill -TERM \$(cat $DEV/supervisor.pid 2>/dev/null) 2>/dev/null"; then
@@ -123,7 +136,7 @@ case "${1:-status}" in
     "$LOCK" release "$1 done on ${TC002_DEVICE:-the connected clock}, stock app restarted"
     ;;
   *)
-    echo "usage: tc002-run.sh push | start [supervisor options...] | status | stop | restore" >&2
+    echo "usage: tc002-run.sh push | start [supervisor options...] | status | stop | halt | restore" >&2
     exit 2
     ;;
 esac
