@@ -121,20 +121,32 @@ payload_kind() {
     if LC_ALL=C grep -qa '/res/bin' "$sup"; then echo flash; else echo in-place; fi
 }
 
-# "updating" on the panel, so nobody watches the clock go dark unexplained. the in-place update
-# gives the notification a moment to fade in, then halts the old runtime without the black frame
-# a stop paints, so the led controller keeps the notice on the glass until the new renderer's
-# first frame replaces it; the flasher draws its own pulsing "Updating..." for the longer blank
-# it causes. a clock with no token yet (a first run) is told about in the log.
+# "Updating..." on the panel, so nobody watches the clock go dark unexplained. it is the flasher's
+# notice, drawn by tc002-notice.sh: the mini face, pulsing, as the canvas base. the binaries are
+# then staged beside the running runtime, so the word keeps pulsing while they arrive, and only
+# the halt that swaps them in freezes it; the led controller keeps that frame until the new
+# renderer draws. a clock with no token yet (a first run) is told about in the log.
+saved_scene=""
 notice() {
     local tf
     if ! tf=$(token_file); then
-        warn "no token file for $ip yet, so no \"updating\" notice on the panel this time"
+        warn "no token file for $ip yet, so no \"Updating...\" notice on the panel this time"
         return 0
     fi
-    "$PY" "$CTL" -s "$ip" --token-file "$tf" notify "updating" --duration 20 >/dev/null 2>&1 \
-        && say "panel reads \"updating\"" \
-        || warn "could not put the notice on the panel (is the runtime up?)"
+    if saved_scene=$("$HERE/tc002-notice.sh" "$ip" "$tf" show 2>/dev/null); then
+        say "panel reads Updating... (was: $saved_scene)"
+    else
+        saved_scene=""
+        warn "could not put the notice on the panel (is the runtime up?)"
+    fi
+}
+restore_scene() {
+    [[ -n $saved_scene ]] || return 0
+    local tf
+    tf=$(token_file) || return 0
+    "$HERE/tc002-notice.sh" "$ip" "$tf" restore "$saved_scene" \
+        && say "panel back to $saved_scene" \
+        || warn "the panel may still read Updating...: tools/tc002ctl.py -s $ip --token-file $tf scene ${saved_scene%%:*}"
 }
 
 connect() {
@@ -163,17 +175,20 @@ in_place() {
         none)  die "no binaries in $RUNTIME/zig-out; build first, or drop --no-build" ;;
     esac
     connect
+    local running=0
     if dsh "ps" | grep -q 'tc002-supervisor'; then
+        running=1
         notice
-        sleep 1.5   # the notice fades in; from here the glass keeps it through the gap
-        say "halting the running runtime (the notice stays on the panel until the new one draws)"
-        "$RUN" halt >/dev/null 2>&1 || true
     else
         warn "no runtime is running on $ip, so nothing to show the notice on"
     fi
-    say "push"
+    say "push (staged beside the running runtime; the notice keeps pulsing meanwhile)"
     local out
-    out=$(TC002_NO_BUILD=1 "$RUN" push 2>&1) || { echo "$out"; die "push failed"; }
+    out=$(TC002_NO_BUILD=1 "$RUN" push --staged 2>&1) || { echo "$out"; die "push failed"; }
+    if (( running )); then
+        say "halting the running runtime and swapping the new binaries in (the notice freezes on the glass until the new one draws)"
+    fi
+    "$RUN" halt >/dev/null 2>&1 || true
     dsh "ls -la /tmp/tc002" | grep -E 'tc002d|tc002-supervisor|tc002-netd' | awk '{print "   " $5 " " $9}' || true
     say "start (tz $tz)"
     "$RUN" start --profile dev --tz "$tz" 2>&1 | grep -E 'supervisor running|ready|exited|error' | sed 's/^/   /' || true
@@ -202,6 +217,7 @@ in_place() {
         echo "   timezone=$tz base=$base clock_font=$font ntp=$ntp (saved)"
     fi
     sleep 3
+    restore_scene
     say "status"
     "$PY" "$CTL" -s "$ip" --token-file "$ROOT/tokens-$ip" status | "$PY" -c '
 import json, sys

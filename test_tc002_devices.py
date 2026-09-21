@@ -205,6 +205,16 @@ if sys.argv[-1] == "ps":
     print("1234 root tc002-supervisor")
 """
 
+FAKE_CURL = """#!{py}
+import json, os, sys
+with open(os.environ["TEST_ADB_LOG"], "a") as log:
+    log.write(json.dumps({{"command": "curl", "args": sys.argv[1:], "device": os.environ.get("TC002_DEVICE")}}) + "\\n")
+if "/status" in " ".join(sys.argv):
+    print('{{"base":"art","generator":"plasma"}}')
+else:
+    print('{{"applied":1}}')
+"""
+
 FAKE_CTL = """#!{py}
 import json, os, pathlib, sys
 with open(os.environ["TEST_ADB_LOG"], "a") as log:
@@ -221,7 +231,7 @@ def fake_checkout(directory, payload=b"\x7fELF the supervisor, built for /tmp/tc
     tools.mkdir(parents=True)
     bindir = root / "bin"
     bindir.mkdir()
-    for name in ("tc002-update.sh", "tc002-up.sh", "tc002-lock.sh"):
+    for name in ("tc002-update.sh", "tc002-up.sh", "tc002-lock.sh", "tc002-notice.sh"):
         shutil.copyfile(ROOT / "runtime/tools" / name, tools / name)
         (tools / name).chmod(0o755)
     shutil.copyfile(ROOT / "runtime/tools/tc002-run.sh", tools / "tc002-run.sh.real")
@@ -234,6 +244,7 @@ def fake_checkout(directory, payload=b"\x7fELF the supervisor, built for /tmp/tc
     fake = FAKE_ADB.format(py=sys.executable)
     for path, content in [(bindir / "adb", fake), (tools / "tc002-run.sh", fake),
                           (bindir / "sleep", "#!/bin/sh\nexit 0\n"),
+                          (bindir / "curl", FAKE_CURL.format(py=sys.executable)),
                           (tools / "tc002ctl.py", FAKE_CTL.format(py=sys.executable))]:
         path.write_text(content)
         path.chmod(0o755)
@@ -241,7 +252,7 @@ def fake_checkout(directory, payload=b"\x7fELF the supervisor, built for /tmp/tc
 
 
 def run_update(root, bindir, log, *args, script="tc002-update.sh"):
-    env = dict(os.environ, PATH=f"{bindir}:{os.environ['PATH']}", TEST_ADB_LOG=str(log))
+    env = dict(os.environ, PATH=f"{bindir}:{os.environ['PATH']}", TEST_ADB_LOG=str(log), CURL=str(bindir / "curl"))
     env.pop("TC002_DEVICE", None)
     return subprocess.run(["/bin/bash", str(root / "runtime" / "tools" / script), *args],
                           env=env, text=True, capture_output=True)
@@ -291,14 +302,21 @@ class UpdateScriptTests(unittest.TestCase):
                 self.assertIn("no reboot", r.stdout)
                 # every update puts "updating" on the panel before the panel is taken away: the
                 # notice goes out before the running runtime is stopped
-                notices = [i for i, c in enumerate(calls) if c["command"] == "tc002ctl.py" and "notify" in c["args"] and "updating" in c["args"]]
+                # the notice is the flasher's: the canvas base, mini face, pulsing, and it goes up
+                # before the copy so it pulses while the binaries arrive
+                notices = [i for i, c in enumerate(calls) if c["command"] == "curl" and "/canvas" in " ".join(c["args"])
+                           and '"font":"mini"' in " ".join(c["args"]) and '"kind":"pulse"' in " ".join(c["args"])]
+                self.assertTrue(notices, "no mini-font pulsing notice was drawn")
+                pushes = [i for i, c in enumerate(calls) if c["command"] == "tc002-run.sh" and c["args"][:2] == ["push", "--staged"]]
                 halts = [i for i, c in enumerate(calls) if c["command"] == "tc002-run.sh" and c["args"][:1] == ["halt"]]
                 stops = [i for i, c in enumerate(calls) if c["command"] == "tc002-run.sh" and c["args"][:1] == ["stop"]]
-                self.assertTrue(notices, "no updating notice was sent")
-                # the old runtime is halted, not stopped: a stop paints a black frame and hands
-                # the panel back, which is exactly what wiped the notice off the glass
-                self.assertTrue(halts and notices[0] < halts[0], (notices, halts))
+                self.assertTrue(pushes, "the binaries are staged beside the running runtime, not over it")
+                # notice, then the staged copy while it pulses, then the halt that swaps it in
+                self.assertTrue(halts and notices[0] < pushes[0] < halts[0], (notices, pushes, halts))
                 self.assertFalse(stops, "an in-place update must not hand the panel back between runtimes")
+                # and the scene the clock was showing is put back once the new runtime is up
+                restores = [i for i, c in enumerate(calls) if c["command"] == "curl" and "/scene" in " ".join(c["args"]) and '"base":"art"' in " ".join(c["args"])]
+                self.assertTrue(restores and restores[-1] > halts[0], (restores, halts))
 
     def test_the_old_bring_up_script_is_the_in_place_mode(self):
         with tempfile.TemporaryDirectory() as d:
@@ -324,6 +342,27 @@ class RunScriptTests(unittest.TestCase):
             self.assertTrue(any("kill -KILL" in s or "kill -9" in s for s in shells), shells)
             self.assertFalse(any("TERM" in s for s in shells), shells)
             self.assertFalse(any("ctl.start zkswe" in s for s in shells), shells)
+            # a staged directory, if any, is swapped in by renames after the kill
+            self.assertTrue(any("/tmp/tc002.new" in s and "mv" in s for s in shells), shells)
+
+    def test_a_staged_push_lands_beside_the_running_runtime(self):
+        with tempfile.TemporaryDirectory() as d:
+            root, bindir, log = fake_checkout(d)
+            for name in ("tc002-supervisor", "tc002d", "tc002-netd", "tc002-ntfy", "tc002-berryd", "tc002-audiod"):
+                (root / "runtime" / "zig-out" / "bin" / name).write_bytes(b"\x7fELF")
+                (root / "runtime" / "zig-out" / "bin" / name).chmod(0o755)
+            (root / "runtime" / "zig-out" / "lib").mkdir()
+            (root / "runtime" / "zig-out" / "lib" / "libtc002-bootstrap.so").write_bytes(b"\x7fELF")
+            env = dict(os.environ, PATH=f"{bindir}:{os.environ['PATH']}", TEST_ADB_LOG=str(log),
+                       TC002_LOCK_FILE=str(root / "lock.txt"), TC002_DEVICE="10.0.0.7:5555", TC002_NO_BUILD="1")
+            Path(str(log) + ".state").touch()
+            r = subprocess.run(["/bin/bash", str(root / "runtime/tools/tc002-run.sh.real"), "push", "--staged"],
+                               env=env, text=True, capture_output=True)
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+            calls = [json.loads(line) for line in log.read_text().splitlines()]
+            pushes = [c["args"] for c in calls if c["command"] == "adb" and "push" in c["args"]]
+            self.assertTrue(pushes)
+            self.assertTrue(all(a[-1].startswith("/tmp/tc002.new/") for a in pushes), pushes)
 
 
 class DeviceSelectionTests(unittest.TestCase):

@@ -1,14 +1,17 @@
 #!/bin/bash
 # volatile device runs of the custom runtime, over adb, under the shared advisory lock.
 #
-#   tc002-run.sh push                 build and push tc002d, tc002-supervisor and the bootstrap to /tmp/tc002/
-#                                     (TC002_NO_BUILD=1 pushes what is in zig-out without building)
+#   tc002-run.sh push [--staged]      build and push tc002d, tc002-supervisor and the bootstrap to /tmp/tc002/
+#                                     (TC002_NO_BUILD=1 pushes what is in zig-out without building).
+#                                     --staged pushes to /tmp/tc002.new/ instead, beside a running
+#                                     runtime, for `halt` to swap in: the panel keeps pulsing meanwhile
 #   tc002-run.sh start [sup-opts...]  lock, stop the stock app, start the supervisor detached (logs in /tmp/tc002/)
 #   tc002-run.sh status               processes, properties, tail of the logs (no lock needed)
 #   tc002-run.sh stop                 sigterm the supervisor, restart the stock app, release the lock
 #   tc002-run.sh halt                 for an update: kill the runtime without the black frame a sigterm
 #                                     paints and without restarting zkswe, so whatever is on the glass
-#                                     (the "updating" notice) stays until the next runtime draws
+#                                     (the "Updating..." notice) stays until the next runtime draws; then
+#                                     rename a staged /tmp/tc002.new/ into place, if there is one
 #   tc002-run.sh restore              stop, then remove /tmp/tc002 and /tmp/EasyUI.cfg (stock state)
 #
 # nothing here survives a reboot: everything lives in the device's tmpfs.
@@ -64,26 +67,28 @@ stock_start() {
 case "${1:-status}" in
   push)
     need_adb
+    TARGET=$DEV
+    [ "${2:-}" = --staged ] && TARGET=$DEV.new
     if [ -z "${TC002_NO_BUILD:-}" ]; then
         (cd "$RUNTIME" && zig build && zig build check) || die "build failed"
     fi
     [ -x "$RUNTIME/zig-out/bin/tc002-supervisor" ] || die "no binaries in $RUNTIME/zig-out; build first"
     # replacing the binaries under another agent's live run truncates mapped executables on tmpfs
     # (netd died that way on 2026-09-07), so the push itself runs under the lock
-    "$LOCK" acquire "tc002-run.sh push: replacing binaries in $DEV on ${TC002_DEVICE:-the connected clock}" 120 || exit 1
+    "$LOCK" acquire "tc002-run.sh push: binaries into $TARGET on ${TC002_DEVICE:-the connected clock}" 120 || exit 1
     # 0711: netd, ntfy and berryd run as uid 1001 and have to *search* this
     # directory to exec themselves out of it. without the x bit the exec fails
     # with 127 and the supervisor respawns them forever, which reads as a crash
     # loop in a binary that is fine. the supervisor creates it 0711 too, but a
     # directory left by an older flashed runtime is 0700, and mkdir -p keeps it.
     # not 0755: the credentials fallback lives under here, so it stays unlistable.
-    adb shell "mkdir -p $DEV && chmod 711 $DEV" >/dev/null
+    adb shell "mkdir -p $TARGET && chmod 711 $TARGET" >/dev/null
     for f in bin/tc002d bin/tc002-supervisor bin/tc002-netd bin/tc002-ntfy bin/tc002-berryd bin/tc002-audiod lib/libtc002-bootstrap.so; do
-        adb push "$RUNTIME/zig-out/$f" "$DEV/$(basename "$f")" >/dev/null || { "$LOCK" release "push of $f failed"; die "push of $f failed"; }
+        adb push "$RUNTIME/zig-out/$f" "$TARGET/$(basename "$f")" >/dev/null || { "$LOCK" release "push of $f failed"; die "push of $f failed"; }
     done
-    adb shell "chmod 755 $DEV/tc002d $DEV/tc002-supervisor $DEV/tc002-netd $DEV/tc002-ntfy $DEV/tc002-berryd $DEV/tc002-audiod" >/dev/null
-    dsh "ls -la $DEV"
-    "$LOCK" release "push done on ${TC002_DEVICE:-the connected clock} ($(basename "$(cd "$RUNTIME/.." && git branch --show-current 2>/dev/null || echo unknown)"))"
+    adb shell "chmod 755 $TARGET/tc002d $TARGET/tc002-supervisor $TARGET/tc002-netd $TARGET/tc002-ntfy $TARGET/tc002-berryd $TARGET/tc002-audiod" >/dev/null
+    dsh "ls -la $TARGET"
+    "$LOCK" release "push done into $TARGET on ${TC002_DEVICE:-the connected clock} ($(basename "$(cd "$RUNTIME/.." && git branch --show-current 2>/dev/null || echo unknown)"))"
     ;;
   start)
     shift
@@ -117,7 +122,10 @@ case "${1:-status}" in
     need_adb
     adb shell "kill -KILL \$(cat $DEV/supervisor.pid 2>/dev/null) 2>/dev/null; kill -KILL \$(ps | grep -v grep | grep -E 'tc002d|tc002-netd|tc002-ntfy|tc002-audiod|tc002-berryd' | while read p rest; do echo \$p; done) 2>/dev/null; true" >/dev/null 2>&1
     wait_for 3 "[ -z \"\$(ps | grep -v grep | grep -E 'tc002-supervisor|tc002-netd')\" ]" || echo "warning: the runtime did not go away" >&2
-    "$LOCK" release "halt done on ${TC002_DEVICE:-the connected clock}: runtime killed, panel left as it was"
+    # a staged push is swapped in now, by renames on the same tmpfs: the old binaries are unmapped,
+    # and nothing has to be copied while the panel waits
+    adb shell "if [ -d $DEV.new ]; then mkdir -p $DEV && chmod 711 $DEV && for f in $DEV.new/*; do mv -f \$f $DEV/; done && rmdir $DEV.new; fi" >/dev/null 2>&1
+    "$LOCK" release "halt done on ${TC002_DEVICE:-the connected clock}: runtime killed, staged binaries in, panel left as it was"
     ;;
   stop|restore)
     need_adb
@@ -136,7 +144,7 @@ case "${1:-status}" in
     "$LOCK" release "$1 done on ${TC002_DEVICE:-the connected clock}, stock app restarted"
     ;;
   *)
-    echo "usage: tc002-run.sh push | start [supervisor options...] | status | stop | halt | restore" >&2
+    echo "usage: tc002-run.sh push [--staged] | start [supervisor options...] | status | stop | halt | restore" >&2
     exit 2
     ;;
 esac

@@ -258,7 +258,9 @@ tools/tc002-run.sh push                     # build, check, push to /tmp/tc002/
 tools/tc002-run.sh start --profile dev --stats --tz 'AEST-10AEDT,M10.1.0,M4.1.0/3'
 tools/tc002-run.sh status
 tools/tc002-run.sh stop                     # sigterm the supervisor (paced black frame), restart the stock app
-tools/tc002-run.sh halt                     # for an update: kill it without the black frame, leave the panel as it is
+tools/tc002-run.sh push --staged            # into /tmp/tc002.new beside a running runtime; `halt` swaps it in
+tools/tc002-run.sh halt                     # for an update: kill it without the black frame, swap a staged push in, leave the panel as it is
+tools/tc002-notice.sh <ip> <tokens> show    # the one "Updating..." (mini face, pulsing, canvas base) both kinds of update draw
 tools/tc002-boot-experiment.sh start        # let the vendor loader dlopen the bootstrap via /tmp/EasyUI.cfg
 tools/tc002-boot-experiment.sh restore
 ```

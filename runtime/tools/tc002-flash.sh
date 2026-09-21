@@ -231,7 +231,7 @@ fi
 API_PORT=18099
 api_ready=0
 saved_base=""
-saved_generator=""
+saved_scene=""
 
 api() { # api <method> <path> <token> [body]
     local m=$1 path=$2 tok=$3 body=${4:-}
@@ -260,29 +260,19 @@ show_notice() {
     adb -s "$DEV" forward "tcp:$API_PORT" tcp:80 >/dev/null 2>&1 || {
         warn "could not forward the api port; skipping the on-panel notice"; return 0; }
     api_ready=1
-    local status; status=$(api GET /status "$admin" || true)
-    saved_base=$(printf '%s' "$status" | sed -n 's/.*"base":"\([a-z]*\)".*/\1/p')
-    saved_generator=$(printf '%s' "$status" | sed -n 's/.*"generator":"\([a-z]*\)".*/\1/p')
-    [ -n "$saved_base" ] || { warn "could not read the current scene; skipping the notice"; return 0; }
-
-    api PUT /canvas "$admin" '{"elements":[
-        {"id":"l1","type":"text","at":[0,5],"size":[52,5],"font":"mini","align":"centre","colour":"ff8000",
-         "text":"Updating...","animate":{"kind":"pulse","ms":1600}}]}' >/dev/null
-    api PUT /scene "$admin" '{"base":"canvas"}' >/dev/null
+    # the notice itself lives in tc002-notice.sh, shared with the in-place update, so the two
+    # kinds of update show the same thing
+    saved_scene=$("$HERE/tc002-notice.sh" "127.0.0.1:$API_PORT" "$TOKENS" show 2>/dev/null) \
+        || { warn "could not read the current scene; skipping the notice"; return 0; }
+    saved_base=${saved_scene%%:*}
     say "panel now reads Updating... (was: $saved_base)"
-    sleep 1   # let it be drawn and latched before anything kills the renderer
 }
 
 restore_scene() {
     [ "$api_ready" -eq 1 ] && [ -n "$saved_base" ] || return 0
-    local admin; admin=$(token_of admin || true)
-    [ -n "$admin" ] || return 0
-    local body="{\"base\":\"$saved_base\""
-    [ -n "$saved_generator" ] && [ "$saved_base" = art ] && body="$body,\"generator\":\"$saved_generator\""
-    body="$body}"
     for _ in $(seq 1 10); do
         adb -s "$DEV" forward "tcp:$API_PORT" tcp:80 >/dev/null 2>&1 || true
-        if api PUT /scene "$admin" "$body" 2>/dev/null | grep -q applied; then
+        if "$HERE/tc002-notice.sh" "127.0.0.1:$API_PORT" "$TOKENS" restore "$saved_scene" --once 2>/dev/null; then
             say "panel back to $saved_base"
             return 0
         fi
