@@ -32,11 +32,12 @@ commands:
   screen [--out FILE] [--ascii]       the framebuffer as shown: metadata, raw rgb to a file, or a preview
   logs [after] [--follow]             the log ring after a sequence number; --follow polls every second
   config                              effective settings (admin token needed for patch/save)
+  reboot                              reboot the clock behind its "rebooting..." notice (admin)
   tokens                              list named client tokens (admin)
   token-new NAME --scope notify [--scope display ...]   issue one; the secret is shown once (admin)
   token-rotate NAME [--scope ...]        new secret in place; shown once (admin)
                                          scopes: status screen logs notify display sound input
-                                                 content scripts settings
+                                                 content scripts settings reboot
   token-revoke NAME                   revoke one, effective immediately (admin)
   config-set key=value ...            patch settings; keys: brightness base generator timezone ntp_server
                                       ntp_interval_s frame_timeout_ms metrics_interval_s discovery discovery_prefix
@@ -156,7 +157,7 @@ def main():
     ap.add_argument("--gradient")
     ap.add_argument("--scope", action="append", default=[], metavar="NAME",
                     choices=["status", "screen", "logs", "notify", "display", "sound",
-                             "input", "content", "scripts", "settings"],
+                             "input", "content", "scripts", "settings", "reboot"],
                     help="repeatable; a token holds exactly the scopes it is given")
     ap.add_argument("--spread", type=int)
     ap.add_argument("--transition")
@@ -166,7 +167,7 @@ def main():
     ap.add_argument("--ip-mode", dest="ip_mode")
     ap.add_argument("--ca-file", dest="ca_file")
     a = ap.parse_args()
-    admin_commands = {"config-set", "config-save", "mqtt", "mqtt-set", "ntfy", "ntfy-set",
+    admin_commands = {"config-set", "config-save", "mqtt", "mqtt-set", "ntfy", "ntfy-set", "reboot",
                       "tokens", "token-new", "token-rotate", "token-revoke"}
     token = load_token(a, a.admin or a.command in admin_commands)
     rid = secrets.token_hex(8)
@@ -274,6 +275,8 @@ def main():
     if c == "config-save":
         body = {"revision": int(a.args[0])} if a.args else {}
         return show(*call(a, "POST", "/config/save", body, token=token))
+    if c == "reboot":
+        return show(*call(a, "POST", "/reboot", {}, token=token))
     if c == "mqtt":
         return show(*call(a, "GET", "/mqtt", token=token))
     if c == "ntfy":

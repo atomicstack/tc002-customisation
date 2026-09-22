@@ -45,10 +45,10 @@ pub const Credentials = struct { control: Token, admin: Token };
 ///
 /// it does carry `input`, and `input` is worth knowing about: injecting button events reaches the
 /// device menu, and the menu can change brightness, the night schedule, the ip layout, mqtt and
-/// ntfy on or off -- `display` and `settings` over http -- and reboot, which `ActionKind` does not
-/// offer at all. so `input` reaches past `settings`, not merely as far. that is not new and
-/// holding this secret always implied it. what is new is that a *named* token can now be issued
-/// without `input`, which is the only way that reach was ever going to be refusable.
+/// ntfy on or off, and reboot -- `display`, `settings` and `reboot` over http. so `input` reaches
+/// past `settings`, not merely as far. that is not new and holding this secret always implied
+/// it. what is new is that a *named* token can now be issued without `input`, which is the only
+/// way that reach was ever going to be refusable.
 pub const admin_scopes: clients.Set = clients.all;
 pub const control_scopes: clients.Set = clients.Scope.status.bit() | clients.Scope.screen.bit() |
     clients.Scope.logs.bit() | clients.Scope.notify.bit() | clients.Scope.display.bit() |
@@ -136,6 +136,9 @@ pub const Op = union(enum) {
     config_get,
     config_patch: ConfigPatch,
     config_save: struct { revision: ?u32 },
+    /// reboot the device: the menu's own path, behind its "rebooting..." notice. its own scope,
+    /// its own route, and deliberately not a body kind, so the mqtt command topics cannot reach it
+    reboot: struct { request_id: u64 },
     mqtt_get,
     mqtt_put: MqttPut,
     mqtt_status,
@@ -772,6 +775,7 @@ const endpoints = [_]Endpoint{
     .{ .method = .GET, .path = "/api/v1/config", .scope = .status },
     .{ .method = .PATCH, .path = "/api/v1/config", .scope = .settings },
     .{ .method = .POST, .path = "/api/v1/config/save", .scope = .settings },
+    .{ .method = .POST, .path = "/api/v1/reboot", .scope = .reboot },
     .{ .method = .POST, .path = "/api/v1/notify", .scope = .notify },
     .{ .method = .POST, .path = "/api/v1/frame", .scope = .display },
     .{ .method = .GET, .path = "/api/v1/icons", .scope = .status },
@@ -993,6 +997,8 @@ pub fn route(req: http.Request, body: []const u8, creds: *const Credentials, sto
         if (!isOctets(req.content_type)) return .{ .reject = .{ .status = 415, .code = "unsupported_media_type", .message = "frames are application/octet-stream" } };
         return parseFrame(req.query, body, generated_id);
     }
+    // a reboot takes no body; an empty one or `{}` are the same request
+    if (std.mem.eql(u8, ep.path, "/api/v1/reboot")) return .{ .op = .{ .reboot = .{ .request_id = generated_id } } };
     // everything below is json
     if (!isJson(req.content_type)) return .{ .reject = .{ .status = 415, .code = "unsupported_media_type", .message = "this route takes application/json" } };
     if (std.mem.eql(u8, ep.path, "/api/v1/scene")) return parseBody(.scene, body, arena, generated_id);
@@ -1702,6 +1708,13 @@ test "config, mqtt and streams routes" {
     try std.testing.expectEqualStrings("Europe/Amsterdam", sp2.op.config_patch.timezone.?);
     try expectReject(route(testReq(.PATCH, "/api/v1/config", "", admin_header, "application/json", null), "{\"clock_colour_mode\":\"rainbow\"}", &c, &no_clients, &origins, &arena, test_minted), 400, "invalid_colour_mode");
     try std.testing.expect(route(testReq(.POST, "/api/v1/config/save", "", admin_header, "application/json", null), "", &c, &no_clients, &origins, &arena, test_minted).op == .config_save);
+    // a reboot is its own route with its own scope: the admin token has it, control does not, and
+    // an empty body or `{}` both do. it is not a body kind, so mqtt's command parser cannot reach it
+    try std.testing.expect(route(testReq(.POST, "/api/v1/reboot", "", admin_header, "application/json", null), "", &c, &no_clients, &origins, &arena, test_minted).op == .reboot);
+    try std.testing.expect(route(testReq(.POST, "/api/v1/reboot", "", admin_header, "application/json", null), "{}", &c, &no_clients, &origins, &arena, test_minted).op == .reboot);
+    try expectReject(route(testReq(.POST, "/api/v1/reboot", "", control_header, "application/json", null), "", &c, &no_clients, &origins, &arena, test_minted), 403, "forbidden");
+    try expectReject(route(testReq(.POST, "/api/v1/reboot", "", null, "application/json", null), "", &c, &no_clients, &origins, &arena, test_minted), 401, "unauthorized");
+    try expectReject(route(testReq(.GET, "/api/v1/reboot", "", admin_header, null, null), "", &c, &no_clients, &origins, &arena, test_minted), 405, "method_not_allowed");
     const m = route(testReq(.PUT, "/api/v1/mqtt", "", admin_header, "application/json", null), "{\"host\":\"10.0.0.2\",\"port\":1883,\"username\":\"tc002\",\"password\":\"Secret1\",\"enabled\":true}", &c, &no_clients, &origins, &arena, test_minted);
     try std.testing.expectEqualStrings("Secret1", m.op.mqtt_put.password.?);
     try expectReject(route(testReq(.GET, "/api/v1/mqtt", "", control_header, null, null), "", &c, &no_clients, &origins, &arena, test_minted), 403, "forbidden");

@@ -149,6 +149,44 @@ restore_scene() {
         || warn "the panel may still read Updating...: tools/tc002ctl.py -s $ip --token-file $tf scene ${saved_scene%%:*}"
 }
 
+# the device's adbd has a fixed budget of ptys per boot; once they are spent every `adb shell`
+# answers "error: closed" (pushes and pulls still work) until the clock reboots. an update spends
+# a dozen shells, so it is the update that tends to hit the wall, and it hit it halfway through
+# more than once: the staged push had worked, the halt silently did nothing, and the script
+# reported the old build as if it had finished. so: check before anything irreversible, reboot
+# the clock over its own api when it has happened, and never report a status past a wedge.
+adb_ok() {
+    local out
+    out=$(adb shell true 2>&1) && [[ $out != *"error: closed"* ]]
+}
+wait_back() {
+    local n=0 up
+    say "waiting for $ip to come back"
+    while :; do
+        up=$("$PY" "$CTL" -s "$ip" --token-file "$1" status 2>/dev/null | "$PY" -c 'import json,sys
+try: print(int(json.load(sys.stdin).get("uptime_s", 0)))
+except Exception: print(-1)')
+        [[ $up =~ ^[0-9]+$ ]] && (( up < 120 )) && break
+        (( n++ )); (( n >= 60 )) && die "$ip did not come back within two minutes of the reboot"
+        sleep 2
+    done
+    n=0
+    adb disconnect "$device" >/dev/null 2>&1 || true
+    while ! { adb connect "$device" >/dev/null 2>&1 && adb_ok; }; do
+        (( n++ )); (( n >= 30 )) && die "$ip is back but adb is not answering"
+        sleep 2
+    done
+    echo "   back after ${up}s of uptime; adb answers again"
+}
+unwedge() {
+    local tf
+    tf=$(token_file) || die "adb on $ip answers \"error: closed\" (its adbd has run out of ptys) and there is no token file to reboot it over the api; power-cycle the clock and run this again"
+    say "adb on $ip answers \"error: closed\": its adbd has run out of ptys. rebooting the clock over the api to clear it"
+    "$PY" "$CTL" -s "$ip" --token-file "$tf" reboot >/dev/null 2>&1 \
+        || die "the reboot was refused (a build older than the /reboot route? power-cycle the clock, or reboot it from its menu)"
+    wait_back "$tf"
+}
+
 connect() {
     say "adb"
     if ! adb get-state >/dev/null 2>&1; then
@@ -175,23 +213,42 @@ in_place() {
         none)  die "no binaries in $RUNTIME/zig-out; build first, or drop --no-build" ;;
     esac
     connect
+    adb_ok || unwedge
     local running=0
-    if dsh "ps" | grep -q 'tc002-supervisor'; then
-        running=1
-        notice
-    else
-        warn "no runtime is running on $ip, so nothing to show the notice on"
+    stage() {
+        running=0
+        if dsh "ps" | grep -q 'tc002-supervisor'; then
+            running=1
+            notice
+        else
+            warn "no runtime is running on $ip, so nothing to show the notice on"
+        fi
+        say "push (staged beside the running runtime; the notice keeps pulsing meanwhile)"
+        local out
+        out=$(TC002_NO_BUILD=1 "$RUN" push --staged 2>&1) || { echo "$out"; die "push failed"; }
+    }
+    stage
+    # the push works over a spent adbd (pushes are not shells), the halt would not: check now,
+    # and after the reboot that clears it, stage again -- /tmp went with the reboot
+    if ! adb_ok; then
+        unwedge
+        stage
     fi
-    say "push (staged beside the running runtime; the notice keeps pulsing meanwhile)"
-    local out
-    out=$(TC002_NO_BUILD=1 "$RUN" push --staged 2>&1) || { echo "$out"; die "push failed"; }
     if (( running )); then
         say "halting the running runtime and swapping the new binaries in (the notice freezes on the glass until the new one draws)"
     fi
-    "$RUN" halt >/dev/null 2>&1 || true
+    local out
+    out=$("$RUN" halt 2>&1) || true
+    if [[ $out == *"error: closed"* ]] || ! adb_ok; then
+        die "adb on $ip answered \"error: closed\" during the halt: the clock is still running the previous build. run this again (it will reboot the clock first)"
+    fi
     dsh "ls -la /tmp/tc002" | grep -E 'tc002d|tc002-supervisor|tc002-netd' | awk '{print "   " $5 " " $9}' || true
     say "start (tz $tz)"
-    "$RUN" start --profile dev --tz "$tz" 2>&1 | grep -E 'supervisor running|ready|exited|error' | sed 's/^/   /' || true
+    out=$("$RUN" start --profile dev --tz "$tz" 2>&1) || true
+    echo "$out" | grep -E 'supervisor running|ready|exited|error' | sed 's/^/   /' || true
+    if [[ $out == *"error: closed"* ]]; then
+        die "adb on $ip answered \"error: closed\" during the start: the runtime was halted and may not have started. reboot the clock (tools/tc002ctl.py -s $ip --token-file $(token_file || echo tokens) reboot, or power-cycle it) and run this again"
+    fi
     sleep 2
     # two token files: `tokens` is the last clock updated, what a one-clock setup has always used;
     # `tokens-<host>` is this clock's own, so two clocks do not overwrite each other's and the

@@ -634,6 +634,11 @@ const Netd = struct {
                 self.ask(c, .{ .config_patch = w }, .config, now);
             },
             .config_save => |s| self.ask(c, .{ .config_save = .{ .has_revision = @intFromBool(s.revision != null), .revision = s.revision orelse 0 } }, .save_result, now),
+            // the supervisor answers as it would a relayed command, once the notice is on its way
+            .reboot => |r| {
+                log.info("reboot: asked over http", .{});
+                self.relay(c, .reboot, r.request_id, 0, now);
+            },
             // the listing is answered from netd's own copy: it already holds the whole set, so a
             // round trip to the supervisor would tell it nothing it does not know.
             .client_list => {

@@ -299,6 +299,15 @@ if sys.argv[-1] == "get-state":
         sys.exit(1)
 if len(sys.argv) > 3 and sys.argv[3] == "pull":
     pathlib.Path(sys.argv[-1]).touch()
+# a wedged adbd: the file holds how many more shells answer before every one is "error: closed",
+# the way the device's adbd behaves once its ptys are spent. a reboot (the fake ctl) removes it.
+wedge = pathlib.Path(os.environ["TEST_ADB_LOG"] + ".wedge")
+if ("shell" in sys.argv or sys.argv[1:2] in (["halt"], ["start"])) and wedge.exists():
+    left = int(wedge.read_text().strip() or 0)
+    if left <= 0:
+        print("error: closed")
+        sys.exit(1)
+    wedge.write_text(str(left - 1))
 if sys.argv[-1] == "ps":
     print("1234 root tc002-supervisor")
 """
@@ -317,7 +326,16 @@ FAKE_CTL = """#!{py}
 import json, os, pathlib, sys
 with open(os.environ["TEST_ADB_LOG"], "a") as log:
     log.write(json.dumps({{"command": "tc002ctl.py", "args": sys.argv[1:], "device": os.environ.get("TC002_DEVICE")}}) + "\\n")
-print("{{}}")
+if "reboot" in sys.argv:
+    # a reboot clears adbd: every shell answers again
+    wedge = pathlib.Path(os.environ["TEST_ADB_LOG"] + ".wedge")
+    if wedge.exists():
+        wedge.unlink()
+    print('{{"status":"applied"}}')
+elif "status" in sys.argv:
+    print('{{"uptime_s":7,"build":"fake","base":"art"}}')
+else:
+    print("{{}}")
 """
 
 
@@ -415,6 +433,44 @@ class UpdateScriptTests(unittest.TestCase):
                 # and the scene the clock was showing is put back once the new runtime is up
                 restores = [i for i, c in enumerate(calls) if c["command"] == "curl" and "/scene" in " ".join(c["args"]) and '"base":"art"' in " ".join(c["args"])]
                 self.assertTrue(restores and restores[-1] > halts[0], (restores, halts))
+
+    def test_a_wedged_adbd_is_rebooted_over_the_api_and_the_update_carries_on(self):
+        # the device's adbd runs out of ptys after a few hundred shells and answers "error: closed"
+        # to every one until the clock reboots. it used to hit mid-update: the staged push worked,
+        # the halt silently did nothing and the script reported the old build as if it had finished.
+        # now the script notices, reboots the clock over its api, waits for it, and does the update
+        # from the top
+        with tempfile.TemporaryDirectory() as d:
+            root, bindir, log = fake_checkout(d)
+            Path(str(log) + ".wedge").write_text("2")   # two shells answer, then adbd is spent
+            r = run_update(root, bindir, log, "--in-place", "--device", "10.0.0.5", "--no-build", "--keep-settings")
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+            calls = [json.loads(line) for line in log.read_text().splitlines()]
+            reboots = [i for i, c in enumerate(calls) if c["command"] == "tc002ctl.py" and "reboot" in c["args"]]
+            self.assertEqual(len(reboots), 1, "one reboot over the api")
+            self.assertIn("error: closed", r.stdout)
+            self.assertIn("reboot", r.stdout)
+            halts = [i for i, c in enumerate(calls) if c["command"] == "tc002-run.sh" and c["args"][:1] == ["halt"]]
+            pushes = [i for i, c in enumerate(calls) if c["command"] == "tc002-run.sh" and c["args"][:2] == ["push", "--staged"]]
+            starts = [i for i, c in enumerate(calls) if c["command"] == "tc002-run.sh" and c["args"][:1] == ["start"]]
+            # the halt and the start happen once each, after the reboot, on a fresh push
+            self.assertEqual(len(halts), 1, halts)
+            self.assertEqual(len(starts), 1, starts)
+            self.assertTrue(reboots[0] < pushes[-1] < halts[0] < starts[0], (reboots, pushes, halts, starts))
+
+    def test_a_wedge_during_the_start_is_a_failure_not_a_report_of_the_old_build(self):
+        # if adbd gives out between the halt and the start, the clock is left running nothing or
+        # the old build; the script must say so and exit non-zero instead of printing a status
+        with tempfile.TemporaryDirectory() as d:
+            root, bindir, log = fake_checkout(d)
+            Path(str(log) + ".wedge").write_text("4")   # enough shells to get past the halt
+            r = run_update(root, bindir, log, "--in-place", "--device", "10.0.0.5", "--no-build", "--keep-settings")
+            calls = [json.loads(line) for line in log.read_text().splitlines()]
+            if any(c["command"] == "tc002ctl.py" and "reboot" in c["args"] for c in calls):
+                self.skipTest("the wedge landed before the halt; the other test covers that")
+            self.assertNotEqual(r.returncode, 0, r.stdout + r.stderr)
+            self.assertIn("error: closed", r.stdout + r.stderr)
+            self.assertNotIn("this build runs from /tmp", r.stdout)
 
     def test_the_old_bring_up_script_is_the_in_place_mode(self):
         with tempfile.TemporaryDirectory() as d:

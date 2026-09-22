@@ -795,7 +795,7 @@ const Supervisor = struct {
         return .applied;
     }
 
-    /// reboot, asked for on the panel and confirmed there.
+    /// reboot, asked for on the panel and confirmed there, or over `POST /reboot`.
     ///
     /// this used to blank the display, on the reasoning that a frozen clock is worse than a dark
     /// panel. both are worse than a word: the device is unreachable for about twenty seconds and a
@@ -2103,6 +2103,11 @@ const Supervisor = struct {
                     self.pushClients();
                     log.info("client token revoked: {s}", .{r.name.slice()});
                     self.sendNetd(.{ .client_result = .{ .status = .applied, .name = r.name } }, p.request_id);
+                },
+                .reboot => {
+                    log.info("reboot: asked over the api", .{});
+                    self.rebootNow();
+                    self.relayResult(p.request_id, .applied, self.snapshot.revision);
                 },
                 .config_save => |cs| {
                     if (cs.has_revision != 0 and cs.revision != self.cfg.revision) {

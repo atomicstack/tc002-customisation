@@ -915,7 +915,7 @@ MAX_CLIENTS = 16  # the device's own cap, chosen rather than derived; see net/cl
 # the device's scope names, in the device's own order: the listing renders them in this order and
 # the tests compare against it
 SCOPES = ("status", "screen", "logs", "notify", "display", "sound",
-          "input", "content", "scripts", "settings", "tokens")
+          "input", "content", "scripts", "settings", "tokens", "reboot")
 # mirrors runtime/src/berry/store.zig
 SCRIPT_MAX = 8000
 BERRY_BUDGET = 64 * 1024

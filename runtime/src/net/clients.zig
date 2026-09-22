@@ -31,9 +31,8 @@ pub const Scope = enum(u4) {
     /// the speaker. a sound in a bedroom is a different kind of consent from a pixel
     sound = 5,
     /// `POST /input`. **this reaches the device menu**, and through it brightness, the night
-    /// schedule, the ip layout, mqtt and ntfy on or off -- `display` and `settings` over http --
-    /// and a **reboot, which has no http route at all**. granting it grants those and more; see
-    /// SECURITY.md
+    /// schedule, the ip layout, mqtt and ntfy on or off, and a reboot -- `display`, `settings`
+    /// and `reboot` over http. granting it grants those and more; see SECURITY.md
     input = 6,
     /// stored assets: sprites, sounds and a whole canvas document. durable, but not dangerous
     content = 7,
@@ -43,13 +42,16 @@ pub const Scope = enum(u4) {
     settings = 9,
     /// the token routes themselves. held by the admin token alone
     tokens = 10,
+    /// `POST /reboot`, and nothing else. the one route that takes the clock off the network for
+    /// a minute, so it is its own bit: a token that may reboot need not be able to reconfigure
+    reboot = 11,
 
     pub fn bit(self: Scope) Set {
         return @as(Set, 1) << @intFromEnum(self);
     }
 };
 
-/// a set of scopes. `u16` holds every bit with room for five more.
+/// a set of scopes. `u16` holds every bit with room for four more.
 pub const Set = u16;
 
 pub const count = @typeInfo(Scope).@"enum".fields.len;
@@ -276,7 +278,7 @@ test "a set survives the round trip through the credentials file's text form" {
     try testing.expectEqual(control_set, parseSet("status|display").?);
     try testing.expectEqualStrings("-", renderSet(0, &buf));
     try testing.expectEqual(@as(Set, 0), parseSet("-").?);
-    try testing.expectEqualStrings("status|screen|logs|notify|display|sound|input|content|scripts|settings|tokens", renderSet(all, &buf));
+    try testing.expectEqualStrings("status|screen|logs|notify|display|sound|input|content|scripts|settings|tokens|reboot", renderSet(all, &buf));
     try testing.expectEqual(all, parseSet(renderSet(all, &buf)).?);
     // an unknown name fails the whole set rather than quietly granting less than it says
     try testing.expect(parseSet("status|wat") == null);

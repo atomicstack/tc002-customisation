@@ -1082,15 +1082,17 @@ device sitting on a lie. A battery notice due in the same window stands aside.
 `batteryart.zig`. A string too wide for the panel is refused rather than drawn
 off the edge: half a word is worse than none.
 
-There is no reboot route on the http api — `ActionKind` is
-`brightness reseed arm_stream power` — so this is reached from the device menu,
-or over `/input` by driving that menu. To put the same word up before a reboot
-you are causing from outside, send a notification first and then reboot however
-you were going to:
+`POST /reboot` reaches the same path from outside: the notice goes up, the
+mdns name is withdrawn as netd goes down, and `/bin/reboot` follows. it needs
+the `reboot` scope, which the admin token holds and the control token does not,
+and it is not one of the mqtt command topics. `tools/tc002ctl.py reboot` is the
+one-liner. it is also how `tc002-update.sh` clears a clock whose adbd has run
+out of ptys (every `adb shell` answering `error: closed`) before it goes on.
+before the route existed the only remote way was driving the menu over
+`/input`, five round trips that depended on the reboot item staying ninth:
 
 ```bash
-runtime/tools/tc002ctl.py -s <ip> --token-file tokens notify "rebooting..." --colour 3a6ea5 --duration 30
-adb -s <ip>:5555 reboot
+runtime/tools/tc002ctl.py -s <ip> --token-file tokens reboot
 ```
 
 a value is applied at once as a preview but is only **written** once it has
@@ -1260,6 +1262,7 @@ notification and nothing else.
 | `scripts` | the berry store: reading a script's source, writing, deleting, running |
 | `settings` | `PATCH /config`, `/config/save`, `/mqtt`, `/ntfy` — durable configuration, and the only place credentials live |
 | `tokens` | the token routes. **the admin token's alone**: one that could mint tokens could mint itself more, and revocation would stop meaning much |
+| `reboot` | `POST /reboot`, and nothing else — the one route that takes the clock off the network for a minute, so a token that may reboot need not be able to reconfigure |
 
 the two built-in secrets are scope sets like any other token. `admin` holds
 every scope. `control` holds `status screen logs notify display sound input` —
@@ -1369,6 +1372,7 @@ read-only storage; connection buffers stay the same size.
 | `GET` | `/config` | `status` | | the [settings document](#settings) |
 | `PATCH` | `/config` | `settings` | any subset of the settings fields plus `expected_revision`? | the settings document after the patch |
 | `POST` | `/config/save` | `settings` | `{"revision":u32}` or an empty body, `application/json` either way | `{"status":"saved","saved_revision":n}` |
+| `POST` | `/reboot` | `reboot` | none (an empty body or `{}`) | `{"status":"applied","revision":n,"request_id":…}`; the "rebooting..." notice goes up and `/bin/reboot` runs about a second later. not reachable over mqtt |
 | `GET` | `/icons` | `status` | | `{"size":8,"names":[…]}`: the built-in [icon](#the-canvas) names |
 | `GET` | `/sprites` | `status` | | `{"slots":8,"sprites":[{"id","width","height"}…]}` |
 | `PUT` | `/sprites/{id}` | `content` | `application/octet-stream`, 192 or 768 bytes of rgb888 | the sprite list |

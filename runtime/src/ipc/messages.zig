@@ -116,6 +116,7 @@ test "every message kind round-trips through a packet" {
         .{ .set_param = .{ .base = 1, .index = 3, .value = 0xff8000 } },
         .{ .device_status = .{ .battery_pct = 80, .usb = 1, .wifi_quality = 49, .wifi_dbm = -61, .time_synced = 1, .mqtt_on = 1, .uptime_s = 90061 } },
         .status_get,
+        .reboot,
         .{ .status = .{ .renderer_state = 2, .epoch = 3, .revision = 4, .presented = 5, .base = 1, .brightness = 77, .uptime_s = 8, .mem_available_kb = 14000, .cpu_pct = 12, .fps_x10 = 599, .ip_present = 1, .ip = .{ 10, 0, 0, 111 }, .config_revision = 2, .saved_revision = 1, .boot_id = 0xabcd, .sample_age_ms = 40, .mac = .{ 1, 2, 3, 4, 5, 6 }, .mac_present = 1, .load_1m_x100 = 123, .mem_free_kb = 4000, .wifi_level_dbm = -61, .wifi_quality = 49, .cpu_renderer_pct_x10 = 87, .tmpfs_used_kb = 1300, .battery_mv = 3987, .battery_pct = 80, .usb_present = 1, .clock = ClockStyle.full(.{ .font = .segment }), .mem_total_kb = 36240, .tmpfs_total_kb = 16504, .flash_total_kb = 8192, .flash_used_kb = 368, .night_phase = 2, .night_override = 1, .seed = 0xc0ffee, .menu = 1, .menu_item = 6, .menu_state = 1, .net_rx_bytes = 525283638, .net_tx_bytes = 48021332, .net_rx_packets = 2277879, .net_tx_packets = 295533, .net_rx_errors = 0, .net_rx_dropped = 1339872, .net_tx_errors = 0, .net_tx_dropped = 0, .net_rx_bps = 2033, .net_tx_bps = 236, .mem_cached_kb = 11772, .mem_dirty_kb = 0, .mem_writeback_kb = 0, .mem_slab_kb = 8528, .saves = 91, .save_failures = 0, .save_bytes = 40131, .save_last_ms = 12, .berry_state = 2, .berry = .{ .heap_bytes = 65536, .heap_used = 8488, .heap_high_water = 9001, .alloc_failures = 0, .stops = 3 } } },
     };
     var buf: [codec.max_message]u8 = undefined;
@@ -383,6 +384,9 @@ pub const Kind = enum(u8) {
     /// netd -> supervisor: run a stored script by name. the source is never carried -- a run that
     /// accepted one would be an eval route wearing a disguise.
     berry_run = 83,
+    /// netd -> supervisor: reboot the device, the way the menu's reboot item does. answered with
+    /// a `result` like a relayed command; the notice goes up and /bin/reboot follows
+    reboot = 84,
     /// supervisor -> netd: the outcome, carrying the new secret on an issue. this is the only
     /// message a token ever travels back in, and netd returns it to the caller exactly once.
     client_result = 80,
@@ -2168,6 +2172,7 @@ pub const Message = union(Kind) {
     client_rotate: ClientRotate,
     berry_script_get: BerryName,
     berry_run: BerryName,
+    reboot,
     client_result: ClientResult,
 };
 
@@ -2373,7 +2378,7 @@ fn encodePayload(msg: Message, out: []u8) usize {
             out[14] = d.night_placed;
             return DeviceStatus.wire_len;
         },
-        .ready, .arm_stream, .time_corrected, .stop, .config_get, .status_get, .screen_get, .canvas_get, .canvas_clear, .sprite_list_get, .berry_list_get, .sound_list_get => return 0,
+        .ready, .arm_stream, .time_corrected, .stop, .config_get, .status_get, .screen_get, .canvas_get, .canvas_clear, .sprite_list_get, .berry_list_get, .sound_list_get, .reboot => return 0,
         .screen => |s| {
             std.mem.writeInt(u32, out[0..4], s.revision, .big);
             out[4] = s.brightness;
@@ -2957,6 +2962,10 @@ pub fn decodePacket(bytes: []const u8) Error!Packet {
         .config_get => blk: {
             _ = try fixed(p, 0);
             break :blk .config_get;
+        },
+        .reboot => blk: {
+            _ = try fixed(p, 0);
+            break :blk .reboot;
         },
         .status_get => blk: {
             _ = try fixed(p, 0);
