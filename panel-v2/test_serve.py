@@ -1200,6 +1200,113 @@ class CatalogueTests(unittest.TestCase):
 
 
 class StartScriptTests(unittest.TestCase):
+    """the address is optional: the clocks advertise themselves, so the launcher asks.
+
+    the script is run for real here, with the lan lister stubbed through TC002_LISTER, and what
+    it decided is read off the `console:` url it prints."""
+
+    def launch(self, rows, args=(), tokens="single"):
+        """run start-panel.sh far enough to print its url, with discovery standing in for the lan."""
+        import signal, time
+        with tempfile.TemporaryDirectory() as d:
+            lister = os.path.join(d, "lister.py")
+            with open(lister, "w") as f:
+                f.write(f"import json; print(json.dumps({rows!r}))\n")
+            sock = socket.socket(); sock.bind(("127.0.0.1", 0)); port = sock.getsockname()[1]; sock.close()
+            # tokens so the script does not try to pull them over adb: either one file named on
+            # the command line, or the per-clock files a multi-clock setup actually has
+            body = f"control={'11' * 32}\nadmin={'22' * 32}\n"
+            token_args = ()
+            if tokens == "single":
+                with open(os.path.join(d, "tokens"), "w") as f:
+                    f.write(body)
+                token_args = ("--token-file", os.path.join(d, "tokens"))
+            else:
+                for ip in ("10.0.0.68", "10.0.0.111"):
+                    with open(os.path.join(d, f"tokens-{ip}"), "w") as f:
+                        f.write(body)
+            env = {**os.environ, "TC002_LISTER": lister}
+            proc = subprocess.Popen(["/bin/bash", os.path.join(HERE, "start-panel.sh"),
+                                     "--port", str(port), *token_args, *args],
+                                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                    start_new_session=True, cwd=d, text=True, env=env)
+            out = ""
+            try:
+                deadline = time.monotonic() + 25
+                while time.monotonic() < deadline:
+                    line = proc.stdout.readline()
+                    if not line:
+                        break
+                    out += line
+                    if "console: " in line:
+                        break
+                return out
+            finally:
+                # the launcher runs the proxy in the foreground and never exits on its own, so it
+                # is stopped here. wait() and not communicate(): everything this test reads has
+                # already been read, and communicate() would sit waiting for eof on a pipe the
+                # proxy still holds
+                try: os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
+                except (ProcessLookupError, PermissionError): pass
+                try:
+                    proc.wait(timeout=10)
+                except subprocess.TimeoutExpired:
+                    try: os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+                    except (ProcessLookupError, PermissionError): pass
+                    proc.wait(timeout=5)
+                finally:
+                    proc.stdout.close()
+
+    ONE = [{"ip": "10.0.0.68", "kind": "runtime", "name": "tc002-ccc4b2779e85.local", "transport": "10.0.0.68:5555"}]
+    TWO = ONE + [{"ip": "10.0.0.111", "kind": "runtime", "name": "tc002-ccc4b277a282.local", "transport": "10.0.0.111:5555"}]
+
+    def test_one_clock_on_the_lan_needs_no_address(self):
+        out = self.launch(self.ONE)
+        self.assertIn("?host=10.0.0.68", out, out)
+
+    def test_several_clocks_are_listed_and_none_is_chosen(self):
+        # picking the first of several is the bug tc002-devices.py exists to prevent; the console
+        # has the list and remembers the last clock used, so the choice belongs there
+        out = self.launch(self.TWO)
+        self.assertNotIn("?host=10.0.0.", out, out)
+        self.assertIn("10.0.0.68", out, "the clocks it found should be named")
+        self.assertIn("10.0.0.111", out, "the clocks it found should be named")
+
+    def test_several_clocks_are_not_also_reported_as_none_found(self):
+        # the two messages come from different branches and both used to fire: naming two clocks
+        # and then saying none was found is worse than either on its own
+        out = self.launch(self.TWO)
+        self.assertNotIn("no clock found", out, out)
+
+    def test_the_clocks_are_listed_in_the_order_a_person_reads_them(self):
+        out = self.launch(self.TWO)
+        self.assertLess(out.index("10.0.0.68"), out.index("10.0.0.111"),
+                        f"addresses should sort by octet, not as text:\n{out}")
+
+    def test_per_clock_token_files_are_used_when_no_clock_is_chosen(self):
+        # several clocks and no address means no tokens-<host> to name, and falling through to an
+        # adb pull cannot work with several devices attached either. the proxy reads the per-clock
+        # files per request, so the directory is all it needs
+        out = self.launch(self.TWO, tokens="per-clock")
+        self.assertIn("per-clock token files in", out, out)
+        self.assertNotIn("pulling the tokens over adb", out, out)
+
+    def test_no_clock_found_still_starts_the_console(self):
+        # the address is optional, so finding none is not a failure: the console opens with its
+        # device field empty and discovery refreshes it there
+        out = self.launch([])
+        self.assertIn("console: ", out, out)
+
+    def test_a_stock_clock_is_not_offered_as_the_device(self):
+        out = self.launch([{"ip": "10.0.0.9", "kind": "stock", "transport": "10.0.0.9:5555"}])
+        self.assertNotIn("?host=10.0.0.9", out, out)
+
+    def test_an_address_given_explicitly_skips_discovery(self):
+        # nothing gets slower for someone who types one
+        out = self.launch([{"ip": "10.0.0.99", "kind": "runtime", "name": "x.local", "transport": "10.0.0.99:5555"}],
+                          args=("10.0.0.70",))
+        self.assertIn("?host=10.0.0.70", out, out)
+
     def test_mock_mode_brings_up_the_mock_and_the_proxy_with_shared_tokens(self):
         import signal, subprocess, time
         with tempfile.TemporaryDirectory() as d:
