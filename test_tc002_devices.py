@@ -472,6 +472,24 @@ class UpdateScriptTests(unittest.TestCase):
             self.assertIn("error: closed", r.stdout + r.stderr)
             self.assertNotIn("this build runs from /tmp", r.stdout)
 
+    def test_the_flash_dump_makes_the_mtd_node_before_reading_it(self):
+        # /dev on this device has no mtd nodes: the flasher creates /dev/mtdblock3 before its own
+        # backup read, and a reboot loses it again. the update script's res dump forgot to, so the
+        # first flash after a power cycle died with "could not pull the chunk at 0 kb"
+        with tempfile.TemporaryDirectory() as d:
+            root, bindir, log = fake_checkout(d, payload=b"\x7fELF built with /res/bin compiled in")
+            (root / "runtime" / "zig-out" / "bin" / "busybox").write_bytes(b"\x7fELF busybox")
+            (root / "runtime" / "zig-out" / "bin" / "busybox.applets").write_text("dd\nmknod\n")
+            (bindir / "unsquashfs").write_text("#!/bin/sh\nexit 1\n")   # the dump is not a squashfs here
+            (bindir / "unsquashfs").chmod(0o755)
+            r = run_update(root, bindir, log, "--flash", "--device", "10.0.0.5", "--no-build", "--no-backup", "--lan", "--yes", "--work", str(root / "work"))
+            calls = [json.loads(line) for line in log.read_text().splitlines()]
+            shells = [(i, " ".join(c["args"])) for i, c in enumerate(calls) if c["command"] == "adb" and "shell" in c["args"]]
+            reads = [i for i, text in shells if "dd if=/dev/mtdblock3" in text]
+            nodes = [i for i, text in shells if "mknod /dev/mtdblock3 b 31 3" in text]
+            self.assertTrue(reads, "the res was never read: " + (r.stdout + r.stderr)[-400:])
+            self.assertTrue(nodes and nodes[0] < reads[0], "the mtd node is not created before the dump reads it")
+
     def test_the_old_bring_up_script_is_the_in_place_mode(self):
         with tempfile.TemporaryDirectory() as d:
             root, bindir, log = fake_checkout(d)

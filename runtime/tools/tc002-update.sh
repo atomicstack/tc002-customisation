@@ -320,6 +320,9 @@ flash() {
         dsh 'chmod 755 /tmp/busybox' >/dev/null
         base_image="$work/mtd3-res-$sn-$(date +%Y%m%d-%H%M%S).bin"
         : > "$base_image"
+        # /dev has no mtd nodes on this device, and the one the flasher makes does not survive a
+        # reboot: make it here too, or the first flash after a power cycle reads nothing
+        dsh "mknod /dev/mtdblock3 b 31 3 2>/dev/null; true" >/dev/null
         local off
         for off in 0 2048 4096 6144; do
             dsh "/tmp/busybox dd if=/dev/mtdblock3 of=/tmp/chunk bs=1024 skip=$off count=2048 2>/dev/null" >/dev/null
