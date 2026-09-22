@@ -19,7 +19,8 @@ import { fileURLToPath } from 'node:url';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const CHROME = '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
-const PYTHON = existsSync('/usr/bin/python3') ? '/usr/bin/python3' : 'python3';
+// the mock and the proxy bind 127.0.0.1 only, so no lan gate applies and any python3 will do
+const PYTHON = 'python3';
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 
 const args = process.argv.slice(2);

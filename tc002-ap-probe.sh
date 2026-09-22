@@ -63,6 +63,8 @@ PSK_FROM=""
 ADOPT_FROM=""
 ADOPT_ONLY=0
 ADB=/opt/homebrew/bin/adb
+# apple's on purpose: this talks to the clock's own access point, which is lan traffic from the
+# interpreter, and macos gates that per binary
 PY=/usr/bin/python3
 CURL=/usr/bin/curl
 

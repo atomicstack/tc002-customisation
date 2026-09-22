@@ -1707,7 +1707,7 @@ rather than waiting out its two-second window. a clock any probe saw running the
 runtime is reported as `runtime`, whether the binaries are in `/res/bin` or `/tmp`.
 
 validation commands: `zig build test` and `zig build` from `runtime`, plus
-`/usr/bin/python3 -m unittest -v test_tc002_devices` from the repository root.
+`python3 -m unittest -v test_tc002_devices` from the repository root.
 live device and resolver acceptance testing is separate from those offline checks.
 
 ## the low-battery shutdown

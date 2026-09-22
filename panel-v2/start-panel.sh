@@ -23,13 +23,16 @@
 # (panel-v2/scenes.json) are rebuilt from runtime/src on every start when zig is installed, so
 # the console always previews the current scene code against the current catalogue.
 #
-# apple's /usr/bin/python3 is used on purpose: on macos 15+ third-party binaries are gated for
-# local network access per binary, apple's are not (see CLAUDE.md / README).
+# any python3 on PATH, apple's as the fallback. the proxy binds 127.0.0.1 but the calls it makes
+# to the clock are lan calls, and macos 15+ gates those per binary: under a third-party python
+# they fail until the terminal app holds the local network grant, and they fail as "cannot reach"
+# rather than as a permission error. apple's /usr/bin/python3 is exempt from the gate, which is
+# why it is the fallback rather than the rule (see README's macos note).
 set -eu
 self="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"
 cd "$(dirname "$self")"
-PY=/usr/bin/python3
-[ -x "$PY" ] || PY=python3
+PY=$(command -v python3 || true)
+[ -x "$PY" ] || PY=/usr/bin/python3
 
 host="" port=8777 token_file="" serial="" mock=0 mock_port=18080 open_browser=0
 while [ $# -gt 0 ]; do

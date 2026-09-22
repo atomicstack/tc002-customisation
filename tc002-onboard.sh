@@ -76,7 +76,10 @@ done
 
 ADB=$(command -v adb || true)
 PY=$(command -v python3 || true)
-[ -x /usr/bin/python3 ] && PY=/usr/bin/python3   # apple's is exempt from the lan privacy gate
+# apple's on purpose, and only here: this sweeps and probes the lan from the interpreter, and
+# it is the first thing a new user runs -- before anyone has told them there is a local network
+# grant to give. a gated python reports "no clocks", never a permission error.
+[ -x /usr/bin/python3 ] && PY=/usr/bin/python3
 
 step() { printf '\n\033[1m== %s\033[0m\n' "$*"; }
 say()  { printf '   %s\n' "$*"; }

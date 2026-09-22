@@ -19,7 +19,7 @@ broken.
 | | why | install |
 |---|---|---|
 | `adb` | the only way in; the device ships with adbd open and root on `:5555` | `brew install android-platform-tools` · `apt install adb` |
-| `python3` | the image tool and the adoption/control scripts | ships with macOS at `/usr/bin/python3` |
+| `python3` | the image tool and the adoption/control scripts | ships with macOS at `/usr/bin/python3`; homebrew's is fine too, see the LAN note below |
 | `squashfs-tools` | `res` is a squashfs; your image is repacked locally | `brew install squashfs-tools` · `apt install squashfs-tools` |
 | `zig` **0.16.0 exactly** | **only from a git checkout** — see below | `brew install zig` |
 
@@ -30,12 +30,14 @@ need zig 0.16.0 exactly — the build panics on any other version — and one
 `runtime/tools/tc002-mkbusybox.sh` run to produce the busybox and its applet
 list.
 
-> **On macOS, use Apple's `/usr/bin/python3`.** macOS 15+ gates LAN access per
-> binary, and Homebrew's python and adb are gated. It surfaces as a misleading
-> network error — "no route to host" — never as a permission error. Grant the
-> terminal under Privacy & Security → Local Network, then **fully quit and
-> relaunch it**; permission is evaluated at process start. See the macOS note in
-> [`README.md`](README.md#a-note-on-macos).
+> **On macOS, LAN access is gated per binary.** macOS 15+ gates it, and
+> Homebrew's python and adb are gated where Apple's `/usr/bin/python3` is not.
+> It surfaces as a misleading network error — "no route to host" — never as a
+> permission error. Grant the terminal under Privacy & Security → Local Network,
+> then **fully quit and relaunch it**; permission is evaluated at process start.
+> Any `python3` works once that grant is in place; **Apple's works without it**,
+> which makes it the thing to reach for when a tool reports nothing found. See
+> the macOS note in [`README.md`](README.md#a-note-on-macos).
 
 **On the device** — nothing. A static busybox is pushed to `/tmp` when needed,
 because the stock shell resolves almost nothing: no `dd`, `grep`, `md5sum`,
@@ -167,7 +169,7 @@ packed `UPDATE.img` and will refuse anything it cannot vouch for, so pack it
 first:
 
 ```bash
-/usr/bin/python3 tc002-update-img.py pack <your-backup>.bin stock-UPDATE.img
+python3 tc002-update-img.py pack <your-backup>.bin stock-UPDATE.img
 runtime/tools/tc002-flash.sh stock-UPDATE.img
 ```
 

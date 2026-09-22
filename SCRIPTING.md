@@ -407,7 +407,7 @@ plain `print()` lines have no source metadata; filtering for the word berry woul
 hide valid script output.
 
 editor tests: `node --test test_scripts.mjs`, `node --test test_layout.mjs`, and
-`/usr/bin/python3 -m unittest test_serve test_scripts_proxy`, from `panel-v2/`.
+`python3 -m unittest test_serve test_scripts_proxy`, from `panel-v2/`.
 the browser suite checks real source round trips through the proxy/mock and uses
 a deterministic execution fixture for run failures and flash-write counts.
 

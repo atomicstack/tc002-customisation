@@ -91,10 +91,10 @@ the network sees.
 
 ```bash
 # find every clock already on your wifi (~1 s)
-/usr/bin/python3 tc002-devices.py
+python3 tc002-devices.py
 
 # from another vlan, or behind an ap that filters broadcasts (~4 s for a /24)
-/usr/bin/python3 tc002-devices.py --sweep 10.0.0
+python3 tc002-devices.py --sweep 10.0.0
 
 # adopt a factory-fresh device: joins its "U-Clock" ap for you on macos,
 # asks you to on linux, posts your credentials, and restores your wifi

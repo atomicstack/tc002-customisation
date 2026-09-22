@@ -15,8 +15,9 @@ without either the page loads but every proxied call fails 503 no_token.
 
 usage: serve.py [port] [--token-file FILE | --adb-pull [--serial S]]     default port 8777
 
-run with apple's python3 (/usr/bin/python3): homebrew binaries are denied lan access by macos
-local network privacy. binds 127.0.0.1 only.
+binds 127.0.0.1 only, but the calls it makes to the clock are lan calls and macos 15+ gates
+those per binary: under a third-party python they fail as "cannot reach" until the terminal app
+holds the local network grant. apple's /usr/bin/python3 is exempt from the gate.
 """
 import argparse, functools, http.server, json, os, re, socketserver, subprocess, sys, tempfile, time, urllib.error, urllib.request
 

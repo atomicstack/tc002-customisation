@@ -162,13 +162,15 @@ prebuilt.
 > own device, and that dump is also your way back.
 > See [`FINGERPRINTS.md`](FINGERPRINTS.md).
 
-everything uses apple's `/usr/bin/python3` deliberately — see
-[the local network gotcha](#a-note-on-macos) below.
+any `python3` will do. if a tool here reports no devices, or cannot reach one
+you know is up, read [the local network gotcha](#a-note-on-macos) below before
+believing it: apple's `/usr/bin/python3` is exempt from the gate and is the
+quickest way to tell a permission apart from a network.
 
 **find a device already on your wifi**
 
 ```bash
-/usr/bin/python3 tc002-devices.py
+python3 tc002-devices.py
 ```
 
 a stock clock announces itself by udp broadcast (port 55555, about once a
@@ -181,7 +183,7 @@ automatic: 254 connections the whole lan can see.
 **control it in english**
 
 ```bash
-cd panel && /usr/bin/python3 serve.py 8777
+cd panel && python3 serve.py 8777
 # open http://127.0.0.1:8777  (override the target with ?host=<device-ip>)
 ```
 
@@ -236,7 +238,7 @@ by hand it is:
 ```bash
 adb pull /data/tc002/state/credentials/tokens tokens # or let serve.py do it with --adb-pull
 cd runtime && zig build wasm && cd ..                # the preview renderer; start-panel.sh does this for you
-cd panel-v2 && /usr/bin/python3 serve.py 8777 --token-file ../tokens
+cd panel-v2 && python3 serve.py 8777 --token-file ../tokens
 # open http://127.0.0.1:8777/?host=<device-ip>
 ```
 
@@ -337,7 +339,7 @@ flow, and the http call it makes, is in [`SETUP.md`](SETUP.md).
 **verify your mqtt broker credentials**
 
 ```bash
-/usr/bin/python3 mqtt-check.py <broker-ip> 1883
+python3 mqtt-check.py <broker-ip> 1883
 ```
 
 prompts for the password with echo off so it never reaches a transcript or
@@ -348,7 +350,7 @@ authorized) rather than the spec's `4` for bad credentials, so treat `5` as
 **make the clock sync more often**
 
 ```bash
-/usr/bin/python3 tc002-ntp-patch.py apply -s <device-ip> --period 10
+python3 tc002-ntp-patch.py apply -s <device-ip> --period 10
 ```
 
 the stock firmware syncs every 2 h and the crystal gains about 70 ppm, so
@@ -521,8 +523,15 @@ never a permission error:
 | `nmap` | `Host seems down` / all ports `filtered (host-unreach)` |
 
 that split is the diagnostic: if `/usr/bin/curl` works and
-`/opt/homebrew/bin/nmap` does not, it is the permission, not the network. it is
-also why the tools here call `/usr/bin/python3` explicitly.
+`/opt/homebrew/bin/nmap` does not, it is the permission, not the network — and
+running the same script under `/usr/bin/python3` and under a homebrew one is the
+same test in a single step.
+
+mdns discovery is the exception, and deliberately: `tc002-devices.py` browses
+through mDNSResponder, so the multicast leaves the daemon rather than the
+interpreter and the gate has nothing to act on. everything else here that
+touches the lan itself — `--sweep`, the udp/55555 listener, the console proxy's
+calls to the clock — is still gated per binary.
 
 **fix:** system settings → privacy & security → local network → enable your
 terminal app, then **fully quit and relaunch it** (the permission is evaluated
