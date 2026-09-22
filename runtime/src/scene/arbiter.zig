@@ -847,7 +847,7 @@ pub const Arbiter = struct {
             .stream_arming, .none => {
                 switch (o.base) {
                     .art => self.art.renderGenerator(o.generator, rgb),
-                    .clock => self.clock.renderWith(o.clock_style, wall_ns, rgb),
+                    .clock => self.clock.renderWith(o.clock_style, wall_ns, self.brightness, rgb),
                     .canvas => rgb.* = self.canvas_frame,
                 }
                 // the same dots as the incoming layer, so a cross-fade leaves them crisp instead
@@ -1397,7 +1397,7 @@ pub const Arbiter = struct {
     fn renderBase(self: *Arbiter, wall_ns: u64, rgb: *geometry.Rgb) void {
         switch (self.base) {
             .art => self.art.render(rgb),
-            .clock => self.clock.renderPulsed(self.clock.style, wall_ns, self.separatorAlpha(self.last_tick_ns), rgb),
+            .clock => self.clock.renderPulsed(self.clock.style, wall_ns, self.separatorAlpha(self.last_tick_ns), self.brightness, rgb),
             .canvas => {
                 self.canvas.render(self.last_tick_ns, rgb);
                 self.canvas_frame = rgb.*;

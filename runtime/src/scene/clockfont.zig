@@ -5,6 +5,7 @@
 //! text, not a property of the font. pure.
 const std = @import("std");
 const geometry = @import("../panel/geometry.zig");
+const pack = @import("../panel/pack.zig");
 const font = @import("font.zig");
 
 /// `hires` is a layout of the clock scene (classic time, a bar, mini milliseconds) that borrows the
@@ -300,24 +301,27 @@ pub fn blit(rgb: *geometry.Rgb, x0: i32, y0: i32, f: Font, text: []const u8, pai
 /// the same, drawn in one of the digit styles. a shadow is the glyph again, dimmed and offset,
 /// laid down first so the digit itself sits on top of it.
 pub fn blitStyled(rgb: *geometry.Rgb, x0: i32, y0: i32, f: Font, text: []const u8, painter: anytype, style: DigitStyle) void {
-    blitBlend(rgb, x0, y0, f, text, text, 0, painter, style);
+    blitBlend(rgb, x0, y0, f, text, text, 0, painter, style, 100);
 }
 
 /// `from` and `to` are the same length; every character that differs is drawn `t`/255 of the way
 /// from the one to the other, and the rest as they are. `t` 0 is exactly `from`, 255 exactly `to`.
-pub fn blitBlend(rgb: *geometry.Rgb, x0: i32, y0: i32, f: Font, from: []const u8, to: []const u8, t: u8, painter: anytype, style: DigitStyle) void {
+/// `brightness` is the panel's, because a partly lit pixel is shaped in the driver's terms (see
+/// `pack.faded`): what looks like half at full brightness is off at a night level.
+pub fn blitBlend(rgb: *geometry.Rgb, x0: i32, y0: i32, f: Font, from: []const u8, to: []const u8, t: u8, painter: anytype, style: DigitStyle, brightness: u8) void {
     const effective: DigitStyle = if (hasBody(f)) style else .solid;
-    if (effective == .shadow) drawRun(rgb, x0 + 1, y0 + 1, f, from, to, t, painter, .solid, shadow_alpha);
-    drawRun(rgb, x0, y0, f, from, to, t, painter, effective, 255);
+    if (effective == .shadow) drawRun(rgb, x0 + 1, y0 + 1, f, from, to, t, painter, .solid, shadow_alpha, brightness);
+    drawRun(rgb, x0, y0, f, from, to, t, painter, effective, 255, brightness);
 }
 
-fn drawRun(rgb: *geometry.Rgb, x0: i32, y0: i32, f: Font, text: []const u8, to: []const u8, t: u8, painter: anytype, style: DigitStyle, strength: u8) void {
+fn drawRun(rgb: *geometry.Rgb, x0: i32, y0: i32, f: Font, text: []const u8, to: []const u8, t: u8, painter: anytype, style: DigitStyle, strength: u8, brightness: u8) void {
     var x = x0;
     for (text, 0..) |c, i| {
         if (i > 0) x += gap(f);
         const raw = glyph(f, c);
         const styled = if (style == .outline) outlined(raw) else raw;
-        const g = if (i < to.len and to[i] != c) blk: {
+        const changing = i < to.len and to[i] != c;
+        const g = if (changing) blk: {
             const target = glyph(f, to[i]);
             break :blk blended(styled, if (style == .outline) outlined(target) else target, t);
         } else styled;
@@ -331,7 +335,10 @@ fn drawRun(rgb: *geometry.Rgb, x0: i32, y0: i32, f: Font, text: []const u8, to: 
                     const px = x + @as(i32, @intCast(col));
                     if (px < 0 or px >= geometry.width) continue;
                     const o = geometry.pixelOffset(@intCast(px), @intCast(y));
-                    rgb[o..][0..3].* = scaled(painter.at(px, y), a);
+                    const colour = painter.at(px, y);
+                    // a pixel on its way between two glyphs is shaped for the driver; everything
+                    // else (a glyph's own level, a shadow's strength) is the plain scale it always was
+                    rgb[o..][0..3].* = if (changing and lit != 255 and strength == 255) .{ pack.faded(colour[0], a, brightness), pack.faded(colour[1], a, brightness), pack.faded(colour[2], a, brightness) } else scaled(colour, a);
                 }
             }
         }
@@ -586,13 +593,43 @@ test "a fade blit is the old text at the start and the new text at the end, in e
         blitStyled(&new_frame, 2, 3, .block, "10", white, style);
         var start: geometry.Rgb = geometry.black_rgb;
         var end: geometry.Rgb = geometry.black_rgb;
-        blitBlend(&start, 2, 3, .block, "09", "10", 0, white, style);
-        blitBlend(&end, 2, 3, .block, "09", "10", 255, white, style);
+        blitBlend(&start, 2, 3, .block, "09", "10", 0, white, style, 100);
+        blitBlend(&end, 2, 3, .block, "09", "10", 255, white, style, 100);
         try std.testing.expectEqualSlices(u8, &old_frame, &start);
         try std.testing.expectEqualSlices(u8, &new_frame, &end);
         var mid: geometry.Rgb = geometry.black_rgb;
-        blitBlend(&mid, 2, 3, .block, "09", "10", 128, white, style);
+        blitBlend(&mid, 2, 3, .block, "09", "10", 128, white, style, 100);
         try std.testing.expect(!std.mem.eql(u8, &old_frame, &mid));
         try std.testing.expect(!std.mem.eql(u8, &new_frame, &mid));
     }
+}
+
+test "a blend lands on driver levels: a share of the lit level at full brightness, and off, not the floor, when the share falls under it" {
+    const white = Solid{ .colour = .{ 255, 255, 255 } };
+    // at full brightness, halfway is half the lit drive level (127), within rounding
+    var mid: geometry.Rgb = geometry.black_rgb;
+    blitBlend(&mid, 2, 3, .block, "3", "4", 128, white, .solid, 100);
+    const lut100 = pack.buildLut(100);
+    var partial: usize = 0;
+    for (0..geometry.width * geometry.height) |i| {
+        const v = mid[i * 3];
+        if (v == 0 or v == 255) continue;
+        partial += 1;
+        try std.testing.expect(@abs(@as(i32, lut100[v]) - 127) <= 2);
+    }
+    try std.testing.expect(partial > 0);
+    // at a night brightness the lit level is 69 and half of it is under the floor of 50, so the
+    // changing pixels are off rather than driven at nearly full: nothing partial survives
+    var night: geometry.Rgb = geometry.black_rgb;
+    blitBlend(&night, 2, 3, .block, "3", "4", 128, white, .solid, 10);
+    for (0..geometry.width * geometry.height) |i| {
+        const v = night[i * 3];
+        try std.testing.expect(v == 0 or v == 255);
+    }
+    // and the ends are still exactly the two texts, whatever the brightness
+    var a: geometry.Rgb = geometry.black_rgb;
+    var b: geometry.Rgb = geometry.black_rgb;
+    blitStyled(&a, 2, 3, .block, "4", white, .solid);
+    blitBlend(&b, 2, 3, .block, "3", "4", 255, white, .solid, 10);
+    try std.testing.expectEqualSlices(u8, &a, &b);
 }

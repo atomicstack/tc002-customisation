@@ -293,9 +293,9 @@ pub const State = struct {
     }
 
     /// draw the lines and, for hires, the bar of the current second
-    fn paint(rgb: *geometry.Rgb, lines: []const Line, bar: ?i32, painter: anytype, digit: clockfont.DigitStyle, t: u8) void {
+    fn paint(rgb: *geometry.Rgb, lines: []const Line, bar: ?i32, painter: anytype, digit: clockfont.DigitStyle, t: u8, brightness: u8) void {
         for (lines) |l| {
-            if (l.to) |to| clockfont.blitBlend(rgb, l.x, l.y, l.font, l.text, to, t, painter, digit) else clockfont.blitStyled(rgb, l.x, l.y, l.font, l.text, painter, digit);
+            if (l.to) |to| clockfont.blitBlend(rgb, l.x, l.y, l.font, l.text, to, t, painter, digit, brightness) else clockfont.blitStyled(rgb, l.x, l.y, l.font, l.text, painter, digit);
         }
         if (bar) |fill| {
             var x: i32 = 0;
@@ -303,14 +303,16 @@ pub const State = struct {
         }
     }
 
+    /// the face at full brightness; the renderer goes through `renderPulsed` with the panel's
     pub fn render(self: *const State, wall_ns: u64, rgb: *geometry.Rgb) void {
-        self.renderWith(self.style, wall_ns, rgb);
+        self.renderWith(self.style, wall_ns, 100, rgb);
     }
 
     /// the face with its separators at `alpha`: 255 is the plain face, anything less is a moment of
     /// a sync pulse. the digits are never touched; an unset clock has its own breathing and no pulse.
-    pub fn renderPulsed(self: *const State, style: Style, wall_ns: u64, alpha: u8, rgb: *geometry.Rgb) void {
-        self.renderWith(style, wall_ns, rgb);
+    /// `brightness` is the panel's, which the fade shapes its blend for.
+    pub fn renderPulsed(self: *const State, style: Style, wall_ns: u64, alpha: u8, brightness: u8, rgb: *geometry.Rgb) void {
+        self.renderWith(style, wall_ns, brightness, rgb);
         if (alpha == 255 or isUnset(wall_ns)) return;
         var boxes: [max_separators]Box = undefined;
         for (boxes[0..self.separatorBoxes(style, wall_ns, &boxes)]) |b| {
@@ -366,7 +368,7 @@ pub const State = struct {
     }
 
     /// render with a given style: the outgoing layer of a restyle transition keeps the old one
-    pub fn renderWith(self: *const State, style: Style, wall_ns: u64, rgb: *geometry.Rgb) void {
+    pub fn renderWith(self: *const State, style: Style, wall_ns: u64, brightness: u8, rgb: *geometry.Rgb) void {
         const utc_s: i64 = @intCast(wall_ns / std.time.ns_per_s);
         const local_s = tz.localFromUtc(self.rule, utc_s);
         var tbuf: [8]u8 = undefined;
@@ -400,11 +402,11 @@ pub const State = struct {
             // one flat colour for both modes: a gradient across two colons is not a gradient, and
             // the pulse is the only thing the eye should be reading here.
             const dim = clockfont.scaled(style.colour, unsetAlpha(wall_ns));
-            paint(rgb, lines, bar, clockfont.Solid{ .colour = dim }, style.digit, 0);
+            paint(rgb, lines, bar, clockfont.Solid{ .colour = dim }, style.digit, 0, brightness);
             return;
         }
         switch (style.mode) {
-            .solid => paint(rgb, lines, bar, clockfont.Solid{ .colour = style.colour }, style.digit, t),
+            .solid => paint(rgb, lines, bar, clockfont.Solid{ .colour = style.colour }, style.digit, t, brightness),
             .gradient => {
                 var box = Box{ .x0 = geometry.width, .y0 = geometry.height, .x1 = -1, .y1 = -1 };
                 for (lines) |l| {
@@ -415,7 +417,7 @@ pub const State = struct {
                 }
                 if (hires) box = .{ .x0 = 0, .y0 = 0, .x1 = geometry.width - 1, .y1 = hires_ms_y + 4 }; // the bar spans the panel
                 const painter = GradientPainter{ .c1 = style.colour, .c2 = style.effectiveColour2(), .box = box, .dir = style.gradient };
-                paint(rgb, lines, bar, painter, style.digit, t);
+                paint(rgb, lines, bar, painter, style.digit, t, brightness);
             },
         }
     }
@@ -655,10 +657,10 @@ test "a separator pulse dims only the separators, and full strength is no pulse 
         var plain = geometry.black_rgb;
         c.render(wall_ns, &plain);
         var full = geometry.black_rgb;
-        c.renderPulsed(c.style, wall_ns, 255, &full);
+        c.renderPulsed(c.style, wall_ns, 255, 100, &full);
         try std.testing.expectEqualSlices(u8, &plain, &full);
         var dark = geometry.black_rgb;
-        c.renderPulsed(c.style, wall_ns, 0, &dark);
+        c.renderPulsed(c.style, wall_ns, 0, 100, &dark);
         // something changed, and everything that changed sits inside a separator glyph's box
         var changed: usize = 0;
         for (0..geometry.height) |y| for (0..geometry.width) |x| {
@@ -776,4 +778,22 @@ test "the fade eases: it starts and ends gently rather than at full speed" {
     try std.testing.expect(fadeEase(32) < 32); // slow off the mark
     try std.testing.expect(fadeEase(223) > 223); // and slow into the finish
     try std.testing.expect(fadeEase(128) > 120 and fadeEase(128) < 136); // symmetric about the middle
+}
+
+test "the fade knows the panel's brightness: at a night level its changing pixels are dark mid-fade, not held at the floor" {
+    var c = State.init(tz.utc);
+    c.style = .{ .font = .block, .fade = true };
+    const sec = test_wall_base + (8 * 3600 + 8 * 60 + 9) * std.time.ns_per_s;
+    const mid = sec + std.time.ns_per_s - fade_ns / 2;
+    var bright = geometry.black_rgb;
+    c.renderPulsed(c.style, mid, 255, 100, &bright);
+    var partial: usize = 0;
+    for (0..geometry.width * geometry.height) |i| {
+        if (bright[i * 3] != 0 and bright[i * 3] != 255) partial += 1;
+    }
+    try std.testing.expect(partial > 0);
+    var night = geometry.black_rgb;
+    c.renderPulsed(c.style, mid, 255, 10, &night);
+    for (0..geometry.width * geometry.height) |i| try std.testing.expect(night[i * 3] == 0 or night[i * 3] == 255);
+    try std.testing.expect(!std.mem.eql(u8, &bright, &night));
 }

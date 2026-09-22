@@ -817,7 +817,13 @@ fading out while the upper-left stroke fades in. it is timed to the boundary
 rather than from it so the panel never shows a stale time: at every instant
 it shows either the current second or a blend on its way to the next. the
 face draws at 60 fps through the window and sleeps between windows as it
-always has. the other faces ignore it. on the panel it is the clock's eighth
+always has. the other faces ignore it. the blend is shaped for the led driver,
+not the frame byte: the driver's level curve has a floor of 50 (see
+[`LED-SPI.md`](LED-SPI.md)), so a changing pixel is driven at a straight share
+of its lit level and goes off, rather than hanging at the floor, once that share
+falls under it. at a night brightness that leaves little room above the floor,
+so the changing strokes are dark through the middle of the fade instead of
+flickering at nearly full. on the panel it is the clock's eighth
 parameter, over `PUT /scene` it is `clock.fade`, in the settings
 `clock_fade`, and every report of the style carries `"fade":bool`.
 
