@@ -12,7 +12,7 @@ var configFields = []field{
 	numberField("metrics_interval_s", 0, 3600), boolField("discovery"), boolField("discovery_controls"), textField("discovery_prefix"), numberField("expected_revision", 0, 4294967295),
 	enumField("clock_font", "classic mini segment big block hires"), enumField("clock_colour_mode", "solid gradient"),
 	colourField("clock_colour"), colourField("clock_colour2"), enumField("clock_gradient", "horizontal vertical diagonal"),
-	numberField("clock_spread", 0, 255), enumField("clock_digit", "solid outline shadow"),
+	numberField("clock_spread", 0, 255), enumField("clock_digit", "solid outline shadow"), boolField("clock_fade"),
 	{name: "generator_params", kind: "json"}, enumField("ip_mode", "lines mini scroll big"), boolField("night"),
 	numberField("night_brightness", 1, 100), numberField("night_lead_min", 0, 120),
 	{name: "latitude", kind: "float", min: -90, max: 90}, {name: "longitude", kind: "float", min: -180, max: 180},

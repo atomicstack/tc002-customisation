@@ -27,6 +27,9 @@ tc002 scene art --generator plasma --seed 5
 tc002 scene art --generator terrain --seed 7
 tc002 scene clock --font mini --colour-mode gradient --colour 2060ff --colour2 60c0ff
 tc002 notify 'hello' --colour 00ff80 --duration 4 --transition swipe_in --direction left
+tc002 notify doorbell --name door --stack --hold   # queues behind the current one, stays until dismissed
+tc002 dismiss door
+tc002 scene clock --font block --fade
 tc002 brightness 60
 tc002 power off
 tc002 input rotary cw --steps 3
@@ -64,7 +67,7 @@ the new secret once; use `--out` to save the response when appropriate.
 | `status`, `scenes`, `icons` | runtime status and catalogues | read |
 | `scene <clock\|art\|canvas>` | select the base scene and clock style | control |
 | `brightness`, `reseed`, `arm-stream`, `power` | display actions | control |
-| `input <control> <event>`, `notify <text>`, `frame` | input and temporary overlays | control |
+| `input <control> <event>`, `notify <text>`, `dismiss [name]`, `frame` | input and temporary overlays | control |
 | `screen [--format json\|raw]` | current framebuffer | read |
 | `logs [--after n]` | one page of the supervisor log ring | control |
 | `events` | continuous server-sent event stream | read |
@@ -76,6 +79,7 @@ the new secret once; use `--out` to save the response when appropriate.
 | `sounds list`, `sounds upload`, `sounds delete`, `sounds play`, `sounds stop` | stored sounds and playback | read; admin for upload/delete; control for playback |
 | `berry`, `scripts list`, `scripts get`, `scripts put`, `scripts run`, `scripts delete` | berry interpreter and script store | control for `berry` and `scripts list`; **`scripts` (admin) for get, put, run and delete** — reading a script back is not a control route |
 | `tokens list`, `tokens create`, `tokens rotate`, `tokens revoke` | named tokens | admin |
+| `reboot` | reboot the clock behind its "rebooting..." notice | admin (the `reboot` scope) |
 | `request <method> <path>` | direct request beneath `/api/v1` | route-dependent; use `--admin` when needed |
 | `completion <bash\|zsh>` | print completion script | offline |
 
@@ -93,7 +97,9 @@ tc002 mqtt set --enabled=true --host 192.168.1.2 --port 1883
 tc002 ntfy set --url https://ntfy.sh --topic clock
 # --token authenticates to the device; --subscription-token configures ntfy:
 tc002 ntfy set --subscription-token '<ntfy-token>'
+tc002 config set --clock-fade   # the block face fades into each new second
 tc002 tokens create dashboard --scope status --scope screen
+tc002 tokens create ops --scope status --scope reboot
 tc002 tokens rotate dashboard  # keeps the existing scopes unless --scope is supplied
 ```
 
@@ -112,25 +118,22 @@ tc002 request GET /logs --query after=12
 tc002 --admin request PATCH /config --data '{"brightness":30}'
 ```
 
-## routes without a command of their own
+## notifications
 
-`request` covers what the command set has not caught up with. these are the ones the
-runtime's docs lean on; each sends exactly what the route's own tests send.
+`notify` replaces the current notification unless `--stack` queues it behind; `--hold`
+keeps it up until a `dismiss`. `--name` (1..32 letters, digits, `-` or `_`) is what a
+dismissal finds it by; `dismiss` alone drops the current one. there are eight slots
+including the active one, and the runtime refuses a stack into a full queue.
 
 ```sh
-# a named notification that queues behind the current one and stays until dismissed
-tc002 request POST /notify --data '{"text":"doorbell","name":"door","stack":true,"hold":true}'
-tc002 request POST /notify/dismiss --data '{"name":"door"}'   # the first notification of that name
-tc002 request POST /notify/dismiss --data '{}'                # the current one only
-# the block clock face's fade (a toggle the settings flags do not know yet)
-tc002 config set --data '{"clock_fade":true}'
-# reboot behind the "rebooting..." notice: needs the reboot scope, so the admin token
-tc002 --admin request POST /reboot
+tc002 notify doorbell --name door --stack --hold
+tc002 notify parcel --name delivery --stack --duration 10
+tc002 dismiss door       # the first notification named door, active before waiting
+tc002 dismiss            # the current one only
 ```
 
-`tokens create --scope` checks its list before sending, and that list does not have
-`reboot` in it yet; grant it through `request`:
-`tc002 --admin request POST /tokens --data '{"name":"ops","scopes":["status","reboot"]}'`.
+`reboot` sends `POST /reboot`, which takes no body and needs the `reboot` scope: the
+admin entry of a labelled file is selected for it, as for every admin command.
 
 ## home assistant controls
 

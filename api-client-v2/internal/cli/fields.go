@@ -34,7 +34,7 @@ func boolField(name string) field { return field{name: name, kind: "bool"} }
 
 // the scopes a named client token may hold. `tokens` is deliberately absent: minting is the one
 // authority the runtime will not delegate (clients.zig `grantable`).
-var grantableScopes = []string{"status", "screen", "logs", "notify", "display", "sound", "input", "content", "scripts", "settings"}
+var grantableScopes = []string{"status", "screen", "logs", "notify", "display", "sound", "input", "content", "scripts", "settings", "reboot"}
 
 // a repeatable flag that becomes a json array. `--scope notify --scope display` -> ["notify","display"].
 // tokens hold a set of scopes rather than a rank, so this is the shape the api wants.
@@ -182,6 +182,20 @@ func parseColour(s string) ([]byte, error) {
 	}
 	return b, nil
 }
+
+// a notification name is narrower than a token or script name: no dot, and it may be empty
+// on a dismissal, which then means the current notification.
+func validNotificationName(s string) error {
+	if len(s) > 32 {
+		return errors.New("name must be 1..32 letters, digits, dash or underscore")
+	}
+	for _, c := range s {
+		if !((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '-' || c == '_') {
+			return errors.New("name must be 1..32 letters, digits, dash or underscore")
+		}
+	}
+	return nil
+}
 func validName(s string, max int) error {
 	if len(s) == 0 || len(s) > max || s[0] == '.' {
 		return fmt.Errorf("name must be 1..%d letters, digits, dash, underscore or dot, without a leading dot", max)
@@ -259,6 +273,7 @@ var transitionFields = []field{
 var clockFields = []field{
 	enumField("font", "classic mini segment big block hires"), enumField("colour_mode", "solid gradient"), colourField("colour"), colourField("colour2"),
 	enumField("gradient", "horizontal vertical diagonal"), numberField("spread", 0, 255), enumField("digits", "solid outline shadow"),
+	boolField("fade"),
 }
 
 // completeDataFile preserves the @ prefix which distinguishes a file from inline json.

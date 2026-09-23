@@ -82,6 +82,18 @@ func TestRuntimeRequests(t *testing.T) {
 		{[]string{"screen", "--format", "raw"}, "GET", "/screen?format=raw", ""},
 		{[]string{"logs", "--after", "12"}, "GET", "/logs?after=12", ""},
 		{[]string{"request", "GET", "/status"}, "GET", "/status", ""},
+		// the routes the client used to leave to `request`: a named notification that queues and
+		// holds, its dismissal, the block face's fade on both the transient and the durable side,
+		// a reboot, and the reboot scope on a named token.
+		{[]string{"notify", "doorbell", "--name", "door", "--stack", "--hold"}, "POST", "/notify", `{"text":"doorbell","name":"door","stack":true,"hold":true}`},
+		{[]string{"dismiss", "door"}, "POST", "/notify/dismiss", `{"name":"door"}`},
+		{[]string{"dismiss"}, "POST", "/notify/dismiss", `{}`},
+		{[]string{"dismiss", "--request-id", "ab"}, "POST", "/notify/dismiss", `{"request_id":"ab"}`},
+		{[]string{"scene", "clock", "--font", "block", "--fade"}, "PUT", "/scene", `{"base":"clock","clock":{"font":"block","fade":true}}`},
+		{[]string{"scene", "clock", "--fade=false"}, "PUT", "/scene", `{"base":"clock","clock":{"fade":false}}`},
+		{[]string{"config", "set", "--clock-fade=true"}, "PATCH", "/config", `{"clock_fade":true}`},
+		{[]string{"reboot"}, "POST", "/reboot", ""},
+		{[]string{"tokens", "create", "ops", "--scope", "status", "--scope", "reboot"}, "POST", "/tokens", `{"name":"ops","scopes":["status","reboot"]}`},
 	}
 	for _, tt := range tests {
 		t.Run(strings.Join(tt.args, " "), func(t *testing.T) {
@@ -141,6 +153,8 @@ func TestValidationBeforeNetwork(t *testing.T) {
 		{"config", "set"}, {"config", "set", "--data", "null"}, {"config", "set", "--data", `{}`, "--night"},
 		{"scripts", "run", "../x"}, {"sprites", "delete", "longerthan8"}, {"tokens", "create", ".hidden"},
 		{"request", "GET", "https://elsewhere/status"}, {"request", "GET", "/../status"},
+		// a notification name is letters, digits, _ or -: no dot, unlike a token or script name
+		{"notify", "hi", "--name", "door.bell"}, {"dismiss", "door.bell"}, {"dismiss", strings.Repeat("d", 33)}, {"reboot", "now"},
 	} {
 		t.Run(strings.Join(args, " "), func(t *testing.T) {
 			_, err := execute(t, args, "")
@@ -258,9 +272,9 @@ func TestCommandAuthSelection(t *testing.T) {
 	if err := os.WriteFile(file, []byte("control="+testToken+"\nadmin="+admin+"\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	for _, args := range [][]string{{"status"}, {"config", "set", "--brightness", "20"}, {"scripts", "run", "demo"}, {"sounds", "play", "chime"}} {
+	for _, args := range [][]string{{"status"}, {"config", "set", "--brightness", "20"}, {"scripts", "run", "demo"}, {"sounds", "play", "chime"}, {"reboot"}, {"dismiss"}} {
 		want := testToken
-		if args[0] == "config" || args[0] == "scripts" {
+		if args[0] == "config" || args[0] == "scripts" || args[0] == "reboot" {
 			want = admin
 		}
 		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

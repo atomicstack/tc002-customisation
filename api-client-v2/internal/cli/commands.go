@@ -164,7 +164,7 @@ func addControl(root *cobra.Command, o *options) {
 		addFields(c, identityFields)
 		root.AddCommand(c)
 	}
-	notifyFields := slices.Concat(identityFields, transitionFields, []field{colourField("colour"), numberField("duration_s", 1, 300)})
+	notifyFields := slices.Concat(identityFields, transitionFields, []field{colourField("colour"), numberField("duration_s", 1, 300), textField("name"), boolField("stack"), boolField("hold")})
 	notify := o.command("notify <text>", "show a temporary text notification", 1, func(c *cobra.Command, args []string) (operation, error) {
 		text := args[0]
 		if len(text) < 1 || len(text) > 128 {
@@ -179,11 +179,42 @@ func addControl(root *cobra.Command, o *options) {
 		if err != nil {
 			return operation{}, err
 		}
+		if name, ok := body["name"]; ok {
+			if name == "" {
+				return operation{}, errors.New("name must be 1..32 letters, digits, dash or underscore")
+			}
+			if err := validNotificationName(name.(string)); err != nil {
+				return operation{}, err
+			}
+		}
 		body["text"] = text
 		return jsonOperation("POST", "/notify", body, false)
 	})
 	addFields(notify, notifyFields)
 	root.AddCommand(notify)
+	// a dismissal names the notification to drop; without a name it drops the current one
+	dismiss := o.command("dismiss [name]", "dismiss the current notification, or the first one of that name", 0, func(c *cobra.Command, args []string) (operation, error) {
+		body, err := collect(c, identityFields)
+		if err != nil {
+			return operation{}, err
+		}
+		if len(args) == 1 {
+			if args[0] == "" {
+				return operation{}, errors.New("name must be 1..32 letters, digits, dash or underscore")
+			}
+			if err := validNotificationName(args[0]); err != nil {
+				return operation{}, err
+			}
+			body["name"] = args[0]
+		}
+		return jsonOperation("POST", "/notify/dismiss", body, false)
+	})
+	dismiss.Args = func(c *cobra.Command, args []string) error { return usage(cobra.MaximumNArgs(1)(c, args)) }
+	addFields(dismiss, identityFields)
+	root.AddCommand(dismiss)
+	// the runtime puts "rebooting..." on the panel and reboots. the route takes no body and
+	// needs the reboot scope, which only the admin token holds among the built-in pair.
+	o.simple(root, "reboot", "reboot the clock behind its notice (admin)", "POST", "/reboot", true)
 	inputFields := slices.Concat(identityFields, []field{numberField("steps", 1, 16)})
 	input := o.command("input <control> <event>", "press a button or turn the rotary control", 2, func(c *cobra.Command, args []string) (operation, error) {
 		control, event := args[0], args[1]
@@ -312,7 +343,7 @@ func addRaw(root *cobra.Command, o *options) {
 			choices = []string{"GET", "POST", "PUT", "PATCH", "DELETE"}
 		}
 		if len(args) == 1 {
-			choices = []string{"/status", "/scenes", "/scene", "/action", "/config", "/config/save", "/notify", "/frame", "/icons", "/sprites", "/canvas", "/mqtt", "/mqtt/status", "/ntfy", "/screen", "/logs", "/events", "/sounds", "/sound", "/berry", "/berry/scripts", "/tokens", "/streams"}
+			choices = []string{"/status", "/scenes", "/scene", "/action", "/config", "/config/save", "/notify", "/frame", "/icons", "/sprites", "/canvas", "/mqtt", "/mqtt/status", "/ntfy", "/screen", "/logs", "/events", "/sounds", "/sound", "/berry", "/berry/scripts", "/tokens", "/streams", "/notify/dismiss", "/reboot"}
 		}
 		return matching(choices, prefix), cobra.ShellCompDirectiveNoFileComp
 	}

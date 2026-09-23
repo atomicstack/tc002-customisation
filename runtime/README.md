@@ -100,14 +100,14 @@ tc002 status
 tc002 scene art --generator plasma --seed 5
 tc002 notify hello --colour 00ff80 --duration 4
 tc002 notify hello --transition swipe_in --direction left   # leaves as swipe_out right
-tc002 request POST /notify --data '{"text":"doorbell","name":"door","stack":true,"hold":true}'
-tc002 request POST /notify --data '{"text":"parcel","name":"delivery","stack":true,"duration_s":10}'
-tc002 request POST /notify/dismiss --data '{"name":"door"}'   # first matching name, active before waiting
-tc002 request POST /notify/dismiss --data '{}'                # current notification only
+tc002 notify doorbell --name door --stack --hold
+tc002 notify parcel --name delivery --stack --duration 10
+tc002 dismiss door   # first matching name, active before waiting
+tc002 dismiss        # current notification only
 tc002 frame --colour ff0000 --duration 3
 tc002 power off               # fades to black; `power on` fades back
 tc002 scene clock --font big --colour-mode gradient --colour 2060ff --colour2 60c0ff --gradient vertical
-tc002 config set --clock-font block --timezone Europe/Amsterdam   # durable defaults, admin token
+tc002 config set --clock-font block --clock-fade --timezone Europe/Amsterdam   # durable defaults, admin token
 tc002 config set --ip-mode big                                    # the address in one of four layouts, on the device menu's ip page
 tc002 scene clock --font hires                                    # time, a bar through the second, milliseconds at 60 fps
 tc002 ntfy set --enabled --url https://ntfy.sh --topic my-clock   # then: curl -d hello ntfy.sh/my-clock
