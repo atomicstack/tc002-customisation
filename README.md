@@ -66,15 +66,16 @@ authenticated api of its own. around it:
 - **`panel-v2/`**, a browser console for the runtime, including a canvas builder
   and a berry script editor, with the device's own renderer compiled to wasm so
   the preview draws the device's pixels rather than an approximation of them.
-- **`api-client-v2/`**, a go command-line client for the runtime's `/api/v1`.
+- **`api-client-v2/`**, `tc002`, a go command-line client for the runtime's `/api/v1`:
+  the way to drive the api by hand.
 - **`tc002-onboard.sh`**, the path from the box to the runtime in one command,
   and **`tc002-mkrelease.sh`**, the tarball that path runs from on a machine
   with no compiler.
 - **`tc002-devices.py`**, which lists every clock on the lan by name, so two
   clocks are never "the device".
-- **`tc002ctl.py`** for driving the api by hand, and **`tc002-update.sh`**, which puts
-  a build on a clock either `--in-place` (no reboot, gone on the next power cycle) or
-  `--flash` (reboots, permanent), with "updating" on the panel either way.
+- **`tc002-update.sh`**, which puts a build on a clock either `--in-place` (no
+  reboot, gone on the next power cycle) or `--flash` (reboots, permanent), with
+  "updating" on the panel either way.
 - **`led/`** and **`led-zig/`**, standalone generative-art renderers that talk
   to the panel over spi directly — the experiments the runtime's renderer grew
   out of.
@@ -119,7 +120,7 @@ tools:
 | [`runtime/tools/tc002-flash.sh`](runtime/tools/tc002-flash.sh) | the flashing step itself, called by `tc002-update.sh --flash` and by the onboarding script: flash an `UPDATE.img` to the `res` partition: backs up `mtd3` first, refuses to continue unless the backup unpacks, prefers usb, and puts a notice on the panel. the only thing here that writes to flash |
 | [`runtime/tools/tc002-mkimage.sh`](runtime/tools/tc002-mkimage.sh) | assemble that image from your device's own `res` plus the runtime, the bootstrap, busybox and the boot scripts |
 | [`runtime/tools/tc002-mkbusybox.sh`](runtime/tools/tc002-mkbusybox.sh) | build the static armv7 busybox the image needs, from a pinned upstream tarball — the vendor's own has no `udhcpc` |
-| [`runtime/tools/`](runtime/README.md) | the rest: `tc002-run.sh` (the push/start/stop steps the in-place update is made of), `tc002ctl.py` (drive the api by hand), `tc002-lock.sh` (the device lock agents share), and the demo and doc generators — described in [`runtime/README.md`](runtime/README.md) |
+| [`runtime/tools/`](runtime/README.md) | the rest: `tc002-run.sh` (the push/start/stop steps the in-place update is made of), `tc002-lock.sh` (the device lock agents share), and the demo and doc generators — described in [`runtime/README.md`](runtime/README.md) |
 | [`tc002-update-img.py`](tc002-update-img.py) | inspect, unpack and build the device's `update.img` (the `res` partition squashfs in the vendor's `ZKSWEV1.0` container): `inspect` runs the same checks the flasher does, `pack` rebuilds the vendor image byte for byte. see [`FIRMWARE.md`](FIRMWARE.md) |
 | [`api-client-v2/`](api-client-v2/README.md) | `tc002`, a go command-line client for the custom runtime's `/api/v1` — the scriptable counterpart to `panel-v2/`. not for the stock firmware |
 | [`led/`](led/) | popsquares generative art running on the device at 60 fps, straight to the panel over spi — static armv7 binary built with zig, plus an adb start/stop wrapper |

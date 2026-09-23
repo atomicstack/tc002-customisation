@@ -1,6 +1,10 @@
 #!/usr/bin/env python3
 """tc002ctl: host client for the custom runtime's /api/v1 (plaintext isolated-lan profile).
 
+deprecated: the go client in api-client-v2/ (`tc002`) is the supported way to drive the api
+by hand, and the docs describe that one. this script stays because tc002-onboard.sh and
+tc002-update.sh call it; do not add commands here.
+
 usage:
   tc002ctl.py -s <device-ip> [--token-file FILE | --token HEX] <command> [args]
 

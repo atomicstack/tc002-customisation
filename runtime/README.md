@@ -94,29 +94,31 @@ tokens (control and admin, 32 random bytes each) are generated once by the super
 
 ```bash
 adb pull /data/tc002/state/credentials/tokens tokens   # root over adb; keep the file private
-tools/tc002ctl.py -s <device-ip> --token-file tokens status
-tools/tc002ctl.py -s <device-ip> --token-file tokens scene art --generator plasma --seed 5
-tools/tc002ctl.py -s <device-ip> --token-file tokens notify hello --colour 00ff80 --duration 4
-tools/tc002ctl.py -s <device-ip> --token-file tokens notify hello --transition swipe_in --direction left   # leaves as swipe_out right
-tools/tc002ctl.py -s <device-ip> --token-file tokens notify doorbell --name door --stack --hold
-tools/tc002ctl.py -s <device-ip> --token-file tokens notify parcel --name delivery --stack --duration 10
-tools/tc002ctl.py -s <device-ip> --token-file tokens dismiss door   # first matching name, active before waiting
-tools/tc002ctl.py -s <device-ip> --token-file tokens dismiss        # current notification only
-tools/tc002ctl.py -s <device-ip> --token-file tokens frame --colour ff0000 --duration 3
-tools/tc002ctl.py -s <device-ip> --token-file tokens power off               # fades to black; `power on` fades back
-tools/tc002ctl.py -s <device-ip> --token-file tokens scene clock --font big --colour-mode gradient --colour 2060ff --colour2 60c0ff --gradient vertical
-tools/tc002ctl.py -s <device-ip> --token-file tokens config-set clock_font=block timezone=Europe/Amsterdam   # durable defaults, admin token
-tools/tc002ctl.py -s <device-ip> --token-file tokens scene ip --ip-mode big                      # the address in one of four layouts
-tools/tc002ctl.py -s <device-ip> --token-file tokens scene clock --font hires                     # time, a bar through the second, milliseconds at 60 fps
-tools/tc002ctl.py -s <device-ip> --token-file tokens --admin ntfy-set enabled=true url=https://ntfy.sh topic=my-clock   # then: curl -d hello ntfy.sh/my-clock
-tools/tc002ctl.py -s <device-ip> --token-file tokens --admin ntfy-set url=https://ntfy.home.lan:8443 --ca-file ca.pem  # a self-hosted server with a private ca
-tools/tc002ctl.py -s <device-ip> --token-file tokens input middle click      # a remote press; rotary cw --steps 3
-tools/tc002ctl.py -s <device-ip> --token-file tokens screen --ascii          # the frame as shown, drawn in the terminal
-tools/tc002ctl.py -s <device-ip> --token-file tokens logs --follow           # the supervisor's log ring
-tools/tc002ctl.py -s <device-ip> --token-file tokens config-set brightness=60 timezone=JST-9   # admin token
-tools/tc002ctl.py -s <device-ip> --token-file tokens config-save
-tools/tc002ctl.py -s <device-ip> --token-file tokens mqtt-set enabled=true host=10.0.0.2 port=1883 prefix=tc002/dev
-tools/tc002ctl.py -s <device-ip> --token-file tokens config-set discovery=true metrics_interval_s=30
+(cd ../api-client-v2 && make build)                     # the client, `tc002`; put api-client-v2/bin on your path
+export TC002_SERVER=<device-ip> TC002_TOKEN_FILE=tokens   # or -s and --token-file on every call
+tc002 status
+tc002 scene art --generator plasma --seed 5
+tc002 notify hello --colour 00ff80 --duration 4
+tc002 notify hello --transition swipe_in --direction left   # leaves as swipe_out right
+tc002 request POST /notify --data '{"text":"doorbell","name":"door","stack":true,"hold":true}'
+tc002 request POST /notify --data '{"text":"parcel","name":"delivery","stack":true,"duration_s":10}'
+tc002 request POST /notify/dismiss --data '{"name":"door"}'   # first matching name, active before waiting
+tc002 request POST /notify/dismiss --data '{}'                # current notification only
+tc002 frame --colour ff0000 --duration 3
+tc002 power off               # fades to black; `power on` fades back
+tc002 scene clock --font big --colour-mode gradient --colour 2060ff --colour2 60c0ff --gradient vertical
+tc002 config set --clock-font block --timezone Europe/Amsterdam   # durable defaults, admin token
+tc002 config set --ip-mode big                                    # the address in one of four layouts, on the device menu's ip page
+tc002 scene clock --font hires                                    # time, a bar through the second, milliseconds at 60 fps
+tc002 ntfy set --enabled --url https://ntfy.sh --topic my-clock   # then: curl -d hello ntfy.sh/my-clock
+tc002 ntfy set --url https://ntfy.home.lan:8443 --ca "$(< ca.pem)"   # a self-hosted server with a private ca
+tc002 input middle click      # a remote press; rotary cw --steps 3
+tc002 screen --format raw --out screen.rgb   # the frame as shown, 2496 rgb888 bytes
+tc002 logs --after 0          # a page of the supervisor's log ring; `events` streams what happens next
+tc002 config set --brightness 60 --timezone JST-9   # admin token
+tc002 config save
+tc002 mqtt set --enabled --host 10.0.0.2 --port 1883 --prefix tc002/dev
+tc002 config set --discovery --metrics-interval-s 30
 tools/tc002-test-broker.py                              # a minimal broker on the host, for tests
 ```
 
@@ -297,7 +299,7 @@ it as `TC002_DEVICE` for the scripts it calls; `tc002-run.sh` uses `TC002_DEVICE
 two. so with two clocks attached, `export TC002_DEVICE=<ip>:5555` before `tc002-run.sh`, and give
 `tc002-update.sh --device`. `tc002-devices.py` lists them, by mdns name where the runtime is
 running. tokens are per clock: an in-place update writes `tokens-<host>` beside `tokens` (the last
-clock updated), `tc002ctl.py --token-file tokens-<host>` picks one, and the console's proxy reads
+clock updated), `tc002 --token-file tokens-<host>` picks one, and the console's proxy reads
 every `tokens-<host>` file beside the one it was started with, so `?host=` switches clocks with the
 right tokens.
 
@@ -397,9 +399,9 @@ are still never sent. the mcu also streams unsolicited mic reports that the sync
 ### time sync (sntp)
 
 the supervisor keeps the clock in sync with one local ntp server once `ntp_server` is set (a dotted
-ipv4; `ntp_interval_s` 300 or 600): `tc002ctl.py -s <ip> --token-file FILE config-set ntp_server=10.0.0.136`,
+ipv4; `ntp_interval_s` 300 or 600): `tc002 -s <ip> --token-file FILE config set --ntp-server 10.0.0.136`,
 every accepted write is persisted at once -- `saved_revision` in the reply follows `revision` on its
-own, and `config-save` is only a force-write. `/status` reports `time.state` (`unsynced` / `synced` /
+own, and `config save` is only a force-write. `/status` reports `time.state` (`unsynced` / `synced` /
 `stale`) and `time.age_s`; the supervisor log shows every exchange as `sntp: offset N ms, delay N ms,
 stratum N, stepped|slewing`. the client, its validation rules and the step/slew thresholds are described
 in [RUNTIME.md](../RUNTIME.md#time-sntp).

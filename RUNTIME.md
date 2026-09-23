@@ -836,7 +836,7 @@ renders the address now.
 the runtime can subscribe to a [ntfy](https://docs.ntfy.sh/subscribe/api/)
 topic, on the official service or a self-hosted server, and show every message
 as a notification. `GET /ntfy` and `PUT /ntfy` (admin) carry the settings;
-`tools/tc002ctl.py ntfy` / `ntfy-set` are the client side:
+`tc002 ntfy get` / `tc002 ntfy set` ([`api-client-v2/`](api-client-v2/README.md)) are the client side:
 
 | field | meaning | default |
 |---|---|---|
@@ -849,7 +849,7 @@ as a notification. `GET /ntfy` and `PUT /ntfy` (admin) carry the settings;
 | `insecure` | skip certificate verification (a self-signed server) | `false` |
 | `ca` | a pem certificate (at most 3,500 bytes) to trust in addition to the built-in root; `""` removes it; reported as `ca_set` | none |
 
-the settings are part of the saved configuration (`config-save`); the ca is
+the settings are part of the saved configuration (`POST /config/save`); the ca is
 kept beside the tokens in the credentials directory (root only) and handed to
 the subscriber over ipc. a message shows as `title: message` (or the message
 alone), folded to printable ascii and at most 128 characters, coloured by
@@ -1134,14 +1134,14 @@ off the edge: half a word is worse than none.
 `POST /reboot` reaches the same path from outside: the notice goes up, the
 mdns name is withdrawn as netd goes down, and `/bin/reboot` follows. it needs
 the `reboot` scope, which the admin token holds and the control token does not,
-and it is not one of the mqtt command topics. `tools/tc002ctl.py reboot` is the
-one-liner. it is also how `tc002-update.sh` clears a clock whose adbd has run
+and it is not one of the mqtt command topics. `tc002 --admin request POST /reboot`
+is the one-liner. it is also how `tc002-update.sh` clears a clock whose adbd has run
 out of ptys (every `adb shell` answering `error: closed`) before it goes on.
 before the route existed the only remote way was driving the menu over
 `/input`, five round trips that depended on the reboot item staying ninth:
 
 ```bash
-runtime/tools/tc002ctl.py -s <ip> --token-file tokens reboot
+tc002 -s <ip> --token-file tokens --admin request POST /reboot
 ```
 
 a value is applied at once as a preview but is only **written** once it has
@@ -2215,7 +2215,7 @@ controls also receive empty retained records to remove previously advertised ent
 
 | tool | what it does |
 |------|--------------|
-| `tc002ctl.py` | a client for every route: `status`, `scenes`, `scene` (with `--font`, `--colour-mode`, `--colour`, `--colour2`, `--gradient`, `--spread` for the clock), `brightness`, `reseed`, `arm-stream`, `notify` (with `--name`, `--stack`, `--hold`), `dismiss [name]`, `frame`, `power`, `input`, `screen` (`--ascii` draws the panel in the terminal, `--out` saves the raw rgb), `logs` (`--follow`), `config`, `config-set`, `config-save`, `mqtt`, `mqtt-set`, `mqtt-status`. takes the pulled token file (`--token-file`) or a hex token, picks the admin token for admin commands, generates request ids and fetches the epoch for you |
+| `tc002` ([`api-client-v2/`](api-client-v2/README.md)) | the command-line client, written in go and built with `make build` there: `status`, `scenes`, `scene` (with `--font`, `--colour-mode`, `--colour`, `--colour2`, `--gradient`, `--spread`, `--digits` for the clock), `brightness`, `reseed`, `arm-stream`, `notify`, `frame`, `power`, `input`, `screen` (`--format raw --out` saves the rgb), `logs`, `events`, `config get|set|save`, `mqtt get|set|status`, `ntfy get|set`, `canvas`, `sprites`, `sounds`, `scripts`, `tokens`, and `request <method> <path>` for a route that has no command of its own yet (`/notify` with `name`, `stack` and `hold`, `/notify/dismiss`, `/reboot`, `clock_fade` through `config set --data`). takes the pulled token file (`--token-file`, or `TC002_TOKEN_FILE`) or a hex token, picks the admin token for admin commands, generates request ids and fetches the epoch for you. it does not live in `runtime/tools/`: the `tc002ctl.py` there is deprecated in its favour and stays only because `tc002-onboard.sh` and `tc002-update.sh` still call it |
 | `tc002-update.sh` | `--in-place`, the one-shot cold start for a person (`tc002-update.sh --in-place` is its old name; `--flash` is the other kind of update, the one that reboots): connect adb, build and push (`--no-build` to skip the build), start the supervisor with `--tz`, apply and save the timezone, scene, clock font and sntp server, pull the tokens to the repo root for the console, print the status. after a reboot this is the way back |
 | `tc002-demo-*.py` | the demo reels, one per topic, played from this machine over the api: `shapes` (the primitives, clipping, bars), `text` (four fonts, alignment, and all eight animations), `charts` (sparkline styles, autoscale against a fixed range, thresholds, sweep, hex samples, a live feed), `icons` (every built-in glyph, five a page, the set fetched from the device), `images` (sprites generated on the host, uploaded, drawn, animated, deleted), `layout` (absolute placement, tiles and rows, boxes, clipping, draw order), `tiles` (the composite at four widths, so the layout switch is visible), `dashboard` (four realistic dashboards, each pushed once then fed only numbers, printing what the layout and the patches cost in bytes). all take `-s`, a token, `--hold`, `--only`, `--list` and `--loop`, and all put back the scene **and the canvas** they found. `tc002demo.py` is their shared helper, not a demo, and `tc002-demo-lint.py` puts every document all eight would send through the runtime's own rules without a device — the limits and field rules, and where the ink lands: text off the edge of a 52×16 panel, two pieces of text on the same pixels, a tile label too wide for its tile. it is how the shapes reel's 26 elements against a limit of 24 were caught on this machine rather than on the panel, and it now catches the overflows that only showed up once the reels were played on one. a step whose subject is running off an edge names itself in the demo's `LINT_ALLOW`. `tc002-canvas-docs.py` photographs the panel for [`CANVAS.md`](CANVAS.md) -- it drives the device through that page's catalogue and saves a png per still and a gif per motion off `GET /screen`, so the document and the picture of it cannot drift (the gifs need ffmpeg on the host; the stills do not) |
 | `tc002-demo-transitions.py` | a demo reel of every transition, played from this machine over the api: for each effect a clock ↔ art scene change arrives with it, then a labelled notification arrives with it and leaves with the paired exit; `--only` with per-step direction and exit overrides, `--ms`, `--hold`, `--loop`, `--no-scenes`, `--list`; restores the scene it started from and leaves the settings alone |
@@ -2232,14 +2232,15 @@ cd runtime
 tools/tc002-run.sh push
 tools/tc002-run.sh start --profile dev --stats --tz 'AEST-10AEDT,M10.1.0,M4.1.0/3'
 adb pull /data/tc002/state/credentials/tokens tokens # root over adb; keep the file private
-tools/tc002ctl.py -s <device-ip> --token-file tokens status
-tools/tc002ctl.py -s <device-ip> --token-file tokens notify hello --colour 00ff80 --duration 4
-tools/tc002ctl.py -s <device-ip> --token-file tokens notify doorbell --name door --stack --hold
-tools/tc002ctl.py -s <device-ip> --token-file tokens notify parcel --name delivery --stack --duration 10
-tools/tc002ctl.py -s <device-ip> --token-file tokens dismiss door   # promotes parcel if door is active
-tools/tc002ctl.py -s <device-ip> --token-file tokens dismiss        # dismisses only the current notification
-tools/tc002ctl.py -s <device-ip> --token-file tokens config-set brightness=60 base=clock
-tools/tc002ctl.py -s <device-ip> --token-file tokens config-save
+export TC002_SERVER=<device-ip> TC002_TOKEN_FILE=tokens   # or -s and --token-file on every call
+tc002 status
+tc002 notify hello --colour 00ff80 --duration 4
+tc002 request POST /notify --data '{"text":"doorbell","name":"door","stack":true,"hold":true}'
+tc002 request POST /notify --data '{"text":"parcel","name":"delivery","stack":true,"duration_s":10}'
+tc002 request POST /notify/dismiss --data '{"name":"door"}'   # promotes parcel if door is active
+tc002 request POST /notify/dismiss --data '{}'                # dismisses only the current notification
+tc002 config set --brightness 60 --base clock
+tc002 config save
 tools/tc002-run.sh stop
 ```
 

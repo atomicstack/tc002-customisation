@@ -112,6 +112,26 @@ tc002 request GET /logs --query after=12
 tc002 --admin request PATCH /config --data '{"brightness":30}'
 ```
 
+## routes without a command of their own
+
+`request` covers what the command set has not caught up with. these are the ones the
+runtime's docs lean on; each sends exactly what the route's own tests send.
+
+```sh
+# a named notification that queues behind the current one and stays until dismissed
+tc002 request POST /notify --data '{"text":"doorbell","name":"door","stack":true,"hold":true}'
+tc002 request POST /notify/dismiss --data '{"name":"door"}'   # the first notification of that name
+tc002 request POST /notify/dismiss --data '{}'                # the current one only
+# the block clock face's fade (a toggle the settings flags do not know yet)
+tc002 config set --data '{"clock_fade":true}'
+# reboot behind the "rebooting..." notice: needs the reboot scope, so the admin token
+tc002 --admin request POST /reboot
+```
+
+`tokens create --scope` checks its list before sending, and that list does not have
+`reboot` in it yet; grant it through `request`:
+`tc002 --admin request POST /tokens --data '{"name":"ops","scopes":["status","reboot"]}'`.
+
 ## home assistant controls
 
 ```sh
@@ -160,7 +180,8 @@ stream-session creation, palette and deletion routes are present in the runtime
 but currently return `503 not_implemented`. they remain accessible through
 `request`; `events` is the separately implemented event stream. `arm-stream`
 only sends the runtime's existing arm action. the current base scenes are clock,
-art and canvas; the old python helper's `scene ip` example is not valid here.
+art and canvas; there is no `scene ip`: the address is a page of the device menu,
+and its layout is the `ip_mode` setting.
 
 ## shell completion
 

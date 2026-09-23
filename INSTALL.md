@@ -19,9 +19,10 @@ broken.
 | | why | install |
 |---|---|---|
 | `adb` | the only way in; the device ships with adbd open and root on `:5555` | `brew install android-platform-tools` · `apt install adb` |
-| `python3` | the image tool and the adoption/control scripts | ships with macOS at `/usr/bin/python3`; homebrew's is fine too, see the LAN note below |
+| `python3` | the image tool and the adoption scripts | ships with macOS at `/usr/bin/python3`; homebrew's is fine too, see the LAN note below |
 | `squashfs-tools` | `res` is a squashfs; your image is repacked locally | `brew install squashfs-tools` · `apt install squashfs-tools` |
 | `zig` **0.16.0 exactly** | **only from a git checkout** — see below | `brew install zig` |
+| `go` 1.24+ | `tc002`, the command-line client for the runtime's api (`make build` in [`api-client-v2/`](api-client-v2/README.md)); optional, the adoption script does not need it | `brew install go` · `apt install golang` |
 
 **"No compiler" is true only from a release tarball.** The tarball carries the
 ARM binaries and the static busybox prebuilt. From a **git checkout**,
@@ -140,13 +141,13 @@ UTC time, while a clock with a timezone and no NTP shows nothing.
 
 ```bash
 adb pull /data/tc002/state/credentials/tokens tokens
-runtime/tools/tc002ctl.py -s <device-ip> --token-file tokens \
-    config-set timezone=Europe/Amsterdam ntp_server=162.159.200.123
+tc002 -s <device-ip> --token-file tokens \
+    config set --timezone Europe/Amsterdam --ntp-server 162.159.200.123
 ```
 
 **You do not need to save.** Every accepted settings write is persisted at once;
 confirm it by seeing `saved_revision` match `revision` in the reply.
-`config-save` remains as a force-write, and forgetting it costs nothing.
+`config save` remains as a force-write, and forgetting it costs nothing.
 
 > **`ntp_server` must be a dotted IPv4 address.** The runtime has no DNS
 > resolver, so `pool.ntp.org` is rejected. (The stock firmware has the same

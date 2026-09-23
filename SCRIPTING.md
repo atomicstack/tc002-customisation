@@ -22,7 +22,7 @@ turned it on.
 
 ```bash
 # 1. turn it on (admin token; berryd is spawned as a result)
-tools/tc002ctl.py -s 10.0.0.111 --token-file tokens config-set berry_enabled=true
+tc002 -s 10.0.0.111 --token-file tokens config set --berry-enabled
 
 # 2. store a script. `autoexec` is the name that runs by itself.
 cat > hello.be <<'EOF'
@@ -458,7 +458,7 @@ device's.
 ## when something does not work
 
 - **`print` is the debugger.** it reaches `GET /api/v1/logs`, which
-  `tools/tc002ctl.py … logs --follow` will tail for you.
+  `tc002 logs` reads a page of (`--after` the `next` of the last page).
 - **a handler that raises is logged with its message** and stays registered, until
   ten consecutive failures drop it — and that drop is logged too.
 - **`GET /api/v1/berry`** reports `heap_used`, `heap_high_water`, `alloc_failures`
