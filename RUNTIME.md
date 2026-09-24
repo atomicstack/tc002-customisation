@@ -758,7 +758,7 @@ pushes the old content off the left edge, revealing the new underneath.
 **the recordings** are the effects themselves, not photographs of them: the
 renderer's transition code compiled to webassembly, driven at 60 frames a
 second for 800 ms with a 300 ms hold either side, the block clock face giving
-way to a dark grey canvas naming the effect and coming back with the paired
+way to a white canvas naming the effect in black and coming back with the paired
 effect the other way, the way a notification leaves. they are animated pngs, so every frame is full colour and
 every delay is exactly 1/60 s, which a gif cannot promise. `node
 panel-v2/record-transitions.mjs` regenerates them from the built wasm; a new

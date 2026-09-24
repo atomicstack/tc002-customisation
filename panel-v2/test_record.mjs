@@ -39,10 +39,11 @@ test('a recording goes from the block clock face to a dark canvas naming the eff
   const classic = W.frame().slice();
   assert.ok(first.some((v, i) => v !== classic[i]), 'the clock is not drawn in the default face');
   assert.ok(first.some(v => v === 255), 'the clock face is lit');
-  // the canvas: a dark grey ground everywhere the text is not, and white text somewhere
+  // the canvas: a white ground everywhere the text is not, and black text in the name's rows
   const corner = [last[0], last[1], last[2]];
-  assert.deepEqual(corner, [0x2a, 0x2a, 0x2a], `dark grey ground, got ${corner}`);
-  assert.ok(last.some(v => v === 255), 'the effect name is written in white');
+  assert.deepEqual(corner, [255, 255, 255], `white ground, got ${corner}`);
+  const nameRows = last.subarray(5 * 52 * 3, 10 * 52 * 3);
+  assert.ok(nameRows.some(v => v === 1), 'the effect name is written in the darkest ink the canvas draws');
   assert.equal(r.label, 'wipe');
 });
 

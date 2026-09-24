@@ -5,8 +5,8 @@
      node panel-v2/record-transitions.mjs [--out DIR] [--fps 60] [--duration 800] [--hold 300]
                                           [--scale 6] [--only fade,slide] [--list]
 
-   each file is one effect: the block clock face gives way, with the effect, to a canvas that is a
-   dark grey ground with the effect's name on it in the mini face, holds, and comes back with the
+   each file is one effect: the block clock face gives way, with the effect, to a canvas that is
+   the effect's name in black on a white ground in the mini face, holds, and comes back with the
    paired effect the other way, which is how a notification leaves. the two scenes are chosen to
    be told apart at a glance halfway through any effect. `random`
    is not recorded, since it resolves to one of the others. the effect list is read out of the wasm,
@@ -33,13 +33,16 @@ const PAIRED = { swipe_in: 'swipe_out', swipe_out: 'swipe_in', split_in: 'split_
 const OPPOSITE = { left: 'right', right: 'left', up: 'down', down: 'up' };
 export const naturalDirection = effect => (effect === 'rain' || effect === 'rain_random') ? 'down' : 'left';
 
-/* the canvas an effect lands on: a dark grey ground under the effect's name, so the two scenes are
-   unmistakable mid-effect. underscores read as spaces in the mini face */
-export const ground = '2a2a2a';
+/* the canvas an effect lands on: the effect's name in black on a white ground, the negative of the
+   white-on-black clock, so the two scenes are unmistakable mid-effect. underscores read as spaces
+   in the mini face. the canvas draws nothing for pure black (black is transparent there, as it is
+   for sprites), so the ink is one step above it, which is black in a recording */
+export const ground = 'ffffff';
+export const ink = '010101';
 export function nameCanvas(effect) {
   return { elements: [
     { type: 'rect', id: 'bg', at: [0, 0], size: [52, 16], colour: ground, filled: true },
-    { type: 'text', id: 'name', at: [0, 5], size: [52, 5], font: 'mini', align: 'centre', colour: 'ffffff', text: effect.replace(/_/g, ' ') },
+    { type: 'text', id: 'name', at: [0, 5], size: [52, 5], font: 'mini', align: 'centre', colour: ink, text: effect.replace(/_/g, ' ') },
   ] };
 }
 
