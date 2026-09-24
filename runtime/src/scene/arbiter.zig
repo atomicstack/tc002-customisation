@@ -670,12 +670,12 @@ pub const Overlay = union(enum) { none, notify: Notify, raw: Raw, stream_arming:
 
 /// what was showing when the running transition began. the renderer composites it as the
 /// effect's old layer, live: the art keeps stepping, the clock ticking, a notification scrolling.
-pub const Outgoing = struct { base: Base, generator: scene.Generator, overlay: Overlay, clock_style: clock.Style };
+pub const Outgoing = struct { base: Base, generator: scene.Generator, overlay: Overlay, clock_style: clock.Style, notify_canvas: canvas.State = .{} };
 
 pub const Command = union(enum) {
     set_base: Base,
     select_generator: scene.Generator,
-    notify: struct { text: []const u8, colour: [3]u8, duration_s: u16, name: []const u8 = "", stack: bool = false, hold: bool = false },
+    notify: struct { text: []const u8, colour: [3]u8, duration_s: u16, name: []const u8 = "", stack: bool = false, hold: bool = false, doc: ?*const canvas.Document = null },
     dismiss_notify: []const u8,
     raw: struct { rgb: *const geometry.Rgb, duration_s: u16 },
     /// one frame of a stream: the same overlay slot as `raw`, a deadline in milliseconds rather
@@ -743,13 +743,15 @@ pub const Statement = struct {
     hold: bool = false,
     text_len: u8 = 0,
     text: [text_max]u8 = [_]u8{0} ** text_max,
+    /// the notification is a document; `text` is its summary
+    rich: bool = false,
 
     pub fn textSlice(self: *const Statement) []const u8 {
         return self.text[0..self.text_len];
     }
 };
 
-pub const Reject = enum { invalid_text, invalid_duration, invalid_brightness, invalid_name, queue_full };
+pub const Reject = enum { invalid_text, invalid_duration, invalid_brightness, invalid_name, invalid_elements, queue_full };
 pub const Result = union(enum) { applied: u32, rejected: Reject };
 
 pub const Arbiter = struct {
@@ -788,6 +790,8 @@ pub const Arbiter = struct {
     /// layout is still a setting, so the state and its four renderings stay here
     ip: ip.State = .{},
     canvas: canvas.State = .{},
+    /// the active rich notification's document and animation clocks; empty while a text one shows
+    notify_canvas: canvas.State = .{},
     /// the settings menu, drawn over everything and taking every control while it is open
     menu_state: ?menu.Menu = null,
     /// what the menu wants the supervisor to do; the renderer takes it and sends it up
@@ -826,7 +830,7 @@ pub const Arbiter = struct {
     }
 
     fn capture(self: *const Arbiter) Outgoing {
-        return .{ .base = self.base, .generator = self.art.generator, .overlay = self.overlay, .clock_style = self.clock.style };
+        return .{ .base = self.base, .generator = self.art.generator, .overlay = self.overlay, .clock_style = self.clock.style, .notify_canvas = self.notify_canvas };
     }
 
     /// the renderer finished (or cut short) the transition: the old layer is no longer needed
@@ -838,7 +842,7 @@ pub const Arbiter = struct {
     pub fn renderOutgoing(self: *const Arbiter, wall_ns: u64, rgb: *geometry.Rgb) bool {
         const o = self.outgoing orelse return false;
         switch (o.overlay) {
-            .notify => |n| self.renderNotify(&n, rgb),
+            .notify => |n| if (n.doc != null) o.notify_canvas.renderWith(&self.canvas.sprites, self.last_tick_ns, rgb) else self.renderNotify(&n, rgb),
             .raw => |r| rgb.* = r.rgb,
             .stream_arming, .none => {
                 switch (o.base) {
@@ -896,6 +900,7 @@ pub const Arbiter = struct {
                 st.name = notification.Name.init(n.name);
                 st.stack = n.stack;
                 st.hold = n.hold;
+                st.rich = n.doc != null;
                 st.text_len = @intCast(@min(n.text.len, Statement.text_max));
                 @memcpy(st.text[0..st.text_len], n.text[0..st.text_len]);
             },
@@ -955,6 +960,7 @@ pub const Arbiter = struct {
                 self.base = b;
                 self.notifications.len = 0;
                 self.overlay = .none;
+                self.notify_canvas = .{};
                 return .{ .applied = self.bump() };
             },
             .select_generator => |g| {
@@ -964,12 +970,15 @@ pub const Arbiter = struct {
                 return .{ .applied = self.bump() };
             },
             .notify => |n| {
-                if (n.text.len == 0 or n.text.len > 128) return .{ .rejected = .invalid_text };
+                if (n.doc) |d| {
+                    if (d.empty()) return .{ .rejected = .invalid_elements };
+                } else if (n.text.len == 0) return .{ .rejected = .invalid_text };
+                if (n.text.len > 128) return .{ .rejected = .invalid_text };
                 for (n.text) |c| if (c < 0x20 or c > 0x7e) return .{ .rejected = .invalid_text };
                 if (!validDuration(n.duration_s)) return .{ .rejected = .invalid_duration };
                 if (n.name.len != 0 and !notification.validName(n.name)) return .{ .rejected = .invalid_name };
                 const t = spec orelse self.default_transition;
-                var o = Notify{ .text = undefined, .len = @intCast(n.text.len), .colour = n.colour, .name = notification.Name.init(n.name), .duration_s = n.duration_s, .hold = n.hold, .since_ns = now_ns, .until_ns = now_ns + @as(u64, n.duration_s) * s_ns, .transition = t };
+                var o = Notify{ .text = undefined, .len = @intCast(n.text.len), .colour = n.colour, .name = notification.Name.init(n.name), .duration_s = n.duration_s, .hold = n.hold, .since_ns = now_ns, .until_ns = now_ns + @as(u64, n.duration_s) * s_ns, .transition = t, .doc = if (n.doc) |d| d.* else null };
                 @memcpy(o.text[0..n.text.len], n.text);
                 if (n.stack and self.overlay == .notify) {
                     if (!self.notifications.push(o)) return .{ .rejected = .queue_full };
@@ -977,6 +986,7 @@ pub const Arbiter = struct {
                     return .{ .applied = self.revision };
                 }
                 self.overlay = .{ .notify = o };
+                self.activateNotification(&o, now_ns);
                 self.pending = t;
                 return .{ .applied = self.bump() };
             },
@@ -1016,6 +1026,7 @@ pub const Arbiter = struct {
                 if (!validDuration(r.duration_s)) return .{ .rejected = .invalid_duration };
                 const t = spec orelse transition.Spec.cut;
                 self.notifications.len = 0;
+                self.notify_canvas = .{};
                 self.overlay = .{ .raw = .{ .rgb = r.rgb.*, .until_ns = now_ns + @as(u64, r.duration_s) * s_ns, .transition = t } };
                 if (!t.instant()) self.pending = t;
                 return .{ .applied = self.bump() };
@@ -1026,6 +1037,7 @@ pub const Arbiter = struct {
                 // sending faster than sixty a second, which it cannot show"
                 if (self.dirty and self.overlay == .raw) self.stream_coalesced +|= 1;
                 self.notifications.len = 0;
+                self.notify_canvas = .{};
                 self.overlay = .{ .raw = .{ .rgb = st.rgb.*, .until_ns = now_ns + @as(u64, st.timeout_ms) * std.time.ns_per_ms, .transition = transition.Spec.cut } };
                 self.stream_frames +|= 1;
                 self.dirty = true;
@@ -1044,6 +1056,7 @@ pub const Arbiter = struct {
             },
             .arm_stream => {
                 self.notifications.len = 0;
+                self.notify_canvas = .{};
                 self.overlay = .{ .stream_arming = now_ns + arming_wait_ns };
                 return .{ .applied = self.bump() };
             },
@@ -1365,11 +1378,20 @@ pub const Arbiter = struct {
             next.since_ns = now_ns;
             next.until_ns = now_ns + @as(u64, next.duration_s) * s_ns;
             self.overlay = .{ .notify = next };
+            self.activateNotification(&next, now_ns);
             self.pending = next.transition;
         } else {
             self.overlay = .none;
+            self.notify_canvas = .{};
             self.pending = current.transition.outgoing();
         }
+    }
+
+    /// a document notification starts its animations the moment it is shown, whether it arrived
+    /// now or waited in the queue: an arrival animation that ran out while waiting would be lost
+    fn activateNotification(self: *Arbiter, e: *const Notify, now_ns: u64) void {
+        self.notify_canvas = .{};
+        if (e.doc) |d| self.notify_canvas.install(d, now_ns);
     }
 
     fn renderBase(self: *Arbiter, wall_ns: u64, rgb: *geometry.Rgb) void {
@@ -1397,6 +1419,10 @@ pub const Arbiter = struct {
     }
 
     fn renderNotify(self: *const Arbiter, n: *const Notify, rgb: *geometry.Rgb) void {
+        if (n.doc != null) {
+            self.notify_canvas.renderWith(&self.canvas.sprites, self.last_tick_ns, rgb);
+            return;
+        }
         rgb.* = geometry.black_rgb;
         const text = n.text[0..n.len];
         const w: i32 = @intCast(font.textWidth(text));
@@ -1419,7 +1445,7 @@ pub const Arbiter = struct {
         // so does a separator pulse, which the clock's own once-a-second cadence would miss entirely
         if (self.base == .clock and self.separatorPulsing(self.last_tick_ns)) return .{ .continuous = scene.frame_period_ns };
         return switch (self.overlay) {
-            .notify => |n| if (font.textWidth(n.text[0..n.len]) > geometry.width) .{ .continuous = scroll_period_ns } else .idle,
+            .notify => |n| if (n.doc != null) self.notify_canvas.cadence(self.last_tick_ns) else if (font.textWidth(n.text[0..n.len]) > geometry.width) .{ .continuous = scroll_period_ns } else .idle,
             .raw => .idle,
             .stream_arming, .none => switch (self.base) {
                 .art => self.art.cadence(),
@@ -1637,4 +1663,108 @@ test "waiting dismissal keeps the transition and display timer unchanged" {
     a.tick(3 * s_ns, 0);
     try std.testing.expect(a.overlay == .none);
     try std.testing.expectEqual(Statement.Kind.overlay_expired, a.takeApplied().?.kind);
+}
+
+fn richDoc(text: []const u8) canvas.Document {
+    var d = canvas.Document{};
+    const span = d.addText(text) catch unreachable;
+    d.add(.{ .id = canvas.Id.init("t"), .box = .{ .x = 0, .y = 5, .w = 52, .h = 5 }, .colour = .{ 255, 128, 0 }, .body = .{ .text = .{ .span = span, .face = .mini, .alignment = .centre } }, .anim = .{ .kind = .typewriter, .ms = 1000 } }) catch unreachable;
+    return d;
+}
+
+fn richCommand(doc: *const canvas.Document, name: []const u8, stack: bool, hold: bool, seconds: u16) Command {
+    return .{ .notify = .{ .text = "", .colour = white, .duration_s = seconds, .name = name, .stack = stack, .hold = hold, .doc = doc } };
+}
+
+fn litPixels(rgb: *const geometry.Rgb) usize {
+    var n: usize = 0;
+    for (rgb) |v| n += @intFromBool(v != 0);
+    return n;
+}
+
+test "a rich notification draws its document and records a rich statement" {
+    var a = fresh();
+    const doc = richDoc("hello");
+    try std.testing.expect(a.apply(richCommand(&doc, "", false, false, 5), 0) == .applied);
+    const st = a.takeApplied().?;
+    try std.testing.expectEqual(Statement.Kind.notify, st.kind);
+    try std.testing.expect(st.rich);
+    try std.testing.expectEqual(@as(u8, 0), st.text_len);
+    a.tick(2 * s_ns, 0);
+    var rgb: geometry.Rgb = undefined;
+    a.render(0, &rgb);
+    try std.testing.expect(litPixels(&rgb) > 0);
+    // orange, from the element, not white from the notify colour
+    var orange = false;
+    var i: usize = 0;
+    while (i < rgb.len) : (i += 3) if (rgb[i] == 255 and rgb[i + 1] == 128 and rgb[i + 2] == 0) {
+        orange = true;
+    };
+    try std.testing.expect(orange);
+}
+
+test "a rich notification without text or elements is invalid, and text stays bounded" {
+    var a = fresh();
+    try expectRejected(a.apply(.{ .notify = .{ .text = "", .colour = white, .duration_s = 5 } }, 0), .invalid_text);
+    const empty = canvas.Document{};
+    try expectRejected(a.apply(richCommand(&empty, "", false, false, 5), 0), .invalid_elements);
+}
+
+test "a queued rich notification starts its animation when promoted, not when queued" {
+    var a = fresh();
+    _ = a.apply(queuedTestCommand("first", "a", false, false, 1), 0);
+    const doc = richDoc("second");
+    _ = a.apply(richCommand(&doc, "b", true, false, 5), 0);
+    // the typewriter is 1000 ms long; at promotion (t = 1 s) it is at its start
+    a.tick(1 * s_ns, 0);
+    try std.testing.expect(a.overlay == .notify and a.overlay.notify.doc != null);
+    try std.testing.expectEqual(@as(u32, 0), a.notify_canvas.clocks.docAgeMs(1 * s_ns));
+    var early: geometry.Rgb = undefined;
+    a.render(0, &early);
+    a.tick(1 * s_ns + 900 * std.time.ns_per_ms, 0);
+    var late: geometry.Rgb = undefined;
+    a.render(0, &late);
+    try std.testing.expect(litPixels(&late) > litPixels(&early));
+}
+
+test "a rich notification leaving through a transition keeps its own document on the outgoing layer" {
+    var a = fresh();
+    const first = richDoc("AAAAAAAAAA");
+    _ = a.apply(richCommand(&first, "a", false, false, 5), 0);
+    // the renderer ran the arrival effect
+    a.pending = null;
+    a.transitionDone();
+    a.tick(2 * s_ns, 0);
+    var shown: geometry.Rgb = undefined;
+    a.render(0, &shown);
+    const second = richDoc("B");
+    _ = a.apply(richCommand(&second, "b", false, false, 5), 2 * s_ns);
+    try std.testing.expect(a.outgoing != null);
+    var out: geometry.Rgb = undefined;
+    try std.testing.expect(a.renderOutgoing(0, &out));
+    // the outgoing layer is the first document, fully typed, not the second at its first frame
+    try std.testing.expectEqualSlices(u8, &shown, &out);
+    var now: geometry.Rgb = undefined;
+    a.render(0, &now);
+    try std.testing.expect(litPixels(&now) < litPixels(&out));
+}
+
+test "a rich notification has the canvas cadence and a text one keeps its own" {
+    var a = fresh();
+    const doc = richDoc("x");
+    _ = a.apply(richCommand(&doc, "", false, false, 5), 0);
+    try std.testing.expect(a.cadence(0) == .continuous); // the typewriter is running
+    a.tick(3 * s_ns, 0);
+    try std.testing.expect(a.cadence(0) == .idle); // and has finished
+    _ = a.apply(queuedTestCommand("short", "", false, false, 5), 3 * s_ns);
+    try std.testing.expect(a.cadence(0) == .idle);
+}
+
+test "a text notification is unchanged by the document field" {
+    var a = fresh();
+    _ = a.apply(queuedTestCommand("hi", "", false, false, 5), 0);
+    try std.testing.expect(a.overlay.notify.doc == null);
+    const st = a.takeApplied().?;
+    try std.testing.expect(!st.rich);
+    try std.testing.expectEqualStrings("hi", st.textSlice());
 }

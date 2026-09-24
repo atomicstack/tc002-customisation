@@ -1,6 +1,7 @@
 //! bounded notification storage; the arbiter owns display timing and transitions.
 const std = @import("std");
 const transition = @import("../panel/transition.zig");
+const canvas = @import("canvas.zig");
 
 pub const capacity = 8;
 pub const name_max = 32;
@@ -37,6 +38,8 @@ pub const Entry = struct {
     since_ns: u64,
     until_ns: u64,
     transition: transition.Spec,
+    /// a document to draw instead of the text; the text is then only the summary
+    doc: ?canvas.Document = null,
 };
 
 /// the active entry is the arbiter's overlay, leaving seven slots for waiting entries.
