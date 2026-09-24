@@ -1854,10 +1854,10 @@ const Netd = struct {
         if (!std.mem.startsWith(u8, p.topic, cmd_prefix)) return;
         const suffix = p.topic[cmd_prefix.len..];
         if (std.mem.eql(u8, suffix, "frame")) {
-            // the 14-byte envelope, or 18 or 19 bytes with a transition (effect, direction, duration_ms,
-            // optionally exit) before the rgb
+            // the 14-byte envelope, or 18, 19 or 20 bytes with a transition (effect, direction,
+            // duration_ms, then optionally exit, then optionally easing) before the rgb
             const extra = p.payload.len -| mqtt_frame_envelope;
-            const extended = extra == 4 or extra == 5;
+            const extended = extra >= 4 and extra <= 6;
             if (p.payload.len != mqtt_frame_envelope and !extended) return;
             // the binary topic has no way to leave a field out, so zero is how it says "you pick":
             // an id of zero is minted here, an epoch of zero means the current one.
@@ -1865,7 +1865,7 @@ const Netd = struct {
             const rid = if (sent_rid == 0) self.newId() else sent_rid;
             const epoch = std.mem.readInt(u32, p.payload[8..12], .big);
             const duration = std.mem.readInt(u16, p.payload[12..14], .big);
-            const t: messages.Transition = if (extended) .{ .has = 1, .effect = p.payload[14], .direction = p.payload[15], .duration_ms = std.mem.readInt(u16, p.payload[16..18], .big), .exit = if (extra == 5) p.payload[18] else 0 } else .{};
+            const t: messages.Transition = if (extended) .{ .has = 1, .effect = p.payload[14], .direction = p.payload[15], .duration_ms = std.mem.readInt(u16, p.payload[16..18], .big), .exit = if (extra >= 5) p.payload[18] else 0, .easing = if (extra == 6) p.payload[19] else 0 } else .{};
             const bad_transition = extended and (t.toSpec() == null or t.duration_ms > transition.max_duration_ms);
             if (duration < 1 or duration > 300 or bad_transition) {
                 self.publishResult(rid, .rejected, self.status.revision);

@@ -1,5 +1,5 @@
 //! scene transitions, pure: how the frame that was on the panel gives way to the scene's new
-//! output. a `Spec` names an effect, a direction and a duration; `Transition` runs one over
+//! output. a `Spec` names an effect, a direction, a duration and an easing; `Transition` runs one over
 //! monotonic time; `composite` is the per-effect blend at a given progress. integer maths on the
 //! rgb bytes, no allocation. the renderer keeps a frame cadence while `apply` reports one running.
 //!
@@ -31,6 +31,17 @@ pub const Effect = enum(u8) {
     flip,
     rain,
     rain_random,
+    dim,
+    blink,
+    flash,
+    zoom,
+    ripple,
+    diamond,
+    blocks,
+    wave,
+    interlace,
+    /// a concrete effect picked afresh each time a run begins (`Spec.resolved`); never `cut`
+    random,
 
     /// the effect that takes away what this one brought in
     pub fn paired(self: Effect) Effect {
@@ -82,6 +93,37 @@ pub const Exit = enum(u8) {
     none,
 };
 
+/// how progress runs over the duration. linear is constant speed; the others are quadratic, so
+/// the curves are integer maths on the 0..256 progress with no table.
+pub const Easing = enum(u8) {
+    linear = 0,
+    /// starts slow, arrives fast
+    ease_in,
+    /// starts fast, settles
+    ease_out,
+    /// slow at both ends (smoothstep)
+    ease_in_out,
+
+    /// eased progress for linear progress `p`, both 0..256; 0 and 256 map to themselves
+    pub fn apply(self: Easing, p: u32) u32 {
+        return switch (self) {
+            .linear => p,
+            .ease_in => p * p / 256,
+            .ease_out => 256 - (256 - p) * (256 - p) / 256,
+            .ease_in_out => p * p * (3 * 256 - 2 * p) / (256 * 256),
+        };
+    }
+
+    /// the same curve run backwards in time, for an exit that backs out the way it came
+    pub fn mirrored(self: Easing) Easing {
+        return switch (self) {
+            .ease_in => .ease_out,
+            .ease_out => .ease_in,
+            else => self,
+        };
+    }
+};
+
 pub const default_duration_ns: u64 = 500 * ns_per_ms;
 pub const max_duration_ms: u32 = 5000;
 
@@ -90,16 +132,27 @@ pub const Spec = struct {
     direction: Direction = .left,
     duration_ns: u64 = default_duration_ns,
     exit: Exit = .reverse,
+    easing: Easing = .linear,
 
     pub const cut: Spec = .{ .effect = .cut, .duration_ns = 0 };
 
-    /// the transition that takes an overlay away, according to `exit`
+    /// the transition that takes an overlay away, according to `exit`. backing out reverses time,
+    /// so the easing is mirrored too; carrying on keeps it.
     pub fn outgoing(self: Spec) Spec {
         return switch (self.exit) {
-            .reverse => .{ .effect = self.effect.paired(), .direction = self.direction.opposite(), .duration_ns = self.duration_ns, .exit = self.exit },
-            .same => .{ .effect = self.effect.paired(), .direction = self.direction, .duration_ns = self.duration_ns, .exit = self.exit },
+            .reverse => .{ .effect = self.effect.paired(), .direction = self.direction.opposite(), .duration_ns = self.duration_ns, .exit = self.exit, .easing = self.easing.mirrored() },
+            .same => .{ .effect = self.effect.paired(), .direction = self.direction, .duration_ns = self.duration_ns, .exit = self.exit, .easing = self.easing },
             .none => cut,
         };
+    }
+
+    /// `random` replaced by one of the concrete effects other than cut, picked by `seed`; any
+    /// other spec as it is. the direction, duration and easing are kept.
+    pub fn resolved(self: Spec, seed: u64) Spec {
+        if (self.effect != .random) return self;
+        var out = self;
+        out.effect = random_pool[@intCast(mix64(seed) % random_pool.len)];
+        return out;
     }
 
     pub fn instant(self: Spec) bool {
@@ -119,7 +172,7 @@ pub const Transition = struct {
             self.start = null;
             return;
         }
-        self.spec = spec;
+        self.spec = spec.resolved(now_ns);
         self.from = current.*;
         self.start = now_ns;
     }
@@ -146,7 +199,8 @@ pub const Transition = struct {
             out.* = in.*;
             return false;
         }
-        composite(self.spec.effect, self.spec.direction, old, in, out, @intCast(elapsed * 256 / self.spec.duration_ns));
+        const p: u32 = @intCast(elapsed * 256 / self.spec.duration_ns);
+        composite(self.spec.effect, self.spec.direction, old, in, out, self.spec.easing.apply(p));
         return true;
     }
 };
@@ -161,8 +215,37 @@ pub fn composite(effect: Effect, dir: Direction, old: *const geometry.Rgb, new: 
             out.* = new.*;
             return;
         },
-        .fade => {
+        .fade, .random => {
+            // random is resolved when a run begins; composited directly it is a cross-fade
             for (old, new, out) |o, n, *d| d.* = @intCast((@as(u32, o) * (256 - p) + @as(u32, n) * p) >> 8);
+            return;
+        },
+        .dim => {
+            // the old frame down to black over the first half, the new up from it over the second
+            if (p < 128) {
+                for (old, out) |o, *d| d.* = @intCast((@as(u32, o) * (256 - 2 * p)) >> 8);
+            } else {
+                for (new, out) |n, *d| d.* = @intCast((@as(u32, n) * (2 * p - 256)) >> 8);
+            }
+            return;
+        },
+        .blink => {
+            // dim in visible steps: the old frame at 3/3, 2/3, 1/3, then the new at 0/3, 1/3, 2/3
+            const second = p >= 128;
+            const half = if (second) (p - 128) * 2 else p * 2;
+            const step = @min(half * blink_steps / 256, blink_steps - 1);
+            const thirds = if (second) step else blink_steps - step;
+            for (if (second) new else old, out) |c, *d| d.* = @intCast(@as(u32, c) * thirds / blink_steps);
+            return;
+        },
+        .flash => {
+            // cross-fade to full white over the first half, then from it to the new frame
+            if (p < 128) {
+                for (old, out) |o, *d| d.* = @intCast(o + ((255 - @as(u32, o)) * 2 * p >> 8));
+            } else {
+                const q = 2 * p - 256;
+                for (new, out) |n, *d| d.* = @intCast((255 * (256 - q) + @as(u32, n) * q) >> 8);
+            }
             return;
         },
         else => {},
@@ -206,6 +289,54 @@ fn wrap(x: i32, y: i32) [2]i32 {
 
 fn scaled(p: u32, len: i32) i32 {
     return @intCast(p * @as(u32, @intCast(len)) / 256);
+}
+
+const blink_steps: u32 = 3;
+const block_w: i32 = 4;
+const block_h: i32 = 2;
+/// keeps the blocks' order from repeating the dissolve's for the same small coordinates
+const blocks_salt: i32 = 0x40;
+/// zoom shows the old frame until the new one would be about a pixel across
+const zoom_hold: u32 = 6;
+/// the squared distance, in half pixels, from the centre to a corner pixel's centre
+const ripple_reach_sq: u32 = (W - 1) * (W - 1) + (H - 1) * (H - 1);
+/// the same as a diamond (manhattan) distance
+const diamond_reach: u32 = (W - 1) + (H - 1);
+/// a sideways wave sways across half the height, as awtrix's does; an up or down one travels
+/// only 16 rows, so it sways a quarter of the height
+const wave_amp_h: i32 = H / 2;
+const wave_amp_v: i32 = H / 4;
+/// one sine period across the lines perpendicular to the travel, in 1/256 px of sway
+const wave_h: [H]i32 = waveTable(H, wave_amp_h);
+const wave_v: [W]i32 = waveTable(W, wave_amp_v);
+
+fn waveTable(comptime n: usize, comptime amp: i32) [n]i32 {
+    @setEvalBranchQuota(10_000);
+    var t: [n]i32 = undefined;
+    for (&t, 0..) |*e, i| {
+        const angle = @as(f64, @floatFromInt(i)) * std.math.tau / @as(f64, @floatFromInt(n - 1));
+        e.* = @intFromFloat(@round(@sin(angle) * @as(f64, @floatFromInt(amp * 256))));
+    }
+    return t;
+}
+
+/// what `random` picks from: every effect but the two that are not really one
+const random_pool = blk: {
+    var pool: []const Effect = &.{};
+    for (std.meta.fields(Effect)) |f| {
+        const e: Effect = @enumFromInt(f.value);
+        if (e != .cut and e != .random) pool = pool ++ &[_]Effect{e};
+    }
+    const out = pool[0..pool.len].*;
+    break :blk out;
+};
+
+/// a 64-bit finaliser (splitmix64's), so nearby seeds such as consecutive frame times spread out
+fn mix64(v: u64) u64 {
+    var z = v +% 0x9E3779B97F4A7C15;
+    z = (z ^ (z >> 30)) *% 0xBF58476D1CE4E5B9;
+    z = (z ^ (z >> 27)) *% 0x94D049BB133111EB;
+    return z ^ (z >> 31);
 }
 
 fn hash(x: u32, y: u32) u8 {
@@ -300,7 +431,57 @@ fn sample(effect: Effect, dir: Direction, x: i32, y: i32, p: u32) Src {
             return if (inBounds(sx, sy)) .{ .old = .{ sx, sy } } else .{ .new = .{ x, y } };
         },
         .dissolve => return if (hash(@intCast(x), @intCast(y)) < p) .{ .new = .{ x, y } } else .{ .old = .{ x, y } },
-        .fade, .cut => unreachable,
+        .blocks => {
+            // the dissolve in whole 4 x 2 blocks, in an order of their own
+            const done = hash(@intCast(@divTrunc(x, block_w)), @intCast(@divTrunc(y, block_h) + blocks_salt)) < p;
+            return if (done) .{ .new = .{ x, y } } else .{ .old = .{ x, y } };
+        },
+        .zoom => {
+            // the whole new frame scaled by p/256 about the panel's centre, over the old; the first
+            // few steps would be a sub-pixel frame, so they hold the old one
+            if (p < zoom_hold) return .{ .old = .{ x, y } };
+            // pixel centres in half-pixel units, so the centre of an even-sized panel is exact
+            const sx = @divFloor(W * @as(i32, @intCast(p)) + (2 * x + 1 - W) * 256, 2 * @as(i32, @intCast(p)));
+            const sy = @divFloor(H * @as(i32, @intCast(p)) + (2 * y + 1 - H) * 256, 2 * @as(i32, @intCast(p)));
+            return if (inBounds(sx, sy)) .{ .new = .{ sx, sy } } else .{ .old = .{ x, y } };
+        },
+        .ripple, .diamond => {
+            // a circle (ripple) or a diamond (diamond) growing from the centre until it takes in the
+            // corners; distances are in half pixels from the centre, which lies between pixels
+            const dx: i32 = 2 * x - (W - 1);
+            const dy: i32 = 2 * y - (H - 1);
+            const inside = if (effect == .ripple)
+                @as(u64, @intCast(dx * dx + dy * dy)) * 256 * 256 <= @as(u64, p) * p * ripple_reach_sq
+            else
+                @as(u32, @abs(dx) + @abs(dy)) * 256 <= p * diamond_reach;
+            return if (inside) .{ .new = .{ x, y } } else .{ .old = .{ x, y } };
+        },
+        .wave => {
+            // a wipe whose edge is one period of a sine across the panel, amplitude `amp`; the front
+            // travels one amplitude further at each end so the whole curve starts and ends off it
+            const horizontal = dir.horizontal();
+            const len = axisLen(dir);
+            const amp: i32 = if (horizontal) wave_amp_h else wave_amp_v;
+            const a: i32 = switch (dir) { // how far in from the edge the new content enters at
+                .left => W - 1 - x,
+                .right => x,
+                .up => H - 1 - y,
+                .down => y,
+            };
+            const bend = if (horizontal) wave_h[@intCast(y)] else wave_v[@intCast(x)];
+            const front = @as(i32, @intCast(p)) * (len + 2 * amp) - amp * 256;
+            return if (a * 256 < front + bend) .{ .new = .{ x, y } } else .{ .old = .{ x, y } };
+        },
+        .interlace => {
+            // a slide in which alternate lines (rows for a sideways direction, columns for up or
+            // down) travel opposite ways
+            const line = if (dir.horizontal()) y else x;
+            const d = delta(if (@mod(line, 2) == 0) dir else dir.opposite(), scaled(p, axisLen(dir)));
+            const sx = x - d[0];
+            const sy = y - d[1];
+            return if (inBounds(sx, sy)) .{ .old = .{ sx, sy } } else .{ .new = wrap(sx, sy) };
+        },
+        .fade, .cut, .dim, .blink, .flash, .random => unreachable,
     }
 }
 
@@ -509,6 +690,175 @@ test "dissolve switches pixels in a fixed order" {
     try std.testing.expectEqualSlices(u8, &half, &run(.dissolve, .left, 128));
     const late = run(.dissolve, .left, 255);
     try std.testing.expect(countNew(&late) > 820);
+}
+
+test "dim goes down to black on the old frame and up on the new" {
+    const a = run(.dim, .left, 64); // old at half brightness
+    try std.testing.expectEqual([3]u8{ 10, 3, 0 }, at(&a, 20, 7));
+    const mid = run(.dim, .left, 128);
+    try expectBlack(&mid, 20, 7);
+    const b = run(.dim, .left, 192); // new at half brightness
+    try std.testing.expectEqual([3]u8{ 10, 3, 1 }, at(&b, 20, 7));
+}
+
+test "blink steps the brightness down and up in thirds" {
+    var old: geometry.Rgb = undefined;
+    @memset(&old, 240);
+    var new: geometry.Rgb = undefined;
+    @memset(&new, 120);
+    var out: geometry.Rgb = undefined;
+    const cases = [_]struct { p: u32, v: u8 }{
+        .{ .p = 10, .v = 240 }, .{ .p = 50, .v = 160 }, .{ .p = 100, .v = 80 },
+        .{ .p = 130, .v = 0 },  .{ .p = 180, .v = 40 }, .{ .p = 250, .v = 80 },
+    };
+    for (cases) |c| {
+        composite(.blink, .left, &old, &new, &out, c.p);
+        try std.testing.expectEqual(c.v, out[100]);
+    }
+}
+
+test "flash passes through white" {
+    var old: geometry.Rgb = undefined;
+    @memset(&old, 0);
+    var new: geometry.Rgb = undefined;
+    @memset(&new, 100);
+    var out: geometry.Rgb = undefined;
+    composite(.flash, .left, &old, &new, &out, 64);
+    try std.testing.expectEqual(@as(u8, 127), out[0]);
+    composite(.flash, .left, &old, &new, &out, 128);
+    try std.testing.expectEqual(@as(u8, 255), out[0]);
+    composite(.flash, .left, &old, &new, &out, 192);
+    try std.testing.expectEqual(@as(u8, 177), out[0]);
+}
+
+test "zoom grows the whole new frame out of the centre" {
+    const out = run(.zoom, .left, 128); // half size, in a 26 x 8 window on the panel
+    try expectPx(&out, 25, 7, 25, 7, new_tag);
+    try expectPx(&out, 13, 4, 1, 1, new_tag);
+    try expectPx(&out, 38, 11, 51, 15, new_tag);
+    try expectPx(&out, 12, 7, 12, 7, old_tag);
+    try expectPx(&out, 25, 3, 25, 3, old_tag);
+    try expectPx(&out, 39, 7, 39, 7, old_tag);
+    try std.testing.expectEqual(@as(usize, 26 * 8), countNew(&out));
+    const end = run(.zoom, .left, 256);
+    try std.testing.expectEqualSlices(u8, &marked(new_tag), &end);
+}
+
+test "ripple and diamond reveal the new frame in a circle and a diamond from the centre" {
+    const r = run(.ripple, .left, 128); // radius 13.3 px
+    try expectPx(&r, 25, 7, 25, 7, new_tag);
+    try expectPx(&r, 38, 7, 38, 7, new_tag);
+    try expectPx(&r, 39, 7, 39, 7, old_tag);
+    try expectPx(&r, 33, 15, 33, 15, new_tag); // 7.5 across, 7.5 down: 10.6 out
+    try expectPx(&r, 36, 15, 36, 15, new_tag); // 10.5 across, 7.5 down: 12.9 out
+    try expectPx(&r, 37, 15, 37, 15, old_tag); // 11.5 across, 7.5 down: 13.7 out
+    try expectPx(&r, 37, 0, 37, 0, old_tag);
+    const d = run(.diamond, .left, 128); // 33 half-steps from the centre
+    try expectPx(&d, 25, 7, 25, 7, new_tag);
+    try expectPx(&d, 41, 7, 41, 7, new_tag); // 31 + 1
+    try expectPx(&d, 42, 7, 42, 7, old_tag); // 33 + 1
+    try expectPx(&d, 33, 15, 33, 15, new_tag); // 15 + 15
+    try expectPx(&d, 35, 15, 35, 15, old_tag); // 19 + 15
+    try std.testing.expectEqual(@as(usize, geometry.pixels), countNew(&run(.ripple, .left, 256)));
+    try std.testing.expectEqual(@as(usize, geometry.pixels), countNew(&run(.diamond, .left, 256)));
+}
+
+test "blocks switch whole 4 x 2 blocks at a time" {
+    const out = run(.blocks, .left, 128);
+    var by: usize = 0;
+    while (by < geometry.height) : (by += 2) {
+        var bx: usize = 0;
+        while (bx < geometry.width) : (bx += 4) {
+            const tag = at(&out, bx, by)[2];
+            for (0..2) |dy| for (0..4) |dx| try std.testing.expectEqual(tag, at(&out, bx + dx, by + dy)[2]);
+        }
+    }
+    const n = countNew(&out);
+    try std.testing.expect(n > 250 and n < 580);
+    try std.testing.expect(!std.mem.eql(u8, &out, &run(.dissolve, .left, 128)));
+}
+
+test "wave sweeps a sine-shaped edge across the panel" {
+    const out = run(.wave, .left, 128); // front 26 px in from the right, crest 8 px either way
+    try expectPx(&out, 51, 0, 51, 0, new_tag);
+    try expectPx(&out, 26, 0, 26, 0, new_tag); // row 0: the edge sits on the front
+    try expectPx(&out, 25, 0, 25, 0, old_tag);
+    try expectPx(&out, 18, 4, 18, 4, new_tag); // row 4 is near the crest: 34 px revealed
+    try expectPx(&out, 17, 4, 17, 4, old_tag);
+    try expectPx(&out, 33, 11, 33, 11, new_tag); // row 11 is near the trough: 18 px revealed
+    try expectPx(&out, 32, 11, 32, 11, old_tag);
+    try std.testing.expect(countNew(&out) > 300 and countNew(&out) < 530);
+    const right = run(.wave, .right, 128);
+    try expectPx(&right, 0, 0, 0, 0, new_tag);
+    try expectPx(&right, 51, 0, 51, 0, old_tag);
+    const down = run(.wave, .down, 128);
+    try expectPx(&down, 0, 0, 0, 0, new_tag);
+    try expectPx(&down, 0, 15, 0, 15, old_tag);
+    try std.testing.expectEqual(@as(usize, geometry.pixels), countNew(&run(.wave, .left, 256)));
+    try std.testing.expectEqual(@as(usize, geometry.pixels), countNew(&run(.wave, .up, 256)));
+}
+
+test "interlace slides alternate lines out opposite ways" {
+    const out = run(.interlace, .left, 128); // 26 px each way
+    try expectPx(&out, 0, 0, 26, 0, old_tag); // even rows travel left
+    try expectPx(&out, 26, 0, 0, 0, new_tag);
+    try expectPx(&out, 26, 1, 0, 1, old_tag); // odd rows travel right
+    try expectPx(&out, 0, 1, 26, 1, new_tag);
+    const up = run(.interlace, .up, 128); // 8 px each way, columns alternate
+    try expectPx(&up, 0, 0, 0, 8, old_tag);
+    try expectPx(&up, 1, 8, 1, 0, old_tag);
+    try expectPx(&up, 1, 0, 1, 8, new_tag);
+}
+
+test "random resolves to a concrete effect when a run begins" {
+    var seen = std.EnumSet(Effect).initEmpty();
+    var seed: u64 = 0;
+    while (seed < 400) : (seed += 1) {
+        const s = (Spec{ .effect = .random, .direction = .up, .duration_ns = 9 }).resolved(seed * 16_666_667);
+        try std.testing.expect(s.effect != .random and s.effect != .cut);
+        try std.testing.expectEqual(Direction.up, s.direction);
+        seen.insert(s.effect);
+    }
+    try std.testing.expect(seen.count() >= 20);
+    try std.testing.expectEqual(Effect.wipe, (Spec{ .effect = .wipe }).resolved(12345).effect);
+    var t = Transition{};
+    const old = marked(old_tag);
+    t.begin(&old, .{ .effect = .random, .duration_ns = 1_000 }, 77);
+    try std.testing.expect(t.spec.effect != .random);
+    try std.testing.expectEqual(Effect.random, (Spec{ .effect = .random }).outgoing().effect);
+}
+
+test "easing reshapes progress and a reversed exit mirrors it" {
+    try std.testing.expectEqual(@as(u32, 128), Easing.linear.apply(128));
+    try std.testing.expectEqual(@as(u32, 64), Easing.ease_in.apply(128));
+    try std.testing.expectEqual(@as(u32, 192), Easing.ease_out.apply(128));
+    try std.testing.expectEqual(@as(u32, 128), Easing.ease_in_out.apply(128));
+    try std.testing.expect(Easing.ease_in_out.apply(64) < 64);
+    try std.testing.expect(Easing.ease_in_out.apply(192) > 192);
+    inline for (std.meta.fields(Easing)) |f| {
+        const e: Easing = @enumFromInt(f.value);
+        try std.testing.expectEqual(@as(u32, 0), e.apply(0));
+        try std.testing.expectEqual(@as(u32, 256), e.apply(256));
+        var last: u32 = 0;
+        for (0..257) |p| {
+            const v = e.apply(@intCast(p));
+            try std.testing.expect(v >= last and v <= 256);
+            last = v;
+        }
+    }
+    const s = Spec{ .effect = .wipe, .easing = .ease_in };
+    try std.testing.expectEqual(Easing.ease_out, s.outgoing().easing);
+    try std.testing.expectEqual(Easing.ease_in, (Spec{ .effect = .wipe, .easing = .ease_in, .exit = .same }).outgoing().easing);
+    try std.testing.expectEqual(Easing.ease_in_out, (Spec{ .easing = .ease_in_out }).outgoing().easing);
+    // a run applies it: a quarter of the way in at half time
+    var t = Transition{};
+    const old = marked(old_tag);
+    const new = marked(new_tag);
+    var out: geometry.Rgb = undefined;
+    t.begin(&old, .{ .effect = .wipe, .direction = .right, .duration_ns = 1_000_000_000, .easing = .ease_in }, 0);
+    try std.testing.expect(t.apply(&new, &out, 500_000_000));
+    try expectPx(&out, 12, 0, 12, 0, new_tag);
+    try expectPx(&out, 13, 0, 13, 0, old_tag);
 }
 
 test "exits pair the effect and reverse, continue or cut according to the exit mode" {

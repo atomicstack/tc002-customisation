@@ -297,6 +297,7 @@ input[type=file]{font:12px var(--body);color:var(--muted);max-width:220px}
         <div class="field" data-base="ip"><label for="kip">IP layout<span class="key">ip only · PUT /scene ip.mode · transient</span></label><select id="kip"></select></div>
         <div class="field"><label for="strans">Transition<span class="key">transition · default: fade · for the next scene change</span></label><select id="strans"></select></div>
         <div class="field"><label for="sdir">Direction<span class="key">direction · auto: the effect's own</span></label><select id="sdir"></select></div>
+        <div class="field"><label for="seas">Easing<span class="key">easing · default: linear</span></label><select id="seas"></select></div>
         <div class="field" data-base="clock"><label for="kfont">Clock font<span class="key">clock only · PUT /scene clock.font · transient</span></label><select id="kfont"></select></div>
         <div class="field" data-base="clock"><span class="lab">Clock colour<span class="key">clock.colour_mode · colour · colour2 · gradient</span></span>
           <span class="inline">
@@ -332,6 +333,7 @@ input[type=file]{font:12px var(--body);color:var(--muted);max-width:220px}
         <div class="field"><label for="ndur">Duration<span class="key">seconds, 1–300</span></label><input type="number" id="ndur" min="1" max="300" value="5"></div>
         <div class="field"><label for="ntrans">Transition<span class="key">transition · default: fade</span></label><select id="ntrans"></select></div>
         <div class="field"><label for="ndir">Direction<span class="key">direction · auto: the effect's own</span></label><select id="ndir"></select></div>
+        <div class="field"><label for="neas">Easing<span class="key">easing · default: linear</span></label><select id="neas"></select></div>
         <div class="field"><label for="nexit">Exit<span class="key">exit · how it leaves</span></label><select id="nexit"></select></div>
       </div>
       <div class="actions"><button class="btn" id="nsend">Send notification</button></div>
@@ -345,6 +347,7 @@ input[type=file]{font:12px var(--body);color:var(--muted);max-width:220px}
         <div class="field"><label for="fdur">Duration<span class="key">seconds, 1–300</span></label><input type="number" id="fdur" min="1" max="300" value="5"></div>
         <div class="field"><label for="ftrans">Transition<span class="key">transition · default: cut</span></label><select id="ftrans"></select></div>
         <div class="field"><label for="fdir">Direction<span class="key">direction · auto: the effect's own</span></label><select id="fdir"></select></div>
+        <div class="field"><label for="feas">Easing<span class="key">easing · default: linear</span></label><select id="feas"></select></div>
         <div class="field"><label for="fexit">Exit<span class="key">exit · how it leaves</span></label><select id="fexit"></select></div>
       </div>
       <div class="actions">
@@ -963,28 +966,32 @@ function fillSelect(sel, names, current) {
 }
 
 /* ---------- transitions ---------- */
-// the effect, direction and exit selects on the scene, notification and frame cards; "default"
-// and "auto" omit the field so the device picks (fade for scenes and notifications, cut for
-// frames; the effect's natural direction; an exit that backs out the way it came)
-const TRANSITION_EFFECTS = ['fade', 'cut', 'slide', 'swipe_out', 'swipe_in', 'collapse', 'expand', 'wipe', 'dissolve', 'split_out', 'split_in', 'blinds', 'flip', 'rain', 'rain_random'];
+// the effect, direction, easing and exit selects on the scene, notification and frame cards;
+// "default" and "auto" omit the field so the device picks (fade for scenes and notifications, cut
+// for frames; the effect's natural direction; linear; an exit that backs out the way it came)
+const TRANSITION_EFFECTS = ['fade', 'cut', 'slide', 'swipe_out', 'swipe_in', 'collapse', 'expand', 'wipe', 'dissolve', 'split_out', 'split_in', 'blinds', 'flip', 'rain', 'rain_random', 'dim', 'blink', 'flash', 'zoom', 'ripple', 'diamond', 'blocks', 'wave', 'interlace', 'random'];
 const TRANSITION_DIRECTIONS = ['left', 'right', 'up', 'down'];
 const TRANSITION_EXITS = ['reverse', 'same', 'none'];
+const TRANSITION_EASINGS = ['linear', 'ease_in', 'ease_out', 'ease_in_out'];
 function fillTransitionSelects() {
   const t = SCENES && SCENES.transitions;
   const effects = ['default', ...(t ? t.effects : TRANSITION_EFFECTS)];
   const dirs = ['auto', ...(t ? t.directions : TRANSITION_DIRECTIONS)];
   const exits = ['default', ...((t && t.exits) || TRANSITION_EXITS)];
-  for (const [e, d, x] of [['strans', 'sdir', null], ['ntrans', 'ndir', 'nexit'], ['ftrans', 'fdir', 'fexit']]) {
-    const ke = $(e).value, kd = $(d).value;
+  const easings = ['default', ...((t && t.easings) || TRANSITION_EASINGS)];
+  for (const [e, d, x, g] of [['strans', 'sdir', null, 'seas'], ['ntrans', 'ndir', 'nexit', 'neas'], ['ftrans', 'fdir', 'fexit', 'feas']]) {
+    const ke = $(e).value, kd = $(d).value, kg = $(g).value;
     fillSelect($(e), effects, effects.includes(ke) ? ke : 'default');
     fillSelect($(d), dirs, dirs.includes(kd) ? kd : 'auto');
+    fillSelect($(g), easings, easings.includes(kg) ? kg : 'default');
     if (x) { const kx = $(x).value; fillSelect($(x), exits, exits.includes(kx) ? kx : 'default'); }
   }
 }
-function transitionFields(effectId, dirId, exitId) {
+function transitionFields(effectId, dirId, easingId, exitId) {
   const out = {};
   if ($(effectId).value !== 'default') out.transition = $(effectId).value;
   if ($(dirId).value !== 'auto') out.direction = $(dirId).value;
+  if ($(easingId).value !== 'default') out.easing = $(easingId).value;
   if (exitId && $(exitId).value !== 'default') out.exit = $(exitId).value;
   return out;
 }
@@ -1112,7 +1119,7 @@ function renderGenParams() {
 /* ---------- scene ---------- */
 async function setScene(base) {
   try {
-    await command('PUT', 'scene', (id, epoch) => ({ base, generator: base === 'art' ? $('gen').value : undefined, ...transitionFields('strans', 'sdir'), request_id: id, epoch }));
+    await command('PUT', 'scene', (id, epoch) => ({ base, generator: base === 'art' ? $('gen').value : undefined, ...transitionFields('strans', 'sdir', 'seas'), request_id: id, epoch }));
     toast(`scene: ${base}`);
   } catch (e) { toast(e.message, true); }
 }
@@ -1233,7 +1240,7 @@ $('nsend').addEventListener('click', async () => {
   if (!/^[\x20-\x7e]{1,128}$/.test(text)) return toast('text must be 1 to 128 printable ascii characters', true);
   if (!(duration >= 1 && duration <= 300)) return toast('duration must be 1 to 300 seconds', true);
   try {
-    await command('POST', 'notify', (id, epoch) => ({ text, colour, duration_s: duration, ...transitionFields('ntrans', 'ndir', 'nexit'), request_id: id, epoch }));
+    await command('POST', 'notify', (id, epoch) => ({ text, colour, duration_s: duration, ...transitionFields('ntrans', 'ndir', 'neas', 'nexit'), request_id: id, epoch }));
     local.notify = { text, colour: colourBytes(colour), sinceMs: Date.now() };
     toast('notification sent');
   } catch (e) { toast(e.message, true); }
@@ -1251,7 +1258,7 @@ async function sendFrame(rgb) {
   const duration = +$('fdur').value;
   if (!(duration >= 1 && duration <= 300)) return toast('duration must be 1 to 300 seconds', true);
   try {
-    const extra = Object.entries(transitionFields('ftrans', 'fdir', 'fexit')).map(([k, v]) => `&${k}=${v}`).join('');
+    const extra = Object.entries(transitionFields('ftrans', 'fdir', 'feas', 'fexit')).map(([k, v]) => `&${k}=${v}`).join('');
     await command('POST', 'frame', () => rgb, 'application/octet-stream', (id, epoch) => `duration_s=${duration}&request_id=${id}&epoch=${epoch}${extra}`);
     local.frame = rgb; local.pending = null;
     toast('frame sent');

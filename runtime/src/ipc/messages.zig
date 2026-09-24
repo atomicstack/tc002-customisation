@@ -143,7 +143,7 @@ test "fixed hex vectors" {
     const st = try encodePacket(.stop, 0, 9, &buf);
     try std.testing.expectEqualSlices(u8, &unhex("54434931" ++ "01" ++ "18" ++ "0000" ++ "0000000000000000" ++ "00000009" ++ "0000" ++ "0000"), st);
     const nt = try encodePacket(.{ .notify = Notify.init("hi", .{ 0xff, 0x80, 0x00 }, 300, .{ .has = 1, .effect = 7, .direction = 3, .duration_ms = 300 }) }, 0, 0, &buf);
-    try std.testing.expectEqualSlices(u8, &unhex("54434931" ++ "01" ++ "11" ++ "0000" ++ "0000000000000000" ++ "00000000" ++ "000e" ++ "0000" ++ "ff8000" ++ "012c" ++ "01" ++ "07" ++ "03" ++ "012c" ++ "00" ++ "02" ++ "6869"), nt);
+    try std.testing.expectEqualSlices(u8, &unhex("54434931" ++ "01" ++ "11" ++ "0000" ++ "0000000000000000" ++ "00000000" ++ "000f" ++ "0000" ++ "ff8000" ++ "012c" ++ "01" ++ "07" ++ "03" ++ "012c" ++ "00" ++ "00" ++ "02" ++ "6869"), nt);
     const fr = try encodePacket(.{ .frame = .{ .duration_s = 1, .rgb = geometry.black_rgb } }, 0, 0, &buf);
     try std.testing.expectEqual(@as(usize, codec.header_len + 2 + Transition.wire_len + geometry.rgb_bytes), fr.len);
     try std.testing.expectEqual(@as(u8, @intFromEnum(Kind.frame)), fr[5]);
@@ -227,6 +227,10 @@ test "transition blocks map to specs and back, unknown values to the default" {
     try std.testing.expect(Transition.fromSpec(null).toSpec() == null);
     const spec = transition.Spec{ .effect = .split_in, .direction = .up, .duration_ns = 1_250_000_000, .exit = .same };
     try std.testing.expectEqual(spec, Transition.fromSpec(spec).toSpec().?);
+    const eased = transition.Spec{ .effect = .interlace, .direction = .down, .duration_ns = 800_000_000, .easing = .ease_in_out };
+    try std.testing.expectEqual(eased, Transition.fromSpec(eased).toSpec().?);
+    try std.testing.expectEqual(transition.Effect.random, Transition.fromSpec(.{ .effect = .random }).toSpec().?.effect);
+    try std.testing.expect((Transition{ .has = 1, .easing = 9 }).toSpec() == null);
     try std.testing.expect((Transition{ .has = 1, .effect = 200 }).toSpec() == null);
     try std.testing.expect((Transition{ .has = 1, .exit = 9 }).toSpec() == null);
     try std.testing.expectEqual(transition.Effect.cut, Transition.fromSpec(transition.Spec.cut).toSpec().?.effect);
@@ -1191,19 +1195,29 @@ pub const LogLines = struct {
 };
 /// a base selection; a present `style` (mask non-zero) also restyles the clock in the same command.
 /// an optional transition on a scene change, notification or frame; `has` = 0 means the
-/// renderer's default. 6 bytes on the wire: has, effect, direction, duration_ms (big-endian), exit.
+/// renderer's default. on the wire: has, effect, direction, duration_ms (big-endian), exit, easing.
 pub const Transition = struct {
     has: u8 = 0,
     effect: u8 = 0,
     direction: u8 = 0,
     duration_ms: u16 = 0,
     exit: u8 = 0,
+    easing: u8 = 0,
 
-    pub const wire_len = 6;
+    const Wire = struct {
+        const has = 1;
+        const effect = 1;
+        const direction = 1;
+        const duration_ms = 2;
+        const exit = 1;
+        /// a new field goes here, after the last one the encoder writes
+        const easing = 1;
+    };
+    pub const wire_len = Wire.has + Wire.effect + Wire.direction + Wire.duration_ms + Wire.exit + Wire.easing;
 
     pub fn fromSpec(spec: ?transition.Spec) Transition {
         const t = spec orelse return .{};
-        return .{ .has = 1, .effect = @intFromEnum(t.effect), .direction = @intFromEnum(t.direction), .duration_ms = @intCast(t.duration_ns / 1_000_000), .exit = @intFromEnum(t.exit) };
+        return .{ .has = 1, .effect = @intFromEnum(t.effect), .direction = @intFromEnum(t.direction), .duration_ms = @intCast(t.duration_ns / 1_000_000), .exit = @intFromEnum(t.exit), .easing = @intFromEnum(t.easing) };
     }
 
     /// null for the default and for values this build does not know
@@ -1212,7 +1226,8 @@ pub const Transition = struct {
         const effect = enumFromInt(transition.Effect, self.effect) orelse return null;
         const direction = enumFromInt(transition.Direction, self.direction) orelse return null;
         const exit = enumFromInt(transition.Exit, self.exit) orelse return null;
-        return .{ .effect = effect, .direction = direction, .duration_ns = @as(u64, self.duration_ms) * 1_000_000, .exit = exit };
+        const easing = enumFromInt(transition.Easing, self.easing) orelse return null;
+        return .{ .effect = effect, .direction = direction, .duration_ns = @as(u64, self.duration_ms) * 1_000_000, .exit = exit, .easing = easing };
     }
 
     fn put(self: Transition, out: []u8) void {
@@ -1221,10 +1236,11 @@ pub const Transition = struct {
         out[2] = self.direction;
         std.mem.writeInt(u16, out[3..5], self.duration_ms, .big);
         out[5] = self.exit;
+        out[6] = self.easing;
     }
 
     fn get(b: []const u8) Transition {
-        return .{ .has = b[0], .effect = b[1], .direction = b[2], .duration_ms = std.mem.readInt(u16, b[3..5], .big), .exit = b[5] };
+        return .{ .has = b[0], .effect = b[1], .direction = b[2], .duration_ms = std.mem.readInt(u16, b[3..5], .big), .exit = b[5], .easing = b[6] };
     }
 };
 
@@ -1262,7 +1278,16 @@ pub const DeviceStatus = struct {
 
     pub const wire_len = 1 + 1 + 1 + 2 + 1 + 1 + 1 + 4 + 3;
 };
-pub const Frame = struct { duration_s: u16, transition: Transition = .{}, rgb: geometry.Rgb };
+pub const Frame = struct {
+    duration_s: u16,
+    transition: Transition = .{},
+    rgb: geometry.Rgb,
+
+    // on the wire in this order: duration_s, the transition, the rgb
+    const transition_at = 2;
+    const rgb_at = transition_at + Transition.wire_len;
+    const wire_len = rgb_at + geometry.rgb_bytes;
+};
 pub const Brightness = struct { value: u8 };
 pub const Reseed = struct { seed: u32 };
 pub const IpChanged = struct { present: u8, addr: [4]u8 };
@@ -1281,10 +1306,10 @@ fn putNotificationOptions(out: []u8, name: arbiter.notification.Name, stack: boo
 fn putNotify(out: []u8, n: Notify, always_options: bool) usize {
     out[0..3].* = n.colour;
     std.mem.writeInt(u16, out[3..5], n.duration_s, .big);
-    n.transition.put(out[5..11]);
-    out[11] = n.len;
-    @memcpy(out[12 .. 12 + @as(usize, n.len)], n.text[0..n.len]);
-    const end = 12 + @as(usize, n.len);
+    n.transition.put(out[Notify.transition_at..Notify.len_at]);
+    out[Notify.len_at] = n.len;
+    @memcpy(out[Notify.text_at .. Notify.text_at + @as(usize, n.len)], n.text[0..n.len]);
+    const end = Notify.text_at + @as(usize, n.len);
     if (!always_options and n.name.len == 0 and !n.stack and !n.hold) return end;
     putNotificationOptions(out[end..], n.name, n.stack, n.hold);
     return end + notification_options_len;
@@ -1304,6 +1329,12 @@ pub const Notify = struct {
     len: u8,
     text: [128]u8,
     transition: Transition = .{},
+
+    // on the wire in this order: colour, duration_s, the transition, len, the text, then the
+    // optional name and flags
+    const transition_at = 3 + 2;
+    const len_at = transition_at + Transition.wire_len;
+    const text_at = len_at + 1;
 
     pub fn init(text: []const u8, colour: [3]u8, duration_s: u16, t: Transition) Notify {
         var n = Notify{ .colour = colour, .duration_s = duration_s, .len = @intCast(text.len), .text = [_]u8{0} ** 128, .transition = t };
@@ -2728,9 +2759,9 @@ fn encodePayload(msg: Message, out: []u8) usize {
         },
         .frame => |f| {
             std.mem.writeInt(u16, out[0..2], f.duration_s, .big);
-            f.transition.put(out[2..8]);
-            @memcpy(out[8 .. 8 + geometry.rgb_bytes], &f.rgb);
-            return 8 + geometry.rgb_bytes;
+            f.transition.put(out[Frame.transition_at..Frame.rgb_at]);
+            @memcpy(out[Frame.rgb_at..Frame.wire_len], &f.rgb);
+            return Frame.wire_len;
         },
         .brightness => |b| {
             out[0] = b.value;
@@ -3296,11 +3327,11 @@ pub fn decodePacket(bytes: []const u8) Error!Packet {
             break :blk .{ .set_base = .{ .base = b[0], .generator = b[1], .seed = std.mem.readInt(u32, b[2..6], .big), .style = ClockStyle.get(b[6..]), .transition = Transition.get(b[6 + ClockStyle.wire_len ..]) } };
         },
         .notify => blk: {
-            if (p.len < 12) return error.BadPayload;
-            const len = p[11];
-            const end = 12 + @as(usize, len);
+            if (p.len < Notify.text_at) return error.BadPayload;
+            const len = p[Notify.len_at];
+            const end = Notify.text_at + @as(usize, len);
             if (len == 0 or len > 128 or (p.len != end and p.len != end + notification_options_len)) return error.BadPayload;
-            var n = Notify.init(p[12..end], p[0..3].*, std.mem.readInt(u16, p[3..5], .big), Transition.get(p[5..11]));
+            var n = Notify.init(p[Notify.text_at..end], p[0..3].*, std.mem.readInt(u16, p[3..5], .big), Transition.get(p[Notify.transition_at..Notify.len_at]));
             if (p.len > end) {
                 const options = p[end..];
                 if (!validNotificationOptions(options)) return error.BadPayload;
@@ -3310,14 +3341,14 @@ pub fn decodePacket(bytes: []const u8) Error!Packet {
             break :blk .{ .notify = n };
         },
         .notify_rich => blk: {
-            if (p.len < 12) return error.BadPayload;
-            const len = p[11];
-            const end = 12 + @as(usize, len);
+            if (p.len < Notify.text_at) return error.BadPayload;
+            const len = p[Notify.len_at];
+            const end = Notify.text_at + @as(usize, len);
             if (len > 128 or p.len < end + notification_options_len) return error.BadPayload;
             const options = p[end .. end + notification_options_len];
             if (!validNotificationOptions(options)) return error.BadPayload;
             const flags = options[notification_options_len - 1];
-            const n = Notify.init(p[12..end], p[0..3].*, std.mem.readInt(u16, p[3..5], .big), Transition.get(p[5..11])).withOptions(options[1..][0..options[0]], flags & 1 != 0, flags & 2 != 0);
+            const n = Notify.init(p[Notify.text_at..end], p[0..3].*, std.mem.readInt(u16, p[3..5], .big), Transition.get(p[Notify.transition_at..Notify.len_at])).withOptions(options[1..][0..options[0]], flags & 1 != 0, flags & 2 != 0);
             const rest = p[end + notification_options_len ..];
             const dlen = canvas.encodedLen(rest) orelse return error.BadPayload;
             if (rest.len != dlen) return error.BadPayload;
@@ -3330,8 +3361,8 @@ pub fn decodePacket(bytes: []const u8) Error!Packet {
             break :blk .{ .dismiss_notify = arbiter.notification.Name.init(p[1..][0..p[0]]) };
         },
         .frame => blk: {
-            const b = try fixed(p, 8 + geometry.rgb_bytes);
-            break :blk .{ .frame = .{ .duration_s = std.mem.readInt(u16, b[0..2], .big), .transition = Transition.get(b[2..8]), .rgb = b[8..][0..geometry.rgb_bytes].* } };
+            const b = try fixed(p, Frame.wire_len);
+            break :blk .{ .frame = .{ .duration_s = std.mem.readInt(u16, b[0..2], .big), .transition = Transition.get(b[Frame.transition_at..Frame.rgb_at]), .rgb = b[Frame.rgb_at..][0..geometry.rgb_bytes].* } };
         },
         .brightness => blk: {
             const b = try fixed(p, 1);

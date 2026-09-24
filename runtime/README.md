@@ -283,7 +283,7 @@ runtime/tools/tc002-update.sh --in-place                      # build, push to /
 runtime/tools/tc002-update.sh --in-place --device 10.0.0.68 --tz Australia/Melbourne --font classic --no-build
 runtime/tools/tc002-update.sh --flash --device 10.0.0.68 --lan --yes   # dump res, build the image, flash, verify
 runtime/tools/tc002-update.sh --flash --base-image ~/tc002-firmware/mtd-backup-20260915/mtd3-res.bin  # from a stock dump
-runtime/tools/tc002-demo-transitions.py -s <device-ip> --token-file tokens   # a demo reel of every transition; --only, --ms, --hold, --loop
+runtime/tools/tc002-demo-transitions.py -s <device-ip> --token-file tokens   # a demo reel of every transition; --only, --ms, --easing, --hold, --loop
 runtime/tools/tc002-demo-shapes.py -s <device-ip> --token-file tokens        # the canvas primitives; and -text, -charts, -icons,
                                                                             # -images, -layout, -tiles, -dashboard alongside it
 panel-v2/start-panel.sh --open                     # the console, once the runtime is up

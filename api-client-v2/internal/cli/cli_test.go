@@ -45,6 +45,7 @@ func TestRuntimeRequests(t *testing.T) {
 		{[]string{"power", "off"}, "POST", "/action", `{"action":"power","power":false}`},
 		{[]string{"input", "rotary", "ccw", "--steps", "3"}, "POST", "/input", `{"control":"rotary","event":"ccw","steps":3}`},
 		{[]string{"notify", "Hello World", "--colour", "00ff80", "--duration", "3", "--transition", "slide", "--direction", "left"}, "POST", "/notify", `{"text":"Hello World","colour":"00ff80","duration_s":3,"transition":"slide","direction":"left"}`},
+		{[]string{"notify", "hi", "--transition", "ripple", "--easing", "ease_out"}, "POST", "/notify", `{"text":"hi","transition":"ripple","easing":"ease_out"}`},
 		{[]string{"config", "set", "--discovery-controls=true"}, "PATCH", "/config", `{"discovery_controls":true}`},
 		{[]string{"config", "set", "--discovery-controls=false"}, "PATCH", "/config", `{"discovery_controls":false}`},
 		{[]string{"config", "get"}, "GET", "/config", ""},
@@ -186,6 +187,8 @@ func TestCompletion(t *testing.T) {
 		{[]string{"config", "set", "--clock-font", ""}, "segment"},
 		{[]string{"tokens", "create", "ha", "--scope", ""}, "status"},
 		{[]string{"notify", "hi", "--transition", ""}, "rain_random"},
+		{[]string{"notify", "hi", "--transition", ""}, "interlace"},
+		{[]string{"scene", "art", "--easing", ""}, "ease_in_out"},
 		{[]string{"screen", "--format", ""}, "raw"},
 		{[]string{"config", "set", "--"}, "--night"},
 	} {

@@ -882,10 +882,10 @@ class Device:
 
 # request schemas: allowed and required keys, as the runtime's strict json enforces
 SCHEMAS = {
-    "scene": ({"base", "generator", "seed", "clock", "ip", "transition", "direction", "transition_ms", "exit", "request_id", "epoch"}, {"base"}),
+    "scene": ({"base", "generator", "seed", "clock", "ip", "transition", "direction", "transition_ms", "exit", "easing", "request_id", "epoch"}, {"base"}),
     "action": ({"action", "brightness", "seed", "power", "request_id", "epoch"}, {"action"}),
     "input": ({"control", "event", "steps", "request_id", "epoch"}, {"control", "event"}),
-    "notify": ({"text", "elements", "colour", "duration_s", "name", "stack", "hold", "transition", "direction", "transition_ms", "exit", "request_id", "epoch"}, set()),
+    "notify": ({"text", "elements", "colour", "duration_s", "name", "stack", "hold", "transition", "direction", "transition_ms", "exit", "easing", "request_id", "epoch"}, set()),
     "config": ({"brightness", "base", "generator", "timezone", "ntp_server", "ntp_interval_s", "frame_timeout_ms",
                 "metrics_interval_s", "discovery", "discovery_controls", "discovery_prefix", "mdns", "expected_revision",
                 "clock_font", "clock_colour_mode", "clock_colour", "clock_colour2", "clock_gradient", "clock_spread",

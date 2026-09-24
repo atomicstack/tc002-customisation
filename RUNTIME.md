@@ -712,7 +712,7 @@ and keeps the settings.
 a scene change, a notification or a pushed frame may name how it arrives.
 `PUT /scene`, `POST /notify` and `POST /frame` (in the query, the body being
 the image) and their mqtt twins `cmd/scene`, `cmd/notify`, `cmd/frame` take
-three optional fields:
+five optional fields:
 
 | field | values | default |
 |---|---|---|
@@ -720,6 +720,7 @@ three optional fields:
 | `direction` | `left`, `right`, `up`, `down` | the effect's natural direction: `down` for the rains, `left` otherwise |
 | `transition_ms` | 0..5000 | 500 |
 | `exit` | `reverse`, `same`, `none`: how a notification or pushed frame leaves (ignored on a base scene) | `reverse` |
+| `easing` | `linear`, `ease_in` (starts slow, arrives fast), `ease_out` (starts fast, settles), `ease_in_out` (slow at both ends): how progress runs over `transition_ms`, for every effect | `linear` |
 
 **direction is the way the moving content travels.** slide left moves
 everything left with the new content entering from the right; swipe in left
@@ -743,15 +744,38 @@ pushes the old content off the left edge, revealing the new underneath.
 | `flip` | the old content squashes to the centre line of the axis, then the new grows out of it; a flat card flip |
 | `rain` | columns (rows for left/right) fall that way one after another with an accelerating drop, revealing the new |
 | `rain_random` | the same with the lines starting in a pseudo-random order |
+| `dim` | the old content dims to black over the first half, the new brightens out of it over the second |
+| `blink` | the same in visible steps: the old at 3/3, 2/3, 1/3, then the new at 0/3, 1/3, 2/3 |
+| `flash` | a cross-fade to full white, then from white to the new content |
+| `zoom` | the whole new content grows out of the centre, scaled, over the old |
+| `ripple` | the new content is uncovered inside a circle growing from the centre until it takes in the corners |
+| `diamond` | the same with a diamond (manhattan distance) |
+| `blocks` | a dissolve in whole 4 × 2 blocks, in an order of its own |
+| `wave` | a wipe whose edge is one period of a sine across the panel: 8 px of sway either way for left/right, 4 px for up/down |
+| `interlace` | a slide in which alternate lines travel opposite ways: rows for left/right (even rows go the named way), columns for up/down |
+| `random` | one of the others, never `cut`, picked afresh each time an effect starts; a notification's exit picks again |
+
+the ten after `rain_random` are the transitions of
+[awtrix-ng](https://github.com/atomicstack/awtrix-ng) that were not here yet,
+redone for this renderer: integer maths on the 0..256 progress, with the
+wave's sine from a comptime table, because there is no libm on the device.
+only `wave` and `interlace` read `direction`; the other eight ignore it.
+
+`easing` reshapes the progress before the effect sees it, so it applies to
+every effect alike, including the brightness ones. the curves are quadratic
+(smoothstep for `ease_in_out`), so there is no table. `rain` and
+`rain_random` already accelerate each line's drop, and easing stacks on top of
+that. a `reverse` exit plays the entry backwards, so it mirrors the easing:
+a notification that arrived `ease_in` leaves `ease_out`. `same` keeps it.
 
 a notification or pushed frame **leaves with the paired effect**: swipe in ↔
 swipe out, split in ↔ split out, expand ↔ collapse; the others repeat
-themselves. `exit` says which way: `reverse` (the default) backs out the way
+themselves, and `random` picks a new one. `exit` says which way: `reverse` (the default) backs out the way
 it came, so a notification that swiped in from the right slides back out to
 the right and one that expanded from the centre collapses into it; `same`
 keeps the direction, so the content carries on across the panel like a
 carousel and the base follows it in; `none` cuts. omitting the fields keeps
-the defaults; a request with `direction`, `transition_ms` or `exit` alone
+the defaults; a request with `direction`, `transition_ms`, `exit` or `easing` alone
 applies them to the default effect. a change between the base scenes with
 no effect named, from the buttons or `PUT /scene`, slides forward (clock, art,
 canvas) to the left and back to the right; the knob's generator change fades.
@@ -764,12 +788,13 @@ what it drew before handing the panel back would otherwise slide out as the
 empty canvas's hint rather than as its own picture. only when an effect starts while another is still running is the old
 layer the composite frame that was on the panel at that moment, held still. the effects are composited in the renderer from
 the frame that was on the panel and the scene's new output; `GET /scenes`
-lists them under `transitions`. the mqtt `cmd/frame` envelope grows from 14
-to 18 or 19 bytes when it carries one: `u8 effect` (the index in that list),
-`u8 direction` (left 0, right 1, up 2, down 3), `u16 duration_ms` and
-optionally `u8 exit` (reverse 0, same 1, none 2) before the rgb bytes; over
-ipc the same block, prefixed with a presence byte, rides on `set_base`,
-`notify` and `frame`.
+lists them under `transitions`, with the easings under `easings`. the mqtt
+`cmd/frame` envelope grows from 14 to 18, 19 or 20 bytes when it carries one:
+`u8 effect` (the index in that list), `u8 direction` (left 0, right 1, up 2,
+down 3), `u16 duration_ms`, then optionally `u8 exit` (reverse 0, same 1,
+none 2) and after it optionally `u8 easing` (the index in its list; linear 0)
+before the rgb bytes. over ipc the same block, prefixed with a presence byte,
+rides on `set_base`, `notify` and `frame`.
 
 ### clock styles
 
@@ -2105,7 +2130,7 @@ all topics live under `prefix` (default `tc002`):
 | `result` | out | `{"request_id","status","revision","epoch"}` for every command received on `cmd/*`, or `{"status":"rejected","error","message"}` for a body that did not parse |
 | `metrics` | out, every `metrics_interval_s` | the [metrics document](#the-metrics-document) |
 | `cmd/scene`, `cmd/action`, `cmd/notify`, `cmd/notify/dismiss` | in, qos 1 | exactly the http json bodies (a document notification fits only within the 4096-byte packet); notify queue capacity and dismissal semantics are the same |
-| `cmd/frame` | in, qos 1 | binary, 2,510 bytes big-endian: `u64 request_id`, `u32 epoch`, `u16 duration_s`, 2,496 rgb bytes. a binary payload cannot leave a field out, so zero says "you pick": a zero id is minted by the device, a zero epoch means the current one; or 2,514 / 2,515 bytes with `u8 effect`, `u8 direction`, `u16 duration_ms` and optionally `u8 exit` before the rgb (see [transitions](#transitions)) |
+| `cmd/frame` | in, qos 1 | binary, 2,510 bytes big-endian: `u64 request_id`, `u32 epoch`, `u16 duration_s`, 2,496 rgb bytes. a binary payload cannot leave a field out, so zero says "you pick": a zero id is minted by the device, a zero epoch means the current one; or 2,514 / 2,515 / 2,516 bytes with `u8 effect`, `u8 direction`, `u16 duration_ms`, optionally `u8 exit` and then optionally `u8 easing` before the rgb (see [transitions](#transitions)) |
 | `cmd/config` | in, qos 1 | `brightness`, `base`, `generator` stay transient. with `discovery_controls: true`, the explicitly allowed clock/time/night fields below are durable; other privileged fields are refused |
 | `cmd/input` | in, qos 1 | the `/input` json body; answered on `result` |
 | `cmd/sound` | in, qos 1 | the `POST /sound` json body — `{"name","volume"?,"loop"?}` or `{"stop":true}`; answered on `result`. the only command topic whose answer is not the renderer's: the id in that `result` is minted by the device, because the body carries no `request_id` to echo. `sound.enabled` is off by default, and playing while it is off answers `unavailable` rather than failing silently |
@@ -2242,7 +2267,7 @@ controls also receive empty retained records to remove previously advertised ent
 | `tc002` ([`api-client-v2/`](api-client-v2/README.md)) | the command-line client, written in go and built with `make build` there: `status`, `scenes`, `scene` (with `--font`, `--colour-mode`, `--colour`, `--colour2`, `--gradient`, `--spread`, `--digits`, `--fade` for the clock), `brightness`, `reseed`, `arm-stream`, `notify` (with `--name`, `--stack`, `--hold`), `dismiss [name]`, `frame`, `power`, `input`, `screen` (`--format raw --out` saves the rgb), `logs`, `events`, `config get|set|save`, `mqtt get|set|status`, `ntfy get|set`, `canvas`, `sprites`, `sounds`, `scripts`, `tokens`, `reboot`, and `request <method> <path>` for anything else. takes the pulled token file (`--token-file`, or `TC002_TOKEN_FILE`) or a hex token, picks the admin token for admin commands, generates request ids and fetches the epoch for you. it does not live in `runtime/tools/`: the `tc002ctl.py` there is deprecated in its favour and stays only because `tc002-onboard.sh` and `tc002-update.sh` still call it |
 | `tc002-update.sh` | `--in-place`, the one-shot cold start for a person (`tc002-update.sh --in-place` is its old name; `--flash` is the other kind of update, the one that reboots): connect adb, build and push (`--no-build` to skip the build), start the supervisor with `--tz`, apply and save the timezone, scene, clock font and sntp server, pull the tokens to the repo root for the console, print the status. after a reboot this is the way back |
 | `tc002-demo-*.py` | the demo reels, one per topic, played from this machine over the api: `shapes` (the primitives, clipping, bars), `text` (four fonts, alignment, and all eight animations), `charts` (sparkline styles, autoscale against a fixed range, thresholds, sweep, hex samples, a live feed), `icons` (every built-in glyph, five a page, the set fetched from the device), `images` (sprites generated on the host, uploaded, drawn, animated, deleted), `layout` (absolute placement, tiles and rows, boxes, clipping, draw order), `tiles` (the composite at four widths, so the layout switch is visible), `dashboard` (four realistic dashboards, each pushed once then fed only numbers, printing what the layout and the patches cost in bytes). all take `-s`, a token, `--hold`, `--only`, `--list` and `--loop`, and all put back the scene **and the canvas** they found. `tc002demo.py` is their shared helper, not a demo, and `tc002-demo-lint.py` puts every document all eight would send through the runtime's own rules without a device — the limits and field rules, and where the ink lands: text off the edge of a 52×16 panel, two pieces of text on the same pixels, a tile label too wide for its tile. it is how the shapes reel's 26 elements against a limit of 24 were caught on this machine rather than on the panel, and it now catches the overflows that only showed up once the reels were played on one. a step whose subject is running off an edge names itself in the demo's `LINT_ALLOW`. `tc002-canvas-docs.py` photographs the panel for [`CANVAS.md`](CANVAS.md) -- it drives the device through that page's catalogue and saves a png per still and a gif per motion off `GET /screen`, so the document and the picture of it cannot drift (the gifs need ffmpeg on the host; the stills do not) |
-| `tc002-demo-transitions.py` | a demo reel of every transition, played from this machine over the api: for each effect a clock ↔ art scene change arrives with it, then a labelled notification arrives with it and leaves with the paired exit; `--only` with per-step direction and exit overrides, `--ms`, `--hold`, `--loop`, `--no-scenes`, `--list`; restores the scene it started from and leaves the settings alone |
+| `tc002-demo-transitions.py` | a demo reel of every transition, played from this machine over the api: for each effect a clock ↔ art scene change arrives with it, then a labelled notification arrives with it and leaves with the paired exit; `--only` with per-step direction and exit overrides, `--ms`, `--easing`, `--hold`, `--loop`, `--no-scenes`, `--list`; restores the scene it started from and leaves the settings alone |
 | `tc002-run.sh` | `push` (build, elf check, push to `/tmp/tc002/`; `TC002_NO_BUILD=1` skips the build), `start [supervisor options]` (under the lock: stop `zkswe`, start the supervisor detached with its log in `/tmp/tc002/`), `status`, `stop` (sigterm, restart the stock app, release the lock), `restore` (stop and remove everything under `/tmp`) |
 | `tc002-ipcprobe` (`zig build ipcprobe`) | a device binary, not part of the runtime and not installed with it: makes the same seqpacket socketpair the supervisor uses and round-trips a filled datagram at 1 kb through 256 kb, reporting `SO_SNDBUF` and the largest that survives intact. it answers the one question that bounds every protocol decision here — what the kernel will actually carry — on the device rather than from the host. measured 2026-09-12: `SO_SNDBUF` 196,608, largest datagram 131,072 |
 | `tc002-boot-experiment.sh` | `baseline` (time the stock `ctl.start` to the property), `start` (rewrite `startupLibPath` into `/tmp/EasyUI.cfg`, restart `zkswe` through the bootstrap, show the audit), `status`, `restore` |

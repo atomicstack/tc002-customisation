@@ -303,11 +303,11 @@ fn scopeSet(names: []const []const u8) union(enum) { set: clients.Set, err: Scop
     }
     return .{ .set = set };
 }
-const SceneBody = struct { base: []const u8, generator: ?[]const u8 = null, seed: ?u32 = null, clock: ?ClockBody = null, transition: ?[]const u8 = null, direction: ?[]const u8 = null, transition_ms: ?u32 = null, exit: ?[]const u8 = null, request_id: ?[]const u8 = null, epoch: ?u32 = null };
+const SceneBody = struct { base: []const u8, generator: ?[]const u8 = null, seed: ?u32 = null, clock: ?ClockBody = null, transition: ?[]const u8 = null, direction: ?[]const u8 = null, transition_ms: ?u32 = null, exit: ?[]const u8 = null, easing: ?[]const u8 = null, request_id: ?[]const u8 = null, epoch: ?u32 = null };
 const ActionBody = struct { action: []const u8, brightness: ?u8 = null, seed: ?u32 = null, power: ?bool = null, request_id: ?[]const u8 = null, epoch: ?u32 = null };
 const InputBody = struct { control: []const u8, event: []const u8, steps: u8 = 1, request_id: ?[]const u8 = null, epoch: ?u32 = null };
 const DismissNotifyBody = struct { name: ?[]const u8 = null, request_id: ?[]const u8 = null, epoch: ?u32 = null };
-const NotifyBody = struct { name: ?[]const u8 = null, stack: bool = false, hold: bool = false, text: ?[]const u8 = null, elements: ?[]const ElementBody = null, colour: ?[]const u8 = null, duration_s: u16 = 5, transition: ?[]const u8 = null, direction: ?[]const u8 = null, transition_ms: ?u32 = null, exit: ?[]const u8 = null, request_id: ?[]const u8 = null, epoch: ?u32 = null };
+const NotifyBody = struct { name: ?[]const u8 = null, stack: bool = false, hold: bool = false, text: ?[]const u8 = null, elements: ?[]const ElementBody = null, colour: ?[]const u8 = null, duration_s: u16 = 5, transition: ?[]const u8 = null, direction: ?[]const u8 = null, transition_ms: ?u32 = null, exit: ?[]const u8 = null, easing: ?[]const u8 = null, request_id: ?[]const u8 = null, epoch: ?u32 = null };
 /// `{"name":"chime"}` to play, `{"stop":true}` to stop. volume is optional and means "louder or
 /// quieter than the setting, just for this one".
 const SoundBody = struct { name: ?[]const u8 = null, volume: ?u8 = null, loop: ?bool = null, stop: ?bool = null };
@@ -1068,7 +1068,7 @@ pub fn parseFrame(query: []const u8, body: []const u8, generated_id: u64) Route 
     if (queryValue(query, "epoch")) |t| epoch = std.fmt.parseInt(u32, t, 10) catch return bad("invalid_epoch", "epoch must be a number");
     var ms: ?u32 = null;
     if (queryValue(query, "transition_ms")) |t| ms = std.fmt.parseInt(u32, t, 10) catch return bad("invalid_transition_ms", "transition_ms must be 0..5000");
-    const spec = switch (parseTransition(queryValue(query, "transition"), queryValue(query, "direction"), ms, queryValue(query, "exit"), .cut)) {
+    const spec = switch (parseTransition(queryValue(query, "transition"), queryValue(query, "direction"), ms, queryValue(query, "exit"), queryValue(query, "easing"), .cut)) {
         .reject => |j| return .{ .reject = j },
         .op => |t| t,
     };
@@ -1092,7 +1092,7 @@ pub fn parseBody(kind: BodyKind, body: []const u8, arena: *Arena, generated_id: 
                     .op => |op| style = op,
                 }
             }
-            const spec = switch (parseTransition(b.transition, b.direction, b.transition_ms, b.exit, .fade)) {
+            const spec = switch (parseTransition(b.transition, b.direction, b.transition_ms, b.exit, b.easing, .fade)) {
                 .reject => |j| return .{ .reject = j },
                 .op => |t| t,
             };
@@ -1159,7 +1159,7 @@ pub fn parseBody(kind: BodyKind, body: []const u8, arena: *Arena, generated_id: 
             if (b.duration_s < 1 or b.duration_s > 300) return bad("invalid_duration", "duration_s must be 1..300");
             const colour = if (b.colour) |c| (parseColour(c) orelse return bad("invalid_colour", "colour must be rrggbb hex")) else [3]u8{ 255, 255, 255 };
             const rid = if (b.request_id) |t| (parseRequestId(t) orelse return bad("invalid_request_id", "request_id must be 1..16 hex digits")) else generated_id;
-            const spec = switch (parseTransition(b.transition, b.direction, b.transition_ms, b.exit, .fade)) {
+            const spec = switch (parseTransition(b.transition, b.direction, b.transition_ms, b.exit, b.easing, .fade)) {
                 .reject => |j| return .{ .reject = j },
                 .op => |t| t,
             };
@@ -1332,9 +1332,10 @@ fn parseClockStyle(font_text: ?[]const u8, mode_text: ?[]const u8, colour_text: 
     return .{ .op = p };
 }
 
-/// the four transition fields shared by `/scene`, `/notify` and `/frame`: none given means the
+/// the five transition fields shared by `/scene`, `/notify` and `/frame`: none given means the
 /// renderer's default; an effect without a direction takes the effect's natural one; a
-/// missing duration is 500 ms; a missing exit backs out the way it came.
+/// missing duration is 500 ms; a missing exit backs out the way it came; a missing easing is
+/// linear.
 const TransitionRoute = union(enum) { op: ?transition.Spec, reject: Reject };
 const LocationRoute = union(enum) { op: ?Location, reject: Reject };
 
@@ -1348,16 +1349,18 @@ fn parseLocation(lat: ?f64, lon: ?f64) LocationRoute {
     if (!(o >= -180.0 and o <= 180.0)) return .{ .reject = .{ .status = 400, .code = "invalid_longitude", .message = "longitude must be -180..180" } };
     return .{ .op = .{ .lat_c = @intFromFloat(@round(a * 100.0)), .lon_c = @intFromFloat(@round(o * 100.0)) } };
 }
-fn parseTransition(effect_text: ?[]const u8, direction_text: ?[]const u8, ms: ?u32, exit_text: ?[]const u8, natural: transition.Effect) TransitionRoute {
-    if (effect_text == null and direction_text == null and ms == null and exit_text == null) return .{ .op = null };
+fn parseTransition(effect_text: ?[]const u8, direction_text: ?[]const u8, ms: ?u32, exit_text: ?[]const u8, easing_text: ?[]const u8, natural: transition.Effect) TransitionRoute {
+    if (effect_text == null and direction_text == null and ms == null and exit_text == null and easing_text == null) return .{ .op = null };
+    const easing = if (easing_text) |t| (enumByName(transition.Easing, t) orelse return .{ .reject = .{ .status = 400, .code = "invalid_easing", .message = easing_names_message } }) else .linear;
     const exit = if (exit_text) |t| (enumByName(transition.Exit, t) orelse return .{ .reject = .{ .status = 400, .code = "invalid_exit", .message = "exit must be reverse, same or none" } }) else .reverse;
     const effect = if (effect_text) |t| (enumByName(transition.Effect, t) orelse return .{ .reject = .{ .status = 400, .code = "invalid_transition", .message = effect_names_message } }) else natural;
     const direction = if (direction_text) |t| (enumByName(transition.Direction, t) orelse return .{ .reject = .{ .status = 400, .code = "invalid_direction", .message = "direction must be left, right, up or down" } }) else effect.naturalDirection();
     if (ms) |v| if (v > transition.max_duration_ms) return .{ .reject = .{ .status = 400, .code = "invalid_transition_ms", .message = "transition_ms must be 0..5000" } };
-    return .{ .op = .{ .effect = effect, .direction = direction, .duration_ns = if (ms) |v| @as(u64, v) * 1_000_000 else transition.default_duration_ns, .exit = exit } };
+    return .{ .op = .{ .effect = effect, .direction = direction, .duration_ns = if (ms) |v| @as(u64, v) * 1_000_000 else transition.default_duration_ns, .exit = exit, .easing = easing } };
 }
 
 const effect_names_message = "transition must be one of " ++ namesList(transition.Effect);
+const easing_names_message = "easing must be one of " ++ namesList(transition.Easing);
 const font_names_message = "font must be one of " ++ namesList(clock.Font);
 
 /// an enum's tag names as a json array, built at comptime so the catalogue cannot drift
@@ -1424,7 +1427,7 @@ pub const scenes_body = "{\"bases\":" ++ namesJson(Base) ++ ",\"generators\":[" 
     "{\"index\":2,\"name\":\"cube\",\"parameters\":" ++ paramsJson(&cube.params) ++ "}," ++
     "{\"index\":3,\"name\":\"terrain\",\"parameters\":" ++ paramsJson(&terrain.params) ++ "}]," ++
     "\"parameters\":{\"art\":" ++ paramsJson(&scene.art_params) ++ ",\"clock\":" ++ paramsJson(&clock.params) ++ ",\"canvas\":" ++ paramsJson(&canvas.params) ++ "}," ++
-    "\"clock\":{\"fonts\":" ++ namesJson(clock.Font) ++ ",\"colour_modes\":[\"solid\",\"gradient\"],\"digits\":" ++ namesJson(clock.DigitStyle) ++ ",\"gradients\":[\"horizontal\",\"vertical\",\"diagonal\"],\"spread\":[0,255],\"max_spread\":255},\"ip\":{\"modes\":" ++ namesJson(ip.Mode) ++ "},\"notify\":{\"text_max\":128,\"duration_s\":[1,300]},\"frame\":{\"bytes\":2496,\"duration_s\":[1,300]},\"transitions\":{\"effects\":" ++ namesJson(transition.Effect) ++ ",\"directions\":" ++ namesJson(transition.Direction) ++ ",\"exits\":" ++ namesJson(transition.Exit) ++ ",\"duration_ms\":[0,5000]}}";
+    "\"clock\":{\"fonts\":" ++ namesJson(clock.Font) ++ ",\"colour_modes\":[\"solid\",\"gradient\"],\"digits\":" ++ namesJson(clock.DigitStyle) ++ ",\"gradients\":[\"horizontal\",\"vertical\",\"diagonal\"],\"spread\":[0,255],\"max_spread\":255},\"ip\":{\"modes\":" ++ namesJson(ip.Mode) ++ "},\"notify\":{\"text_max\":128,\"duration_s\":[1,300]},\"frame\":{\"bytes\":2496,\"duration_s\":[1,300]},\"transitions\":{\"effects\":" ++ namesJson(transition.Effect) ++ ",\"directions\":" ++ namesJson(transition.Direction) ++ ",\"exits\":" ++ namesJson(transition.Exit) ++ ",\"easings\":" ++ namesJson(transition.Easing) ++ ",\"duration_ms\":[0,5000]}}";
 
 // tests
 
@@ -1600,7 +1603,7 @@ test "transition fields become a spec with the effect's natural direction and 50
     try std.testing.expect(plain.op.frame.transition == null);
     try expectReject(route(testReq(.POST, "/api/v1/frame", "duration_s=5&request_id=ab&epoch=1&transition_ms=x", control_header, "application/octet-stream", null), &frame, &c, &no_clients, &origins, &arena, test_minted), 400, "invalid_transition_ms");
     try std.testing.expect(std.mem.indexOf(u8, scenes_body, "\"transitions\":{\"effects\":[\"fade\",\"cut\",\"slide\",\"swipe_out\"") != null);
-    try std.testing.expect(std.mem.endsWith(u8, scenes_body, "\"directions\":[\"left\",\"right\",\"up\",\"down\"],\"exits\":[\"reverse\",\"same\",\"none\"],\"duration_ms\":[0,5000]}}"));
+    try std.testing.expect(std.mem.endsWith(u8, scenes_body, "\"directions\":[\"left\",\"right\",\"up\",\"down\"],\"exits\":[\"reverse\",\"same\",\"none\"],\"easings\":[\"linear\",\"ease_in\",\"ease_out\",\"ease_in_out\"],\"duration_ms\":[0,5000]}}"));
     const e = route(testReq(.POST, "/api/v1/notify", "", control_header, "application/json", null), "{\"text\":\"x\",\"request_id\":\"1\",\"epoch\":1,\"transition\":\"swipe_in\",\"exit\":\"same\"}", &c, &no_clients, &origins, &arena, test_minted);
     try std.testing.expectEqual(transition.Exit.same, e.op.notify.transition.?.exit);
     try std.testing.expectEqual(transition.Exit.reverse, n.op.notify.transition.?.exit);
@@ -1609,6 +1612,23 @@ test "transition fields become a spec with the effect's natural direction and 50
     try expectReject(route(testReq(.POST, "/api/v1/notify", "", control_header, "application/json", null), "{\"text\":\"x\",\"request_id\":\"1\",\"epoch\":1,\"exit\":\"back\"}", &c, &no_clients, &origins, &arena, test_minted), 400, "invalid_exit");
     const fe = route(testReq(.POST, "/api/v1/frame", "duration_s=5&request_id=ab&epoch=1&transition=slide&exit=none", control_header, "application/octet-stream", null), &frame, &c, &no_clients, &origins, &arena, test_minted);
     try std.testing.expectEqual(transition.Exit.none, fe.op.frame.transition.?.exit);
+}
+
+test "easing is one more optional transition field on scenes, notifications and frames" {
+    const c = testCreds();
+    var arena: Arena = undefined;
+    const origins = OriginPolicy{};
+    const s = route(testReq(.PUT, "/api/v1/scene", "", control_header, "application/json", null), "{\"base\":\"clock\",\"transition\":\"ripple\",\"easing\":\"ease_out\",\"request_id\":\"7\"}", &c, &no_clients, &origins, &arena, test_minted);
+    try std.testing.expectEqual(transition.Spec{ .effect = .ripple, .direction = .left, .duration_ns = 500_000_000, .easing = .ease_out }, s.op.set_scene.transition.?);
+    const n = route(testReq(.POST, "/api/v1/notify", "", control_header, "application/json", null), "{\"text\":\"x\",\"request_id\":\"1\",\"epoch\":1,\"easing\":\"ease_in_out\"}", &c, &no_clients, &origins, &arena, test_minted);
+    try std.testing.expectEqual(transition.Spec{ .effect = .fade, .direction = .left, .duration_ns = 500_000_000, .easing = .ease_in_out }, n.op.notify.transition.?);
+    const r = route(testReq(.POST, "/api/v1/notify", "", control_header, "application/json", null), "{\"text\":\"x\",\"request_id\":\"1\",\"epoch\":1,\"transition\":\"random\"}", &c, &no_clients, &origins, &arena, test_minted);
+    try std.testing.expectEqual(transition.Spec{ .effect = .random, .direction = .left, .duration_ns = 500_000_000 }, r.op.notify.transition.?);
+    try expectReject(route(testReq(.POST, "/api/v1/notify", "", control_header, "application/json", null), "{\"text\":\"x\",\"request_id\":\"1\",\"epoch\":1,\"easing\":\"bouncy\"}", &c, &no_clients, &origins, &arena, test_minted), 400, "invalid_easing");
+    const frame = [_]u8{7} ** geometry.rgb_bytes;
+    const f = route(testReq(.POST, "/api/v1/frame", "duration_s=5&request_id=ab&epoch=1&easing=ease_in", control_header, "application/octet-stream", null), &frame, &c, &no_clients, &origins, &arena, test_minted);
+    try std.testing.expectEqual(transition.Spec{ .effect = .cut, .direction = .left, .easing = .ease_in }, f.op.frame.transition.?);
+    try expectReject(route(testReq(.POST, "/api/v1/frame", "duration_s=5&request_id=ab&epoch=1&easing=x", control_header, "application/octet-stream", null), &frame, &c, &no_clients, &origins, &arena, test_minted), 400, "invalid_easing");
 }
 
 test "the ip layout is a setting only: there is no ip base to put it on" {

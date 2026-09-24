@@ -267,8 +267,9 @@ func jsonData(c *cobra.Command, fields []field) (map[string]any, error) {
 
 var identityFields = []field{textField("request_id"), numberField("epoch", 0, 4294967295)}
 var transitionFields = []field{
-	enumField("transition", "fade cut slide swipe_out swipe_in collapse expand wipe dissolve split_out split_in blinds flip rain rain_random"),
+	enumField("transition", "fade cut slide swipe_out swipe_in collapse expand wipe dissolve split_out split_in blinds flip rain rain_random dim blink flash zoom ripple diamond blocks wave interlace random"),
 	enumField("direction", "left right up down"), numberField("transition_ms", 0, 5000), enumField("exit", "reverse same none"),
+	enumField("easing", "linear ease_in ease_out ease_in_out"),
 }
 var clockFields = []field{
 	enumField("font", "classic mini segment big block hires"), enumField("colour_mode", "solid gradient"), colourField("colour"), colourField("colour2"),

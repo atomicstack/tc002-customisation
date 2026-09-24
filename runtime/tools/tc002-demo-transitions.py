@@ -7,6 +7,7 @@ the reel ends by putting back the scene that was showing; durable settings are n
   tc002-demo-transitions.py -s <device-ip> [--token-file FILE | --token HEX] [options]
 
   --ms N          transition duration in ms, 0..5000 (default 800)
+  --easing E      linear, ease_in, ease_out or ease_in_out for every step (default: the device's, linear)
   --hold S        seconds each notification stays before it leaves, 1..300 (default 2)
   --only STEPS    a comma-separated subset of effects, played in that order; each may carry its own
                   direction and exit after colons in any order, e.g. swipe_in:same:up,flip:none
@@ -43,7 +44,18 @@ REEL = [
     ("flip", "left", "reverse", "flip", "ff60ff"),
     ("rain", "down", "none", "rain", "60c0ff"),
     ("rain_random", "down", "same", "rain rnd", "ffa0ff"),
+    ("dim", None, "reverse", "dim", "ffe0a0"),
+    ("blink", None, "reverse", "blink", "ff8080"),
+    ("flash", None, "reverse", "flash", "a0e0ff"),
+    ("zoom", None, "reverse", "zoom", "80ffc0"),
+    ("ripple", None, "reverse", "ripple", "40a0ff"),
+    ("diamond", None, "reverse", "diamond", "ffc0ff"),
+    ("blocks", None, "reverse", "blocks", "c0ff40"),
+    ("wave", "left", "same", "wave", "40ffff"),
+    ("interlace", "left", "reverse", "interlc", "ff6040"),
+    ("random", None, "reverse", "random", "ffffff"),
 ]
+EASINGS = ("linear", "ease_in", "ease_out", "ease_in_out")
 DIRECTIONS = ("left", "right", "up", "down")
 EXITS = {"reverse": "leaves the other way", "same": "leaves the same way", "none": "cuts away"}
 OTHER_BASE = {"clock": "art", "art": "clock", "ip": "clock"}
@@ -65,11 +77,11 @@ def request(args, token, method, path, body=None, query=""):
     return json.loads(raw) if raw else {}
 
 
-def describe(effect, direction, ms):
-    return f"{effect}{' ' + direction if direction else ''}, {ms} ms"
+def describe(effect, direction, ms, easing=None):
+    return f"{effect}{' ' + direction if direction else ''}, {ms} ms{', ' + easing if easing else ''}"
 
 
-def set_scene(args, token, base, generator, effect=None, direction=None, ms=None):
+def set_scene(args, token, base, generator, effect=None, direction=None, ms=None, easing=None):
     body = {"base": base, "request_id": secrets.token_hex(8)}
     if base == "art" and generator:
         body["generator"] = generator
@@ -78,14 +90,18 @@ def set_scene(args, token, base, generator, effect=None, direction=None, ms=None
         body["transition_ms"] = ms
         if direction:
             body["direction"] = direction
+        if easing:
+            body["easing"] = easing
     request(args, token, "PUT", "/scene", body)
 
 
-def notify(args, token, text, colour, hold, effect, direction, ms, exit_mode):
+def notify(args, token, text, colour, hold, effect, direction, ms, exit_mode, easing=None):
     body = {"text": text, "colour": colour, "duration_s": hold, "transition": effect, "transition_ms": ms, "exit": exit_mode,
             "request_id": secrets.token_hex(8), "epoch": tc002ctl.epoch(args, token)}
     if direction:
         body["direction"] = direction
+    if easing:
+        body["easing"] = easing
     request(args, token, "POST", "/notify", body)
 
 
@@ -116,11 +132,11 @@ def play(args, token, reel, start_base, generator):
     for effect, direction, exit_mode, label, colour in reel:
         if not args.no_scenes:
             base = OTHER_BASE[base]
-            print(f"  scene -> {base:5s}  {describe(effect, direction, args.ms)}")
-            set_scene(args, token, base, generator, effect, direction, args.ms)
+            print(f"  scene -> {base:5s}  {describe(effect, direction, args.ms, args.easing)}")
+            set_scene(args, token, base, generator, effect, direction, args.ms, args.easing)
             time.sleep(args.ms / 1000 + 0.7)
-        print(f"  notify {label!r:11s} {describe(effect, direction, args.ms)}; exit {exit_mode}: {EXITS[exit_mode]}")
-        notify(args, token, label, colour, args.hold, effect, direction, args.ms, exit_mode)
+        print(f"  notify {label!r:11s} {describe(effect, direction, args.ms, args.easing)}; exit {exit_mode}: {EXITS[exit_mode]}")
+        notify(args, token, label, colour, args.hold, effect, direction, args.ms, exit_mode, args.easing)
         time.sleep(args.hold + args.ms / 1000 + 0.4)
     return base
 
@@ -132,6 +148,7 @@ def main():
     ap.add_argument("--token-file")
     ap.add_argument("--ms", type=int, default=800)
     ap.add_argument("--hold", type=int, default=2)
+    ap.add_argument("--easing", choices=EASINGS)
     ap.add_argument("--only")
     ap.add_argument("--loop", action="store_true")
     ap.add_argument("--no-scenes", action="store_true")
