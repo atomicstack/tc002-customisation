@@ -23,7 +23,8 @@ version is struck through rather than deleted, so anyone who read it can find
 out they were misled.
 
 note: this is beta software and changes to APIs / logic / file formats have the
-potential to break between commits. patches welcome 🫠
+potential to break between commits. [`CHANGES.md`](CHANGES.md) says what each
+release brought. patches welcome 🫠
 
 ### for the stock firmware
 
@@ -89,6 +90,7 @@ docs, one topic each:
 
 | doc | what it covers |
 |-----|----------------|
+| [`CHANGES.md`](CHANGES.md) | what each release of the runtime brought, newest first, and what main has gained since the last one; every release gets its section before it is cut |
 | [`CANVAS.md`](CANVAS.md) | canvas mode, in pictures: every font, numeral, icon and drawing primitive the runtime offers, and the animations as recordings — each one a photograph of the panel rather than a drawing of it |
 | [`CLOUD.md`](CLOUD.md) | what the device sends to ulanzi's cloud, how it authenticates, and why that's a problem |
 | [`CUSTOM-APP.md`](CUSTOM-APP.md) | the custom-app frame payload shared by http and mqtt: text, draw primitives, bitmaps, gifs, lifecycle |
