@@ -826,6 +826,12 @@ pub const State = struct {
     }
 
     pub fn render(self: *const State, now_ns: u64, rgb: *geometry.Rgb) void {
+        self.renderWith(&self.sprites, now_ns, rgb);
+    }
+
+    /// draw with a sprite store that is not this state's own: a notification's document borrows
+    /// the canvas scene's uploaded pictures rather than carrying a copy of them
+    pub fn renderWith(self: *const State, sprites: *const Sprites, now_ns: u64, rgb: *geometry.Rgb) void {
         @memset(rgb, 0);
         if (self.doc.empty()) {
             // a dim word rather than a black panel: an empty canvas is a state, not a fault
@@ -862,9 +868,9 @@ pub const State = struct {
                 },
                 .sprite => {
                     const o = animatedOffset(e, ms, 0, 0);
-                    if (self.sprites.find(e.body.sprite.id.slice())) |sp| drawSprite(rgb, sp, @as(i32, e.box.x) + o[0], @as(i32, e.box.y) + o[1]);
+                    if (sprites.find(e.body.sprite.id.slice())) |sp| drawSprite(rgb, sp, @as(i32, e.box.x) + o[0], @as(i32, e.box.y) + o[1]);
                 },
-                .tile => drawTile(rgb, &self.doc, e, &self.sprites, animatedOffset(e, ms, 0, 0), colour),
+                .tile => drawTile(rgb, &self.doc, e, sprites, animatedOffset(e, ms, 0, 0), colour),
             }
         }
     }
@@ -2194,4 +2200,20 @@ test "a corrupt file is refused rather than half-read" {
     var too_many = buf;
     too_many[n - 1] = sprite_max + 1;
     try std.testing.expectError(error.BadFile, loadBytes(too_many[0..n], &out_d, &out_s));
+}
+
+test "a state renders with sprites it does not own" {
+    var st = State{};
+    var doc = Document{};
+    doc.add(.{ .id = Id.init("s"), .box = .{ .x = 0, .y = 0, .w = 8, .h = 8 }, .body = .{ .sprite = .{ .id = Id.init("sun") } } }) catch unreachable;
+    st.install(doc, 0);
+    var shared = Sprites{};
+    var sp = Sprite{ .id = Id.init("sun"), .w = 8, .h = 8 };
+    @memset(sp.rgb[0 .. 8 * 8 * 3], 200);
+    shared.put(sp) catch unreachable;
+    var rgb: geometry.Rgb = undefined;
+    st.renderWith(&shared, 0, &rgb);
+    try std.testing.expectEqual(@as(u8, 200), rgb[0]);
+    st.render(0, &rgb); // its own, empty store: nothing to draw
+    try std.testing.expectEqual(@as(u8, 0), rgb[0]);
 }
