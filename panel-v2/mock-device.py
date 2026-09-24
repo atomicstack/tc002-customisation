@@ -277,6 +277,7 @@ class Device:
         self.restarts = 0
         self.seed = secrets.randbelow(1 << 32)   # the art scene's seed, as /status reports it
         self.canvas = []                         # the canvas document, as last PUT
+        self.canvas_persist = True               # whether that put asked to be written
         self.log_seq = 0
         self.log_lines = []
         for line in SEED_LOG_LINES:
@@ -884,7 +885,7 @@ SCHEMAS = {
     "tokens/rotate": ({"scopes"}, set()),
     # the canvas body is stored, not checked: the element schema is the runtime's and this file
     # does not keep a second copy of it. PUT sends elements, PATCH sends values
-    "canvas": ({"elements", "values"}, set()),
+    "canvas": ({"elements", "values", "persist"}, set()),
     "mock/persist": ({"enabled"}, {"enabled"}),
     "mqtt": ({"enabled", "host", "port", "username", "password", "client_id", "prefix", "tls"}, set()),
     "ntfy": ({"enabled", "url", "topic", "token", "username", "password", "duration_s", "insecure", "ca"}, set()),
@@ -1101,7 +1102,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
                     return self._send(200, SCENES)
                 if endpoint == "canvas":
                     if method == "GET":
-                        return self._send(200, {"elements": d.canvas, "max_elements": 24,
+                        return self._send(200, {"elements": d.canvas, "max_elements": 24, "persist": d.canvas_persist,
                                                 "saved_revision": d.config["saved_revision"]})
                     if method == "DELETE":
                         d.canvas = []
@@ -1112,8 +1113,12 @@ class Handler(http.server.BaseHTTPRequestHandler):
                         els = body.get("elements")
                         if not isinstance(els, list):
                             raise Reject(400, "invalid_elements", "elements must be a list")
+                        persist = body.get("persist", True)
+                        if not isinstance(persist, bool):
+                            raise Reject(400, "invalid_persist", "persist must be true or false")
                         d.canvas = els
-                        d.log(f"canvas: {len(els)} elements")
+                        d.canvas_persist = persist
+                        d.log(f"canvas: {len(els)} elements" + ("" if persist else ", not saved"))
                     else:   # PATCH: a list of {id, ...} updates, merged onto matching elements
                         values = body.get("values")
                         if not isinstance(values, list):

@@ -652,6 +652,13 @@ which is what any dashboard shows until its next update. `saved_revision` in `GE
 is on disk, the same confirmation the settings give: it trails `revision` after a patch and catches
 up at the next layout change.
 
+a `PUT` with `"persist": false` shows a document without writing it: the supervisor keeps the
+last persistent document beside the live one, `canvas.bin` and `saved_revision` keep describing
+that one, a sprite change saves that one, and a restart brings it back. `GET /canvas` reports
+`persist`. a patch on a transient document applies live and writes nothing, as patches always
+did; `DELETE` clears both and saves the empty document. this is what a temporary screen wants,
+and what a notification already gets for free.
+
 **the animation clocks, and why the document alone is not enough.** the device starts a
 document's animations when it installs it: one `epoch_ns` for the continuous motions (hue, pulse,
 blink, bounce) and one `started_ns` per element for the arrival ones (scramble, typewriter, sweep).
@@ -1444,8 +1451,8 @@ read-only storage; connection buffers stay the same size.
 | `GET` | `/sprites` | `status` | | `{"slots":8,"sprites":[{"id","width","height"}…]}` |
 | `PUT` | `/sprites/{id}` | `content` | `application/octet-stream`, 192 or 768 bytes of rgb888 | the sprite list |
 | `DELETE` | `/sprites/{id}` | `content` | | the sprite list |
-| `GET` | `/canvas` | `status` | | the [document](#the-canvas) as held, plus `limits` and the `age_ms` of every animation clock |
-| `PUT` | `/canvas` | `content` | `{"elements":[…]}` | the document as stored |
+| `GET` | `/canvas` | `status` | | the [document](#the-canvas) as held, plus `persist`, `limits` and the `age_ms` of every animation clock |
+| `PUT` | `/canvas` | `content` | `{"elements":[…],"persist":bool?}` (`persist` defaults true; false shows without saving) | the document as held, with `persist` |
 | `PATCH` | `/canvas` | `display` | `{"values":[{"id":"…","text"/"data"/"data_hex"/"value"/"colour"}…]}` | the document as stored |
 | `DELETE` | `/canvas` | `display` | | the emptied document |
 | `GET` | `/mqtt` | `settings` | | broker settings; `password_set` instead of the password |

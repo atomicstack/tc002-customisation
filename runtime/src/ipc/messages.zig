@@ -26,6 +26,7 @@ test "every message kind round-trips through a packet" {
     patch.add(.{ .id = canvas.Id.init("hdr"), .has = canvas.Field.colour, .colour = .{ 1, 2, 3 } }) catch unreachable;
     const all = [_]Message{
         .{ .canvas = CanvasView{ .doc = doc, .doc_age_ms = 1234, .element_age_ms = [_]u32{777} ++ [_]u32{0} ** (canvas.max_elements - 1) } },
+        .{ .canvas = CanvasView{ .doc = doc, .persist = false } },
         .canvas_get,
         .{ .canvas_patch = patch },
         .canvas_clear,
@@ -2063,6 +2064,11 @@ pub const CanvasView = struct {
     doc: canvas.Document = .{},
     doc_age_ms: u32 = 0,
     element_age_ms: [canvas.max_elements]u32 = [_]u32{0} ** canvas.max_elements,
+    /// netd asking: write it to flash or only show it. the supervisor answering: whether the
+    /// live document is the durable one
+    persist: bool = true,
+
+    pub const persist_len = 1;
 };
 
 /// as much of a build id as reaches a device. `git describe --always --dirty --abbrev=12` is 13 to
@@ -2293,7 +2299,9 @@ fn encodePayload(msg: Message, out: []u8) usize {
                 std.mem.writeInt(u32, out[o..][0..4], v.element_age_ms[i], .big);
                 o += 4;
             }
-            return o;
+            if (o + CanvasView.persist_len > out.len) return 0;
+            out[o] = @intFromBool(v.persist);
+            return o + CanvasView.persist_len;
         },
         .canvas_patch => |p| return canvas.putPatch(&p, out) catch 0,
         .canvas_error => |e| {
@@ -2812,6 +2820,8 @@ pub fn decodePacket(bytes: []const u8) Error!Packet {
                     o += 4;
                 }
             }
+            // the persist byte follows the ages; a sender without one means the durable default
+            if (p.len >= o + CanvasView.persist_len) v.persist = p[o] != 0;
             break :blk .{ .canvas = v };
         },
         .canvas_patch => blk: {
@@ -3515,4 +3525,14 @@ test "an applied statement carries the rich flag" {
     const back = (try decodePacket(try encodePacket(.{ .applied = applied }, 4, 9, &buf))).message.applied;
     try std.testing.expect(back.rich);
     try std.testing.expectEqualDeep(applied, back);
+}
+
+test "a canvas view without the persist byte reads as persistent" {
+    var buf: [codec.max_message]u8 = undefined;
+    var payload: [codec.max_message]u8 = undefined;
+    const v = CanvasView{ .doc = .{}, .persist = false };
+    const plen = encodePayload(.{ .canvas = v }, &payload);
+    try std.testing.expect(!(try decodePacket(try encodePacket(.{ .canvas = v }, 0, 0, &buf))).message.canvas.persist);
+    const trimmed = try codec.encode(.{ .kind = @intFromEnum(Kind.canvas), .request_id = 0, .epoch = 0, .payload_len = @intCast(plen - CanvasView.persist_len) }, payload[0 .. plen - CanvasView.persist_len], &buf);
+    try std.testing.expect((try decodePacket(trimmed)).message.canvas.persist);
 }

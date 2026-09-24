@@ -627,7 +627,7 @@ const Netd = struct {
             .sprite_put => |sp| self.ask(c, .{ .sprite = sp }, .sprites, now),
             .sprite_delete => |id| self.ask(c, .{ .sprite_delete = id }, .sprites, now),
             .canvas_get => self.ask(c, .canvas_get, .canvas, now),
-            .canvas_put => |d| self.ask(c, .{ .canvas = .{ .doc = d } }, .canvas, now),
+            .canvas_put => |p| self.ask(c, .{ .canvas = .{ .doc = p.doc, .persist = p.persist } }, .canvas, now),
             .canvas_patch => |cp| self.ask(c, .{ .canvas_patch = cp }, .canvas, now),
             .canvas_clear => self.ask(c, .canvas_clear, .canvas, now),
             .config_patch => |p| {
@@ -1201,7 +1201,7 @@ const Netd = struct {
     /// drawing; `PUT` accepts the field and ignores it, so a document read back can be put back.
     fn canvasJson(o: *Out, view: *const messages.CanvasView) void {
         const d = &view.doc;
-        o.fmt("{{\"revision\":{d},\"saved_revision\":{d},\"age_ms\":{d},\"elements\":[", .{ d.revision, d.saved_revision, view.doc_age_ms });
+        o.fmt("{{\"revision\":{d},\"saved_revision\":{d},\"persist\":{},\"age_ms\":{d},\"elements\":[", .{ d.revision, d.saved_revision, view.persist, view.doc_age_ms });
         for (d.elements[0..d.count], 0..) |*e, i| {
             if (i > 0) o.add(",");
             o.fmt("{{\"type\":\"{s}\",\"age_ms\":{d}", .{ @tagName(e.kind()), view.element_age_ms[i] });

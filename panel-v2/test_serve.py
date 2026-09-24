@@ -545,6 +545,16 @@ class EndToEndTests(unittest.TestCase):
         _, emptied = self.call("GET", "canvas")
         self.assertEqual(emptied["elements"], [])
 
+        # a transient document shows without being saved, and the reply says so
+        status, _ = self.call("PUT", "canvas", {**doc, "persist": False})
+        self.assertEqual(status, 200)
+        _, got = self.call("GET", "canvas")
+        self.assertEqual(got["persist"], False)
+        status, _ = self.call("PUT", "canvas", doc)
+        self.assertEqual(status, 200)
+        _, got = self.call("GET", "canvas")
+        self.assertEqual(got["persist"], True)
+
     def test_clock_spread_is_both_a_setting_and_a_transient_scene_field(self):
         _, cfg = self.call("GET", "config")
         status, doc = self.call("PATCH", "config", {"clock_spread": 120, "expected_revision": cfg["revision"]})

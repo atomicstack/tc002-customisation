@@ -151,8 +151,9 @@ pub const Op = union(enum) {
     streams_palette,
     streams_delete,
     canvas_get,
-    /// the whole document, by value: it is about two kilobytes and a request handles one
-    canvas_put: canvas.Document,
+    /// the whole document, by value: it is about two kilobytes and a request handles one.
+    /// `persist` false shows it without writing it to flash
+    canvas_put: struct { doc: canvas.Document, persist: bool },
     canvas_patch: canvas.Patch,
     canvas_clear,
     icons,
@@ -409,7 +410,7 @@ const SampleData = union(enum) {
 };
 
 const AnimateBody = struct { kind: []const u8, ms: ?u16 = null, phase: ?u8 = null, amount: ?u8 = null, axis: ?[]const u8 = null };
-const CanvasBody = struct { elements: []const ElementBody };
+const CanvasBody = struct { elements: []const ElementBody, persist: bool = true };
 /// a patch names elements by id and carries only what changed. it is a list rather than an object
 /// keyed by id because the parser resolves field names at compile time and the ids belong to the
 /// client -- the same reason `generator_params` is a list.
@@ -1236,7 +1237,7 @@ pub fn parseBody(kind: BodyKind, body: []const u8, arena: *Arena, generated_id: 
             var doc = canvas.Document{};
             return switch (parseCanvas(b.elements, &doc)) {
                 .reject => |j| .{ .reject = j },
-                .op => |d| .{ .op = .{ .canvas_put = d } },
+                .op => |d| .{ .op = .{ .canvas_put = .{ .doc = d, .persist = b.persist } } },
             };
         },
         .canvas_patch => {
@@ -1842,7 +1843,7 @@ test "samples given as a json string are refused, rather than read as the bytes 
     try expectReject(route(patch, "{\"values\":[{\"id\":\"g\",\"data\":\"1,2,3\"}]}", &c, &no_clients, &origins, &arena, test_minted), 400, "invalid_data");
     // and a list of numbers still parses
     const good = route(put, "{\"elements\":[{\"type\":\"sparkline\",\"data\":[1,2,3]}]}", &c, &no_clients, &origins, &arena, test_minted);
-    try std.testing.expectEqualSlices(u8, &[_]u8{ 1, 2, 3 }, good.op.canvas_put.dataOf(good.op.canvas_put.elements[0].body.sparkline.span));
+    try std.testing.expectEqualSlices(u8, &[_]u8{ 1, 2, 3 }, good.op.canvas_put.doc.dataOf(good.op.canvas_put.doc.elements[0].body.sparkline.span));
 }
 
 test "a number the schema cannot hold names the field it was given for" {
@@ -1879,7 +1880,7 @@ test "a canvas document is parsed whole, with every field checked against its el
         \\ {"type":"line","at":[0,12],"to":[51,12],"colour":"202020"},
         \\ {"id":"b","type":"bar","row":3,"of":4,"value":60,"background":"101010"}]}
     , &c, &no_clients, &origins, &arena, test_minted);
-    const d = r.op.canvas_put;
+    const d = r.op.canvas_put.doc;
     try std.testing.expectEqual(@as(u8, 5), d.count);
     try std.testing.expectEqualStrings("living room", d.textOf(d.elements[0].body.text.span));
     try std.testing.expectEqual(canvas.Font.big, d.elements[1].body.text.face);
@@ -1893,7 +1894,7 @@ test "a canvas document is parsed whole, with every field checked against its el
 
     // samples as hex, for a document that would not otherwise fit
     const hexed = route(put, "{\"elements\":[{\"type\":\"sparkline\",\"data_hex\":\"01090f\"}]}", &c, &no_clients, &origins, &arena, test_minted);
-    try std.testing.expectEqualSlices(u8, &[_]u8{ 1, 9, 15 }, hexed.op.canvas_put.dataOf(hexed.op.canvas_put.elements[0].body.sparkline.span));
+    try std.testing.expectEqualSlices(u8, &[_]u8{ 1, 9, 15 }, hexed.op.canvas_put.doc.dataOf(hexed.op.canvas_put.doc.elements[0].body.sparkline.span));
 
     // a field that does not belong to the type is a mistake worth hearing about
     try expectReject(route(put, "{\"elements\":[{\"type\":\"rect\",\"text\":\"hi\"}]}", &c, &no_clients, &origins, &arena, test_minted), 400, "invalid_element_field");
@@ -1928,7 +1929,7 @@ test "a document read back can be put back: age_ms is accepted and ignored" {
         \\  "animate":{"kind":"scramble","ms":2500}},
         \\ {"type":"rect","at":[0,8],"size":[10,4],"age_ms":0}]}
     , &c, &no_clients, &origins, &arena, test_minted);
-    const d = r.op.canvas_put;
+    const d = r.op.canvas_put.doc;
     try std.testing.expectEqual(@as(u8, 2), d.count);
     try std.testing.expectEqualStrings("21.4C", d.textOf(d.elements[0].body.text.span));
     try std.testing.expectEqual(canvas.Motion.scramble, d.elements[0].anim.kind);
@@ -1972,7 +1973,7 @@ test "an animation is declared per element, and only where it makes sense" {
         \\ {"id":"b","type":"bar","value":50,"animate":{"kind":"bounce","amount":3,"axis":"x","phase":50}},
         \\ {"id":"g","type":"sparkline","data":[1,2],"animate":{"kind":"sweep","ms":900}}]}
     , &c, &no_clients, &origins, &arena, test_minted);
-    const d = r.op.canvas_put;
+    const d = r.op.canvas_put.doc;
     try std.testing.expectEqual(canvas.Motion.scramble, d.elements[0].anim.kind);
     try std.testing.expectEqual(@as(u16, 600), d.elements[0].anim.ms);
     try std.testing.expectEqual(@as(u16, 8000), d.elements[1].anim.ms); // a hue turns slowly by default
@@ -2330,4 +2331,13 @@ test "a notification may be a document, with the text as its summary or absent" 
     try std.testing.expectEqualStrings("invalid_element_type", wrong.reject.code);
     const textless = route(testReq(.POST, "/api/v1/notify", "", control_header, "application/json", null), "{}", &c, &no_clients, &origins, &arena, test_minted);
     try std.testing.expectEqualStrings("invalid_text", textless.reject.code);
+}
+
+test "a canvas put may decline to persist" {
+    var arena: Arena = undefined;
+    const t = parseBody(.canvas_put, "{\"elements\":[{\"type\":\"rect\",\"at\":[0,0],\"size\":[4,4]}],\"persist\":false}", &arena, 0);
+    try std.testing.expect(!t.op.canvas_put.persist);
+    try std.testing.expectEqual(@as(u8, 1), t.op.canvas_put.doc.count);
+    const d = parseBody(.canvas_put, "{\"elements\":[{\"type\":\"rect\",\"at\":[0,0],\"size\":[4,4]}]}", &arena, 0);
+    try std.testing.expect(d.op.canvas_put.persist);
 }

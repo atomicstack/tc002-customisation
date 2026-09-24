@@ -572,6 +572,10 @@ const Supervisor = struct {
     /// the canvas document. the supervisor owns it because it is state a client reads back and
     /// will one day persist; the renderer gets a copy whenever it changes or restarts.
     canvas_doc: canvas.Document = .{},
+    /// the last document accepted with persist, and what canvas.bin holds. a transient put shows
+    /// without touching it, so a sprite change that saves the file saves this one
+    canvas_durable: canvas.Document = .{},
+    canvas_transient: bool = false,
     /// when this document's animations started. the supervisor keeps the same account the renderer
     /// does -- the same comparison over the same documents -- so `GET /canvas` can publish ages a
     /// second renderer can reproduce the phase from.
@@ -1899,11 +1903,20 @@ const Supervisor = struct {
                 .canvas => |v| {
                     var next = v.doc;
                     next.revision = self.canvas_doc.revision +% 1;
-                    self.installCanvas(next);
-                    self.sendCanvas();
-                    self.saveCanvas();
+                    self.canvas_transient = !v.persist;
+                    if (v.persist) {
+                        self.installCanvas(next);
+                        self.canvas_durable = self.canvas_doc;
+                        self.sendCanvas();
+                        self.saveCanvas();
+                    } else {
+                        // shown, not written: saved_revision keeps naming the durable document
+                        next.saved_revision = self.canvas_saved;
+                        self.installCanvas(next);
+                        self.sendCanvas();
+                    }
                     self.sendNetd(.{ .canvas = self.canvasView() }, p.request_id);
-                    log.info("canvas: {d} elements, revision {d}", .{ self.canvas_doc.count, self.canvas_doc.revision });
+                    log.info("canvas: {d} elements, revision {d}{s}", .{ self.canvas_doc.count, self.canvas_doc.revision, if (v.persist) "" else ", not saved" });
                 },
                 .canvas_patch => |cp| {
                     // onto a copy, so the clocks can be told what actually changed
@@ -1914,6 +1927,7 @@ const Supervisor = struct {
                         continue;
                     };
                     self.installCanvas(next);
+                    if (!self.canvas_transient) self.canvas_durable = self.canvas_doc;
                     self.sendCanvas();
                     self.sendNetd(.{ .canvas = self.canvasView() }, p.request_id);
                 },
@@ -1921,6 +1935,8 @@ const Supervisor = struct {
                     var next = self.canvas_doc;
                     next.clear();
                     self.installCanvas(next);
+                    self.canvas_transient = false;
+                    self.canvas_durable = self.canvas_doc;
                     self.sendCanvas();
                     self.saveCanvas();
                     self.sendNetd(.{ .canvas = self.canvasView() }, p.request_id);
@@ -3074,7 +3090,7 @@ const Supervisor = struct {
     /// the document as a client reads it back: with the ages of its animation clocks
     fn canvasView(self: *const Supervisor) messages.CanvasView {
         const now = sys.monotonicNs();
-        var v = messages.CanvasView{ .doc = self.canvas_doc, .doc_age_ms = self.canvas_clocks.docAgeMs(now) };
+        var v = messages.CanvasView{ .doc = self.canvas_doc, .doc_age_ms = self.canvas_clocks.docAgeMs(now), .persist = !self.canvas_transient };
         for (0..self.canvas_doc.count) |i| v.element_age_ms[i] = self.canvas_clocks.elementAgeMs(i, now);
         return v;
     }
@@ -3096,7 +3112,7 @@ const Supervisor = struct {
         const dir = self.statePathIn(&dir_buf, "config");
         const tmp = self.statePathIn(&tmp_buf, "config/canvas.bin.tmp");
         const path = self.statePathIn(&path_buf, "config/canvas.bin");
-        const n = canvas.saveBytes(&self.canvas_doc, &self.sprites, &canvas_file_buf) catch {
+        const n = canvas.saveBytes(&self.canvas_durable, &self.sprites, &canvas_file_buf) catch {
             log.err("canvas save failed: it does not fit its buffer", .{});
             return;
         };
@@ -3104,9 +3120,10 @@ const Supervisor = struct {
             log.err("canvas save failed: {s}", .{sys.errText(e)});
             return;
         };
-        self.canvas_saved = self.canvas_doc.revision;
-        self.canvas_doc.saved_revision = self.canvas_saved;
-        log.info("canvas saved, revision {d}, {d} bytes", .{ self.canvas_doc.revision, n });
+        self.canvas_saved = self.canvas_durable.revision;
+        self.canvas_durable.saved_revision = self.canvas_saved;
+        if (!self.canvas_transient) self.canvas_doc.saved_revision = self.canvas_saved;
+        log.info("canvas saved, revision {d}, {d} bytes", .{ self.canvas_durable.revision, n });
     }
 
     fn loadCanvas(self: *Supervisor) void {
@@ -3121,6 +3138,8 @@ const Supervisor = struct {
         };
         self.canvas_saved = self.canvas_doc.revision;
         self.canvas_doc.saved_revision = self.canvas_saved;
+        self.canvas_durable = self.canvas_doc;
+        self.canvas_transient = false;
         log.info("canvas loaded, revision {d}, {d} elements, {d} sprites", .{ self.canvas_doc.revision, self.canvas_doc.count, self.sprites.count });
     }
 

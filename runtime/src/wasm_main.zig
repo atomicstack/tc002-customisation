@@ -333,8 +333,8 @@ export fn installCanvas(len: u32, now_ms: f64) u32 {
     // a canvas document carries no request id, so the minted-id argument is unused here
     switch (api.parseBody(.canvas_put, body, &canvas_arena, 0)) {
         .op => |op| switch (op) {
-            .canvas_put => |doc| {
-                arb.canvas.install(doc, toNs(now_ms));
+            .canvas_put => |p| {
+                arb.canvas.install(p.doc, toNs(now_ms));
                 arb.dirty = true;
                 return 1;
             },
