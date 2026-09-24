@@ -1140,12 +1140,13 @@ was there before. The panel holds its last latched frame while nothing is
 driving it, so the word stays on the glass for the whole dark stretch and
 costs nothing to keep there.
 
-It goes out as a stream frame, so it touches no persisted state. The updaters'
-`Updating...` is a held notification named `updating` for the same reason: a
+It goes out as a stream frame, so it touches no persisted state, and it is held
+for ten seconds, far longer than the wait, so that **if the exec fails the notice
+expires by itself** and the clock returns rather than the device sitting on a
+lie. A battery notice due in the same window stands aside. The updaters'
+`Updating...` is a held notification named `updating` for a related reason: a
 notification lives in the renderer's memory, so the restart or reboot that ends
-the update drops it, and nothing is left on the canvas. It is held for ten seconds, far longer than the wait, so that **if the
-exec fails the notice expires by itself** and the clock returns rather than the
-device sitting on a lie. A battery notice due in the same window stands aside.
+the update drops it, and nothing is left on the canvas.
 
 `scene/banner.zig` draws it, and is a pure module with pixel tests like
 `batteryart.zig`. A string too wide for the panel is refused rather than drawn
@@ -1632,6 +1633,7 @@ a dismissal with no matching notification is a no-op and emits no statement.
 | `age_ms` | how long ago it was applied. set by the renderer and added to at each hop, exactly as `sample_age_ms` is for `/status`, so a mirror running deliberately behind real time can place it at the right instant |
 | `cmd` | `set_base`, `select_generator`, `notify`, `dismiss_notify`, `raw`, `brightness`, `reseed`, `arm_stream`, `power`, `set_clock_style`, `set_ip_mode`, `overlay_expired` |
 | `source` | `api` (http or mqtt), `ntfy`, `input` (a button or the knob), `local` (the device itself: a menu selection, night brightness, an overlay reaching its deadline) |
+| `rich` | on a `notify` statement: the notification is a canvas document, and `text` is only its summary (empty when the sender gave none) |
 
 **the parameters are resolved, not requested.** the knob asks for "the next
 generator" and the statement names the one it landed on; a seedless reseed
@@ -1640,7 +1642,10 @@ with no special cases of its own.
 
 **what is not published.** a `raw` or `stream` frame says how long the overlay
 holds, never which pixels: 2,496 bytes per statement would not fit the ipc, and a
-mirror that wants them can read `/screen`. a stream frame does not appear at all,
+mirror that wants them can read `/screen`. a document notification is published
+the same way: `rich: true`, its name, its timing and its summary text, never its
+elements, and there is no route that reads the active notification back, so a
+mirror draws what it sent itself and a summary for what it did not. a stream frame does not appear at all,
 because it deliberately does not move the revision — which is also what stops
 sixty frames a second from flooding the stream. `api` does not distinguish http
 from mqtt: netd serves both and marks neither, and the question a console

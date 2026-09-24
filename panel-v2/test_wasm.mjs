@@ -736,3 +736,18 @@ test('a rich notification the page did not send is replayed as its summary', () 
   const c = W.compose({ base: 'clock', overlay: 'notify', generator: 'popsquares', brightness: 100 }, localWith(W), WALL, true);
   assert.equal(c.label, 'rich notification (document not sent from this page)');
 });
+
+test('in follow mode a rich notification the page sent is drawn from the stream statement', () => {
+  // the console normally follows the event stream, where the statement for a notification is the
+  // authority and compose() leaves notifications alone. a document the page sent is replayed from
+  // the statement with the document the page still holds, not as its summary text
+  W.reset('clock', 'popsquares', 1);
+  const body = { elements: [{ type: 'rect', at: [0, 0], size: [52, 16], colour: 'ff8000' }], name: 'builder', hold: true };
+  W.expectRich(body);
+  const r = W.applyStatement({ revision: 1, age_ms: 0, cmd: 'notify', source: 'api', text: '', rich: true, duration_s: 5, hold: true, stack: false, name: 'builder' }, WALL);
+  assert.equal(r.ok, true, r.reason || '');
+  const local = localWith(W, { notify: { elements: body.elements, text: '', hold: true, name: 'builder', colour: [255, 255, 255], sinceMs: WALL } });
+  const c = W.compose({ base: 'clock', overlay: 'notify', generator: 'popsquares', brightness: 100 }, local, WALL, true);
+  assert.equal(c.label, 'rich notification');
+  assert.equal(c.rgb[0], 255); assert.equal(c.rgb[1], 128); assert.equal(c.rgb[2], 0);
+});

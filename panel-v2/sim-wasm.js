@@ -100,6 +100,10 @@
   let lastCanvasResult = { ok: true };
   /* the last notify statement replayed from the stream was a document the page never saw */
   let lastRichReplay = false;
+  /* a document notification the page is about to send: the stream's statement for it carries only
+     the summary, so the replay draws from this instead */
+  let pendingRich = null;
+  function expectRich(body) { pendingRich = { name: String(body && body.name ? body.name : ''), body }; }
 
   /* the panel's clock is the device's, not this browser's. every response carries a Date header,
      which is whole seconds — the same resolution the clock scene redraws at — so anchoring to it
@@ -430,8 +434,16 @@
                       c.fade == null ? -1 : (c.fade ? 1 : 0), ev.at);
     },
     notify: (e, ev) => {
-      // a document notification cannot be rebuilt from its statement: replay it as its summary so
-      // the queue and the timers stay aligned, and say so in the label
+      // a document notification the page sent is replayed with the document the page still holds:
+      // one apply, the statement's own duration, hold and name, so the revision lands where the
+      // device's did and the preview draws what the panel draws
+      if (ev.rich && pendingRich && pendingRich.name === String(ev.name == null ? '' : ev.name)) {
+        const held = pendingRich; pendingRich = null; lastRichReplay = false;
+        return notifyBody({ ...held.body, text: ev.text || undefined, duration_s: (ev.duration_s | 0) || undefined,
+                            hold: !!ev.hold, stack: !!ev.stack, name: held.name || undefined }, ev.at) ? 1 : 0;
+      }
+      // any other document notification cannot be rebuilt from its statement: replay it as its
+      // summary so the queue and the timers stay aligned, and say so in the label
       lastRichReplay = !!ev.rich;
       const encoder = new TextEncoder();
       const text = encoder.encode(String(ev.rich && !ev.text ? 'notification' : (ev.text == null ? '' : ev.text)));
@@ -525,7 +537,7 @@
   const api = {
     WIDTH, HEIGHT, PIXELS, RGB_BYTES, WHITE, black, pixelOffset,
     ready, loaded, buildLut, tzParse, TZ_UTC, Art, compose, sceneParams, renderIpLayout,
-    agreement, anchorClock, deviceNow, installCanvas, clearCanvas, canvasEmpty, canvasAnimated, notifyBody,
+    agreement, anchorClock, deviceNow, installCanvas, clearCanvas, canvasEmpty, canvasAnimated, notifyBody, expectRich,
     applyStatement, setRevision, applyGeneratorParams, frame, renderCanvasDraft,
     stepCanvasDraft, canvasBounds,
     canvasBackdated,

@@ -1961,6 +1961,8 @@ async function cvNotify() {
   const duration = +$('cvndur').value, hold = $('cvnhold').checked;
   if (!(duration >= 1 && duration <= 300)) return toast('duration must be 1 to 300 seconds', true);
   try {
+    // the stream's statement will carry only a summary; the preview keeps the document to draw from
+    S.expectRich({ elements: cvDraft.elements, name: 'builder' });
     await command('POST', 'notify', (id, epoch) => ({ elements: cvDraft.elements, duration_s: duration, hold, name: 'builder', request_id: id, epoch }));
     local.notify = { elements: cvDraft.elements, text: '', hold, name: 'builder', colour: [255, 255, 255], sinceMs: Date.now() };
     toast(hold ? 'notification sent; it holds until dismissed' : `notification sent for ${duration}s`);
