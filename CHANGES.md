@@ -30,7 +30,10 @@ refuses a version this file does not know. the github releases carry the same no
 - **the block face fade is brightness-aware.** the cross-fade blends in the led driver's terms and
   cuts to off under the driver's floor of 50, so a dimmed night clock no longer hovers and flickers
   through the middle of a fade.
-- **ten more transitions from awtrix-ng, and easing for all of them.**
+- **ten more transitions from awtrix-ng**: `dim`, `blink`, `flash`, `zoom`, `ripple`, `diamond`, `blocks`,
+  `wave`, `interlace` and `random` (one of the others, picked afresh each time), redone for this
+  renderer in integer maths. **and easing for every effect**: `ease_in`, `ease_out` and
+  `ease_in_out` beside the linear default.
 - the api contract test's canvas example reports `persist`, as the device does.
 
 ## v0.3.3 — rich notifications and a transient canvas (2026-09-24)
