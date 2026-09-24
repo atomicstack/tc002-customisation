@@ -90,8 +90,8 @@ docs, one topic each:
 
 | doc | what it covers |
 |-----|----------------|
-| [`CHANGES.md`](CHANGES.md) | what each release of the runtime brought, newest first, and what main has gained since the last one; every release gets its section before it is cut |
 | [`CANVAS.md`](CANVAS.md) | canvas mode, in pictures: every font, numeral, icon and drawing primitive the runtime offers, and the animations as recordings — each one a photograph of the panel rather than a drawing of it |
+| [`CHANGES.md`](CHANGES.md) | what each release of the runtime brought, newest first, and what main has gained since the last one; every release gets its section before it is cut |
 | [`CLOUD.md`](CLOUD.md) | what the device sends to ulanzi's cloud, how it authenticates, and why that's a problem |
 | [`CUSTOM-APP.md`](CUSTOM-APP.md) | the custom-app frame payload shared by http and mqtt: text, draw primitives, bitmaps, gifs, lifecycle |
 | [`DEVICE.md`](DEVICE.md) | living with the device: the stripped busybox, root adb, flashing and recovery, and how it keeps time. the hardware inventory itself is in this readme under [hardware](#hardware) |
