@@ -786,34 +786,61 @@ everything left with the new content entering from the right; swipe in left
 pulls the new content in from the right edge over the old; swipe out left
 pushes the old content off the left edge, revealing the new underneath.
 
+**fades and switches** — nothing moves; the old picture gives way to the new where it stands:
+
 | effect | what moves | recorded |
 |---|---|---|
 | `fade` | a cross-fade of the whole frame | ![fade](runtime/screenshots/transitions/fade.png) |
 | `cut` | nothing: the new content at once | ![cut](runtime/screenshots/transitions/cut.png) |
+| `dissolve` | pixels switch from old to new in a fixed pseudo-random order | ![dissolve](runtime/screenshots/transitions/dissolve.png) |
+| `blocks` | a dissolve in whole 4 × 2 blocks, in an order of its own | ![blocks](runtime/screenshots/transitions/blocks.png) |
+| `dim` | the old content dims to black over the first half, the new brightens out of it over the second | ![dim](runtime/screenshots/transitions/dim.png) |
+| `flash` | a cross-fade to full white, then from white to the new content | ![flash](runtime/screenshots/transitions/flash.png) |
+| `blink` | `dim` in visible steps: the old at 3/3, 2/3, 1/3, then the new at 0/3, 1/3, 2/3 | ![blink](runtime/screenshots/transitions/blink.png) |
+
+**slides and wipes** — the content, or an edge, travels the named direction:
+
+| effect | what moves | recorded |
+|---|---|---|
 | `slide` | old and new content move in tandem, the new following the old in | ![slide](runtime/screenshots/transitions/slide.png) |
 | `swipe_out` | the old content slides away; the new content sits still underneath | ![swipe_out](runtime/screenshots/transitions/swipe_out.png) |
 | `swipe_in` | the new content slides in over the old, which sits still | ![swipe_in](runtime/screenshots/transitions/swipe_in.png) |
-| `collapse` | the old content is kept inside a rectangle shrinking to the centre, both axes meeting there together; the new shows outside it | ![collapse](runtime/screenshots/transitions/collapse.png) |
-| `expand` | the new content grows out of the centre over the old (the reverse) | ![expand](runtime/screenshots/transitions/expand.png) |
-| `wipe` | a hard edge sweeps that way; nothing moves | ![wipe](runtime/screenshots/transitions/wipe.png) |
-| `dissolve` | pixels switch from old to new in a fixed pseudo-random order | ![dissolve](runtime/screenshots/transitions/dissolve.png) |
 | `split_out` | the old content parts at the centre line and both halves slide off; left/right part sideways, up/down part vertically | ![split_out](runtime/screenshots/transitions/split_out.png) |
 | `split_in` | both halves of the new content slide in from the edges and meet at the centre | ![split_in](runtime/screenshots/transitions/split_in.png) |
+| `wipe` | a hard edge sweeps that way; nothing moves | ![wipe](runtime/screenshots/transitions/wipe.png) |
+
+**about the centre** — the picture shrinks into or grows out of the middle:
+
+| effect | what moves | recorded |
+|---|---|---|
+| `collapse` | the old content is kept inside a rectangle shrinking to the centre, both axes meeting there together; the new shows outside it | ![collapse](runtime/screenshots/transitions/collapse.png) |
+| `expand` | the new content grows out of the centre over the old (the reverse) | ![expand](runtime/screenshots/transitions/expand.png) |
+| `zoom` | the whole new content grows out of the centre, scaled, over the old | ![zoom](runtime/screenshots/transitions/zoom.png) |
+| `shrink` | zoom backwards: the old content shrinks into the centre, scaled, over the new | ![shrink](runtime/screenshots/transitions/shrink.png) |
+
+**shapes** — a shape spreads from the centre or a shaped edge sweeps across:
+
+| effect | what moves | recorded |
+|---|---|---|
+| `ripple` | the new content is uncovered inside a circle growing from the centre until it takes in the corners | ![ripple](runtime/screenshots/transitions/ripple.png) |
+| `diamond` | the same with a diamond (manhattan distance) | ![diamond](runtime/screenshots/transitions/diamond.png) |
+| `wave` | a wipe whose edge is one period of a sine across the panel: 8 px of sway either way for left/right, 4 px for up/down | ![wave](runtime/screenshots/transitions/wave.png) |
+
+**lines and slats** — the panel is cut into strips that move one by one or against each other:
+
+| effect | what moves | recorded |
+|---|---|---|
 | `blinds` | four slats perpendicular to the direction each wipe that way at once | ![blinds](runtime/screenshots/transitions/blinds.png) |
+| `interlace` | a slide in which alternate lines travel opposite ways: rows for left/right (even rows go the named way), columns for up/down | ![interlace](runtime/screenshots/transitions/interlace.png) |
 | `flip` | the old content squashes to the centre line of the axis, then the new grows out of it; a flat card flip | ![flip](runtime/screenshots/transitions/flip.png) |
 | `rain` | columns (rows for left/right) fall that way one after another with an accelerating drop, revealing the new | ![rain](runtime/screenshots/transitions/rain.png) |
 | `rain_random` | the same with the lines starting in a pseudo-random order | ![rain_random](runtime/screenshots/transitions/rain_random.png) |
-| `dim` | the old content dims to black over the first half, the new brightens out of it over the second | ![dim](runtime/screenshots/transitions/dim.png) |
-| `blink` | the same in visible steps: the old at 3/3, 2/3, 1/3, then the new at 0/3, 1/3, 2/3 | ![blink](runtime/screenshots/transitions/blink.png) |
-| `flash` | a cross-fade to full white, then from white to the new content | ![flash](runtime/screenshots/transitions/flash.png) |
-| `zoom` | the whole new content grows out of the centre, scaled, over the old | ![zoom](runtime/screenshots/transitions/zoom.png) |
-| `shrink` | zoom backwards: the old content shrinks into the centre, scaled, over the new | ![shrink](runtime/screenshots/transitions/shrink.png) |
-| `ripple` | the new content is uncovered inside a circle growing from the centre until it takes in the corners | ![ripple](runtime/screenshots/transitions/ripple.png) |
-| `diamond` | the same with a diamond (manhattan distance) | ![diamond](runtime/screenshots/transitions/diamond.png) |
-| `blocks` | a dissolve in whole 4 × 2 blocks, in an order of its own | ![blocks](runtime/screenshots/transitions/blocks.png) |
-| `wave` | a wipe whose edge is one period of a sine across the panel: 8 px of sway either way for left/right, 4 px for up/down | ![wave](runtime/screenshots/transitions/wave.png) |
-| `interlace` | a slide in which alternate lines travel opposite ways: rows for left/right (even rows go the named way), columns for up/down | ![interlace](runtime/screenshots/transitions/interlace.png) |
-| `random` | one of the others, never `cut`, picked afresh each time an effect starts; a notification's exit picks again |  |
+
+and one that is none of them:
+
+| effect | what moves |
+|---|---|
+| `random` | one of the others, never `cut`, picked afresh each time an effect starts; a notification's exit picks again |
 
 **the recordings** are the effects themselves, not photographs of them: the
 renderer's transition code compiled to webassembly, driven at 60 frames a
@@ -824,7 +851,8 @@ every delay is exactly 1/60 s, which a gif cannot promise. `node
 panel-v2/record-transitions.mjs` regenerates them from the built wasm; a new
 effect in `transition.zig` is a new recording the next time it runs.
 
-the ten after `rain_random` are the transitions of
+ten of these — `dim`, `blink`, `flash`, `zoom`, `ripple`, `diamond`, `blocks`, `wave`,
+`interlace` and `random` — are the transitions of
 [awtrix-ng](https://github.com/atomicstack/awtrix-ng) that were not here yet,
 redone for this renderer: integer maths on the 0..256 progress, with the
 wave's sine from a comptime table, because there is no libm on the device.
