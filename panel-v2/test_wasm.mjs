@@ -751,3 +751,33 @@ test('in follow mode a rich notification the page sent is drawn from the stream 
   assert.equal(c.label, 'rich notification');
   assert.equal(c.rgb[0], 255); assert.equal(c.rgb[1], 128); assert.equal(c.rgb[2], 0);
 });
+
+test('a scene change with a transition is composited frame by frame, as the device does it', () => {
+  // the arbiter only records that a transition is pending; the device's renderer runs it through
+  // the fader. the wasm runs the same fader, so a preview and a recording show the effect itself
+  W.reset('clock', 'popsquares', 1);
+  W.exports.runTransitions(1);
+  const t0 = WALL;
+  W.exports.frame(t0, t0);
+  const clock = W.frame().slice();
+  W.exports.setBaseWith(W.BASES.indexOf('art'), W.TRANSITION_EFFECTS.indexOf('fade'), 0, 0, 500, 0, t0 + 10);
+  W.exports.frame(t0 + 10, t0 + 10);
+  W.exports.frame(t0 + 260, t0 + 260);
+  const mid = W.frame().slice();
+  W.exports.frame(t0 + 700, t0 + 700);
+  const art = W.frame().slice();
+  const differs = (a, b) => a.some((v, i) => v !== b[i]);
+  assert.ok(differs(clock, art), 'the two scenes draw differently');
+  assert.ok(differs(mid, clock) && differs(mid, art), 'halfway through a fade the frame is neither scene');
+  // halfway through a linear fade every clock pixel is about half as bright as it was
+  const litClock = clock.findIndex(v => v > 200);
+  assert.ok(litClock >= 0);
+  assert.ok(mid[litClock] > 60 && mid[litClock] < 200, `blended byte ${mid[litClock]} from ${clock[litClock]}`);
+  // a cut is immediate; the clock face is the same frame anywhere inside the same second
+  W.exports.setBaseWith(W.BASES.indexOf('clock'), W.TRANSITION_EFFECTS.indexOf('cut'), 0, 0, 500, 0, t0 + 800);
+  W.exports.frame(t0 + 800, t0 + 800);
+  assert.deepEqual(W.frame().slice(), clock);
+  assert.ok(W.TRANSITION_EFFECTS.length >= 25, 'the catalogue comes from the runtime');
+  assert.ok(W.TRANSITION_DIRECTIONS.includes('left') && W.TRANSITION_EASINGS.includes('linear'));
+  W.exports.runTransitions(0);
+});

@@ -22,6 +22,8 @@ const tz = @import("scene/tz.zig");
 const param = @import("scene/param.zig");
 const canvas = @import("scene/canvas.zig");
 const api = @import("net/api.zig");
+const panel_fade = @import("panel/fade.zig");
+const transition = @import("panel/transition.zig");
 
 const ms_per_ns: f64 = 1_000_000.0;
 
@@ -36,6 +38,16 @@ fn toMs(ns: u64) f64 {
 }
 
 var out_rgb: geometry.Rgb = geometry.black_rgb;
+/// the scene as rendered before the fader composites a running transition over it
+var scene_rgb: geometry.Rgb = geometry.black_rgb;
+var old_rgb: geometry.Rgb = geometry.black_rgb;
+/// the device's own fader, so a pending transition is run here exactly as the renderer runs it:
+/// the outgoing layer rendered live and composited by the effect. the power ramp is left alone,
+/// the preview never having shown one
+var fader: panel_fade.Fader = .{};
+/// off, a scene change lands at once, which is what a replica placing a statement wants; on, the
+/// fader runs every pending transition, for the live preview and for recordings
+var transitions_on = false;
 /// strings in, frames in, canvas documents in, catalogue names out; one buffer, never two calls
 /// deep. sized for the api's own json body limit, since a whole /canvas document comes through it
 var scratch: [9216]u8 = undefined;
@@ -87,12 +99,41 @@ export fn frame(now_ms: f64, wall_ms: f64) f64 {
     const now_ns = toNs(now_ms);
     const wall_ns = toNs(wall_ms);
     arb.tick(now_ns, wall_ns);
-    arb.render(wall_ns, &out_rgb);
+    if (!transitions_on) {
+        if (arb.takeTransition()) |_| arb.transitionDone();
+        arb.render(wall_ns, &out_rgb);
+        return cadenceMs(wall_ms, wall_ns);
+    }
+    // the same sequence as tc002d's frame: a pending transition begins from the last composite,
+    // the old layer is rendered live while the effect runs, and the arbiter is told when it ended
+    if (arb.takeTransition()) |spec| {
+        const chained = fader.cross.active();
+        fader.begin(&out_rgb, spec, now_ns);
+        if (chained or !fader.cross.active()) arb.transitionDone();
+    }
+    arb.render(wall_ns, &scene_rgb);
+    const live_old = fader.cross.active() and arb.renderOutgoing(wall_ns, &old_rgb);
+    _ = if (live_old) fader.applyLive(&old_rgb, &scene_rgb, &out_rgb, now_ns) else fader.apply(&scene_rgb, &out_rgb, now_ns);
+    if (!fader.cross.active()) arb.transitionDone();
+    // an effect in flight wants frames at the panel's own rate, whatever the scene under it wants
+    if (fader.cross.active()) return toMs(scene_frame_period_ns);
+    return cadenceMs(wall_ms, wall_ns);
+}
+
+const scene_frame_period_ns: u64 = @import("scene/scene.zig").frame_period_ns;
+
+fn cadenceMs(wall_ms: f64, wall_ns: u64) f64 {
     return switch (arb.cadence(wall_ns)) {
         .continuous => |period| toMs(period),
         .at_wall_ns => |at| @max(0, toMs(at) - wall_ms),
         .idle => -1,
     };
+}
+
+/// whether `frame` runs pending transitions through the fader (1) or lands every change at once (0)
+export fn runTransitions(on: u32) void {
+    transitions_on = on != 0;
+    if (!transitions_on) fader = .{};
 }
 
 /// replay one authoritative expiry without advancing animation clocks or checking local deadlines.
@@ -122,6 +163,21 @@ fn generatorOf(v: u32) scene.Generator {
 
 export fn setBase(v: u32, now_ms: f64) void {
     _ = arb.apply(.{ .set_base = baseOf(v) }, toNs(now_ms));
+}
+/// a scene change that names how it arrives: the effect, direction, easing and exit are indices
+/// into the catalogues below, the duration in milliseconds (0 keeps the arbiter's default)
+export fn setBaseWith(v: u32, effect: u32, direction: u32, easing: u32, duration_ms: u32, exit: u32, now_ms: f64) u32 {
+    var spec = transition.Spec{
+        .effect = enumOf(transition.Effect, effect) orelse return 0,
+        .direction = enumOf(transition.Direction, direction) orelse return 0,
+        .easing = enumOf(transition.Easing, easing) orelse return 0,
+        .exit = enumOf(transition.Exit, exit) orelse return 0,
+    };
+    if (duration_ms > 0) spec.duration_ns = toNs(@floatFromInt(duration_ms));
+    return switch (arb.applyWith(.{ .set_base = baseOf(v) }, spec, toNs(now_ms))) {
+        .applied => 1,
+        .rejected => 0,
+    };
 }
 export fn setGenerator(v: u32, now_ms: f64) void {
     _ = arb.apply(.{ .select_generator = generatorOf(v) }, toNs(now_ms));
@@ -516,6 +572,18 @@ export fn digitStyleNames() u32 {
 }
 export fn ipModeNames() u32 {
     return copyOut(enumNames(ip.Mode));
+}
+export fn transitionEffectNames() u32 {
+    return copyOut(enumNames(transition.Effect));
+}
+export fn transitionDirectionNames() u32 {
+    return copyOut(enumNames(transition.Direction));
+}
+export fn transitionEasingNames() u32 {
+    return copyOut(enumNames(transition.Easing));
+}
+export fn transitionExitNames() u32 {
+    return copyOut(enumNames(transition.Exit));
 }
 export fn baseNames() u32 {
     return copyOut(enumNames(arbiter.Base));

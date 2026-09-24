@@ -23,6 +23,7 @@
   let E = null;           // wasm exports, once ready
   let readyPromise = null;
   /* every enum name comes from the wasm, so a new font or generator needs no edit here */
+  let TRANSITION_EFFECTS = [], TRANSITION_DIRECTIONS = [], TRANSITION_EASINGS = [], TRANSITION_EXITS = [];
   let BASES = [], GENERATORS = [], CLOCK_FONTS = [], CLOCK_MODES = [],
       GRADIENTS = [], DIGIT_STYLES = [], IP_MODES = [];
   let CLOCK_MAX_SPREAD = 255, NOTIFY_MAX_S = 300;
@@ -55,6 +56,10 @@
       GRADIENTS = names(E.gradientNames);
       DIGIT_STYLES = names(E.digitStyleNames);
       IP_MODES = names(E.ipModeNames);
+      TRANSITION_EFFECTS = names(E.transitionEffectNames);
+      TRANSITION_DIRECTIONS = names(E.transitionDirectionNames);
+      TRANSITION_EASINGS = names(E.transitionEasingNames);
+      TRANSITION_EXITS = names(E.transitionExitNames);
       CLOCK_MAX_SPREAD = E.clockDefaultSpread();
       NOTIFY_MAX_S = E.notifyMaxSeconds();
       E.init(0, 0, 1);
@@ -546,6 +551,10 @@
     DEFAULT_CLOCK_STYLE,
     /* enum catalogues: live values read out of the wasm at load, so they cannot drift */
     get BASES() { return BASES; },
+    get TRANSITION_EFFECTS() { return TRANSITION_EFFECTS; },
+    get TRANSITION_DIRECTIONS() { return TRANSITION_DIRECTIONS; },
+    get TRANSITION_EASINGS() { return TRANSITION_EASINGS; },
+    get TRANSITION_EXITS() { return TRANSITION_EXITS; },
     get GENERATORS() { return GENERATORS; },
     get CLOCK_FONTS() { return CLOCK_FONTS; },
     get CLOCK_MODES() { return CLOCK_MODES; },
