@@ -364,7 +364,8 @@ const Renderer = struct {
             },
             .screen_get => {
                 // a read: what is on the panel now, outside the epoch and dedup rules
-                self.send(.{ .screen = .{ .revision = arb.revision, .brightness = arb.brightness, .power = @intFromBool(arb.power), .rgb = out_rgb } }, p.request_id);
+                // the frame as shown, and the level it is shown at: mid-ramp that is not the target
+                self.send(.{ .screen = .{ .revision = arb.revision, .brightness = arb.shownBrightness(), .power = @intFromBool(arb.power), .rgb = out_rgb } }, p.request_id);
                 return;
             },
             .heartbeat, .ready, .result, .screen, .input, .log_get, .log_lines, .credentials, .config, .config_get, .config_patch, .config_save, .save_result, .mqtt_put, .status_get, .status => return, // not for the renderer
