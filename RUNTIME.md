@@ -430,7 +430,7 @@ the visible output is one **base** scene plus at most one temporary
 
 | overlay | bounds | behaviour |
 |---------|--------|-----------|
-| notification | 1–128 printable ascii characters, a colour, 1–300 s or held | centred if it fits; otherwise scrolls in from the right one pixel per 33 ms and wraps |
+| notification | 1–128 printable ascii characters and a colour, **or a canvas document** (`elements`: the schema and limits of `PUT /canvas`); 1–300 s or held | text: centred if it fits, otherwise scrolls in from the right one pixel per 33 ms and wraps. a document: drawn by the canvas renderer, its animations starting when it is shown |
 | raw frame | exactly 2,496 rgb888 bytes (52×16×3), 1–300 s | shown as-is; switches at once unless the request names a [transition](#transitions) |
 | stream arming | 2 s | a placeholder for the streaming feature; falls back to the base when nothing arrives |
 
@@ -462,6 +462,18 @@ them, but timed expiry keeps running while the display is dark. notifications
 are held in memory only: restarting the runtime loses the queue. notification
 queueing and dismissal do not change sound playback; sound remains separately
 controlled through the sound api.
+
+**a document as a notification.** `elements` in the body makes the notification a
+canvas document: every element, font, icon, sprite and animation of
+[the canvas](#the-canvas), under the notification's own lifecycle — duration,
+`hold`, `name`, `stack`, the queue, transitions and dismissal. with `elements`
+present `text` is optional and is only the summary the event stream and mqtt
+carry; `colour` is ignored, since elements carry their own. an empty `elements`
+is `400 invalid_elements`; a bad element gets the canvas's own error code. the
+body limit is the http one (8192 bytes) and, over `cmd/notify`, the mqtt packet
+(4096). arrival animations start when the notification is shown, not when it
+was queued. notifications are held in memory only, so a document shown this way
+is gone after a restart — which is exactly why the update notice is one.
 
 every applied change bumps a
 **revision** counter that the api reports back, so a client can tell whether a
@@ -1406,7 +1418,7 @@ read-only storage; connection buffers stay the same size.
 | `GET` | `/scenes` | `status` | | the static catalogue: bases, generators, notification and frame bounds |
 | `PUT` | `/scene` | `display` | `{"base":"clock\|art\|canvas","generator":"popsquares\|plasma\|cube\|terrain"?,"seed":u32?,"clock":{"font","colour_mode","colour","colour2","gradient","spread","digits","fade"}?,"request_id":hex?,"epoch":u32?}` | `{"status":"applied","revision":n,"epoch":n,"request_id":…}` |
 | `POST` | `/action` | `display` | `{"action":"brightness\|reseed\|arm_stream","brightness":1..100?,"seed":u32?,"request_id":hex?,"epoch":u32?}` | as above |
-| `POST` | `/notify` | `notify` | `{"text":"…","colour":"rrggbb"?,"duration_s":1..300?,"name":"door"?,"stack":bool?,"hold":bool?,"request_id":hex?,"epoch":u32?}` (`duration_s` defaults to 5; `stack` and `hold` default false) | as above; `409 queue_full` if appending would exceed eight notifications |
+| `POST` | `/notify` | `notify` | `{"text":"…"?,"elements":[…]?,"colour":"rrggbb"?,"duration_s":1..300?,"name":"door"?,"stack":bool?,"hold":bool?,"request_id":hex?,"epoch":u32?}` (`duration_s` defaults to 5; `stack` and `hold` default false; `elements` is a [canvas document](#the-canvas), and then `text` is optional) | as above; `409 queue_full` if appending would exceed eight notifications; the canvas's own codes for a bad element |
 | `POST` | `/notify/dismiss` | `notify` | `{"name":"door"?,"request_id":hex?,"epoch":u32?}` (omit `name` for current; empty name is invalid) | as above; missing matches are successful no-ops |
 | `POST` | `/frame?duration_s=` (`request_id`, `epoch` optional) | `display` | `application/octet-stream`, exactly 2,496 bytes | as above |
 | `POST` | `/action` (`"action":"power"`) | `display` | `{"action":"power","power":true\|false,"request_id":hex?,"epoch":u32?}` | as above; fades over 600 ms |

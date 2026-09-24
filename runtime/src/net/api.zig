@@ -133,7 +133,8 @@ pub const Op = union(enum) {
     /// a remote control event: the same paths as a physical press
     input: struct { control: actions.Control, event: actions.InputRequest, steps: u8, request_id: u64, epoch: ?u32 },
     dismiss_notify: struct { name: []const u8, request_id: u64, epoch: ?u32 },
-    notify: struct { text: []const u8, colour: [3]u8, duration_s: u16, name: []const u8, stack: bool, hold: bool, transition: ?transition.Spec, request_id: u64, epoch: ?u32 },
+    /// `doc` set makes it a rich notification: the document is drawn and `text` is its summary
+    notify: struct { text: []const u8, colour: [3]u8, duration_s: u16, name: []const u8, stack: bool, hold: bool, transition: ?transition.Spec, request_id: u64, epoch: ?u32, doc: ?canvas.Document = null },
     frame: struct { rgb: *const geometry.Rgb, duration_s: u16, transition: ?transition.Spec, request_id: u64, epoch: ?u32 },
     config_get,
     config_patch: ConfigPatch,
@@ -305,7 +306,7 @@ const SceneBody = struct { base: []const u8, generator: ?[]const u8 = null, seed
 const ActionBody = struct { action: []const u8, brightness: ?u8 = null, seed: ?u32 = null, power: ?bool = null, request_id: ?[]const u8 = null, epoch: ?u32 = null };
 const InputBody = struct { control: []const u8, event: []const u8, steps: u8 = 1, request_id: ?[]const u8 = null, epoch: ?u32 = null };
 const DismissNotifyBody = struct { name: ?[]const u8 = null, request_id: ?[]const u8 = null, epoch: ?u32 = null };
-const NotifyBody = struct { name: ?[]const u8 = null, stack: bool = false, hold: bool = false, text: []const u8, colour: ?[]const u8 = null, duration_s: u16 = 5, transition: ?[]const u8 = null, direction: ?[]const u8 = null, transition_ms: ?u32 = null, exit: ?[]const u8 = null, request_id: ?[]const u8 = null, epoch: ?u32 = null };
+const NotifyBody = struct { name: ?[]const u8 = null, stack: bool = false, hold: bool = false, text: ?[]const u8 = null, elements: ?[]const ElementBody = null, colour: ?[]const u8 = null, duration_s: u16 = 5, transition: ?[]const u8 = null, direction: ?[]const u8 = null, transition_ms: ?u32 = null, exit: ?[]const u8 = null, request_id: ?[]const u8 = null, epoch: ?u32 = null };
 /// `{"name":"chime"}` to play, `{"stop":true}` to stop. volume is optional and means "louder or
 /// quieter than the setting, just for this one".
 const SoundBody = struct { name: ?[]const u8 = null, volume: ?u8 = null, loop: ?bool = null, stop: ?bool = null };
@@ -1140,8 +1141,20 @@ pub fn parseBody(kind: BodyKind, body: []const u8, arena: *Arena, generated_id: 
         .notify => {
             const b = json.parse(NotifyBody, body, arena, &where) catch |e| return jsonError(e, where, arena);
             if (b.name) |name| if (!arbiter.notification.validName(name)) return bad("invalid_name", "a notification name is 1..32 letters, digits, _ or -");
-            if (b.text.len == 0 or b.text.len > 128) return bad("invalid_text", "text must be 1..128 printable ascii characters");
-            for (b.text) |c| if (c < 0x20 or c > 0x7e) return bad("invalid_text", "text must be 1..128 printable ascii characters");
+            // a document makes the text optional: it is then the summary the events carry
+            var doc: ?canvas.Document = null;
+            if (b.elements) |els| {
+                if (els.len == 0) return bad("invalid_elements", "a rich notification has at least one element");
+                var d = canvas.Document{};
+                switch (parseCanvas(els, &d)) {
+                    .reject => |j| return .{ .reject = j },
+                    .op => |parsed| doc = parsed,
+                }
+            }
+            const text = b.text orelse "";
+            if (doc == null and text.len == 0) return bad("invalid_text", "text must be 1..128 printable ascii characters");
+            if (text.len > 128) return bad("invalid_text", "text must be 1..128 printable ascii characters");
+            for (text) |c| if (c < 0x20 or c > 0x7e) return bad("invalid_text", "text must be 1..128 printable ascii characters");
             if (b.duration_s < 1 or b.duration_s > 300) return bad("invalid_duration", "duration_s must be 1..300");
             const colour = if (b.colour) |c| (parseColour(c) orelse return bad("invalid_colour", "colour must be rrggbb hex")) else [3]u8{ 255, 255, 255 };
             const rid = if (b.request_id) |t| (parseRequestId(t) orelse return bad("invalid_request_id", "request_id must be 1..16 hex digits")) else generated_id;
@@ -1149,7 +1162,7 @@ pub fn parseBody(kind: BodyKind, body: []const u8, arena: *Arena, generated_id: 
                 .reject => |j| return .{ .reject = j },
                 .op => |t| t,
             };
-            return .{ .op = .{ .notify = .{ .text = b.text, .colour = colour, .duration_s = b.duration_s, .name = b.name orelse "", .stack = b.stack, .hold = b.hold, .transition = spec, .request_id = rid, .epoch = b.epoch } } };
+            return .{ .op = .{ .notify = .{ .text = text, .colour = colour, .duration_s = b.duration_s, .name = b.name orelse "", .stack = b.stack, .hold = b.hold, .transition = spec, .request_id = rid, .epoch = b.epoch, .doc = doc } } };
         },
         .config_patch => {
             const b = json.parse(ConfigBody, body, arena, &where) catch |e| return jsonError(e, where, arena);
@@ -2295,4 +2308,26 @@ test "notification dismissal requires notify scope" {
     const r = route(testReq(.POST, "/api/v1/notify/dismiss", "", auth, "application/json", null), "{}", &c, &store, &origins, &arena, test_minted);
     try std.testing.expect(r == .op);
     try expectReject(route(testReq(.POST, "/api/v1/notify/dismiss", "", null, "application/json", null), "{}", &c, &store, &origins, &arena, test_minted), 401, "unauthorized");
+}
+
+test "a notification may be a document, with the text as its summary or absent" {
+    const c = testCreds();
+    var arena: Arena = undefined;
+    var origins = OriginPolicy{};
+    const rich = "{\"elements\":[{\"type\":\"text\",\"at\":[0,5],\"size\":[52,5],\"font\":\"mini\",\"align\":\"centre\",\"text\":\"Updating...\",\"animate\":{\"kind\":\"pulse\",\"ms\":1600}}],\"name\":\"updating\",\"hold\":true}";
+    const r = route(testReq(.POST, "/api/v1/notify", "", control_header, "application/json", null), rich, &c, &no_clients, &origins, &arena, test_minted);
+    try std.testing.expect(r == .op);
+    try std.testing.expect(r.op.notify.doc != null);
+    try std.testing.expectEqual(@as(u8, 1), r.op.notify.doc.?.count);
+    try std.testing.expectEqualStrings("", r.op.notify.text);
+    try std.testing.expect(r.op.notify.hold);
+    const summarised = "{\"text\":\"parcel\",\"elements\":[{\"type\":\"rect\",\"at\":[0,0],\"size\":[52,16],\"colour\":\"00ff00\"}]}";
+    const s = route(testReq(.POST, "/api/v1/notify", "", control_header, "application/json", null), summarised, &c, &no_clients, &origins, &arena, test_minted);
+    try std.testing.expectEqualStrings("parcel", s.op.notify.text);
+    const empty = route(testReq(.POST, "/api/v1/notify", "", control_header, "application/json", null), "{\"elements\":[]}", &c, &no_clients, &origins, &arena, test_minted);
+    try std.testing.expectEqualStrings("invalid_elements", empty.reject.code);
+    const wrong = route(testReq(.POST, "/api/v1/notify", "", control_header, "application/json", null), "{\"elements\":[{\"type\":\"blob\",\"at\":[0,0]}]}", &c, &no_clients, &origins, &arena, test_minted);
+    try std.testing.expectEqualStrings("invalid_element_type", wrong.reject.code);
+    const textless = route(testReq(.POST, "/api/v1/notify", "", control_header, "application/json", null), "{}", &c, &no_clients, &origins, &arena, test_minted);
+    try std.testing.expectEqualStrings("invalid_text", textless.reject.code);
 }
