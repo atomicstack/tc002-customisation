@@ -285,6 +285,18 @@ console's preview does exactly that.
 
 ---
 
+## as a notification
+
+every document on this page can also be a notification: `POST /notify` with `elements` instead
+of `text` draws it under the notification's lifecycle — a duration or `hold`, a `name` to dismiss
+it by, `stack` to queue it behind the current one — and its arrival animations start the moment
+it is shown, not when it was queued. the base scene comes back when it leaves, and a restart drops
+it, because notifications live in the renderer's memory and never on flash. `tc002 notify --data
+@doc.json` sends one; the console's canvas builder has a "send as notification" button; the
+`Updating...` the update tools show is one of these, the mini face pulsing, held until the new
+runtime is up. a document that should show without being saved but is not a notification is a
+`PUT /canvas` with `"persist": false`.
+
 ## trying it
 
 the demo reels in `runtime/tools/` play every one of these on the device, and print what each step

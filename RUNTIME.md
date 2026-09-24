@@ -2099,7 +2099,7 @@ all topics live under `prefix` (default `tc002`):
 | `state` | out, retained | the status document, republished on change at most twice a second |
 | `result` | out | `{"request_id","status","revision","epoch"}` for every command received on `cmd/*`, or `{"status":"rejected","error","message"}` for a body that did not parse |
 | `metrics` | out, every `metrics_interval_s` | the [metrics document](#the-metrics-document) |
-| `cmd/scene`, `cmd/action`, `cmd/notify`, `cmd/notify/dismiss` | in, qos 1 | exactly the http json bodies; notify queue capacity and dismissal semantics are the same |
+| `cmd/scene`, `cmd/action`, `cmd/notify`, `cmd/notify/dismiss` | in, qos 1 | exactly the http json bodies (a document notification fits only within the 4096-byte packet); notify queue capacity and dismissal semantics are the same |
 | `cmd/frame` | in, qos 1 | binary, 2,510 bytes big-endian: `u64 request_id`, `u32 epoch`, `u16 duration_s`, 2,496 rgb bytes. a binary payload cannot leave a field out, so zero says "you pick": a zero id is minted by the device, a zero epoch means the current one; or 2,514 / 2,515 bytes with `u8 effect`, `u8 direction`, `u16 duration_ms` and optionally `u8 exit` before the rgb (see [transitions](#transitions)) |
 | `cmd/config` | in, qos 1 | `brightness`, `base`, `generator` stay transient. with `discovery_controls: true`, the explicitly allowed clock/time/night fields below are durable; other privileged fields are refused |
 | `cmd/input` | in, qos 1 | the `/input` json body; answered on `result` |

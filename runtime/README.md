@@ -104,6 +104,8 @@ tc002 notify doorbell --name door --stack --hold
 tc002 notify parcel --name delivery --stack --duration 10
 tc002 dismiss door   # first matching name, active before waiting
 tc002 dismiss        # current notification only
+tc002 notify --data @notice.json          # a canvas document as a notification: {"elements":[…],"hold":true,"name":"updating"}
+tc002 canvas put --data @doc.json --persist=false   # shown, not written; a restart brings the saved document back
 tc002 frame --colour ff0000 --duration 3
 tc002 power off               # fades to black; `power on` fades back
 tc002 scene clock --font big --colour-mode gradient --colour 2060ff --colour2 60c0ff --gradient vertical
