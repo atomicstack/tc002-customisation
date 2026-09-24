@@ -684,9 +684,46 @@ the file is binary rather than json because half of it is pixels — the readabl
 8x8 sprite is 283 bytes. a file that does not start with `TCCV` and its version byte, or that runs
 out part way through, is refused and the canvas starts empty with the file left alone.
 
-### the cube
+### art
 
-a solid rotating cube, shaded rather than flat: each of the six faces takes one
+the `art` base is one of four generators, all pure zig with a host test each and
+the same code rendering the console preview: the panel and the page cannot
+disagree about a frame. every generator is deterministic for its seed, so
+`PUT /scene` with `{"base":"art","generator":"terrain","seed":7}` shows the same
+frames on every clock, and a knob click reseeds the showing one. the dial pages
+through the generators in the order below; holding the art button opens the
+showing generator's controls, whose names and ranges each generator declares
+for itself (see [scene parameters](#scene-parameters)). they redraw
+continuously at 60 hz.
+
+**popsquares.** every led holds a level that counts down and snaps back to full,
+or now and then to a random dim level, when spent; a fixed per-cell rank decides
+whether it takes part at all, and some pops use the tint colour instead of
+white. it is the same cell simulation as [`led/`](LED-SPI.md#led-native-popsquares-at-60-fps),
+ported from the `popsquares_tc002` processing sketch, and its controls are that
+sketch's sliders. the sketch's other sliders — led gap, corner, off level, panel
+brightness and the glow — simulate the physical panel this runs on, so they have
+nothing to set here. the one change of unit is the sketch's `decay`, which
+counts levels lost per frame and therefore means something different at every
+frame rate: `pop ms` (250–20000) is the length of a whole pop instead, which says
+the same thing and survives a dropped frame (the sketch's 0.1 to 8 is roughly
+20 s down to 0.26 s). `alive` is the percentage of the panel that ever lights,
+`dim chance` how often a spent cell comes back part-lit rather than full,
+`dim floor` and `dim ceiling` the range it comes back into as a percentage of
+full, and `tint` the percentage of pops that use `tint colour` instead of white —
+rolled afresh on every pop, so the colour drifts around the panel. `cell` is the
+one parameter the sketch did not have as a slider: the size of a virtual pixel
+in leds, `1x1` (the default, one cell per led), `2x2` or `4x4`. the sketch drew
+its squares bigger than a led, and at `4x4` the panel is thirteen by four fat
+cells popping, which reads from across a room. the simulation runs on the
+coarser grid, so a pop is one block.
+
+**plasma.** the classic sum-of-sines effect, integer only: a 256-entry sine
+table, so it is cheap on the cortex-a7 and deterministic for a seed. it has no
+controls. it exists to prove the scene interface with a second generator, and
+it stayed because it is restful.
+
+**the cube.** a solid rotating cube, shaded rather than flat: each of the six faces takes one
 brightness from its own normal against a fixed light up, left and towards the
 viewer, so the form reads as three dimensional instead of a silhouette. back
 faces are culled, which for a convex solid is the whole of the depth problem,
@@ -706,6 +743,21 @@ coverage across four sub-rows per output row and blending by that coverage, so
 a diagonal lands part-lit rather than stepped. it costs one 832-byte coverage
 buffer per face and no supersampled frame. the seed decides where it starts, so a reseed turns it to a new face
 and keeps the settings.
+
+**terrain.** rolling rainbow hills: a seeded height field scrolling towards the
+camera, near columns hiding farther ones, the remaining sky black, with
+perspective fitted to the wide, shallow panel. it recreates the pixoo
+rainbow-landscape reference, generating new frames continuously rather than
+replaying that gif's 45-frame loop. two noise scales give broad hills with
+smaller ridges; directional shading and distance dimming make their shape
+visible. no mesh, no heap, no gif decoder, no runtime trigonometry. reseeding
+changes the landscape and keeps the controls.
+
+| terrain control | range | default | effect |
+|---|---|---|---|
+| `speed` | 1–20 | 6 | forward travel speed |
+| `height` | 40–180 | 100 | height of the hills, as a percentage |
+| `colour drift` | 0–60 | 15 | palette rotation in degrees per second; 0 holds the elevation colours |
 
 ### transitions
 
@@ -1048,43 +1100,11 @@ is `0x00RRGGBB`, a toggle is 0 or 1.
 | terrain | `speed`, `height`, `colour drift` |
 | ip | `layout` |
 
-`terrain` recreates the supplied pixoo rainbow-landscape gif as a seeded, scrolling
-height field, with a black sky and perspective fitted to the 52×16 panel. it generates
-new frames continuously rather than replaying the source's 45-frame loop. the two
-noise scales give broad hills with smaller ridges; directional shading and distance
-dimming make their shape visible. the same zig code renders the console preview.
-
-| terrain control | range | default | effect |
-|---|---|---|---|
-| `speed` | 1–20 | 6 | forward travel speed |
-| `height` | 40–180 | 100 | height of the hills, as a percentage |
-| `colour drift` | 0–60 | 15 | palette rotation in degrees per second; 0 holds the elevation colours |
-
-the dial pages to `terrain` after `cube`; holding the art button opens its controls.
-reseeding changes the landscape and retains these controls. api selection is
-`PUT /api/v1/scene` with `{"base":"art","generator":"terrain","seed":7}`.
-settings use the existing `generator_params` list, with `scene: "terrain"`.
+what each generator's controls mean is under [art](#art); this section is
+about the mechanism they share.
 older saved files with three generator parameter arrays retain all three and get
 the declared terrain defaults. the config ipc gains another owner's slots, so all
 runtime binaries must be upgraded together.
-
-popsquares' table is the sliders of the `popsquares_tc002` processing sketch,
-which is where the generator came from. its other sliders — led gap, corner,
-off level, panel brightness and the glow — simulate the physical panel this
-runs on, so they have nothing to set here. the one change of unit is the
-sketch's `decay`, which counts levels lost per frame and therefore means
-something different at every frame rate: `pop ms` is the length of a whole pop
-instead, which says the same thing and survives a dropped frame (the sketch's
-0.1 to 8 is roughly 20 s down to 0.26 s). `alive` is the percentage of the
-panel that ever lights, `dim chance` how often a spent cell comes back part-lit
-rather than full, `dim floor` and `dim ceiling` the range it comes back into as
-a percentage of full, and `tint` the percentage of pops that use `tint colour`
-instead of white — rolled afresh on every pop, so the colour drifts around the
-panel. `cell` is the one parameter the sketch did not have as a slider: the
-size of a virtual pixel in leds, `1x1` (the default, one cell per led), `2x2`
-or `4x4`. the sketch drew its squares bigger than a led, and at `4x4` the panel
-is thirteen by four fat cells popping, which reads from across a room. the
-simulation runs on the coarser grid, so a pop is one block.
 
 **over the api.** `GET /config` reports every generator's parameters as an
 object keyed by the names its table declares, values in the same shape a patch
