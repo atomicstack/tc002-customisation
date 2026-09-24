@@ -1853,7 +1853,7 @@ const Supervisor = struct {
                     ring.page(g.after, &page);
                     self.sendNetd(.{ .log_lines = page }, p.request_id);
                 },
-                .set_base, .notify, .dismiss_notify, .frame, .brightness, .reseed, .arm_stream, .screen_get, .inject_input, .power, .clock_style, .ip_mode => {
+                .set_base, .notify, .notify_rich, .dismiss_notify, .frame, .brightness, .reseed, .arm_stream, .screen_get, .inject_input, .power, .clock_style, .ip_mode => {
                     // a brightness from an api client or mqtt is as hand-set as the knob is
                     if (p.message == .brightness) self.night.hold(unixNow());
                     if (self.child_fd == null or lifecycle.state != .running) {

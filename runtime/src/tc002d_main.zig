@@ -418,6 +418,7 @@ const Renderer = struct {
             },
             .dismiss_notify => |name| arb.apply(.{ .dismiss_notify = name.slice() }, now),
             .notify => |n| arb.applyWith(.{ .notify = .{ .text = n.slice(), .colour = n.colour, .duration_s = n.duration_s, .name = n.name.slice(), .stack = n.stack, .hold = n.hold } }, n.transition.toSpec(), now),
+            .notify_rich => |*r| arb.applyWith(.{ .notify = .{ .text = r.notify.slice(), .colour = r.notify.colour, .duration_s = r.notify.duration_s, .name = r.notify.name.slice(), .stack = r.notify.stack, .hold = r.notify.hold, .doc = &r.doc } }, r.notify.transition.toSpec(), now),
             .frame => |f| arb.applyWith(.{ .raw = .{ .rgb = &f.rgb, .duration_s = f.duration_s } }, f.transition.toSpec(), now),
             .brightness => |b| arb.apply(.{ .brightness = b.value }, now),
             .reseed => |r| arb.apply(.{ .reseed = r.seed }, now),

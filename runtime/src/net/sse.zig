@@ -92,7 +92,7 @@ pub fn event(out: []u8, a: messages.Applied, extra_age_ms: u32) []u8 {
             if (!w.str(out, &n, a.textSlice())) break :blk false;
             if (!w.add(out, &n, ",\"name\":")) break :blk false;
             if (!w.str(out, &n, a.name.slice())) break :blk false;
-            break :blk w.fmt(out, &n, ",\"colour\":\"{x:0>2}{x:0>2}{x:0>2}\",\"duration_s\":{d},\"stack\":{},\"hold\":{}", .{ a.colour[0], a.colour[1], a.colour[2], a.duration_s, a.stack, a.hold });
+            break :blk w.fmt(out, &n, ",\"colour\":\"{x:0>2}{x:0>2}{x:0>2}\",\"duration_s\":{d},\"stack\":{},\"hold\":{},\"rich\":{}", .{ a.colour[0], a.colour[1], a.colour[2], a.duration_s, a.stack, a.hold, a.rich });
         },
         .raw => w.fmt(out, &n, ",\"duration_s\":{d}", .{a.duration_s}),
         .brightness => w.fmt(out, &n, ",\"brightness\":{d}", .{a.brightness}),
@@ -206,4 +206,11 @@ test "the clock style publishes the resolved style, not the patch that asked for
     // every field is present even though the request named one: a mirror sets the whole style
     try testing.expect(std.mem.indexOf(u8, out, "\"gradient\":") != null);
     try testing.expect(std.mem.indexOf(u8, out, "\"digits\":") != null);
+}
+
+test "a rich notification's event says so" {
+    const st = arbiter.Statement{ .kind = .notify, .rich = true, .name = arbiter.notification.Name.init("updating"), .hold = true };
+    var buf: [1024]u8 = undefined;
+    const frame = event(&buf, messages.Applied.init(st, .api, 0), 0);
+    try std.testing.expect(std.mem.indexOf(u8, frame, "\"rich\":true") != null);
 }

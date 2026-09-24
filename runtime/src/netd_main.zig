@@ -604,7 +604,10 @@ const Netd = struct {
             .logs => |l| self.ask(c, .{ .log_get = .{ .after = l.after } }, .logs, now),
             .input => |i| self.relay(c, .{ .inject_input = .{ .control = @intFromEnum(i.control), .event = @intFromEnum(i.event), .steps = i.steps } }, i.request_id, i.epoch orelse 0, now),
             .dismiss_notify => |n| self.relay(c, .{ .dismiss_notify = notification.Name.init(n.name) }, n.request_id, n.epoch orelse 0, now),
-            .notify => |n| self.relay(c, .{ .notify = messages.Notify.init(n.text, n.colour, n.duration_s, messages.Transition.fromSpec(n.transition)).withOptions(n.name, n.stack, n.hold) }, n.request_id, n.epoch orelse 0, now),
+            .notify => |n| {
+                const base = messages.Notify.init(n.text, n.colour, n.duration_s, messages.Transition.fromSpec(n.transition)).withOptions(n.name, n.stack, n.hold);
+                if (n.doc) |d| self.relay(c, .{ .notify_rich = .{ .notify = base, .doc = d } }, n.request_id, n.epoch orelse 0, now) else self.relay(c, .{ .notify = base }, n.request_id, n.epoch orelse 0, now);
+            },
             .frame => |f| {
                 if (!self.frameAllowed(now)) {
                     c.client_id = f.request_id;
@@ -1904,7 +1907,10 @@ const Netd = struct {
                 .sound_play => |sp| self.mqttRelay(.{ .sound_cmd = messages.SoundCmd.init(.play, sp.name, sp.volume orelse 0, sp.loop) }, self.newId(), 0, now),
                 .sound_stop => self.mqttRelay(.{ .sound_cmd = messages.SoundCmd.init(.stop, "", 0, false) }, self.newId(), 0, now),
                 .dismiss_notify => |n| self.mqttRelay(.{ .dismiss_notify = notification.Name.init(n.name) }, n.request_id, n.epoch orelse 0, now),
-                .notify => |n| self.mqttRelay(.{ .notify = messages.Notify.init(n.text, n.colour, n.duration_s, messages.Transition.fromSpec(n.transition)).withOptions(n.name, n.stack, n.hold) }, n.request_id, n.epoch orelse 0, now),
+                .notify => |n| {
+                    const base = messages.Notify.init(n.text, n.colour, n.duration_s, messages.Transition.fromSpec(n.transition)).withOptions(n.name, n.stack, n.hold);
+                    if (n.doc) |d| self.mqttRelay(.{ .notify_rich = .{ .notify = base, .doc = d } }, n.request_id, n.epoch orelse 0, now) else self.mqttRelay(.{ .notify = base }, n.request_id, n.epoch orelse 0, now);
+                },
                 .config_patch => |cp| {
                     switch (ha.patchPolicy(cp, self.cfg.discovery_controls)) {
                         .rejected => {
