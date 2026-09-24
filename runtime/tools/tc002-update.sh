@@ -122,31 +122,33 @@ payload_kind() {
 }
 
 # "Updating..." on the panel, so nobody watches the clock go dark unexplained. it is the flasher's
-# notice, drawn by tc002-notice.sh: the mini face, pulsing, as the canvas base. the binaries are
-# then staged beside the running runtime, so the word keeps pulsing while they arrive, and only
-# the halt that swaps them in freezes it; the led controller keeps that frame until the new
-# renderer draws. a clock with no token yet (a first run) is told about in the log.
-saved_scene=""
+# notice, posted by tc002-notice.sh: the mini face, pulsing, as a held notification named
+# `updating`. the binaries are then staged beside the running runtime, so the word keeps pulsing
+# while they arrive, and only the halt that swaps them in freezes it; the led controller keeps that
+# frame until the new renderer draws, and the new runtime starts without it, because a
+# notification lives in the old renderer's memory and nowhere else. a clock with no token yet (a
+# first run) is told about in the log.
+noticed=0
 notice() {
     local tf
     if ! tf=$(token_file); then
         warn "no token file for $ip yet, so no \"Updating...\" notice on the panel this time"
         return 0
     fi
-    if saved_scene=$("$HERE/tc002-notice.sh" "$ip" "$tf" show 2>/dev/null); then
-        say "panel reads Updating... (was: $saved_scene)"
+    if "$HERE/tc002-notice.sh" "$ip" "$tf" show 2>/dev/null; then
+        noticed=1
+        say "panel reads Updating..."
     else
-        saved_scene=""
         warn "could not put the notice on the panel (is the runtime up?)"
     fi
 }
 restore_scene() {
-    [[ -n $saved_scene ]] || return 0
+    # the restart has already dropped the notice; this is for the runtime that never restarted
+    (( noticed )) || return 0
     local tf
     tf=$(token_file) || return 0
-    "$HERE/tc002-notice.sh" "$ip" "$tf" restore "$saved_scene" \
-        && say "panel back to $saved_scene" \
-        || warn "the panel may still read Updating...: tools/tc002ctl.py -s $ip --token-file $tf scene ${saved_scene%%:*}"
+    "$HERE/tc002-notice.sh" "$ip" "$tf" restore >/dev/null 2>&1 \
+        || warn "the panel may still read Updating...: api-client-v2/bin/tc002 -s $ip --token-file $tf dismiss updating"
 }
 
 # the device's adbd has a fixed budget of ptys per boot; once they are spent every `adb shell`

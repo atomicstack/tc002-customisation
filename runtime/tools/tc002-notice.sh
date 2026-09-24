@@ -2,24 +2,28 @@
 # tc002-notice.sh: the one "Updating..." the panel shows for every kind of update.
 #
 #   runtime/tools/tc002-notice.sh <host[:port]> <token-file> show
-#   runtime/tools/tc002-notice.sh <host[:port]> <token-file> restore <scene> [--once]
+#   runtime/tools/tc002-notice.sh <host[:port]> <token-file> restore [--once]
 #
-# `show` draws the notice and prints the scene the clock was showing, as `base` or `base:generator`,
-# so the caller can hand it back to `restore` once the update is over. it is drawn as the canvas
-# base, not a notification: a notification expires on its own timer and this has to last as long
-# as the update does. the panel holds its last latched frame while nothing drives it, so whatever
-# is on the glass when the runtime dies is what stays there through the gap.
+# `show` posts the notice as a **held notification named `updating`**: a canvas document (the
+# `mini` face -- 3x5, fits 13 characters; "Updating..." is 11, and it has one case, so the capital
+# is for the reader of this script -- centred, orange, pulsing every 1.6 s) under the notification
+# lifecycle, held until dismissed. it used to be the canvas base, back when a notification could
+# only be a line of text and expired on its own timer; that left "Updating..." as the canvas
+# document, on flash, for the canvas button to show for ever after. a notification lives in the
+# renderer's memory: the restart that ends an in-place update, or the reboot that ends a flash,
+# drops it by itself, and nothing on the clock is changed to show it or to take it down.
 #
-# the style is fixed here and nowhere else: the `mini` face (3x5, fits 13 characters; "Updating..."
-# is 11, and it has one case, so the capital is for the reader of this script), centred, orange,
-# pulsing every 1.6 s. it pulses because a frozen panel and a dead one look identical, and the
-# pulse is the difference: while the runtime is alive it visibly breathes, which says "working,
-# wait" rather than "crashed"; the moment the renderer dies it freezes on whatever brightness it
-# had, and that frame carries the word for the rest of the update.
+# it pulses because a frozen panel and a dead one look identical, and the pulse is the difference:
+# while the runtime is alive it visibly breathes, which says "working, wait" rather than "crashed";
+# the moment the renderer dies it freezes on whatever brightness it had, and the panel holds that
+# latched frame, word and all, for the rest of the update.
 #
-# `restore` retries for half a minute, because after a flash the runtime is a fresh boot away;
-# `--once` is one attempt, for a caller with its own loop (the flasher re-forwards the port each
-# time). CURL overrides the curl binary (tests; apple's is the default because macos gates lan
+# `restore` dismisses the notice by name, for the case where the runtime that showed it is still
+# the one running (a flash that was refused, an in-place update that stopped before the halt). on
+# a fresh runtime there is nothing to dismiss and the call is a successful no-op, so callers run it
+# unconditionally. it retries for half a minute, because after a flash the runtime is a fresh boot
+# away; `--once` is one attempt, for a caller with its own loop (the flasher re-forwards the port
+# each time). CURL overrides the curl binary (tests; apple's is the default because macos gates lan
 # access per binary).
 set -euo pipefail
 CURL=${CURL:-/usr/bin/curl}
@@ -41,30 +45,20 @@ admin=$(token_of)
 
 case "$verb" in
   show)
-    status=$(api GET /status || true)
-    base=$(printf '%s' "$status" | sed -n 's/.*"base":"\([a-z]*\)".*/\1/p')
-    generator=$(printf '%s' "$status" | sed -n 's/.*"generator":"\([a-z]*\)".*/\1/p')
-    [[ -n $base ]] || { echo "tc002-notice.sh: could not read the current scene from $host" >&2; exit 1; }
-    api PUT /canvas '{"elements":[
+    api POST /notify '{"name":"updating","hold":true,"elements":[
         {"id":"l1","type":"text","at":[0,5],"size":[52,5],"font":"mini","align":"centre","colour":"ff8000",
-         "text":"Updating...","animate":{"kind":"pulse","ms":1600}}]}' >/dev/null
-    api PUT /scene '{"base":"canvas"}' >/dev/null
+         "text":"Updating...","animate":{"kind":"pulse","ms":1600}}]}' | grep -q applied \
+        || { echo "tc002-notice.sh: the runtime did not take the notice" >&2; exit 1; }
     sleep 1   # let it be drawn and latched before anything kills the renderer
-    if [[ $base == art && -n $generator ]]; then echo "$base:$generator"; else echo "$base"; fi
     ;;
   restore)
-    scene=${1:?scene, as printed by show}; shift
     once=0; [[ ${1:-} == --once ]] && once=1
-    base=${scene%%:*}
-    body="{\"base\":\"$base\""
-    [[ $scene == *:* ]] && body="$body,\"generator\":\"${scene#*:}\""
-    body="$body}"
     tries=10; (( once )) && tries=1
-    for (( i = 0; i < tries; i++ )); do
-        if api PUT /scene "$body" 2>/dev/null | grep -q applied; then exit 0; fi
+    for _ in $(seq 1 "$tries"); do
+        if api POST /notify/dismiss '{"name":"updating"}' 2>/dev/null | grep -q applied; then exit 0; fi
         (( once )) || sleep 3
     done
-    echo "tc002-notice.sh: could not put the panel back to $scene; it may still read Updating..." >&2
+    echo "tc002-notice.sh: could not reach $host to take the notice down; a restart drops it anyway" >&2
     exit 1
     ;;
   *) echo "tc002-notice.sh: show or restore" >&2; exit 2 ;;

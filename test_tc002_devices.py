@@ -418,11 +418,14 @@ class UpdateScriptTests(unittest.TestCase):
                 self.assertIn("no reboot", r.stdout)
                 # every update puts "updating" on the panel before the panel is taken away: the
                 # notice goes out before the running runtime is stopped
-                # the notice is the flasher's: the canvas base, mini face, pulsing, and it goes up
-                # before the copy so it pulses while the binaries arrive
-                notices = [i for i, c in enumerate(calls) if c["command"] == "curl" and "/canvas" in " ".join(c["args"])
-                           and '"font":"mini"' in " ".join(c["args"]) and '"kind":"pulse"' in " ".join(c["args"])]
-                self.assertTrue(notices, "no mini-font pulsing notice was drawn")
+                # the notice is a held notification named `updating`: the mini face, pulsing, and it
+                # goes up before the copy so it pulses while the binaries arrive. it is not a canvas
+                # document, because that outlived the update it announced
+                notices = [i for i, c in enumerate(calls) if c["command"] == "curl" and "/notify" in " ".join(c["args"])
+                           and '"font":"mini"' in " ".join(c["args"]) and '"kind":"pulse"' in " ".join(c["args"])
+                           and '"hold":true' in " ".join(c["args"]) and '"name":"updating"' in " ".join(c["args"])]
+                self.assertTrue(notices, "no held mini-font pulsing notification was posted")
+                self.assertFalse([c for c in calls if c["command"] == "curl" and "/canvas" in " ".join(c["args"])], "the notice must not touch the canvas")
                 pushes = [i for i, c in enumerate(calls) if c["command"] == "tc002-run.sh" and c["args"][:2] == ["push", "--staged"]]
                 halts = [i for i, c in enumerate(calls) if c["command"] == "tc002-run.sh" and c["args"][:1] == ["halt"]]
                 stops = [i for i, c in enumerate(calls) if c["command"] == "tc002-run.sh" and c["args"][:1] == ["stop"]]
@@ -430,9 +433,10 @@ class UpdateScriptTests(unittest.TestCase):
                 # notice, then the staged copy while it pulses, then the halt that swaps it in
                 self.assertTrue(halts and notices[0] < pushes[0] < halts[0], (notices, pushes, halts))
                 self.assertFalse(stops, "an in-place update must not hand the panel back between runtimes")
-                # and the scene the clock was showing is put back once the new runtime is up
-                restores = [i for i, c in enumerate(calls) if c["command"] == "curl" and "/scene" in " ".join(c["args"]) and '"base":"art"' in " ".join(c["args"])]
+                # and the notice is taken down by name once the new runtime is up; the scene is never touched
+                restores = [i for i, c in enumerate(calls) if c["command"] == "curl" and "/notify/dismiss" in " ".join(c["args"]) and '"name":"updating"' in " ".join(c["args"])]
                 self.assertTrue(restores and restores[-1] > halts[0], (restores, halts))
+                self.assertFalse([c for c in calls if c["command"] == "curl" and "/scene" in " ".join(c["args"])], "the update must not change the scene")
 
     def test_a_wedged_adbd_is_rebooted_over_the_api_and_the_update_carries_on(self):
         # the device's adbd runs out of ptys after a few hundred shells and answers "error: closed"

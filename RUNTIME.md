@@ -1140,9 +1140,10 @@ was there before. The panel holds its last latched frame while nothing is
 driving it, so the word stays on the glass for the whole dark stretch and
 costs nothing to keep there.
 
-It goes out as a stream frame, so it touches no persisted state — unlike the
-flasher's `Updating...`, which is the canvas base and has to be captured and put
-back. It is held for ten seconds, far longer than the wait, so that **if the
+It goes out as a stream frame, so it touches no persisted state. The updaters'
+`Updating...` is a held notification named `updating` for the same reason: a
+notification lives in the renderer's memory, so the restart or reboot that ends
+the update drops it, and nothing is left on the canvas. It is held for ten seconds, far longer than the wait, so that **if the
 exec fails the notice expires by itself** and the clock returns rather than the
 device sitting on a lie. A battery notice due in the same window stands aside.
 

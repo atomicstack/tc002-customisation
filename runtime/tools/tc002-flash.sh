@@ -230,8 +230,7 @@ fi
 # frame carries the word for the rest of the write.
 API_PORT=18099
 api_ready=0
-saved_base=""
-saved_scene=""
+noticed=0
 
 api() { # api <method> <path> <token> [body]
     local m=$1 path=$2 tok=$3 body=${4:-}
@@ -261,25 +260,26 @@ show_notice() {
         warn "could not forward the api port; skipping the on-panel notice"; return 0; }
     api_ready=1
     # the notice itself lives in tc002-notice.sh, shared with the in-place update, so the two
-    # kinds of update show the same thing
-    saved_scene=$("$HERE/tc002-notice.sh" "127.0.0.1:$API_PORT" "$TOKENS" show 2>/dev/null) \
-        || { warn "could not read the current scene; skipping the notice"; return 0; }
-    saved_base=${saved_scene%%:*}
-    say "panel now reads Updating... (was: $saved_base)"
+    # kinds of update show the same thing: a held notification the reboot drops by itself
+    "$HERE/tc002-notice.sh" "127.0.0.1:$API_PORT" "$TOKENS" show 2>/dev/null \
+        || { warn "the runtime did not take the notice; skipping it"; return 0; }
+    noticed=1
+    say "panel now reads Updating..."
 }
 
 restore_scene() {
-    [ "$api_ready" -eq 1 ] && [ -n "$saved_base" ] || return 0
-    for _ in $(seq 1 10); do
+    # after a flash the reboot has dropped the notice; this is for a flash that never rebooted,
+    # where the runtime that showed it is still the one running
+    [ "$api_ready" -eq 1 ] && [ "$noticed" -eq 1 ] || return 0
+    for _ in $(seq 1 3); do
         adb -s "$DEV" forward "tcp:$API_PORT" tcp:80 >/dev/null 2>&1 || true
-        if "$HERE/tc002-notice.sh" "127.0.0.1:$API_PORT" "$TOKENS" restore "$saved_scene" --once 2>/dev/null; then
-            say "panel back to $saved_base"
+        if "$HERE/tc002-notice.sh" "127.0.0.1:$API_PORT" "$TOKENS" restore --once 2>/dev/null; then
             return 0
         fi
         sleep 3
     done
-    warn "could not put the panel back to $saved_base -- it may still read Updating..."
-    warn "fix with: tools/tc002ctl.py -s <ip> --token-file $TOKENS scene $saved_base"
+    warn "the panel may still read Updating... if the flash did not reboot the clock"
+    warn "take it down with: api-client-v2/bin/tc002 -s <ip> --token-file $TOKENS dismiss updating"
 }
 # the restore has to happen even if the wait loop gives up or the script is interrupted, or the
 # device is left permanently telling its owner not to unplug it.
