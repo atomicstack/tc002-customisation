@@ -5,8 +5,10 @@
      node panel-v2/record-transitions.mjs [--out DIR] [--fps 60] [--duration 800] [--hold 300]
                                           [--scale 6] [--only fade,slide] [--list]
 
-   each file is one effect: the clock face gives way to the art scene with the effect, holds, and
-   comes back with the paired effect the other way, which is how a notification leaves. `random`
+   each file is one effect: the block clock face gives way, with the effect, to a canvas that is a
+   dark grey ground with the effect's name on it in the mini face, holds, and comes back with the
+   paired effect the other way, which is how a notification leaves. the two scenes are chosen to
+   be told apart at a glance halfway through any effect. `random`
    is not recorded, since it resolves to one of the others. the effect list is read out of the wasm,
    so a new effect in transition.zig is a new file here the next time this runs.
 
@@ -31,10 +33,20 @@ const PAIRED = { swipe_in: 'swipe_out', swipe_out: 'swipe_in', split_in: 'split_
 const OPPOSITE = { left: 'right', right: 'left', up: 'down', down: 'up' };
 export const naturalDirection = effect => (effect === 'rain' || effect === 'rain_random') ? 'down' : 'left';
 
+/* the canvas an effect lands on: a dark grey ground under the effect's name, so the two scenes are
+   unmistakable mid-effect. underscores read as spaces in the mini face */
+export const ground = '2a2a2a';
+export function nameCanvas(effect) {
+  return { elements: [
+    { type: 'rect', id: 'bg', at: [0, 0], size: [52, 16], colour: ground, filled: true },
+    { type: 'text', id: 'name', at: [0, 5], size: [52, 5], font: 'mini', align: 'centre', colour: 'ffffff', text: effect.replace(/_/g, ' ') },
+  ] };
+}
+
 /* frames of one effect: hold, the effect in, hold, the paired effect out, hold. `andBack: false`
-   stops after the first hold. returns { frames, fps, width, height } */
+   stops after the first hold. returns { frames, fps, width, height, label } */
 export function recordTransition(W, { effect, direction = naturalDirection(effect), easing = 'linear', exit = 'reverse',
-                                      durationMs = 800, holdMs = 300, fps = 60, andBack = false, from = 'clock', to = 'art' }) {
+                                      durationMs = 800, holdMs = 300, fps = 60, andBack = false, from = 'clock', to = 'canvas', font = 'block' }) {
   const E = W.exports;
   const idx = (list, name, what) => { const i = list.indexOf(name); if (i < 0) throw new Error(`unknown ${what} ${name}`); return i; };
   const step = 1000 / fps;
@@ -42,6 +54,11 @@ export function recordTransition(W, { effect, direction = naturalDirection(effec
   let t = T0;
   const run = ms => { for (let i = 0, n = Math.round(ms / step); i < n; i++) { E.frame(t, t); frames.push(W.frame().slice()); t += step; } };
   W.reset(from, 'popsquares', 1);
+  // the face to show, and the named canvas to land on; a restyle would cross-fade, so drop that
+  E.setClockStyle(idx(W.CLOCK_FONTS, font, 'font'), -1, -1, -1, -1, -1, -1, -1, t);
+  E.dropTransition();
+  const installed = W.installCanvas(nameCanvas(effect), t);
+  if (!installed.ok) throw new Error(`the canvas for ${effect} was refused: ${installed.reason}`);
   E.runTransitions(1);
   try {
     run(holdMs);
@@ -55,7 +72,7 @@ export function recordTransition(W, { effect, direction = naturalDirection(effec
       run(durationMs + holdMs);
     }
   } finally { E.runTransitions(0); }
-  return { frames, fps, width: W.WIDTH, height: W.HEIGHT };
+  return { frames, fps, width: W.WIDTH, height: W.HEIGHT, label: effect };
 }
 
 /* a plain png of the panel, each pixel a `scale` square, 8-bit rgb, no dependencies */

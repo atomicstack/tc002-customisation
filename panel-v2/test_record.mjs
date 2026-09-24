@@ -30,6 +30,22 @@ test('a recording is the scene change at the asked rate, ending on the new scene
   assert.equal(r.fps, 60);
 });
 
+test('a recording goes from the block clock face to a dark canvas naming the effect', { skip: existsSync(WASM) ? false : 'wasm not built' }, () => {
+  const r = recordTransition(W, { effect: 'wipe', durationMs: 200, holdMs: 50, fps: 60 });
+  const first = r.frames[0], last = r.frames[r.frames.length - 1];
+  // the block face, not the classic one: render the classic face at the same instant and compare
+  W.reset('clock', 'popsquares', 1);
+  W.exports.frame(Date.UTC(2026, 8, 6, 12, 34, 56), Date.UTC(2026, 8, 6, 12, 34, 56));
+  const classic = W.frame().slice();
+  assert.ok(first.some((v, i) => v !== classic[i]), 'the clock is not drawn in the default face');
+  assert.ok(first.some(v => v === 255), 'the clock face is lit');
+  // the canvas: a dark grey ground everywhere the text is not, and white text somewhere
+  const corner = [last[0], last[1], last[2]];
+  assert.deepEqual(corner, [0x2a, 0x2a, 0x2a], `dark grey ground, got ${corner}`);
+  assert.ok(last.some(v => v === 255), 'the effect name is written in white');
+  assert.equal(r.label, 'wipe');
+});
+
 test('a png is a png of the scaled panel', () => {
   const rgb = new Uint8Array(52 * 16 * 3).fill(0); rgb[0] = 255;
   const png = encodePng(rgb, 52, 16, 4);
