@@ -38,6 +38,7 @@ test "every message kind round-trips through a packet" {
         .{ .clock_style = ClockStyle.fromPatch(.{ .font = .segment, .colour = .{ 9, 9, 9 } }) },
         .{ .heartbeat = .{ .presented = 1, .revision = 2, .state = 1, .clock = ClockStyle.full(.{ .font = .mini, .mode = .gradient }), .seed = 0xfeedface } },
         .{ .notify = Notify.init("hello, panel", .{ 1, 2, 3 }, 30, .{}) },
+        .{ .notify_rich = .{ .notify = Notify.init("rich", .{ 1, 2, 3 }, 4, .{}).withOptions("r", true, false), .doc = doc } },
         .{ .notify = Notify.init("bye", .{ 1, 2, 3 }, 2, .{ .has = 1, .effect = 4, .direction = 1, .duration_ms = 250, .exit = 1 }) },
         .{ .frame = frame },
         .{ .frame = .{ .duration_s = 1, .transition = .{ .has = 1, .effect = 6, .direction = 3, .duration_ms = 5000 }, .rgb = geometry.black_rgb } },
@@ -286,6 +287,9 @@ pub const Kind = enum(u8) {
     set_base = 16,
     notify = 17,
     dismiss_notify = 85,
+    /// a notification whose body is a canvas document: the notify payload with its options
+    /// always present, then the document in the canvas codec
+    notify_rich = 86,
     frame = 18,
     brightness = 19,
     reseed = 20,
@@ -871,10 +875,13 @@ pub const Applied = struct {
     name: arbiter.notification.Name = .{},
     stack: bool = false,
     hold: bool = false,
+    /// the notification is a document; `text` is its summary
+    rich: bool = false,
     text_len: u8 = 0,
     text: [arbiter.Statement.text_max]u8 = [_]u8{0} ** arbiter.Statement.text_max,
 
-    pub const wire_len = 1 + 1 + 4 + 4 + 1 + 1 + 4 + 1 + 1 + 1 + ClockStyle.wire_len + 2 + 3 + 1 + arbiter.Statement.text_max + notification_options_len;
+    pub const rich_len = 1;
+    pub const wire_len = 1 + 1 + 4 + 4 + 1 + 1 + 4 + 1 + 1 + 1 + ClockStyle.wire_len + 2 + 3 + 1 + arbiter.Statement.text_max + notification_options_len + rich_len;
 
     pub fn init(st: arbiter.Statement, source: Source, age_ms: u32) Applied {
         return .{
@@ -896,6 +903,7 @@ pub const Applied = struct {
             .name = st.name,
             .stack = st.stack,
             .hold = st.hold,
+            .rich = st.rich,
         };
     }
 
@@ -924,6 +932,7 @@ pub const Applied = struct {
         o += 1;
         @memcpy(out[o..][0..arbiter.Statement.text_max], &self.text);
         putNotificationOptions(out[o + arbiter.Statement.text_max ..], self.name, self.stack, self.hold);
+        out[o + arbiter.Statement.text_max + notification_options_len] = @intFromBool(self.rich);
     }
 
     fn get(b: []const u8) Applied {
@@ -952,6 +961,7 @@ pub const Applied = struct {
         a.name = arbiter.notification.Name.init(options[1..][0..options[0]]);
         a.stack = options[notification_options_len - 1] & 1 != 0;
         a.hold = options[notification_options_len - 1] & 2 != 0;
+        a.rich = options[notification_options_len] != 0;
         return a;
     }
 };
@@ -1264,6 +1274,21 @@ fn putNotificationOptions(out: []u8, name: arbiter.notification.Name, stack: boo
     out[notification_options_len - 1] = @as(u8, @intFromBool(stack)) | (@as(u8, @intFromBool(hold)) << 1);
 }
 
+/// the notify payload: colour, duration, transition, the text, then the queue options -- which a
+/// plain notify leaves off when they are all default, so unchanged callers keep their encoding,
+/// and a rich notify always writes, because the document follows and needs a fixed start
+fn putNotify(out: []u8, n: Notify, always_options: bool) usize {
+    out[0..3].* = n.colour;
+    std.mem.writeInt(u16, out[3..5], n.duration_s, .big);
+    n.transition.put(out[5..11]);
+    out[11] = n.len;
+    @memcpy(out[12 .. 12 + @as(usize, n.len)], n.text[0..n.len]);
+    const end = 12 + @as(usize, n.len);
+    if (!always_options and n.name.len == 0 and !n.stack and !n.hold) return end;
+    putNotificationOptions(out[end..], n.name, n.stack, n.hold);
+    return end + notification_options_len;
+}
+
 fn validNotificationOptions(b: []const u8) bool {
     if (b.len != notification_options_len or b[0] > arbiter.notification.name_max or b[notification_options_len - 1] > 3) return false;
     return b[0] == 0 or arbiter.notification.validName(b[1..][0..b[0]]);
@@ -1297,6 +1322,9 @@ pub const Notify = struct {
         return self.text[0..self.len];
     }
 };
+
+/// a notification carrying a canvas document; `notify.text` is only its summary and may be empty
+pub const NotifyRich = struct { notify: Notify, doc: canvas.Document };
 
 pub const Credentials = api.Credentials;
 
@@ -2145,6 +2173,7 @@ pub const Message = union(Kind) {
     set_base: SetBase,
     notify: Notify,
     dismiss_notify: arbiter.notification.Name,
+    notify_rich: NotifyRich,
     frame: Frame,
     brightness: Brightness,
     reseed: Reseed,
@@ -2679,17 +2708,11 @@ fn encodePayload(msg: Message, out: []u8) usize {
             s.transition.put(out[6 + ClockStyle.wire_len .. 6 + ClockStyle.wire_len + Transition.wire_len]);
             return 6 + ClockStyle.wire_len + Transition.wire_len;
         },
-        .notify => |n| {
-            out[0..3].* = n.colour;
-            std.mem.writeInt(u16, out[3..5], n.duration_s, .big);
-            n.transition.put(out[5..11]);
-            out[11] = n.len;
-            @memcpy(out[12 .. 12 + @as(usize, n.len)], n.text[0..n.len]);
-            const end = 12 + @as(usize, n.len);
-            // unchanged callers retain their original encoding.
-            if (n.name.len == 0 and !n.stack and !n.hold) return end;
-            putNotificationOptions(out[end..], n.name, n.stack, n.hold);
-            return end + notification_options_len;
+        .notify => |n| return putNotify(out, n, false),
+        .notify_rich => |r| {
+            const o = putNotify(out, r.notify, true);
+            const d = canvas.encode(&r.doc, out[o..]) catch return 0;
+            return o + d;
         },
         .dismiss_notify => |name| {
             putNotificationOptions(out, name, false, false);
@@ -2900,7 +2923,7 @@ pub fn decodePacket(bytes: []const u8) Error!Packet {
         },
         .applied => blk: {
             const b = try fixed(p, Applied.wire_len);
-            if (!validNotificationOptions(b[b.len - notification_options_len ..])) return error.BadPayload;
+            if (!validNotificationOptions(b[b.len - Applied.rich_len - notification_options_len .. b.len - Applied.rich_len])) return error.BadPayload;
             break :blk .{ .applied = Applied.get(b) };
         },
         .sound_config => blk: {
@@ -3276,6 +3299,22 @@ pub fn decodePacket(bytes: []const u8) Error!Packet {
             }
             break :blk .{ .notify = n };
         },
+        .notify_rich => blk: {
+            if (p.len < 12) return error.BadPayload;
+            const len = p[11];
+            const end = 12 + @as(usize, len);
+            if (len > 128 or p.len < end + notification_options_len) return error.BadPayload;
+            const options = p[end .. end + notification_options_len];
+            if (!validNotificationOptions(options)) return error.BadPayload;
+            const flags = options[notification_options_len - 1];
+            const n = Notify.init(p[12..end], p[0..3].*, std.mem.readInt(u16, p[3..5], .big), Transition.get(p[5..11])).withOptions(options[1..][0..options[0]], flags & 1 != 0, flags & 2 != 0);
+            const rest = p[end + notification_options_len ..];
+            const dlen = canvas.encodedLen(rest) orelse return error.BadPayload;
+            if (rest.len != dlen) return error.BadPayload;
+            const doc = canvas.decode(rest) catch return error.BadPayload;
+            if (doc.count == 0) return error.BadPayload;
+            break :blk .{ .notify_rich = .{ .notify = n, .doc = doc } };
+        },
         .dismiss_notify => blk: {
             if (!validNotificationOptions(p) or p[notification_options_len - 1] != 0) return error.BadPayload;
             break :blk .{ .dismiss_notify = arbiter.notification.Name.init(p[1..][0..p[0]]) };
@@ -3445,4 +3484,35 @@ test "notification ipc rejects malformed lengths names and flags" {
     payload[end + 1] = 'd';
     payload[len - 1] = 4;
     try Cases.rejected(payload[0..len], &packet);
+}
+
+test "a rich notification round-trips with its document, and a short one is refused" {
+    var buf: [codec.max_message]u8 = undefined;
+    var doc = canvas.Document{};
+    const span = doc.addText("Updating...") catch unreachable;
+    doc.add(.{ .id = canvas.Id.init("l1"), .box = .{ .x = 0, .y = 5, .w = 52, .h = 5 }, .colour = .{ 255, 128, 0 }, .body = .{ .text = .{ .span = span, .face = .mini, .alignment = .centre } } }) catch unreachable;
+    const n = Notify.init("updating", .{ 255, 255, 255 }, 5, .{}).withOptions("updating", false, true);
+    const msg = Message{ .notify_rich = .{ .notify = n, .doc = doc } };
+    const bytes = try encodePacket(msg, 3, 1, &buf);
+    const back = try decodePacket(bytes);
+    try std.testing.expectEqualDeep(msg, back.message);
+    // a summary may be empty for a rich notification
+    const quiet = Message{ .notify_rich = .{ .notify = Notify.init("", .{ 0, 0, 0 }, 5, .{}), .doc = doc } };
+    try std.testing.expectEqualDeep(quiet, (try decodePacket(try encodePacket(quiet, 3, 1, &buf))).message);
+    // the document's own header says how long it is; a packet shorter than that is refused
+    var payload: [codec.max_message]u8 = undefined;
+    const plen = encodePayload(msg, &payload);
+    const cut = try codec.encode(.{ .kind = @intFromEnum(Kind.notify_rich), .request_id = 0, .epoch = 0, .payload_len = @intCast(plen - 7) }, payload[0 .. plen - 7], &buf);
+    try std.testing.expectError(error.BadPayload, decodePacket(cut));
+    // an empty document is not a rich notification
+    const none = Message{ .notify_rich = .{ .notify = n, .doc = .{} } };
+    try std.testing.expectError(error.BadPayload, decodePacket(try encodePacket(none, 3, 1, &buf)));
+}
+
+test "an applied statement carries the rich flag" {
+    var buf: [codec.max_message]u8 = undefined;
+    const applied = Applied.init(.{ .kind = .notify, .rich = true, .hold = true }, .api, 0);
+    const back = (try decodePacket(try encodePacket(.{ .applied = applied }, 4, 9, &buf))).message.applied;
+    try std.testing.expect(back.rich);
+    try std.testing.expectEqualDeep(applied, back);
 }
