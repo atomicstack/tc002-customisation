@@ -6,7 +6,10 @@ refuses a version this file does not know. the github releases carry the same no
 
 ## unreleased
 
-nothing yet.
+- **every transition has a recording**, in RUNTIME.md's effects table: the renderer's own code
+  compiled to webassembly, driven at 60 fps, saved as animated png (full colour, exact frame delays).
+  `panel-v2/record-transitions.mjs` regenerates them; the canvas page's animations are apng now too.
+- **the console preview runs transitions** as the panel does, instead of cutting.
 
 ## v0.3.4 — more transitions, and a fade that survives the night (2026-09-24)
 

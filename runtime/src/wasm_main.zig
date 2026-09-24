@@ -130,6 +130,10 @@ fn cadenceMs(wall_ms: f64, wall_ns: u64) f64 {
     };
 }
 
+/// forget a pending transition without running it: a replica placing a snapshot lands it at once
+export fn dropTransition() void {
+    if (arb.takeTransition()) |_| arb.transitionDone();
+}
 /// whether `frame` runs pending transitions through the fader (1) or lands every change at once (0)
 export fn runTransitions(on: u32) void {
     transitions_on = on != 0;

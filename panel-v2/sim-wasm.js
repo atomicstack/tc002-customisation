@@ -183,6 +183,8 @@
       const m = indexOf(IP_MODES, s.ip_mode, 0);
       if (m !== applied.ipMode) { e.setIpMode(m, nowMs); applied.ipMode = m; }
     }
+    // a snapshot places the device's state; it is not a change the device animated just now
+    e.dropTransition();
     }   // end of what the event stream owns
 
 
@@ -570,6 +572,9 @@
     menuOpen: () => need().menuOpen() !== 0,
     revision: () => need().revision(),
     takeTransition: () => { const t = need().takeTransition(); return t === 255 ? null : t; },
+    /* on, a statement's transition is run through the device's own fader; off (the default, and
+       what the tests assume), every change lands at once */
+    runTransitions: on => need().runTransitions(on ? 1 : 0),
     /* base and generator may be names or indices; names are safer, because the indices are the
        runtime's enum values and those are renumbered whenever a scene is added or retired */
     reset: (base, generator, seed) => {

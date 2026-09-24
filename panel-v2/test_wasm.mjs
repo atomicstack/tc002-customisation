@@ -781,3 +781,37 @@ test('a scene change with a transition is composited frame by frame, as the devi
   assert.ok(W.TRANSITION_DIRECTIONS.includes('left') && W.TRANSITION_EASINGS.includes('linear'));
   W.exports.runTransitions(0);
 });
+
+test('with transitions on, a stream statement animates and a snapshot lands at once', () => {
+  // the clock face is the deterministic scene: the same wall time draws the same frame, whereas
+  // the art steps with every tick. the glue re-applies a base only when the snapshot differs from
+  // what it last applied, so every placement here goes art then clock. no reset in between: the
+  // timezone the first compose installs must be the same for every frame compared
+  W.reset('art', 'popsquares', 1);
+  const t0 = WALL;
+  const snap = base => ({ base, generator: 'popsquares', seed: 1, brightness: 100, overlay: 'none' });
+  const place = () => { W.compose(snap('art'), localWith(W), t0); W.compose(snap('clock'), localWith(W), t0); W.exports.frame(t0 + 16, t0 + 16); return W.frame().slice(); };
+  W.exports.runTransitions(1);
+  try {
+    const placed = place();
+    W.exports.runTransitions(0);
+    const plain = place();
+    W.exports.runTransitions(1);
+    assert.deepEqual(placed, plain, 'a snapshot placement is not animated');
+    // the export the glue relies on, by itself: a pending slide dropped is a frame landed
+    W.exports.setBase(W.BASES.indexOf('art'), t0 + 16); W.exports.dropTransition();
+    W.exports.setBase(W.BASES.indexOf('clock'), t0 + 16); W.exports.dropTransition();
+    W.exports.frame(t0 + 16, t0 + 16);
+    assert.deepEqual(W.frame().slice(), plain, 'a dropped transition lands at once');
+    // a set_base statement from the stream: the arbiter's default slide runs
+    const r = W.applyStatement({ revision: W.revision() + 1, age_ms: 0, cmd: 'set_base', source: 'input', base: 'art' }, t0 + 100);
+    assert.equal(r.ok, true, r.reason || '');
+    W.exports.frame(t0 + 100, t0 + 100);
+    W.exports.frame(t0 + 250, t0 + 250);
+    const mid = W.frame().slice();
+    W.exports.frame(t0 + 900, t0 + 900);
+    const art = W.frame().slice();
+    const differs = (a, b) => a.some((v, i) => v !== b[i]);
+    assert.ok(differs(mid, plain) && differs(mid, art), 'mid-slide is neither scene');
+  } finally { W.exports.runTransitions(0); }
+});

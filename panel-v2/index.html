@@ -2295,6 +2295,8 @@ $('host').addEventListener('keydown', e => { if (e.key === 'Enter') loadAll(); }
 // the preview is the runtime's own renderer compiled to wasm, so nothing can be drawn or
 // configured until it is instantiated; the whole boot waits on it rather than racing it
 S.ready().then(() => {
+  // the preview runs transitions as the panel does; a snapshot still lands at once
+  S.runTransitions(true);
   requestAnimationFrame(draw);
   try { const t = localStorage.getItem('tc002tab-v2'); if (t && document.querySelector(`.tabbar button[data-tab="${t}"]`)) showTab(t); } catch {}
   // not awaited: a lan probe takes a second or so and the console must not wait on it
