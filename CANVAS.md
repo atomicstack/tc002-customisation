@@ -223,57 +223,57 @@ lockstep.
 
 the colour walks the wheel from whatever the element was given as its starting point.
 
-![two words in the small face cycling through the colour wheel, half a period apart](runtime/screenshots/canvas/anim-hue.gif)
+![two words in the small face cycling through the colour wheel, half a period apart](runtime/screenshots/canvas/anim-hue.png)
 
 ### pulse
 
 brightness rides up and down, never quite to nothing.
 
-![the word breathe in blue, brightening and dimming](runtime/screenshots/canvas/anim-pulse.gif)
+![the word breathe in blue, brightening and dimming](runtime/screenshots/canvas/anim-pulse.png)
 
 ### blink
 
 on for its duty cycle, dark for the rest. `amount` is the duty as a percentage.
 
-![the words one, two and three blinking out of step with each other](runtime/screenshots/canvas/anim-blink.gif)
+![the words one, two and three blinking out of step with each other](runtime/screenshots/canvas/anim-blink.png)
 
 ### bounce
 
 up and down by `amount` pixels, or across with `axis: "x"`.
 
-![the words up, and, down bouncing vertically one after another](runtime/screenshots/canvas/anim-bounce.gif)
-![the word side sliding left and right](runtime/screenshots/canvas/anim-bounce-x.gif)
+![the words up, and, down bouncing vertically one after another](runtime/screenshots/canvas/anim-bounce.png)
+![the word side sliding left and right](runtime/screenshots/canvas/anim-bounce-x.png)
 
 ### scramble
 
 the flipboard: each character settles out of flipping glyphs, left to right, and then stops. an
 arrival animation — it runs once when the value arrives rather than forever.
 
-![the word SCRAMBLE resolving out of randomly flipping letters](runtime/screenshots/canvas/anim-scramble.gif)
+![the word SCRAMBLE resolving out of randomly flipping letters](runtime/screenshots/canvas/anim-scramble.png)
 
 ### typewriter
 
 a character at a time, then it holds. also an arrival animation.
 
-![the words typing and one by one appearing a letter at a time](runtime/screenshots/canvas/anim-typewriter.gif)
+![the words typing and one by one appearing a letter at a time](runtime/screenshots/canvas/anim-typewriter.png)
 
 ### scroll
 
 for text too wide for its box: a pixel every `ms`, wrapping once it has left.
 
-![a long sentence scrolling right to left across the panel](runtime/screenshots/canvas/anim-scroll.gif)
+![a long sentence scrolling right to left across the panel](runtime/screenshots/canvas/anim-scroll.png)
 
 ### sweep
 
 a sparkline draws itself in from the left, and starts again whenever its data changes.
 
-![an area chart drawing itself in from the left edge](runtime/screenshots/canvas/anim-sweep.gif)
+![an area chart drawing itself in from the left edge](runtime/screenshots/canvas/anim-sweep.png)
 
 ### together
 
 each element runs on its own clock, so a document mixes them freely.
 
-![five elements animating at once: a hue cycle, a blink, a pulse, a scramble settling and a bouncing word](runtime/screenshots/canvas/anim-together.gif)
+![five elements animating at once: a hue cycle, a blink, a pulse, a scramble settling and a bouncing word](runtime/screenshots/canvas/anim-together.png)
 
 ### matching the phase elsewhere
 

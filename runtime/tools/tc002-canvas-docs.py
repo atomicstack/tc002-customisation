@@ -2,13 +2,13 @@
 """tc002-canvas-docs.py: photograph the panel for CANVAS.md.
 
 drives the device through a catalogue of canvas documents and saves what the panel actually shows:
-a png per still, an animated gif per motion. nothing here is drawn on this machine -- every pixel
+a png per still, an animated png (apng) per motion. nothing here is drawn on this machine -- every pixel
 came off `GET /screen`, so the document cannot drift from the picture of it.
 
   tc002-canvas-docs.py -s <device-ip> [--token-file FILE] [--out DIR] [--only NAME,NAME]
                        [--scale N] [--fps N] [--seconds S] [--list]
 
-the panel it found is put back at the end, canvas and all. the gifs need ffmpeg on this machine;
+the panel it found is put back at the end, canvas and all. the animations need ffmpeg on this machine;
 the stills do not (the png encoder is twenty lines at the bottom of this file).
 """
 import argparse, math, os, shutil, struct, subprocess, sys, tempfile, time, zlib
@@ -262,7 +262,7 @@ def icon_page(chunk):
     return els
 
 
-# ---- png, and gif by way of ffmpeg ----
+# ---- png, and apng by way of ffmpeg ----
 
 def png(path, w, h, rows):
     raw = b"".join(b"\x00" + bytes(r) for r in rows)
@@ -294,15 +294,15 @@ def save_png(path, frame, scale):
     png(path, W * scale, H * scale, scaled_rows(frame, scale))
 
 
-def save_gif(path, frames, scale, fps):
-    """ffmpeg builds a palette from the whole clip, which a hue sweep needs"""
-    tmp = tempfile.mkdtemp(prefix="tc002gif")
+def save_apng(path, frames, scale, fps):
+    """an animated png: every frame full colour, every delay exactly 1/fps, looping for ever. gif
+    could do neither -- 256 colours, and browsers stretch any delay under 20 ms to 100"""
+    tmp = tempfile.mkdtemp(prefix="tc002apng")
     try:
         for i, f in enumerate(frames):
             save_png(os.path.join(tmp, f"f{i:04d}.png"), f, scale)
         cmd = ["ffmpeg", "-y", "-loglevel", "error", "-framerate", str(fps), "-i", os.path.join(tmp, "f%04d.png"),
-               "-filter_complex", "[0:v]split[a][b];[a]palettegen=max_colors=255[p];[b][p]paletteuse=dither=none",
-               "-loop", "0", path]
+               "-plays", "0", "-f", "apng", path]
         subprocess.run(cmd, check=True)
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
@@ -340,7 +340,7 @@ def main():
     ap.add_argument("--out", default=DEFAULT_OUT, help="where the images go")
     ap.add_argument("--only", help="a comma-separated subset of names")
     ap.add_argument("--scale", type=int, default=6, help="how many screen pixels to a panel pixel (default 6)")
-    ap.add_argument("--fps", type=int, default=15, help="gif frame rate (default 15)")
+    ap.add_argument("--fps", type=int, default=15, help="animation frame rate (default 15)")
     ap.add_argument("--settle", type=float, default=0.45, help="seconds to let a still settle (default 0.45)")
     ap.add_argument("--progress-socket", help=argparse.SUPPRESS)
     ap.add_argument("--list", action="store_true", help="print the catalogue and exit")
@@ -398,8 +398,8 @@ def main():
                 if gap > 0:
                     time.sleep(gap)
                 frames.append(grab(dev))
-            save_gif(os.path.join(args.out, f"{name}.gif"), frames, args.scale, args.fps)
-            print(f"  {name}.gif  ({len(frames)} frames at {args.fps} fps)")
+            save_apng(os.path.join(args.out, f"{name}.png"), frames, args.scale, args.fps)
+            print(f"  {name}.png  ({len(frames)} frames at {args.fps} fps)")
             progress(args.progress_socket, f"@value {done}\n")
     finally:
         dev.request("PUT", "/scene", {"base": was_base, "request_id": os.urandom(8).hex()})
