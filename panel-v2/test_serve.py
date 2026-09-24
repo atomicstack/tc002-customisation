@@ -363,6 +363,17 @@ class EndToEndTests(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertIn("password_set", doc)
 
+    def test_a_notification_may_be_a_document(self):
+        _, st = self.call("GET", "status")
+        status, doc = self.call("POST", "notify", {"elements": [{"type": "rect", "at": [0, 0], "size": [52, 16], "colour": "ff8000"}], "hold": True, "name": "updating", "epoch": st["epoch"]})
+        self.assertEqual((status, doc["status"]), (200, "applied"))
+        status, doc = self.call("POST", "notify", {"elements": [], "epoch": st["epoch"]})
+        self.assertEqual((status, doc["error"]), (400, "invalid_elements"))
+        status, doc = self.call("POST", "notify", {"epoch": st["epoch"]})
+        self.assertEqual((status, doc["error"]), (400, "invalid_text"))
+        status, doc = self.call("POST", "notify", {"text": "hi", "name": "door.bell", "epoch": st["epoch"]})
+        self.assertEqual((status, doc["error"]), (400, "invalid_name"))
+
     def test_scene_action_notify_and_frame(self):
         _, st = self.call("GET", "status")
         status, doc = self.call("PUT", "scene", {"base": "clock", "request_id": "a1", "epoch": st["epoch"]})

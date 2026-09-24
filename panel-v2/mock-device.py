@@ -45,6 +45,7 @@ DEFAULT_CLOCK = {"font": "classic", "colour_mode": "solid", "colour": "ffffff", 
 # raised from 4096 with the canvas, which needs room for a whole document
 JSON_BODY_MAX = 8192
 PRINTABLE = re.compile(r"^[\x20-\x7e]{1,128}$")
+NOTIFICATION_NAME = re.compile(r"^[A-Za-z0-9_-]{1,32}$")
 HEX_ID = re.compile(r"^[0-9a-fA-F]{1,16}$")
 
 # physical controls (RUNTIME.md "physical controls"): which events each control accepts
@@ -646,9 +647,20 @@ class Device:
         raise Reject(400, "invalid_action", "unknown action")
 
     def notify(self, body):
+        # a document makes the text optional: it is then only the summary. the elements themselves
+        # are stored, not checked, for the reason the canvas gives above
+        elements = body.get("elements")
+        if elements is not None and (not isinstance(elements, list) or not elements):
+            raise Reject(400, "invalid_elements", "a rich notification has at least one element")
         text = body.get("text", "")
-        if not isinstance(text, str) or not PRINTABLE.match(text):
+        if not isinstance(text, str) or (elements is None and not PRINTABLE.match(text)) or (text and not PRINTABLE.match(text)):
             raise Reject(400, "invalid_text", "text must be 1..128 printable ascii characters")
+        name = body.get("name")
+        if name is not None and (not isinstance(name, str) or not NOTIFICATION_NAME.match(name)):
+            raise Reject(400, "invalid_name", "a notification name is 1..32 letters, digits, _ or -")
+        for flag in ("stack", "hold"):
+            if flag in body and not isinstance(body[flag], bool):
+                raise Reject(400, f"invalid_{flag}", f"{flag} must be true or false")
         d = body.get("duration_s", 5)
         if not isinstance(d, int) or d < 1 or d > 300:
             raise Reject(400, "invalid_duration", "duration_s must be 1..300")
@@ -873,7 +885,7 @@ SCHEMAS = {
     "scene": ({"base", "generator", "seed", "clock", "ip", "transition", "direction", "transition_ms", "exit", "request_id", "epoch"}, {"base"}),
     "action": ({"action", "brightness", "seed", "power", "request_id", "epoch"}, {"action"}),
     "input": ({"control", "event", "steps", "request_id", "epoch"}, {"control", "event"}),
-    "notify": ({"text", "colour", "duration_s", "transition", "direction", "transition_ms", "exit", "request_id", "epoch"}, {"text"}),
+    "notify": ({"text", "elements", "colour", "duration_s", "name", "stack", "hold", "transition", "direction", "transition_ms", "exit", "request_id", "epoch"}, set()),
     "config": ({"brightness", "base", "generator", "timezone", "ntp_server", "ntp_interval_s", "frame_timeout_ms",
                 "metrics_interval_s", "discovery", "discovery_controls", "discovery_prefix", "mdns", "expected_revision",
                 "clock_font", "clock_colour_mode", "clock_colour", "clock_colour2", "clock_gradient", "clock_spread",
