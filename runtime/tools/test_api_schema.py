@@ -165,7 +165,7 @@ class ApiContractTests(unittest.TestCase):
             'SoundResult': {'status': 'ok', 'used': 32, 'budget': 262144},
             'LogsResponse': {'next': 2, 'lines': [{'seq': 1, 'text': 'boot'}]},
             'SpritesResponse': {'slots': 8, 'sprites': [{'id': 'weather', 'width': 8, 'height': 8}]},
-            'CanvasResponse': {'revision': 1, 'saved_revision': 0, 'age_ms': 1, 'elements': [{'type': 'pixel', 'at': [0, 0], 'colour': 'ffffff', 'age_ms': 1}], 'limits': {'elements': 24, 'text_bytes': 256, 'data_bytes': 1024, 'samples': 52}},
+            'CanvasResponse': {'revision': 1, 'saved_revision': 0, 'persist': True, 'age_ms': 1, 'elements': [{'type': 'pixel', 'at': [0, 0], 'colour': 'ffffff', 'age_ms': 1}], 'limits': {'elements': 24, 'text_bytes': 256, 'data_bytes': 1024, 'samples': 52}},
             'ScreenResponse': {'width': 52, 'height': 16, 'epoch': 1, 'revision': 3, 'brightness': 50, 'power': True, 'rgb_base64': 'A' * 3328},
             'TokenResponse': {'name': 'ha', 'scopes': ['display', 'status'], 'token': 'a' * 64},
             'AppliedEvent': {'revision': 24, 'age_ms': 12, 'cmd': 'set_base', 'source': 'input', 'base': 'clock'},
