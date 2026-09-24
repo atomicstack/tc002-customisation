@@ -67,7 +67,7 @@ the new secret once; use `--out` to save the response when appropriate.
 | `status`, `scenes`, `icons` | runtime status and catalogues | read |
 | `scene <clock\|art\|canvas>` | select the base scene and clock style | control |
 | `brightness`, `reseed`, `arm-stream`, `power` | display actions | control |
-| `input <control> <event>`, `notify <text>`, `dismiss [name]`, `frame` | input and temporary overlays | control |
+| `input <control> <event>`, `notify [text]`, `dismiss [name]`, `frame` | input and temporary overlays | control |
 | `screen [--format json\|raw]` | current framebuffer | read |
 | `logs [--after n]` | one page of the supervisor log ring | control |
 | `events` | continuous server-sent event stream | read |
@@ -130,6 +130,17 @@ tc002 notify doorbell --name door --stack --hold
 tc002 notify parcel --name delivery --stack --duration 10
 tc002 dismiss door       # the first notification named door, active before waiting
 tc002 dismiss            # the current one only
+```
+
+a notification may be a canvas document instead of a line of text: `--data` takes the
+same `elements` a `canvas put` takes, plus any notify field, and the optional text
+argument becomes the summary the event stream carries. `--data` does not mix with the
+field flags, as everywhere else.
+
+```sh
+tc002 notify --data @notice.json                 # {"elements":[…],"hold":true,"name":"updating"}
+tc002 notify parcel --data '{"elements":[{"type":"rect","at":[0,0],"size":[52,16],"colour":"00ff80"}],"duration_s":10}'
+tc002 canvas put --data @canvas.json --persist=false   # shown, not written to flash; a restart brings the saved one back
 ```
 
 `reboot` sends `POST /reboot`, which takes no body and needs the `reboot` scope: the

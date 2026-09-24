@@ -92,9 +92,18 @@ func addSettings(root *cobra.Command, o *options) {
 			if verb == "patch" {
 				method = "PATCH"
 			}
+			// persist is not a body field of the document, so it rides beside --data rather than
+			// being refused as a field flag
+			if verb == "put" && c.Flags().Changed("persist") {
+				v, _ := c.Flags().GetBool("persist")
+				body["persist"] = v
+			}
 			return jsonOperation(method, "/canvas", body, verb == "put")
 		})
 		dataFlag(c)
+		if verb == "put" {
+			c.Flags().Bool("persist", true, "write the document to flash (the default); --persist=false shows it without saving")
+		}
 		canvas.AddCommand(c)
 	}
 }

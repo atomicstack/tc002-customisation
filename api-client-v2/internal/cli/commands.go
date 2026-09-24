@@ -165,15 +165,28 @@ func addControl(root *cobra.Command, o *options) {
 		root.AddCommand(c)
 	}
 	notifyFields := slices.Concat(identityFields, transitionFields, []field{colourField("colour"), numberField("duration_s", 1, 300), textField("name"), boolField("stack"), boolField("hold")})
-	notify := o.command("notify <text>", "show a temporary text notification", 1, func(c *cobra.Command, args []string) (operation, error) {
-		text := args[0]
-		if len(text) < 1 || len(text) > 128 {
-			return operation{}, errors.New("text must be 1..128 printable ascii characters")
-		}
-		for _, ch := range []byte(text) {
-			if ch < 32 || ch > 126 {
-				return operation{}, errors.New("text must be printable ascii")
+	notify := o.command("notify [text]", "show a temporary notification: text, or a canvas document with --data", 0, func(c *cobra.Command, args []string) (operation, error) {
+		// --data carries a document (and any other notify field) and, like everywhere else, does
+		// not mix with the field flags; the text argument is then the summary the events carry
+		if c.Flags().Changed("data") {
+			body, err := jsonData(c, notifyFields)
+			if err != nil {
+				return operation{}, err
 			}
+			if len(args) == 1 {
+				if err := validText(args[0]); err != nil {
+					return operation{}, err
+				}
+				body["text"] = args[0]
+			}
+			return jsonOperation("POST", "/notify", body, false)
+		}
+		if len(args) == 0 {
+			return operation{}, errors.New("give the text, or --data with a document")
+		}
+		text := args[0]
+		if err := validText(text); err != nil {
+			return operation{}, err
 		}
 		body, err := collect(c, notifyFields)
 		if err != nil {
@@ -190,7 +203,9 @@ func addControl(root *cobra.Command, o *options) {
 		body["text"] = text
 		return jsonOperation("POST", "/notify", body, false)
 	})
+	notify.Args = func(c *cobra.Command, args []string) error { return usage(cobra.MaximumNArgs(1)(c, args)) }
 	addFields(notify, notifyFields)
+	dataFlag(notify)
 	root.AddCommand(notify)
 	// a dismissal names the notification to drop; without a name it drops the current one
 	dismiss := o.command("dismiss [name]", "dismiss the current notification, or the first one of that name", 0, func(c *cobra.Command, args []string) (operation, error) {
@@ -247,6 +262,17 @@ func addControl(root *cobra.Command, o *options) {
 		return matching(values, prefix), cobra.ShellCompDirectiveNoFileComp
 	}
 	root.AddCommand(input)
+}
+func validText(text string) error {
+	if len(text) < 1 || len(text) > 128 {
+		return errors.New("text must be 1..128 printable ascii characters")
+	}
+	for _, ch := range []byte(text) {
+		if ch < 32 || ch > 126 {
+			return errors.New("text must be printable ascii")
+		}
+	}
+	return nil
 }
 func inputEvents(control string) []string {
 	switch control {

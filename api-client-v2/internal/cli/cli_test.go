@@ -94,6 +94,11 @@ func TestRuntimeRequests(t *testing.T) {
 		{[]string{"config", "set", "--clock-fade=true"}, "PATCH", "/config", `{"clock_fade":true}`},
 		{[]string{"reboot"}, "POST", "/reboot", ""},
 		{[]string{"tokens", "create", "ops", "--scope", "status", "--scope", "reboot"}, "POST", "/tokens", `{"name":"ops","scopes":["status","reboot"]}`},
+		// a document notification and a canvas that is shown without being saved
+		{[]string{"notify", "--data", `{"elements":[{"type":"rect","at":[0,0],"size":[52,16]}],"hold":true,"name":"updating"}`}, "POST", "/notify", `{"elements":[{"type":"rect","at":[0,0],"size":[52,16]}],"hold":true,"name":"updating"}`},
+		{[]string{"notify", "parcel", "--data", `{"elements":[{"type":"rect","at":[0,0],"size":[4,4]}]}`}, "POST", "/notify", `{"text":"parcel","elements":[{"type":"rect","at":[0,0],"size":[4,4]}]}`},
+		{[]string{"canvas", "put", "--data", `{"elements":[]}`, "--persist=false"}, "PUT", "/canvas", `{"elements":[],"persist":false}`},
+		{[]string{"canvas", "put", "--data", `{"elements":[]}`}, "PUT", "/canvas", `{"elements":[]}`},
 	}
 	for _, tt := range tests {
 		t.Run(strings.Join(tt.args, " "), func(t *testing.T) {
@@ -155,6 +160,8 @@ func TestValidationBeforeNetwork(t *testing.T) {
 		{"request", "GET", "https://elsewhere/status"}, {"request", "GET", "/../status"},
 		// a notification name is letters, digits, _ or -: no dot, unlike a token or script name
 		{"notify", "hi", "--name", "door.bell"}, {"dismiss", "door.bell"}, {"dismiss", strings.Repeat("d", 33)}, {"reboot", "now"},
+		// a notification needs its text or a document, and data does not mix with field flags
+		{"notify"}, {"notify", "hi", "--data", "{}", "--hold"}, {"notify", "héllo", "--data", "{}"},
 	} {
 		t.Run(strings.Join(args, " "), func(t *testing.T) {
 			_, err := execute(t, args, "")
