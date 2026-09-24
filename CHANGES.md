@@ -6,6 +6,10 @@ refuses a version this file does not know. the github releases carry the same no
 
 ## unreleased
 
+nothing yet.
+
+## v0.3.4 — more transitions, and a fade that survives the night (2026-09-24)
+
 - **the block face fade is brightness-aware.** the cross-fade blends in the led driver's terms and
   cuts to off under the driver's floor of 50, so a dimmed night clock no longer hovers and flickers
   through the middle of a fade.
