@@ -718,3 +718,21 @@ test('terrain renders in art mode and receives its declared controls', () => {
   const configured = W.compose(status, localWith(W), WALL).rgb;
   assert.ok(bytesDiffering(defaults, configured) > 100, 'height must change the landscape');
 });
+
+test('a rich notification the page sent is drawn from its document', () => {
+  W.reset('clock', 'popsquares', 1);
+  const body = { elements: [{ type: 'rect', at: [0, 0], size: [52, 16], colour: 'ff8000' }], name: 'updating', hold: true };
+  assert.equal(W.notifyBody(body, WALL), true);
+  const s = { base: 'clock', overlay: 'notify', generator: 'popsquares', brightness: 100 };
+  const c = W.compose(s, localWith(W, { notify: { elements: body.elements, text: '', hold: true, name: 'updating', colour: [255, 255, 255], sinceMs: WALL } }), WALL);
+  assert.equal(c.label, 'rich notification');
+  assert.equal(c.rgb[0], 255); assert.equal(c.rgb[1], 128); assert.equal(c.rgb[2], 0);
+});
+
+test('a rich notification the page did not send is replayed as its summary', () => {
+  W.reset('clock', 'popsquares', 1);
+  const r = W.applyStatement({ revision: 1, age_ms: 0, cmd: 'notify', source: 'api', text: 'parcel', rich: true, duration_s: 5, hold: false, stack: false, name: '' }, WALL);
+  assert.equal(r.ok, true, r.reason || '');
+  const c = W.compose({ base: 'clock', overlay: 'notify', generator: 'popsquares', brightness: 100 }, localWith(W), WALL, true);
+  assert.equal(c.label, 'rich notification (document not sent from this page)');
+});

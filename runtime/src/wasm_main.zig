@@ -204,6 +204,31 @@ export fn notifyNamed(len: u32, colour: i32, duration_s: u32, name_len: u32, sta
     };
 }
 
+/// a whole `/notify` json body in scratch, parsed by the device's own parser, so a document
+/// notification the page sends is drawn exactly as the clock would draw it, and refused for the
+/// same reason. the reason lands where installCanvas leaves its own.
+export fn notifyBody(len: u32, now_ms: f64) u32 {
+    const body = scratch[0..@min(len, scratch.len)];
+    canvas_reject_len = 0;
+    switch (api.parseBody(.notify, body, &canvas_arena, 0)) {
+        .op => |op| switch (op) {
+            .notify => |n| {
+                const doc = n.doc;
+                return switch (arb.applyWith(.{ .notify = .{ .text = n.text, .colour = n.colour, .duration_s = n.duration_s, .name = n.name, .stack = n.stack, .hold = n.hold, .doc = if (doc) |*d| d else null } }, n.transition, toNs(now_ms))) {
+                    .applied => 1,
+                    .rejected => 0,
+                };
+            },
+            else => return 0,
+        },
+        .reject => |r| {
+            const text = std.fmt.bufPrint(&canvas_reject, "{s}: {s}", .{ r.code, r.message }) catch r.code;
+            canvas_reject_len = @intCast(@min(text.len, canvas_reject.len));
+            return 0;
+        },
+    }
+}
+
 /// the first scratch bytes name an entry; an empty name dismisses the current notification.
 export fn dismissNotify(name_len: u32, now_ms: f64) u32 {
     if (name_len > notification.name_max) return 0;

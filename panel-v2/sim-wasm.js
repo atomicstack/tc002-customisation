@@ -98,6 +98,8 @@
   /* what we last pushed in, so each poll issues only the commands that actually changed */
   const applied = { base: null, generator: null, seed: null, tz: null, clock: null, ipMode: null, ip: null, notify: null, canvas: null };
   let lastCanvasResult = { ok: true };
+  /* the last notify statement replayed from the stream was a document the page never saw */
+  let lastRichReplay = false;
 
   /* the panel's clock is the device's, not this browser's. every response carries a Date header,
      which is whole seconds — the same resolution the clock scene redraws at — so anchoring to it
@@ -198,9 +200,13 @@
        following, the stream's own notify statement has already placed it */
     if (follow) return;
     const n = s.overlay === 'notify' && local && local.notify ? local.notify : null;
-    const nKey = n ? `${n.sinceMs}:${n.text}` : null;
+    const nKey = n ? `${n.sinceMs}:${n.elements ? JSON.stringify(n.elements) : n.text}` : null;
     if (nKey !== applied.notify) {
-      if (n) {
+      if (n && n.elements) {
+        // a document the page sent: the device's own parser draws it, held for the longest the
+        // arbiter accepts, exactly as the text path does
+        notifyBody({ elements: n.elements, text: n.text || undefined, duration_s: NOTIFY_MAX_S, hold: !!n.hold, name: n.name || undefined }, n.sinceMs);
+      } else if (n) {
         const colour = Array.isArray(n.colour)
           ? (n.colour[0] << 16) | (n.colour[1] << 8) | n.colour[2]
           : hexInt(n.colour, 0xffffff);
@@ -216,7 +222,10 @@
     const s = status || {};
     if (local && local.pending) return 'pending frame';
     if (s.overlay === 'frame') return local && local.frame ? 'frame' : 'frame (contents unknown: not sent from this page)';
-    if (s.overlay === 'notify') return local && local.notify ? 'notification' : 'notification (text unknown: not sent from this page)';
+    if (s.overlay === 'notify') {
+      if (local && local.notify) return local.notify.elements ? 'rich notification' : 'notification';
+      return lastRichReplay ? 'rich notification (document not sent from this page)' : 'notification (text unknown: not sent from this page)';
+    }
     // switch on the base with a default: the set of bases is the runtime's enum, not a list this
     // file knows. a base it has never heard of captions as itself rather than as art
     if (s.base === 'clock') {
@@ -303,6 +312,19 @@
     return { ok: true, backdated: docAge !== null };
   }
   const clearCanvas = nowMs => need().clearCanvas(nowMs || 0);
+
+  /* a whole /notify body, the device's parser deciding: a document notification the page sends
+     is drawn as the clock draws it, or refused with the clock's reason */
+  function notifyBody(body, nowMs) {
+    const e = need();
+    const text = JSON.stringify(body);
+    if (!e.notifyBody(writeScratch(text), nowMs || 0)) {
+      const len = e.canvasRejectReason();
+      lastCanvasResult = { ok: false, reason: len ? readScratch(len) : 'the notification was refused' };
+      return false;
+    }
+    return true;
+  }
   const canvasEmpty = () => need().canvasEmpty() !== 0;
   /* how many elements declare a motion; the device's phase for them is not published */
   const canvasAnimated = () => need().canvasAnimatedCount();
@@ -408,8 +430,11 @@
                       c.fade == null ? -1 : (c.fade ? 1 : 0), ev.at);
     },
     notify: (e, ev) => {
+      // a document notification cannot be rebuilt from its statement: replay it as its summary so
+      // the queue and the timers stay aligned, and say so in the label
+      lastRichReplay = !!ev.rich;
       const encoder = new TextEncoder();
-      const text = encoder.encode(String(ev.text == null ? '' : ev.text));
+      const text = encoder.encode(String(ev.rich && !ev.text ? 'notification' : (ev.text == null ? '' : ev.text)));
       const name = encoder.encode(String(ev.name == null ? '' : ev.name));
       if (text.length + name.length > e.scratchLen()) return 0;
       const input = bytes(e.scratchPtr(), text.length + name.length);
@@ -500,7 +525,7 @@
   const api = {
     WIDTH, HEIGHT, PIXELS, RGB_BYTES, WHITE, black, pixelOffset,
     ready, loaded, buildLut, tzParse, TZ_UTC, Art, compose, sceneParams, renderIpLayout,
-    agreement, anchorClock, deviceNow, installCanvas, clearCanvas, canvasEmpty, canvasAnimated,
+    agreement, anchorClock, deviceNow, installCanvas, clearCanvas, canvasEmpty, canvasAnimated, notifyBody,
     applyStatement, setRevision, applyGeneratorParams, frame, renderCanvasDraft,
     stepCanvasDraft, canvasBounds,
     canvasBackdated,
