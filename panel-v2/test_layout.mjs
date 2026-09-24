@@ -989,3 +989,32 @@ test('script editor restores its selected draft when the device cannot be reache
   assert.equal(await cdp.eval(`document.getElementById('scriptSource').value`),"print('offline draft')");
   assert.equal(await cdp.eval(`document.getElementById('scriptSource').disabled`),false);
 });
+
+test('the canvas builder sends its draft as a notification, held or timed',
+  { skip: chromeAvailable ? false : 'google chrome is not installed' }, async () => {
+  const sent = await cdp.eval(`
+    (async () => {
+      const was = cvDraft;
+      cvDraft = { elements: [{ type: 'text', id: 't', at: [1, 4], text: 'hi', colour: 'ffffff' }] };
+      const seen = [];
+      const real = command;
+      command = async (method, path, makeBody) => { seen.push({ method, path, body: makeBody('ab', 1) }); return { status: 'applied' }; };
+      document.getElementById('cvndur').value = '7';
+      document.getElementById('cvnhold').checked = true;
+      await cvNotify();
+      command = real;
+      const mine = local.notify;
+      cvDraft = was; cvRender();
+      return { seen, elements: mine && mine.elements ? mine.elements.length : 0, label: document.getElementById('cvnotify').textContent };
+    })()
+  `);
+  assert.equal(sent.seen.length, 1);
+  assert.equal(sent.seen[0].method, 'POST');
+  assert.equal(sent.seen[0].path, 'notify');
+  assert.equal(sent.seen[0].body.elements.length, 1);
+  assert.equal(sent.seen[0].body.duration_s, 7);
+  assert.equal(sent.seen[0].body.hold, true);
+  assert.equal(sent.seen[0].body.name, 'builder');
+  assert.equal(sent.elements, 1, 'the preview is told what was sent, so it draws it');
+  assert.match(sent.label, /notification/i);
+});

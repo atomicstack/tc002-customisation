@@ -363,6 +363,10 @@ input[type=file]{font:12px var(--body);color:var(--muted);max-width:220px}
           <button class="btn" id="cvsend">Send to device</button>
           <button class="btn ghost" id="cvload">Load from device</button>
           <button class="btn ghost" id="cvclear">Clear draft</button></div>
+        <div class="field"><span class="lab">As a notification<span class="key">the draft overlays whatever the panel shows, then leaves</span></span>
+          <span class="inline"><button class="btn ghost" id="cvnotify">Send as notification</button>
+            <label class="inline">for <input id="cvndur" type="number" min="1" max="300" value="5" style="width:4.5em"> s</label>
+            <label class="inline"><input id="cvnhold" type="checkbox"> hold until dismissed</label></span></div>
       </div>
       <div class="cvsplit">
         <div class="cvlist">
@@ -1950,6 +1954,19 @@ async function cvSend() {
   } catch (e) { toast(e.message, true); }
 }
 
+async function cvNotify() {
+  // the same local refusal as cvSend: the runtime's parser, before any round trip
+  const check = S.renderCanvasDraft(cvDraft, Date.now());
+  if (!check.ok) return toast(`not sent — ${check.reason}`, true);
+  const duration = +$('cvndur').value, hold = $('cvnhold').checked;
+  if (!(duration >= 1 && duration <= 300)) return toast('duration must be 1 to 300 seconds', true);
+  try {
+    await command('POST', 'notify', (id, epoch) => ({ elements: cvDraft.elements, duration_s: duration, hold, name: 'builder', request_id: id, epoch }));
+    local.notify = { elements: cvDraft.elements, text: '', hold, name: 'builder', colour: [255, 255, 255], sinceMs: Date.now() };
+    toast(hold ? 'notification sent; it holds until dismissed' : `notification sent for ${duration}s`);
+  } catch (e) { toast(e.message, true); }
+}
+
 function cvClear() { cvDraft = { elements: [] }; cvSelected = 0; cvEpoch = 0; cvList(); cvForm(); cvRender(); }
 
 async function cvIcons() {
@@ -1969,6 +1986,7 @@ $('matrix').addEventListener('pointercancel', cvPointerUp);
 $('cvadd').addEventListener('click', cvAdd);
 $('cvload').addEventListener('click', cvLoad);
 $('cvsend').addEventListener('click', cvSend);
+$('cvnotify').addEventListener('click', cvNotify);
 $('cvclear').addEventListener('click', cvClear);
 
 /* ---------- client tokens (admin) ----------
