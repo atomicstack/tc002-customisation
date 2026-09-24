@@ -206,7 +206,9 @@ It builds the ARM binaries **with `-Dbin_dir=/res/bin -Dnetup=true`** — these
 are compiled in, and a payload built without them flashes cleanly and then
 cannot find its own children, with nothing to say so. It also builds the static
 busybox and its applet list, writes `MANIFEST.sha256`, and tars the lot.
-Publishing is manual; the script prints the `gh release create` line.
+Publishing is manual; the script prints the `gh release create` line. Every release
+has a section in [`CHANGES.md`](CHANGES.md) first, written before the tag; the script
+refuses a version the file does not know.
 
 ## 8. Afterwards
 

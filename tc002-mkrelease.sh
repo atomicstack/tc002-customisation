@@ -22,6 +22,12 @@ HERE=$(cd "$(dirname "$0")" && pwd)
 VERSION=${1:-$(git -C "$HERE" describe --tags --always --dirty 2>/dev/null || echo dev)}
 OUTDIR=${2:-$HERE/dist}
 NAME="tc002-runtime-$VERSION"
+# a release is recorded in CHANGES.md before it is cut, under a "## vX.Y.Z" heading; a version this
+# file does not know is refused here rather than discovered on github
+if [[ $VERSION == v[0-9]* ]] && ! grep -q "^## $VERSION\b" "$HERE/CHANGES.md"; then
+    echo "tc002-mkrelease.sh: CHANGES.md has no section for $VERSION; add one (## $VERSION — headline (date)) and run this again" >&2
+    exit 1
+fi
 STAGE="$OUTDIR/$NAME"
 
 say() { printf '== %s\n' "$*"; }
@@ -156,5 +162,5 @@ cat <<EOF
   to publish (this script deliberately does not):
 
     gh release create $VERSION "$TARBALL" \\
-       --title "tc002 runtime $VERSION" --notes-file <your notes>
+       --title "tc002 runtime $VERSION" --notes-file <your notes, from the $VERSION section of CHANGES.md>
 EOF
