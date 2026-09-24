@@ -800,6 +800,7 @@ pushes the old content off the left edge, revealing the new underneath.
 | `blink` | the same in visible steps: the old at 3/3, 2/3, 1/3, then the new at 0/3, 1/3, 2/3 | ![blink](runtime/screenshots/transitions/blink.png) |
 | `flash` | a cross-fade to full white, then from white to the new content | ![flash](runtime/screenshots/transitions/flash.png) |
 | `zoom` | the whole new content grows out of the centre, scaled, over the old | ![zoom](runtime/screenshots/transitions/zoom.png) |
+| `shrink` | zoom backwards: the old content shrinks into the centre, scaled, over the new | ![shrink](runtime/screenshots/transitions/shrink.png) |
 | `ripple` | the new content is uncovered inside a circle growing from the centre until it takes in the corners | ![ripple](runtime/screenshots/transitions/ripple.png) |
 | `diamond` | the same with a diamond (manhattan distance) | ![diamond](runtime/screenshots/transitions/diamond.png) |
 | `blocks` | a dissolve in whole 4 × 2 blocks, in an order of its own | ![blocks](runtime/screenshots/transitions/blocks.png) |
@@ -820,7 +821,8 @@ the ten after `rain_random` are the transitions of
 [awtrix-ng](https://github.com/atomicstack/awtrix-ng) that were not here yet,
 redone for this renderer: integer maths on the 0..256 progress, with the
 wave's sine from a comptime table, because there is no libm on the device.
-only `wave` and `interlace` read `direction`; the other eight ignore it.
+only `wave` and `interlace` read `direction`; the other eight ignore it. `shrink`
+came after them, as the zoom's opposite, and ignores it too.
 
 `easing` reshapes the progress before the effect sees it, so it applies to
 every effect alike, including the brightness ones. the curves are quadratic
@@ -830,7 +832,7 @@ that. a `reverse` exit plays the entry backwards, so it mirrors the easing:
 a notification that arrived `ease_in` leaves `ease_out`. `same` keeps it.
 
 a notification or pushed frame **leaves with the paired effect**: swipe in ↔
-swipe out, split in ↔ split out, expand ↔ collapse; the others repeat
+swipe out, split in ↔ split out, expand ↔ collapse, zoom ↔ shrink; the others repeat
 themselves, and `random` picks a new one. `exit` says which way: `reverse` (the default) backs out the way
 it came, so a notification that swiped in from the right slides back out to
 the right and one that expanded from the centre collapses into it; `same`

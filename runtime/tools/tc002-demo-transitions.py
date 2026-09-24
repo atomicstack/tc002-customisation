@@ -53,6 +53,7 @@ REEL = [
     ("blocks", None, "reverse", "blocks", "c0ff40"),
     ("wave", "left", "same", "wave", "40ffff"),
     ("interlace", "left", "reverse", "interlc", "ff6040"),
+    ("shrink", "left", "reverse", "shrink", "40c0ff"),
     ("random", None, "reverse", "random", "ffffff"),
 ]
 EASINGS = ("linear", "ease_in", "ease_out", "ease_in_out")

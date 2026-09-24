@@ -188,6 +188,7 @@ func TestCompletion(t *testing.T) {
 		{[]string{"tokens", "create", "ha", "--scope", ""}, "status"},
 		{[]string{"notify", "hi", "--transition", ""}, "rain_random"},
 		{[]string{"notify", "hi", "--transition", ""}, "interlace"},
+		{[]string{"notify", "hi", "--transition", ""}, "shrink"},
 		{[]string{"scene", "art", "--easing", ""}, "ease_in_out"},
 		{[]string{"screen", "--format", ""}, "raw"},
 		{[]string{"config", "set", "--"}, "--night"},

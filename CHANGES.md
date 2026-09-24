@@ -19,8 +19,9 @@ nothing yet.
   still lands at once.
 - RUNTIME.md has an **art** section describing all four generators and their controls, where the
   cube alone had one.
+- **`shrink`**, a new transition: zoom backwards, the old content shrinking into the centre over
+  the new. zoom and shrink are a pair, so a notification that zoomed in shrinks out.
 - `CHANGES.md` itself, and the release script refusing a version this file does not know.
-- no change to the device binaries since v0.3.4: a clock on v0.3.4 shows the same thing.
 
 ## v0.3.4 — more transitions, and a fade that survives the night (2026-09-24)
 

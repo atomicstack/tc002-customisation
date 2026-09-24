@@ -40,6 +40,8 @@ pub const Effect = enum(u8) {
     blocks,
     wave,
     interlace,
+    /// zoom backwards: the old frame shrinks into the centre over the new
+    shrink,
     /// a concrete effect picked afresh each time a run begins (`Spec.resolved`); never `cut`
     random,
 
@@ -52,6 +54,8 @@ pub const Effect = enum(u8) {
             .split_out => .split_in,
             .expand => .collapse,
             .collapse => .expand,
+            .zoom => .shrink,
+            .shrink => .zoom,
             else => self,
         };
     }
@@ -445,6 +449,15 @@ fn sample(effect: Effect, dir: Direction, x: i32, y: i32, p: u32) Src {
             const sy = @divFloor(H * @as(i32, @intCast(p)) + (2 * y + 1 - H) * 256, 2 * @as(i32, @intCast(p)));
             return if (inBounds(sx, sy)) .{ .new = .{ sx, sy } } else .{ .old = .{ x, y } };
         },
+        .shrink => {
+            // zoom backwards: the old frame scaled by (256 - p)/256 about the centre, over the new;
+            // the last few steps would be a sub-pixel old frame, so they show the new one whole
+            const q: u32 = 256 - @min(p, 256);
+            if (q < zoom_hold) return .{ .new = .{ x, y } };
+            const sx = @divFloor(W * @as(i32, @intCast(q)) + (2 * x + 1 - W) * 256, 2 * @as(i32, @intCast(q)));
+            const sy = @divFloor(H * @as(i32, @intCast(q)) + (2 * y + 1 - H) * 256, 2 * @as(i32, @intCast(q)));
+            return if (inBounds(sx, sy)) .{ .old = .{ sx, sy } } else .{ .new = .{ x, y } };
+        },
         .ripple, .diamond => {
             // a circle (ripple) or a diamond (diamond) growing from the centre until it takes in the
             // corners; distances are in half pixels from the centre, which lies between pixels
@@ -742,6 +755,26 @@ test "zoom grows the whole new frame out of the centre" {
     try std.testing.expectEqual(@as(usize, 26 * 8), countNew(&out));
     const end = run(.zoom, .left, 256);
     try std.testing.expectEqualSlices(u8, &marked(new_tag), &end);
+}
+
+test "shrink is zoom backwards: the old frame shrinks into the centre over the new" {
+    const out = run(.shrink, .left, 128); // the old at half size, in a 26 x 8 window on the panel
+    try expectPx(&out, 25, 7, 25, 7, old_tag);
+    try expectPx(&out, 13, 4, 1, 1, old_tag);
+    try expectPx(&out, 38, 11, 51, 15, old_tag);
+    try expectPx(&out, 12, 7, 12, 7, new_tag);
+    try expectPx(&out, 25, 3, 25, 3, new_tag);
+    try expectPx(&out, 39, 7, 39, 7, new_tag);
+    try std.testing.expectEqual(@as(usize, 52 * 16 - 26 * 8), countNew(&out));
+    // the last few steps would be a sub-pixel old frame, so they are the new one entirely
+    const end = run(.shrink, .left, 256 - zoom_hold + 1);
+    try std.testing.expectEqualSlices(u8, &marked(new_tag), &end);
+    // and it starts on the old frame whole
+    const start = run(.shrink, .left, 0);
+    try std.testing.expectEqualSlices(u8, &marked(old_tag), &start);
+    // zoom and shrink are a pair, as expand and collapse are: a notification that zoomed in shrinks out
+    try std.testing.expectEqual(Effect.shrink, Effect.zoom.paired());
+    try std.testing.expectEqual(Effect.zoom, Effect.shrink.paired());
 }
 
 test "ripple and diamond reveal the new frame in a circle and a diamond from the centre" {
