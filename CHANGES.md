@@ -6,10 +6,21 @@ refuses a version this file does not know. the github releases carry the same no
 
 ## unreleased
 
+nothing yet.
+
+## v0.3.5 — every transition on record (2026-09-25)
+
 - **every transition has a recording**, in RUNTIME.md's effects table: the renderer's own code
-  compiled to webassembly, driven at 60 fps, saved as animated png (full colour, exact frame delays).
-  `panel-v2/record-transitions.mjs` regenerates them; the canvas page's animations are apng now too.
-- **the console preview runs transitions** as the panel does, instead of cutting.
+  compiled to webassembly, driven at 60 fps, saved as animated png (full colour, exact frame
+  delays). each goes from the block clock face to a white canvas naming the effect in black, and
+  back with the paired effect. `panel-v2/record-transitions.mjs` regenerates them; the canvas
+  page's animations are apng now too, re-recorded off a clock.
+- **the console preview runs transitions** as the panel does, instead of cutting; a status snapshot
+  still lands at once.
+- RUNTIME.md has an **art** section describing all four generators and their controls, where the
+  cube alone had one.
+- `CHANGES.md` itself, and the release script refusing a version this file does not know.
+- no change to the device binaries since v0.3.4: a clock on v0.3.4 shows the same thing.
 
 ## v0.3.4 — more transitions, and a fade that survives the night (2026-09-24)
 
