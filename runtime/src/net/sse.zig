@@ -95,7 +95,7 @@ pub fn event(out: []u8, a: messages.Applied, extra_age_ms: u32) []u8 {
             break :blk w.fmt(out, &n, ",\"colour\":\"{x:0>2}{x:0>2}{x:0>2}\",\"duration_s\":{d},\"stack\":{},\"hold\":{},\"rich\":{}", .{ a.colour[0], a.colour[1], a.colour[2], a.duration_s, a.stack, a.hold, a.rich });
         },
         .raw => w.fmt(out, &n, ",\"duration_s\":{d}", .{a.duration_s}),
-        .brightness => w.fmt(out, &n, ",\"brightness\":{d}", .{a.brightness}),
+        .brightness => if (a.ramp_ms != 0) w.fmt(out, &n, ",\"brightness\":{d},\"ramp_ms\":{d}", .{ a.brightness, a.ramp_ms }) else w.fmt(out, &n, ",\"brightness\":{d}", .{a.brightness}),
         .reseed => w.fmt(out, &n, ",\"seed\":{d}", .{a.seed}),
         .power => w.fmt(out, &n, ",\"power\":{}", .{a.power != 0}),
         .set_ip_mode => w.fmt(out, &n, ",\"ip_mode\":\"{s}\"", .{enumName(ip.Mode, a.ip_mode)}),
@@ -213,4 +213,13 @@ test "a rich notification's event says so" {
     var buf: [1024]u8 = undefined;
     const frame = event(&buf, messages.Applied.init(st, .api, 0), 0);
     try std.testing.expect(std.mem.indexOf(u8, frame, "\"rich\":true") != null);
+}
+
+test "an eased brightness statement says how long the ease is" {
+    var buf: [1024]u8 = undefined;
+    const eased = event(&buf, messages.Applied.init(.{ .kind = .brightness, .brightness = 20, .ramp_ms = 2000 }, .local, 0), 0);
+    try std.testing.expect(std.mem.indexOf(u8, eased, "\"brightness\":20,\"ramp_ms\":2000") != null);
+    var buf2: [1024]u8 = undefined;
+    const plain = event(&buf2, messages.Applied.init(.{ .kind = .brightness, .brightness = 20 }, .local, 0), 0);
+    try std.testing.expect(std.mem.indexOf(u8, plain, "ramp_ms") == null);
 }

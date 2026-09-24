@@ -189,6 +189,13 @@ export fn setGenerator(v: u32, now_ms: f64) void {
 export fn setBrightness(v: u32, now_ms: f64) void {
     _ = arb.apply(.{ .brightness = @intCast(@min(v, 255)) }, toNs(now_ms));
 }
+/// the same, eased over `ms` as the panel does it; `shownBrightness` is where the ease has got to
+export fn setBrightnessRamp(v: u32, ms: u32, now_ms: f64) void {
+    _ = arb.apply(.{ .brightness_ramp = .{ .value = @intCast(@min(v, 255)), .ms = @intCast(@min(ms, 65535)) } }, toNs(now_ms));
+}
+export fn shownBrightness() u32 {
+    return arb.shownBrightness();
+}
 export fn setPower(on: u32, now_ms: f64) void {
     _ = arb.apply(.{ .power = on != 0 }, toNs(now_ms));
 }

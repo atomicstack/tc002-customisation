@@ -192,9 +192,11 @@ const Renderer = struct {
         const live_old = fader.cross.active() and arb.renderOutgoing(wall, &old_rgb);
         const fading = if (live_old) fader.applyLive(&old_rgb, &rgb, &out_rgb, now) else fader.apply(&rgb, &out_rgb, now);
         if (!fader.cross.active()) arb.transitionDone();
-        if (lut_brightness != arb.brightness) {
-            lut = pack.buildLut(arb.brightness);
-            lut_brightness = arb.brightness;
+        // what the panel shows: the target, or a point on the way to it while a ramp eases
+        const shown = arb.shownBrightness();
+        if (lut_brightness != shown) {
+            lut = pack.buildLut(shown);
+            lut_brightness = shown;
         }
         pack.packWithLut(&out_rgb, &lut, &frame);
         frame_version +%= 1;
@@ -420,7 +422,7 @@ const Renderer = struct {
             .notify => |n| arb.applyWith(.{ .notify = .{ .text = n.slice(), .colour = n.colour, .duration_s = n.duration_s, .name = n.name.slice(), .stack = n.stack, .hold = n.hold } }, n.transition.toSpec(), now),
             .notify_rich => |*r| arb.applyWith(.{ .notify = .{ .text = r.notify.slice(), .colour = r.notify.colour, .duration_s = r.notify.duration_s, .name = r.notify.name.slice(), .stack = r.notify.stack, .hold = r.notify.hold, .doc = &r.doc } }, r.notify.transition.toSpec(), now),
             .frame => |f| arb.applyWith(.{ .raw = .{ .rgb = &f.rgb, .duration_s = f.duration_s } }, f.transition.toSpec(), now),
-            .brightness => |b| arb.apply(.{ .brightness = b.value }, now),
+            .brightness => |b| if (b.ramp_ms > 0) arb.apply(.{ .brightness_ramp = .{ .value = b.value, .ms = b.ramp_ms } }, now) else arb.apply(.{ .brightness = b.value }, now),
             .reseed => |r| arb.apply(.{ .reseed = r.seed }, now),
             .arm_stream => arb.apply(.arm_stream, now),
             .power => |pw| arb.apply(.{ .power = pw.on != 0 }, now),

@@ -96,6 +96,8 @@ const reboot_notice_ns: u64 = 1200 * std.time.ns_per_ms;
 const reboot_notice_hold_ms: u16 = 10_000;
 /// a fresh wifi bring-up is not launched more often than this.
 const netup_retry_ns: u64 = 30 * ns_per_s;
+/// how long the panel takes to reach a level the night schedule sends
+const night_ramp_ms: u16 = 2000;
 const sample_period_ns: u64 = 5 * ns_per_s;
 const netd_uid: u32 = 1001;
 const netd_gid: u32 = 1001;
@@ -3079,7 +3081,9 @@ const Supervisor = struct {
         self.snapshot.night_override = @intFromBool(self.night.override_until != null);
         const value = want orelse return;
         if (value == self.snapshot.brightness) return;
-        self.send(.{ .brightness = .{ .value = value } });
+        // eased on the panel: an evening step is a level or two and barely shows it, but the first
+        // level after a boot is the whole distance from daylight, and a step that size is a jolt
+        self.send(.{ .brightness = .{ .value = value, .ramp_ms = night_ramp_ms } });
     }
 
     /// the renderer draws whatever document the supervisor is holding

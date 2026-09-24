@@ -6,7 +6,9 @@ refuses a version this file does not know. the github releases carry the same no
 
 ## unreleased
 
-nothing yet.
+- **the night schedule's brightness is eased**, over two seconds, instead of stepped: after a
+  reboot the panel used to jump from the flashed daylight level straight to the night one. the
+  target is reported at once; the event carries `ramp_ms`; the knob and the api still land at once.
 
 ## v0.3.5 — every transition on record (2026-09-25)
 

@@ -682,6 +682,10 @@ pub const Command = union(enum) {
     /// than seconds, and no revision bump
     stream: struct { rgb: *const geometry.Rgb, timeout_ms: u16 },
     brightness: u8,
+    /// the same, eased on the panel over `ms` from wherever the panel is; the target is the
+    /// state at once, the ease is presentation. the night schedule uses it, so its first level
+    /// after a boot arrives the way an evening does rather than as a step
+    brightness_ramp: struct { value: u8, ms: u16 },
     reseed: u32,
     arm_stream,
     time_corrected,
@@ -745,6 +749,8 @@ pub const Statement = struct {
     text: [text_max]u8 = [_]u8{0} ** text_max,
     /// the notification is a document; `text` is its summary
     rich: bool = false,
+    /// a brightness that eases over this many milliseconds; 0 lands at once
+    ramp_ms: u16 = 0,
 
     pub fn textSlice(self: *const Statement) []const u8 {
         return self.text[0..self.text_len];
@@ -760,6 +766,10 @@ pub const Arbiter = struct {
     notifications: notification.Waiting = .{},
     revision: u32 = 0,
     brightness: u8 = 100,
+    /// a brightness ramp in flight: from what level, since when, for how long
+    brightness_from: u8 = 100,
+    brightness_ramp_at: ?u64 = null,
+    brightness_ramp_ns: u64 = 0,
     power: bool = true,
     /// frames accepted on the stream, and how many were overwritten before they could be shown
     stream_frames: u32 = 0,
@@ -916,6 +926,11 @@ pub const Arbiter = struct {
                 st.kind = .brightness;
                 st.brightness = self.brightness;
             },
+            .brightness_ramp => |r| {
+                st.kind = .brightness;
+                st.brightness = self.brightness;
+                st.ramp_ms = if (self.brightness_ramp_at != null) r.ms else 0;
+            },
             .reseed => {
                 st.kind = .reseed;
                 st.seed = self.art.seed;
@@ -1048,6 +1063,20 @@ pub const Arbiter = struct {
             .brightness => |b| {
                 if (b < 1 or b > 100) return .{ .rejected = .invalid_brightness };
                 self.brightness = b;
+                self.brightness_ramp_at = null;
+                return .{ .applied = self.bump() };
+            },
+            .brightness_ramp => |r| {
+                if (r.value < 1 or r.value > 100) return .{ .rejected = .invalid_brightness };
+                // from wherever the panel is right now, which mid-ramp is not the old target
+                self.brightness_from = self.shownAt(now_ns);
+                self.brightness = r.value;
+                if (r.ms == 0) {
+                    self.brightness_ramp_at = null;
+                } else {
+                    self.brightness_ramp_at = now_ns;
+                    self.brightness_ramp_ns = @as(u64, r.ms) * std.time.ns_per_ms;
+                }
                 return .{ .applied = self.bump() };
             },
             .reseed => |seed| {
@@ -1324,6 +1353,9 @@ pub const Arbiter = struct {
             self.drainMenuCommit();
             self.handleMenu(r, now_ns);
         }
+        if (self.brightness_ramp_at) |at| if (now_ns >= at + self.brightness_ramp_ns) {
+            self.brightness_ramp_at = null;
+        };
         const dt_s = @as(f32, @floatFromInt(dt_ns)) / @as(f32, s_ns);
         self.art.step(dt_s);
         // an outgoing generator keeps moving through its transition
@@ -1394,6 +1426,21 @@ pub const Arbiter = struct {
         if (e.doc) |d| self.notify_canvas.install(d, now_ns);
     }
 
+    /// the brightness the panel shows: the target, or a point on the way to it while a ramp runs
+    pub fn shownBrightness(self: *const Arbiter) u8 {
+        return self.shownAt(self.last_tick_ns);
+    }
+
+    fn shownAt(self: *const Arbiter, now_ns: u64) u8 {
+        const at = self.brightness_ramp_at orelse return self.brightness;
+        const elapsed = now_ns -| at;
+        if (elapsed >= self.brightness_ramp_ns or self.brightness_ramp_ns == 0) return self.brightness;
+        const from: i64 = self.brightness_from;
+        const to: i64 = self.brightness;
+        const p: i64 = @intCast(elapsed * 256 / self.brightness_ramp_ns);
+        return @intCast(from + @divTrunc((to - from) * p, 256));
+    }
+
     fn renderBase(self: *Arbiter, wall_ns: u64, rgb: *geometry.Rgb) void {
         switch (self.base) {
             .art => self.art.render(rgb),
@@ -1442,6 +1489,8 @@ pub const Arbiter = struct {
         if (self.menu_state != null) return .{ .continuous = 40 * std.time.ns_per_ms };
         // a fading page indicator needs frames of its own, whatever the scene underneath wants
         if (self.pagesAlpha(self.last_tick_ns) > 0) return .{ .continuous = 40 * std.time.ns_per_ms };
+        // so does a brightness easing towards its target
+        if (self.brightness_ramp_at != null) return .{ .continuous = scene.frame_period_ns };
         // so does a separator pulse, which the clock's own once-a-second cadence would miss entirely
         if (self.base == .clock and self.separatorPulsing(self.last_tick_ns)) return .{ .continuous = scene.frame_period_ns };
         return switch (self.overlay) {
@@ -1767,4 +1816,47 @@ test "a text notification is unchanged by the document field" {
     const st = a.takeApplied().?;
     try std.testing.expect(!st.rich);
     try std.testing.expectEqualStrings("hi", st.textSlice());
+}
+
+test "a ramped brightness eases what is shown while the target is reported at once" {
+    // on the clock base, whose own cadence is once a second, so the ramp's continuous frames show
+    var a = Arbiter.init(.clock, .popsquares, 1, tz.utc);
+    // a set clock, or the unset face's blinking separator is a continuous cadence of its own
+    const wall: u64 = 1_700_000_000 * s_ns;
+    _ = a.apply(.{ .brightness = 100 }, 0);
+    try std.testing.expectEqual(@as(u8, 100), a.shownBrightness());
+    _ = a.takeApplied();
+    _ = a.apply(.{ .brightness_ramp = .{ .value = 20, .ms = 2000 } }, 10 * s_ns);
+    // the target is the state; the ease is presentation
+    try std.testing.expectEqual(@as(u8, 20), a.brightness);
+    const st = a.takeApplied().?;
+    try std.testing.expectEqual(Statement.Kind.brightness, st.kind);
+    try std.testing.expectEqual(@as(u8, 20), st.brightness);
+    try std.testing.expectEqual(@as(u16, 2000), st.ramp_ms);
+    a.tick(10 * s_ns, 0);
+    try std.testing.expectEqual(@as(u8, 100), a.shownBrightness());
+    try std.testing.expect(a.cadence(wall) == .continuous);
+    a.tick(11 * s_ns, 0);
+    const mid = a.shownBrightness();
+    try std.testing.expect(mid > 20 and mid < 100);
+    try std.testing.expectEqual(@as(u8, 60), mid);
+    a.tick(12 * s_ns, 0);
+    try std.testing.expectEqual(@as(u8, 20), a.shownBrightness());
+    try std.testing.expect(a.cadence(wall) != .continuous);
+    // an instant brightness lands at once and cancels a ramp in flight
+    _ = a.apply(.{ .brightness_ramp = .{ .value = 80, .ms = 2000 } }, 20 * s_ns);
+    _ = a.apply(.{ .brightness = 50 }, 21 * s_ns);
+    a.tick(21 * s_ns, 0);
+    try std.testing.expectEqual(@as(u8, 50), a.shownBrightness());
+    // a ramp that starts during a ramp eases from where the panel is, not from the old target
+    _ = a.apply(.{ .brightness_ramp = .{ .value = 100, .ms = 1000 } }, 30 * s_ns);
+    a.tick(30 * s_ns + 500 * std.time.ns_per_ms, 0);
+    try std.testing.expectEqual(@as(u8, 75), a.shownBrightness());
+    _ = a.apply(.{ .brightness_ramp = .{ .value = 1, .ms = 1000 } }, 30 * s_ns + 500 * std.time.ns_per_ms);
+    a.tick(31 * s_ns, 0);
+    try std.testing.expectEqual(@as(u8, 38), a.shownBrightness()); // halfway from 75 to 1, the floor of the range
+    // a ramp of zero is a plain brightness
+    _ = a.apply(.{ .brightness_ramp = .{ .value = 33, .ms = 0 } }, 40 * s_ns);
+    a.tick(40 * s_ns, 0);
+    try std.testing.expectEqual(@as(u8, 33), a.shownBrightness());
 }

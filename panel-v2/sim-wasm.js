@@ -427,7 +427,7 @@
   const STATEMENTS = {
     set_base: (e, ev) => e.setBase(indexOf(BASES, ev.base, 0), ev.at),
     select_generator: (e, ev) => e.setGenerator(indexOf(GENERATORS, ev.generator, 0), ev.at),
-    brightness: (e, ev) => e.setBrightness(ev.brightness | 0, ev.at),
+    brightness: (e, ev) => ev.ramp_ms ? e.setBrightnessRamp(ev.brightness | 0, ev.ramp_ms | 0, ev.at) : e.setBrightness(ev.brightness | 0, ev.at),
     power: (e, ev) => e.setPower(ev.power ? 1 : 0, ev.at),
     reseed: (e, ev) => e.reseed(ev.seed >>> 0, ev.at),
     set_ip_mode: (e, ev) => e.setIpMode(indexOf(IP_MODES, ev.ip_mode, 0), ev.at),

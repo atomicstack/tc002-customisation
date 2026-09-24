@@ -815,3 +815,17 @@ test('with transitions on, a stream statement animates and a snapshot lands at o
     assert.ok(differs(mid, plain) && differs(mid, art), 'mid-slide is neither scene');
   } finally { W.exports.runTransitions(0); }
 });
+
+test('a brightness statement with a ramp replays as an ease, target reported at once', () => {
+  W.reset('clock', 'popsquares', 1);
+  const t0 = WALL;
+  W.exports.setBrightness(100, t0);
+  const r = W.applyStatement({ revision: W.revision() + 1, age_ms: 0, cmd: 'brightness', source: 'local', brightness: 20, ramp_ms: 2000 }, t0 + 10);
+  assert.equal(r.ok, true, r.reason || '');
+  W.exports.frame(t0 + 10, t0 + 10);
+  assert.equal(W.exports.shownBrightness(), 100);
+  W.exports.frame(t0 + 1010, t0 + 1010);
+  assert.equal(W.exports.shownBrightness(), 60);
+  W.exports.frame(t0 + 2100, t0 + 2100);
+  assert.equal(W.exports.shownBrightness(), 20);
+});

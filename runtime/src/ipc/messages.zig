@@ -882,11 +882,14 @@ pub const Applied = struct {
     hold: bool = false,
     /// the notification is a document; `text` is its summary
     rich: bool = false,
+    /// a brightness eased over this many milliseconds; 0 lands at once
+    ramp_ms: u16 = 0,
     text_len: u8 = 0,
     text: [arbiter.Statement.text_max]u8 = [_]u8{0} ** arbiter.Statement.text_max,
 
     pub const rich_len = 1;
-    pub const wire_len = 1 + 1 + 4 + 4 + 1 + 1 + 4 + 1 + 1 + 1 + ClockStyle.wire_len + 2 + 3 + 1 + arbiter.Statement.text_max + notification_options_len + rich_len;
+    pub const ramp_len = 2;
+    pub const wire_len = 1 + 1 + 4 + 4 + 1 + 1 + 4 + 1 + 1 + 1 + ClockStyle.wire_len + 2 + 3 + 1 + arbiter.Statement.text_max + notification_options_len + rich_len + ramp_len;
 
     pub fn init(st: arbiter.Statement, source: Source, age_ms: u32) Applied {
         return .{
@@ -909,6 +912,7 @@ pub const Applied = struct {
             .stack = st.stack,
             .hold = st.hold,
             .rich = st.rich,
+            .ramp_ms = st.ramp_ms,
         };
     }
 
@@ -938,6 +942,7 @@ pub const Applied = struct {
         @memcpy(out[o..][0..arbiter.Statement.text_max], &self.text);
         putNotificationOptions(out[o + arbiter.Statement.text_max ..], self.name, self.stack, self.hold);
         out[o + arbiter.Statement.text_max + notification_options_len] = @intFromBool(self.rich);
+        std.mem.writeInt(u16, out[o + arbiter.Statement.text_max + notification_options_len + rich_len ..][0..2], self.ramp_ms, .big);
     }
 
     fn get(b: []const u8) Applied {
@@ -967,6 +972,7 @@ pub const Applied = struct {
         a.stack = options[notification_options_len - 1] & 1 != 0;
         a.hold = options[notification_options_len - 1] & 2 != 0;
         a.rich = options[notification_options_len] != 0;
+        a.ramp_ms = std.mem.readInt(u16, options[notification_options_len + rich_len ..][0..2], .big);
         return a;
     }
 };
@@ -1288,7 +1294,15 @@ pub const Frame = struct {
     const rgb_at = transition_at + Transition.wire_len;
     const wire_len = rgb_at + geometry.rgb_bytes;
 };
-pub const Brightness = struct { value: u8 };
+/// a level, and how long the panel takes to get there (0: at once). the value is one byte and
+/// the ramp two, which an older sender leaves off
+pub const Brightness = struct {
+    value: u8,
+    ramp_ms: u16 = 0,
+
+    pub const value_len = 1;
+    pub const ramp_len = 2;
+};
 pub const Reseed = struct { seed: u32 };
 pub const IpChanged = struct { present: u8, addr: [4]u8 };
 
@@ -2765,7 +2779,8 @@ fn encodePayload(msg: Message, out: []u8) usize {
         },
         .brightness => |b| {
             out[0] = b.value;
-            return 1;
+            std.mem.writeInt(u16, out[Brightness.value_len..][0..2], b.ramp_ms, .big);
+            return Brightness.value_len + Brightness.ramp_len;
         },
         .reseed => |r| {
             std.mem.writeInt(u32, out[0..4], r.seed, .big);
@@ -2964,7 +2979,8 @@ pub fn decodePacket(bytes: []const u8) Error!Packet {
         },
         .applied => blk: {
             const b = try fixed(p, Applied.wire_len);
-            if (!validNotificationOptions(b[b.len - Applied.rich_len - notification_options_len .. b.len - Applied.rich_len])) return error.BadPayload;
+            const tail = Applied.rich_len + Applied.ramp_len;
+            if (!validNotificationOptions(b[b.len - tail - notification_options_len .. b.len - tail])) return error.BadPayload;
             break :blk .{ .applied = Applied.get(b) };
         },
         .sound_config => blk: {
@@ -3365,8 +3381,9 @@ pub fn decodePacket(bytes: []const u8) Error!Packet {
             break :blk .{ .frame = .{ .duration_s = std.mem.readInt(u16, b[0..2], .big), .transition = Transition.get(b[Frame.transition_at..Frame.rgb_at]), .rgb = b[Frame.rgb_at..][0..geometry.rgb_bytes].* } };
         },
         .brightness => blk: {
-            const b = try fixed(p, 1);
-            break :blk .{ .brightness = .{ .value = b[0] } };
+            if (p.len != Brightness.value_len and p.len != Brightness.value_len + Brightness.ramp_len) return error.BadPayload;
+            const ramp: u16 = if (p.len > Brightness.value_len) std.mem.readInt(u16, p[Brightness.value_len..][0..2], .big) else 0;
+            break :blk .{ .brightness = .{ .value = p[0], .ramp_ms = ramp } };
         },
         .reseed => blk: {
             const b = try fixed(p, 4);
@@ -3566,4 +3583,20 @@ test "a canvas view without the persist byte reads as persistent" {
     try std.testing.expect(!(try decodePacket(try encodePacket(.{ .canvas = v }, 0, 0, &buf))).message.canvas.persist);
     const trimmed = try codec.encode(.{ .kind = @intFromEnum(Kind.canvas), .request_id = 0, .epoch = 0, .payload_len = @intCast(plen - CanvasView.persist_len) }, payload[0 .. plen - CanvasView.persist_len], &buf);
     try std.testing.expect((try decodePacket(trimmed)).message.canvas.persist);
+}
+
+test "a brightness may ask to be eased, and one without the ramp bytes lands at once" {
+    var buf: [codec.max_message]u8 = undefined;
+    const eased = Message{ .brightness = .{ .value = 20, .ramp_ms = 2000 } };
+    try std.testing.expectEqualDeep(eased, (try decodePacket(try encodePacket(eased, 1, 1, &buf))).message);
+    const plain = Message{ .brightness = .{ .value = 20 } };
+    try std.testing.expectEqualDeep(plain, (try decodePacket(try encodePacket(plain, 1, 1, &buf))).message);
+    // one byte, as an older sender writes it: the ramp reads as zero
+    const short = try codec.encode(.{ .kind = @intFromEnum(Kind.brightness), .request_id = 0, .epoch = 0, .payload_len = 1 }, &[_]u8{20}, &buf);
+    try std.testing.expectEqualDeep(plain, (try decodePacket(short)).message);
+    // an applied brightness statement carries the ramp too
+    const applied = Applied.init(.{ .kind = .brightness, .brightness = 20, .ramp_ms = 2000 }, .local, 0);
+    const back = (try decodePacket(try encodePacket(.{ .applied = applied }, 4, 9, &buf))).message.applied;
+    try std.testing.expectEqual(@as(u16, 2000), back.ramp_ms);
+    try std.testing.expectEqualDeep(applied, back);
 }

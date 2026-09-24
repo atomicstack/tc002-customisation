@@ -381,6 +381,13 @@ is consulted every ten seconds, which is finer than a ramp of tens of minutes
 over a hundred steps can move. a clock that has not been set yet (1970, before
 sntp has answered) holds daylight rather than guessing.
 
+**a level the schedule sends is eased on the panel over two seconds** rather
+than stepped. an evening step is a level or two every ten seconds and barely
+shows it; the first level after a boot is the whole distance from the flashed
+daylight brightness to the night one, and as a step it was a jolt. the ease is
+presentation: `/status` and the event stream report the target at once, the
+event carrying `ramp_ms`, and the knob and the api still land at once.
+
 a brightness that arrives from anywhere else — the knob, `PATCH /config`,
 `POST /action`, mqtt — **holds the schedule off until the next ramp begins**:
 turn it up at midnight and it stays up until dawn; turn it down in the
@@ -1696,6 +1703,7 @@ a dismissal with no matching notification is a no-op and emits no statement.
 | `cmd` | `set_base`, `select_generator`, `notify`, `dismiss_notify`, `raw`, `brightness`, `reseed`, `arm_stream`, `power`, `set_clock_style`, `set_ip_mode`, `overlay_expired` |
 | `source` | `api` (http or mqtt), `ntfy`, `input` (a button or the knob), `local` (the device itself: a menu selection, night brightness, an overlay reaching its deadline) |
 | `rich` | on a `notify` statement: the notification is a canvas document, and `text` is only its summary (empty when the sender gave none) |
+| `ramp_ms` | on a `brightness` statement the night schedule sent: the panel eases to the level over this long; absent when it landed at once |
 
 **the parameters are resolved, not requested.** the knob asks for "the next
 generator" and the statement names the one it landed on; a seedless reseed
