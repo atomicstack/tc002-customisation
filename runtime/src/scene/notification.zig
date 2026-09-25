@@ -4,7 +4,7 @@ const transition = @import("../panel/transition.zig");
 const canvas = @import("canvas.zig");
 
 pub const capacity = 8;
-pub const name_max = 32;
+pub const name_max = 255;
 
 pub fn validName(name: []const u8) bool {
     if (name.len == 0 or name.len > name_max) return false;
@@ -62,3 +62,10 @@ pub const Waiting = struct {
         return e;
     }
 };
+
+test "a name is 1 to 255 letters, digits, underscores or hyphens" {
+    try std.testing.expect(validName("n" ** 255));
+    try std.testing.expect(!validName("n" ** 256));
+    try std.testing.expect(!validName(""));
+    try std.testing.expect(!validName("a b"));
+}

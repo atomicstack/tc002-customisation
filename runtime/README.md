@@ -129,7 +129,7 @@ preserves waiting entries, while stacking queues in arrival order. there are eig
 slots including the active notification; a full queue rejects stacking with
 `409 queue_full` and stays unchanged, while replacement still works. durations
 start when displayed, not when queued; `--hold` disables expiry. `--name` accepts
-1–32 ascii letters/digits/`_`/`-`, case-sensitive. repeated names are allowed;
+1–255 ascii letters/digits/`_`/`-`, case-sensitive. repeated names are allowed;
 `dismiss name` removes the first match, active before waiting, and a missing match
 is a successful no-op. omit the name to dismiss current; an empty name is invalid.
 scene selection, raw frames, stream takeover and stream arming clear the queue.

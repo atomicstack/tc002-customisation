@@ -3507,7 +3507,7 @@ test "notification queue options survive applied events" {
 
 test "dismissal and notification event metadata round-trip with bounded names" {
     var buf: [codec.max_message]u8 = undefined;
-    for ([_][]const u8{ "", "door", "abcdefghijklmnopqrstuvwxyz012345" }) |name| {
+    for ([_][]const u8{ "", "door", "abcdefghijklmnopqrstuvwxyz012345", "n" ** 255 }) |name| {
         const msg = Message{ .dismiss_notify = arbiter.notification.Name.init(name) };
         const packet = try encodePacket(msg, 4, 9, &buf);
         const decoded = try decodePacket(packet);
@@ -3517,12 +3517,18 @@ test "dismissal and notification event metadata round-trip with bounded names" {
     const applied = Applied.init(.{ .kind = .notify, .name = arbiter.notification.Name.init("door"), .hold = true, .stack = true }, .api, 0);
     const packet = try encodePacket(.{ .applied = applied }, 4, 9, &buf);
     try std.testing.expectEqualDeep(applied, (try decodePacket(packet)).message.applied);
+    const long = Applied.init(.{ .kind = .notify, .name = arbiter.notification.Name.init("n" ** 255), .hold = true }, .api, 0);
+    const long_packet = try encodePacket(.{ .applied = long }, 4, 9, &buf);
+    try std.testing.expectEqualDeep(long, (try decodePacket(long_packet)).message.applied);
+    const named = Notify.init("hi", .{ 1, 2, 3 }, 5, .{}).withOptions("n" ** 255, true, false);
+    const named_packet = try encodePacket(.{ .notify = named }, 4, 9, &buf);
+    try std.testing.expectEqualDeep(named, (try decodePacket(named_packet)).message.notify);
     const full = try encodePacket(.{ .result = .{ .status = .queue_full, .revision = 17 } }, 4, 9, &buf);
     try std.testing.expectEqual(Status.queue_full, (try decodePacket(full)).message.result.status);
 }
 
 test "notification ipc rejects malformed lengths names and flags" {
-    var payload: [256]u8 = undefined;
+    var payload: [512]u8 = undefined;
     var packet: [codec.max_message]u8 = undefined;
     const msg = Notify.init("hi", .{ 1, 2, 3 }, 5, .{}).withOptions("door", true, true);
     const len = encodePayload(.{ .notify = msg }, &payload);
@@ -3534,9 +3540,7 @@ test "notification ipc rejects malformed lengths names and flags" {
         }
     };
     try Cases.rejected(payload[0 .. len - 1], &packet);
-    payload[end] = 33;
-    try Cases.rejected(payload[0..len], &packet);
-    payload[end] = 4;
+    // no length byte is too long for the field any more: a u8 counts to 255, which is `name_max`
     payload[end + 1] = '/';
     try Cases.rejected(payload[0..len], &packet);
     payload[end + 1] = 'd';
@@ -3599,4 +3603,13 @@ test "a brightness may ask to be eased, and one without the ramp bytes lands at 
     const back = (try decodePacket(try encodePacket(.{ .applied = applied }, 4, 9, &buf))).message.applied;
     try std.testing.expectEqual(@as(u16, 2000), back.ramp_ms);
     try std.testing.expectEqualDeep(applied, back);
+}
+
+test "the largest rich notification still fits one packet with the longest name" {
+    // the encoder answers 0 bytes, not an error, when the document does not fit behind the
+    // notification, so the bound is held here rather than discovered on the device
+    var head: [codec.max_payload]u8 = undefined;
+    const n = Notify.init("t" ** arbiter.Statement.text_max, .{ 1, 2, 3 }, 5, .{}).withOptions("n" ** arbiter.notification.name_max, true, true);
+    const header = putNotify(&head, n, true);
+    try std.testing.expect(header + canvas.wire_max <= codec.max_payload);
 }

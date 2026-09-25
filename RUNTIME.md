@@ -454,7 +454,7 @@ expiry, even when a duration is supplied; dismissal, replacement or a display
 takeover can still remove it. expiry or active dismissal promotes the oldest
 waiting notification, or reveals the base if none remain.
 
-an optional `name` is 1–32 ascii letters, digits, `_` or `-`, case-sensitive.
+an optional `name` is 1–255 ascii letters, digits, `_` or `-`, case-sensitive.
 names need not be unique: `POST /api/v1/notify/dismiss` with `{"name":"door"}`
 removes the first match, checking the active notification before the waiting
 queue. another request with that name removes the next match. an omitted name

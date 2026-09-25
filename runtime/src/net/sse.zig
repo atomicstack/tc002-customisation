@@ -123,8 +123,8 @@ pub fn event(out: []u8, a: messages.Applied, extra_age_ms: u32) []u8 {
 
 /// the largest event this module can produce, so a caller can size a buffer that never truncates.
 /// the notification statement is the big one: 128 bytes of text, every byte of which can escape to
-/// six (`\u001f`), plus the envelope.
-pub const event_max = 384 + 6 * arbiter.Statement.text_max;
+/// six (`\u001f`), its name, which never escapes (letters, digits, `_` and `-`), plus the envelope.
+pub const event_max = 384 + 6 * arbiter.Statement.text_max + arbiter.notification.name_max;
 
 const testing = std.testing;
 
@@ -193,6 +193,10 @@ test "a buffer too small yields nothing at all, never half a statement" {
     var st = arbiter.Statement{ .kind = .notify, .revision = 4294967295, .duration_s = 65535 };
     st.text_len = arbiter.Statement.text_max;
     @memset(st.text[0..st.text_len], 0x01);
+    st.name = arbiter.notification.Name.init("n" ** arbiter.notification.name_max);
+    st.stack = true;
+    st.hold = true;
+    st.rich = true;
     var big: [event_max]u8 = undefined;
     try testing.expect(event(&big, messages.Applied.init(st, .api, 4294967295), 4294967295).len > 0);
 }

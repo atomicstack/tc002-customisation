@@ -183,15 +183,20 @@ func parseColour(s string) ([]byte, error) {
 	return b, nil
 }
 
+// the device's limit on a notification name, runtime/src/scene/notification.zig's name_max
+const notificationNameMax = 255
+
+var errNotificationName = errors.New("name must be 1..255 letters, digits, dash or underscore")
+
 // a notification name is narrower than a token or script name: no dot, and it may be empty
 // on a dismissal, which then means the current notification.
 func validNotificationName(s string) error {
-	if len(s) > 32 {
-		return errors.New("name must be 1..32 letters, digits, dash or underscore")
+	if len(s) > notificationNameMax {
+		return errNotificationName
 	}
 	for _, c := range s {
 		if !((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '-' || c == '_') {
-			return errors.New("name must be 1..32 letters, digits, dash or underscore")
+			return errNotificationName
 		}
 	}
 	return nil

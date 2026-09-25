@@ -9,6 +9,9 @@ refuses a version this file does not know. the github releases carry the same no
 - **the night schedule's brightness is eased**, over two seconds, instead of stepped: after a
   reboot the panel used to jump from the flashed daylight level straight to the night one. the
   target is reported at once; the event carries `ramp_ms`; the knob and the api still land at once.
+- **a notification name may be 255 characters**, up from 32, in the api, the go client, the mock
+  and the console's preview. the name is a fixed field of the notification and applied-statement
+  ipc messages, which grow with it: deploy the binaries together.
 
 ## v0.3.5 — every transition on record (2026-09-25)
 

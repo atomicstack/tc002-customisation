@@ -122,7 +122,7 @@ tc002 --admin request PATCH /config --data '{"brightness":30}'
 ## notifications
 
 `notify` replaces the current notification unless `--stack` queues it behind; `--hold`
-keeps it up until a `dismiss`. `--name` (1..32 letters, digits, `-` or `_`) is what a
+keeps it up until a `dismiss`. `--name` (1..255 letters, digits, `-` or `_`) is what a
 dismissal finds it by; `dismiss` alone drops the current one. there are eight slots
 including the active one, and the runtime refuses a stack into a full queue.
 

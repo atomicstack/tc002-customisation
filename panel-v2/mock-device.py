@@ -45,7 +45,7 @@ DEFAULT_CLOCK = {"font": "classic", "colour_mode": "solid", "colour": "ffffff", 
 # raised from 4096 with the canvas, which needs room for a whole document
 JSON_BODY_MAX = 8192
 PRINTABLE = re.compile(r"^[\x20-\x7e]{1,128}$")
-NOTIFICATION_NAME = re.compile(r"^[A-Za-z0-9_-]{1,32}$")
+NOTIFICATION_NAME = re.compile(r"^[A-Za-z0-9_-]{1,255}$")
 HEX_ID = re.compile(r"^[0-9a-fA-F]{1,16}$")
 
 # physical controls (RUNTIME.md "physical controls"): which events each control accepts
@@ -657,7 +657,7 @@ class Device:
             raise Reject(400, "invalid_text", "text must be 1..128 printable ascii characters")
         name = body.get("name")
         if name is not None and (not isinstance(name, str) or not NOTIFICATION_NAME.match(name)):
-            raise Reject(400, "invalid_name", "a notification name is 1..32 letters, digits, _ or -")
+            raise Reject(400, "invalid_name", "a notification name is 1..255 letters, digits, _ or -")
         for flag in ("stack", "hold"):
             if flag in body and not isinstance(body[flag], bool):
                 raise Reject(400, f"invalid_{flag}", f"{flag} must be true or false")

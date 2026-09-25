@@ -551,11 +551,11 @@ test('named notification exports reject oversized scratch inputs without changin
   const e = W.exports;
   assert.equal(typeof e.notifyNamed, 'function');
   assert.equal(typeof e.dismissNotify, 'function');
-  new Uint8Array(e.memory.buffer, e.scratchPtr(), 40).fill(97);
-  assert.equal(e.notifyNamed(2, 0xff0000, 1, 33, 0, 0, 1000), 0);
+  new Uint8Array(e.memory.buffer, e.scratchPtr(), 300).fill(97);
+  assert.equal(e.notifyNamed(2, 0xff0000, 1, 256, 0, 0, 1000), 0);
   assert.equal(e.notifyNamed(e.scratchLen() + 1, 0xff0000, 1, 0, 0, 0, 1000), 0);
   assert.equal(e.notifyNamed(0xffffffff, 0xff0000, 1, 32, 0, 0, 1000), 0);
-  assert.equal(e.dismissNotify(33, 1000), 0);
+  assert.equal(e.dismissNotify(256, 1000), 0);
   assert.equal(e.dismissNotify(0xffffffff, 1000), 0);
   assert.equal(W.revision(), 0);
   assert.equal(e.notify(2, 0xff0000, 1, 1000), 1, 'the legacy notification export remains usable');

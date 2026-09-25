@@ -112,9 +112,9 @@ class ApiContractTests(unittest.TestCase):
         self.assertEqual(operation['requestBody']['content']['application/json']['schema']['$ref'], '#/components/schemas/DismissNotifyBody')
         for model, base in [('NotifyBody', {'text': 'hello'}), ('DismissNotifyBody', {})]:
             validator = Draft202012Validator({'$ref': '#/$defs/' + model, '$defs': document['$defs']})
-            for name in ['door-1', 'a' * 32]:
+            for name in ['door-1', 'a' * 255]:
                 self.assertEqual(list(validator.iter_errors(dict(base, name=name))), [])
-            for name in ['', 'a' * 33, 'door.bell', 'bad/name', 'door\n']:
+            for name in ['', 'a' * 256, 'door.bell', 'bad/name', 'door\n']:
                 self.assertTrue(list(validator.iter_errors(dict(base, name=name))))
             self.assertEqual(list(validator.iter_errors(base)), [])
         notify = document['$defs']['NotifyBody']['properties']

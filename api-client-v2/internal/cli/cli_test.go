@@ -88,6 +88,9 @@ func TestRuntimeRequests(t *testing.T) {
 		// a reboot, and the reboot scope on a named token.
 		{[]string{"notify", "doorbell", "--name", "door", "--stack", "--hold"}, "POST", "/notify", `{"text":"doorbell","name":"door","stack":true,"hold":true}`},
 		{[]string{"dismiss", "door"}, "POST", "/notify/dismiss", `{"name":"door"}`},
+		// a name may be as long as the device allows: 255 characters
+		{[]string{"dismiss", strings.Repeat("d", 255)}, "POST", "/notify/dismiss", `{"name":"` + strings.Repeat("d", 255) + `"}`},
+		{[]string{"notify", "hi", "--name", strings.Repeat("n", 255)}, "POST", "/notify", `{"text":"hi","name":"` + strings.Repeat("n", 255) + `"}`},
 		{[]string{"dismiss"}, "POST", "/notify/dismiss", `{}`},
 		{[]string{"dismiss", "--request-id", "ab"}, "POST", "/notify/dismiss", `{"request_id":"ab"}`},
 		{[]string{"scene", "clock", "--font", "block", "--fade"}, "PUT", "/scene", `{"base":"clock","clock":{"font":"block","fade":true}}`},
@@ -160,7 +163,7 @@ func TestValidationBeforeNetwork(t *testing.T) {
 		{"scripts", "run", "../x"}, {"sprites", "delete", "longerthan8"}, {"tokens", "create", ".hidden"},
 		{"request", "GET", "https://elsewhere/status"}, {"request", "GET", "/../status"},
 		// a notification name is letters, digits, _ or -: no dot, unlike a token or script name
-		{"notify", "hi", "--name", "door.bell"}, {"dismiss", "door.bell"}, {"dismiss", strings.Repeat("d", 33)}, {"reboot", "now"},
+		{"notify", "hi", "--name", "door.bell"}, {"dismiss", "door.bell"}, {"dismiss", strings.Repeat("d", 256)}, {"notify", "hi", "--name", strings.Repeat("n", 256)}, {"reboot", "now"},
 		// a notification needs its text or a document, and data does not mix with field flags
 		{"notify"}, {"notify", "hi", "--data", "{}", "--hold"}, {"notify", "héllo", "--data", "{}"},
 	} {

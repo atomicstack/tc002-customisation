@@ -153,7 +153,7 @@ def main():
     ap.add_argument("--seed", type=int)
     ap.add_argument("--colour", default=None)
     ap.add_argument("--duration", type=int, default=5)
-    ap.add_argument("--name", metavar="name", help="notification name: 1..32 ascii letters, digits, _ or -")
+    ap.add_argument("--name", metavar="name", help="notification name: 1..255 ascii letters, digits, _ or -")
     ap.add_argument("--stack", action="store_true", help="queue behind existing notifications")
     ap.add_argument("--hold", action="store_true", help="hold notification until dismissed or replaced")
     ap.add_argument("--steps", type=int, default=1)

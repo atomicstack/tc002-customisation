@@ -1135,13 +1135,13 @@ pub fn parseBody(kind: BodyKind, body: []const u8, arena: *Arena, generated_id: 
         },
         .dismiss_notify => {
             const b = json.parse(DismissNotifyBody, body, arena, &where) catch |e| return jsonError(e, where, arena);
-            if (b.name) |name| if (!arbiter.notification.validName(name)) return bad("invalid_name", "a notification name is 1..32 letters, digits, _ or -");
+            if (b.name) |name| if (!arbiter.notification.validName(name)) return bad("invalid_name", "a notification name is 1..255 letters, digits, _ or -");
             const rid = if (b.request_id) |t| (parseRequestId(t) orelse return bad("invalid_request_id", "request_id must be 1..16 hex digits")) else generated_id;
             return .{ .op = .{ .dismiss_notify = .{ .name = b.name orelse "", .request_id = rid, .epoch = b.epoch } } };
         },
         .notify => {
             const b = json.parse(NotifyBody, body, arena, &where) catch |e| return jsonError(e, where, arena);
-            if (b.name) |name| if (!arbiter.notification.validName(name)) return bad("invalid_name", "a notification name is 1..32 letters, digits, _ or -");
+            if (b.name) |name| if (!arbiter.notification.validName(name)) return bad("invalid_name", "a notification name is 1..255 letters, digits, _ or -");
             // a document makes the text optional: it is then the summary the events carry
             var doc: ?canvas.Document = null;
             if (b.elements) |els| {
@@ -2304,8 +2304,13 @@ test "notification options validate names types durations and preserve defaults"
     const queued = parseBody(.notify, "{\"text\":\"hello\",\"name\":\"door-1\",\"stack\":true,\"hold\":true}", &arena, test_minted).op.notify;
     try std.testing.expect(queued.stack and queued.hold);
     try std.testing.expectEqualStrings("door-1", queued.name);
-    for ([_][]const u8{ "", "bad/name", "a b", "123456789012345678901234567890123" ++ "45" }) |name| {
-        var buf: [256]u8 = undefined;
+    const longest = "n" ** 255;
+    const at_most = parseBody(.notify, "{\"text\":\"x\",\"name\":\"" ++ longest ++ "\"}", &arena, test_minted).op.notify;
+    try std.testing.expectEqualStrings(longest, at_most.name);
+    const dismissed = parseBody(.dismiss_notify, "{\"name\":\"" ++ longest ++ "\"}", &arena, test_minted).op.dismiss_notify;
+    try std.testing.expectEqualStrings(longest, dismissed.name);
+    for ([_][]const u8{ "", "bad/name", "a b", longest ++ "n" }) |name| {
+        var buf: [512]u8 = undefined;
         const body = try std.fmt.bufPrint(&buf, "{{\"text\":\"x\",\"name\":\"{s}\"}}", .{name});
         try expectReject(parseBody(.notify, body, &arena, test_minted), 400, "invalid_name");
         const dismiss = try std.fmt.bufPrint(&buf, "{{\"name\":\"{s}\"}}", .{name});

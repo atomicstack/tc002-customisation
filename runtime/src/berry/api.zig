@@ -137,7 +137,7 @@ fn notifyFn(vm: ?*Bvm) callconv(.c) c_int {
     const seconds = argInt(v, 3, 5);
     if (seconds < arbiter.min_duration_s or seconds > arbiter.max_duration_s) return refuse(v, "a notification lasts 1 to 300 seconds");
     const name = argText(v, 4);
-    if (be_top(v) >= 4 and !be_isnil(v, 4) and !arbiter.notification.validName(name)) return refuse(v, "a notification name is 1 to 32 letters, digits, _ or -");
+    if (be_top(v) >= 4 and !be_isnil(v, 4) and !arbiter.notification.validName(name)) return refuse(v, "a notification name is 1 to 255 letters, digits, _ or -");
     if (be_top(v) >= 5 and !be_isbool(v, 5)) return refuse(v, "stack must be a boolean");
     if (be_top(v) >= 6 and !be_isbool(v, 6)) return refuse(v, "hold must be a boolean");
     const stack = be_top(v) >= 5 and be_tobool(v, 5);
@@ -149,7 +149,7 @@ fn notifyFn(vm: ?*Bvm) callconv(.c) c_int {
 fn dismissFn(vm: ?*Bvm) callconv(.c) c_int {
     const v = vm.?;
     const name = argText(v, 1);
-    if (be_top(v) >= 1 and !arbiter.notification.validName(name)) return refuse(v, "a notification name is 1 to 32 letters, digits, _ or -");
+    if (be_top(v) >= 1 and !arbiter.notification.validName(name)) return refuse(v, "a notification name is 1 to 255 letters, digits, _ or -");
     send(.{ .dismiss_notify = arbiter.notification.Name.init(name) });
     return be_returnnilvalue(v);
 }

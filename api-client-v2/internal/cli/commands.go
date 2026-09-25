@@ -194,7 +194,7 @@ func addControl(root *cobra.Command, o *options) {
 		}
 		if name, ok := body["name"]; ok {
 			if name == "" {
-				return operation{}, errors.New("name must be 1..32 letters, digits, dash or underscore")
+				return operation{}, errNotificationName
 			}
 			if err := validNotificationName(name.(string)); err != nil {
 				return operation{}, err
@@ -215,7 +215,7 @@ func addControl(root *cobra.Command, o *options) {
 		}
 		if len(args) == 1 {
 			if args[0] == "" {
-				return operation{}, errors.New("name must be 1..32 letters, digits, dash or underscore")
+				return operation{}, errNotificationName
 			}
 			if err := validNotificationName(args[0]); err != nil {
 				return operation{}, err

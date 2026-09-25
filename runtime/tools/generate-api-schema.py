@@ -62,7 +62,7 @@ def enum_source(path, name):
 BOOL = {'type': 'boolean'}
 COLOUR = string(pattern='^[0-9a-fA-F]{6}$')
 REQUEST_ID = string(pattern='^[0-9a-fA-F]{1,16}$', description='caller id for retries; generated if omitted; 1..16 hex digits')
-NOTIFICATION_NAME = string(minLength=1, maxLength=32, pattern=r'^[A-Za-z0-9_-]+(?![\s\S])')
+NOTIFICATION_NAME = string(minLength=1, maxLength=255, pattern=r'^[A-Za-z0-9_-]+(?![\s\S])')
 NAME = string(pattern='^[A-Za-z0-9_-][A-Za-z0-9_.-]{0,31}$')
 ID = string(minLength=1, maxLength=8)
 OCTET = r'(?:[0-9]{1,2}|[01][0-9]{2}|2[0-4][0-9]|25[0-5])'
@@ -204,7 +204,7 @@ def response_schemas(schemas):
         return ref(name)
     clock = obj(dict(font=FONT, colour_mode=enum('solid', 'gradient'), colour=COLOUR, colour2=COLOUR, gradient=enum('horizontal', 'vertical', 'diagonal'), spread=integer(0, 255), digits=DIGITS))
     model('ErrorResponse', dict(error=text, message=text, request_id=string(pattern='^[0-9a-f]{16}$')))
-    model('AppliedEvent', dict(revision=n, age_ms=n, cmd=enum('set_base', 'select_generator', 'notify', 'raw', 'brightness', 'reseed', 'power', 'set_ip_mode', 'set_clock_style', 'arm_stream', 'overlay_expired', 'dismiss_notify'), name=string(maxLength=32, pattern=r'^[A-Za-z0-9_-]*(?![\s\S])'), stack=b, hold=b, rich=b, source=enum('local', 'api', 'ntfy', 'input'), base=BASE, generator=GENERATOR, text=text, colour=COLOUR, duration_s=n, brightness=n, ramp_ms=integer(0, 65535), seed=n, power=b, ip_mode=enum('lines', 'mini', 'scroll', 'big'), clock=clock), ['revision', 'age_ms', 'cmd', 'source'])
+    model('AppliedEvent', dict(revision=n, age_ms=n, cmd=enum('set_base', 'select_generator', 'notify', 'raw', 'brightness', 'reseed', 'power', 'set_ip_mode', 'set_clock_style', 'arm_stream', 'overlay_expired', 'dismiss_notify'), name=string(maxLength=255, pattern=r'^[A-Za-z0-9_-]*(?![\s\S])'), stack=b, hold=b, rich=b, source=enum('local', 'api', 'ntfy', 'input'), base=BASE, generator=GENERATOR, text=text, colour=COLOUR, duration_s=n, brightness=n, ramp_ms=integer(0, 65535), seed=n, power=b, ip_mode=enum('lines', 'mini', 'scroll', 'big'), clock=clock), ['revision', 'age_ms', 'cmd', 'source'])
     model('AppliedResponse', dict(status={'const': 'applied'}, revision=n, epoch=n, request_id=string(pattern='^[0-9a-f]{16}$')))
     model('SavedResponse', dict(status={'const': 'saved'}, saved_revision=n))
     model('BerryResult', dict(status={'const': 'ok'}, name=text, note=text), ['status', 'name'])
@@ -242,7 +242,7 @@ def build():
         '/config/save': 'persist the current settings; optional revision must match. an empty body is accepted with application/json.',
         '/scene': 'select clock, art or canvas; art may select a generator and seed. clock customizations apply to this scene command.',
         '/action': 'brightness requires brightness (1..100); power requires power; reseed accepts seed; arm_stream opens the local stream-arming overlay but does not implement stream sessions.',
-        '/notify': 'show 1..128 printable ascii characters; long text scrolls. stack=true queues fifo with eight slots including the active notification; otherwise replace the active notification and keep the queue. duration_s is 1..300 (default 5), starting when displayed. hold=true disables expiry; both flags default false. names are case-sensitive, 1..32 ascii letters, digits, _ or -.',
+        '/notify': 'show 1..128 printable ascii characters; long text scrolls. stack=true queues fifo with eight slots including the active notification; otherwise replace the active notification and keep the queue. duration_s is 1..300 (default 5), starting when displayed. hold=true disables expiry; both flags default false. names are case-sensitive, 1..255 ascii letters, digits, _ or -.',
         '/notify/dismiss': 'omit name to dismiss the current notification, or provide a name to remove the first matching active or queued notification. an unknown name is a successful no-op; an empty name is invalid. dismissing the active notification promotes the next queued entry.',
         '/reboot': 'reboot the device through its reboot notice. requires the reboot scope and takes no request body.',
         '/frame': 'show exactly 2496 row-major rgb888 bytes (52 x 16), for duration_s seconds. limited to ten frames per second. query transition defaults to cut.',

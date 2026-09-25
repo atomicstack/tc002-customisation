@@ -374,6 +374,13 @@ class EndToEndTests(unittest.TestCase):
         status, doc = self.call("POST", "notify", {"text": "hi", "name": "door.bell", "epoch": st["epoch"]})
         self.assertEqual((status, doc["error"]), (400, "invalid_name"))
 
+    def test_a_notification_name_may_be_255_characters(self):
+        _, st = self.call("GET", "status")
+        status, doc = self.call("POST", "notify", {"text": "hi", "name": "n" * 255, "epoch": st["epoch"]})
+        self.assertEqual((status, doc["status"]), (200, "applied"))
+        status, doc = self.call("POST", "notify", {"text": "hi", "name": "n" * 256, "epoch": st["epoch"]})
+        self.assertEqual((status, doc["error"]), (400, "invalid_name"))
+
     def test_scene_action_notify_and_frame(self):
         _, st = self.call("GET", "status")
         status, doc = self.call("PUT", "scene", {"base": "clock", "request_id": "a1", "epoch": st["epoch"]})

@@ -84,7 +84,7 @@ same refusal — `tc002.brightness(0)` raises rather than quietly clamping.
 |---|---|---|
 | `tc002.scene(name)` | `'clock'`, `'art'` or `'canvas'` | |
 | `tc002.brightness(n)` | 1–100 | outside the range it raises |
-| `tc002.notify(text, colour, seconds, name, stack, hold)` | trailing arguments optional: colour defaults white, seconds defaults 5, name defaults absent, stack and hold default false | the same queue and overlay `POST /notify` uses; seconds 1–300, names 1–32 ascii letters/digits/`_`/`-` |
+| `tc002.notify(text, colour, seconds, name, stack, hold)` | trailing arguments optional: colour defaults white, seconds defaults 5, name defaults absent, stack and hold default false | the same queue and overlay `POST /notify` uses; seconds 1–300, names 1–255 ascii letters/digits/`_`/`-` |
 | `tc002.dismiss(name)` | name optional; omit for current notification | removes the first matching name, active before waiting; a missing match is a successful no-op, an empty name is invalid |
 | `tc002.subscribe(filter[, f])` | an mqtt topic filter, `+` and `#` allowed; optionally a handler | up to thirty-two; see [mqtt](#mqtt) |
 | `tc002.unsubscribe(filter)` | the same filter, exactly as given to `subscribe` | frees its slot, tells the broker, drops its handler |
