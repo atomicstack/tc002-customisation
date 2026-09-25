@@ -83,7 +83,9 @@ Two conclusions worth keeping:
   `ui/app_icons/tools_focus_clock.png` and `ui/font_image/t_9_L.png`, unit B has
   `ui/font_image/t_10_L.png` instead. `etc/EasyUI.cfg` — the loader config the
   custom runtime's takeover depends on — is identical on both, which is the one
-  piece of good news for portability.
+  piece of good news for portability. Both `libzkgui.so` builds are known to
+  [`tc002-ntp-patch.py`](tc002-ntp-patch.py), which patches either and refuses
+  anything else.
 
 > **So never flash a `res` image built for one unit to another.** The image
 > carries `lib/libzkgui.so`, the vendor application, and that file differs
