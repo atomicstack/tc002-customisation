@@ -18,7 +18,8 @@ so does `revert`. the copy costs about 7.5 mb of the device's ~13 mb free ram.
     /usr/bin/python3 tc002-ntp-patch.py revert  [-s DEVICE]
     /usr/bin/python3 tc002-ntp-patch.py patch   --in libzkgui.so --out patched.so [--period MINUTES] [--server IP ...]
 
-the offsets are for app version 1.1.1 (libzkgui.so sha256 64d7dc6f...). any other build is
+the offsets are for two app builds: 1.1.1 (libzkgui.so sha256 64d7dc6f...) and 1.0.8
+(sha256 de15dd84...; the "unit b" res revision of FINGERPRINTS.md). any other build is
 refused rather than guessed at.
 
 needs `adb` on the host and adb enabled on the device (it is, by default, on port 5555).
@@ -37,31 +38,44 @@ import tempfile
 import time
 
 # ---------------------------------------------------------------------------
-# what we know about app 1.1.1's libzkgui.so
+# what we know about the libzkgui.so builds in circulation
 # ---------------------------------------------------------------------------
 
-KNOWN = {
-    "sha256": "64d7dc6f7c06cc4f00164b28a52e73cf0b24678a2f3360e22b4ef757818bb7e1",
-    "size": 7484524,
-    "app": "1.1.1",
+# one entry per res revision of FINGERPRINTS.md: app 1.1.1 is unit a there, 1.0.8 unit b.
+# both builds share the layout: the sync period is a 2 h literal in mainActivity::onCreate's
+# pool (UiHandler::schedule(name, fn, period_ms, first_delay_ms)), the first-delay expression
+# ends in `sub r3, r0, r3` (r0 = rand(), so rand() % 3600000 ms), and seven ntp server strings
+# sit in 16-byte nul-padded slots in .rodata. the 1.0.8 offsets were worked out the same way as
+# 1.1.1's and then confirmed by disassembly: the delay instruction immediately follows `bl rand`
+# and the 3_600_000 literal, and the period literal -- the only 7_200_000 in the file -- is
+# loaded into r3 just before the call into UiHandler::schedule.
+BUILDS = {
+    "1.1.1": {
+        "sha256": "64d7dc6f7c06cc4f00164b28a52e73cf0b24678a2f3360e22b4ef757818bb7e1",
+        "size": 7484524,
+        "period_off": 0x1F4484,
+        "delay_insn_off": 0x1F4174,
+        "server_slot0_off": 0x625E34,
+    },
+    "1.0.8": {
+        "sha256": "de15dd84b5be962e3b3775c03a9d0dce4a8594713948da87b4b121f233e12db6",
+        "size": 7464044,
+        "period_off": 0x1F0B08,
+        "delay_insn_off": 0x1F07F8,
+        "server_slot0_off": 0x621598,
+    },
 }
 
 DEVICE_LIB = "/res/lib/libzkgui.so"
 OVERRIDE_LIB = "/tmp/libzkgui.so"
 SERVICE = "zkswe"
 
-# mainActivity::onCreate literal pool: UiHandler::schedule(name, fn, period_ms, first_delay_ms)
-PERIOD_OFF = 0x1F4484
 PERIOD_ORIG = struct.pack("<I", 7_200_000)
 
-# the first-delay computation ends in `sub r3, r0, r3` (r0 = rand()), giving rand() % 3600000.
-# we swap that one instruction for `and r3, r0, #0xff00`, giving 0..65 s of jitter instead.
-DELAY_INSN_OFF = 0x1F4174
+# we swap the delay's last instruction for `and r3, r0, #0xff00`, giving 0..65 s of jitter.
 DELAY_INSN_ORIG = bytes.fromhex("033040e0")  # sub r3, r0, r3
 DELAY_INSN_NEW = bytes.fromhex("ff3c00e2")   # and r3, r0, #0xff00
 
-# ntp::defaultServerList(): seven ip strings in .rodata, each in its own 16-byte nul-padded slot
-SERVER_SLOT0_OFF = 0x625E34
 SERVER_SLOT_SIZE = 16
 SERVERS_ORIG = [
     "203.107.6.88",     # ntp.aliyun.com
@@ -93,14 +107,25 @@ def ipv4(s):
     return s
 
 
-def check_known(data):
+def known_build(data):
+    """(app version, BUILDS entry) this library is, or (none, none)."""
     h = hashlib.sha256(data).hexdigest()
-    if len(data) != KNOWN["size"] or h != KNOWN["sha256"]:
-        die(f"this libzkgui.so is not the app {KNOWN['app']} build these offsets were worked out on\n"
+    for app, b in BUILDS.items():
+        if len(data) == b["size"] and h == b["sha256"]:
+            return app, b
+    return None, None
+
+
+def check_known(data):
+    app, b = known_build(data)
+    if b is None:
+        h = hashlib.sha256(data).hexdigest()
+        want = "; ".join(f"app {a}: size={bb['size']} sha256={bb['sha256'][:16]}..." for a, bb in BUILDS.items())
+        die("this libzkgui.so is not a build these offsets were worked out on\n"
             f"  got  size={len(data)} sha256={h[:16]}...\n"
-            f"  want size={KNOWN['size']} sha256={KNOWN['sha256'][:16]}...\n"
+            f"  want {want}\n"
             "  refusing to guess at offsets in an unknown build")
-    return h
+    return app, b
 
 
 def expect(data, off, orig, what):
@@ -109,7 +134,7 @@ def expect(data, off, orig, what):
         die(f"unexpected bytes at {off:#x} ({what}): got {got.hex()} want {orig.hex()}")
 
 
-def patch_bytes(data, period_s=None, servers=None):
+def patch_bytes(data, build, period_s=None, servers=None):
     """return (patched_bytes, list of change descriptions)."""
     data = bytearray(data)
     changes = []
@@ -117,21 +142,21 @@ def patch_bytes(data, period_s=None, servers=None):
     if period_s is not None:
         if not MIN_PERIOD_S <= period_s <= MAX_PERIOD_S:
             die(f"period must be between {MIN_PERIOD_S} s and {MAX_PERIOD_S} s")
-        expect(data, PERIOD_OFF, PERIOD_ORIG, "sync period literal")
-        data[PERIOD_OFF:PERIOD_OFF + 4] = struct.pack("<I", period_s * 1000)
+        expect(data, build["period_off"], PERIOD_ORIG, "sync period literal")
+        data[build["period_off"]:build["period_off"] + 4] = struct.pack("<I", period_s * 1000)
         changes.append(f"sync period 2 h -> {fmt_secs(period_s)}")
 
-        expect(data, DELAY_INSN_OFF, DELAY_INSN_ORIG, "first-delay instruction")
-        data[DELAY_INSN_OFF:DELAY_INSN_OFF + 4] = DELAY_INSN_NEW
+        expect(data, build["delay_insn_off"], DELAY_INSN_ORIG, "first-delay instruction")
+        data[build["delay_insn_off"]:build["delay_insn_off"] + 4] = DELAY_INSN_NEW
         changes.append("first sync delay rand()%3600000 ms -> rand()&0xff00 ms (0..65 s)")
 
     if servers:
         for i, orig in enumerate(SERVERS_ORIG):
-            off = SERVER_SLOT0_OFF + i * SERVER_SLOT_SIZE
+            off = build["server_slot0_off"] + i * SERVER_SLOT_SIZE
             expect(data, off, orig.encode() + b"\0" * (SERVER_SLOT_SIZE - len(orig)), f"server slot {i}")
         for i in range(len(SERVERS_ORIG)):
             ip = servers[i % len(servers)]
-            off = SERVER_SLOT0_OFF + i * SERVER_SLOT_SIZE
+            off = build["server_slot0_off"] + i * SERVER_SLOT_SIZE
             data[off:off + SERVER_SLOT_SIZE] = ip.encode().ljust(SERVER_SLOT_SIZE, b"\0")
         changes.append(f"ntp servers {', '.join(SERVERS_ORIG)} -> {', '.join(servers)} (all 7 slots)")
 
@@ -146,10 +171,10 @@ def fmt_secs(s):
     return f"{s} s"
 
 
-def read_patched(data):
-    """describe what a (possibly patched) 1.1.1 library will do."""
-    period_ms = struct.unpack_from("<I", data, PERIOD_OFF)[0]
-    insn = bytes(data[DELAY_INSN_OFF:DELAY_INSN_OFF + 4])
+def read_patched(data, build):
+    """describe what a (possibly patched) known-build library will do."""
+    period_ms = struct.unpack_from("<I", data, build["period_off"])[0]
+    insn = bytes(data[build["delay_insn_off"]:build["delay_insn_off"] + 4])
     if insn == DELAY_INSN_ORIG:
         delay = "rand() % 3600000 ms (0..60 min)"
     elif insn == DELAY_INSN_NEW:
@@ -158,7 +183,7 @@ def read_patched(data):
         delay = f"unknown instruction {insn.hex()}"
     servers = []
     for i in range(len(SERVERS_ORIG)):
-        off = SERVER_SLOT0_OFF + i * SERVER_SLOT_SIZE
+        off = build["server_slot0_off"] + i * SERVER_SLOT_SIZE
         servers.append(bytes(data[off:off + SERVER_SLOT_SIZE]).split(b"\0", 1)[0].decode("latin1"))
     return period_ms, delay, servers
 
@@ -315,19 +340,20 @@ class Adb:
 def cmd_patch(args):
     with open(args.infile, "rb") as f:
         data = f.read()
-    check_known(data)
-    patched, changes = patch_bytes(data, args.period_s, args.server)
+    app, build = check_known(data)
+    patched, changes = patch_bytes(data, build, args.period_s, args.server)
     if not changes:
         die("nothing to change: give --period and/or --server")
     with open(args.outfile, "wb") as f:
         f.write(patched)
+    print(f"app {app} build; changes:")
     for c in changes:
         print(f"  {c}")
     print(f"wrote {args.outfile} ({len(patched)} bytes)")
 
 
-def describe_lib(label, data):
-    period_ms, delay, servers = read_patched(data)
+def describe_lib(label, data, build):
+    period_ms, delay, servers = read_patched(data, build)
     print(f"{label}:")
     print(f"  sync period    {fmt_secs(period_ms // 1000)}")
     print(f"  first delay    {delay}")
@@ -370,10 +396,11 @@ def cmd_status(args):
             adb.pull(OVERRIDE_LIB, local)
             with open(local, "rb") as f:
                 data = f.read()
-        if len(data) == KNOWN["size"]:
-            describe_lib(f"{OVERRIDE_LIB} (tmpfs, gone after a reboot)", data)
+        app, build = known_build(data)
+        if build:
+            describe_lib(f"{OVERRIDE_LIB} (tmpfs, gone after a reboot; app {app} build)", data, build)
         else:
-            print(f"{OVERRIDE_LIB} exists but is {len(data)} bytes; not a 1.1.1 build")
+            print(f"{OVERRIDE_LIB} exists but is {len(data)} bytes; not a known build")
     else:
         print("stock behaviour: 2 h period, 0..60 min first delay, vendor servers")
     print_sync_log(adb)
@@ -392,7 +419,7 @@ def cmd_apply(args):
         adb.stop_app()
         adb.unmount_override()
     free = adb.tmp_free_kb()
-    need = KNOWN["size"] // 1024 + 512
+    need = max(b["size"] for b in BUILDS.values()) // 1024 + 512
     if free is not None and free < need and not adb.override_present():
         die(f"/tmp has only {free} kb free; need ~{need} kb")
 
@@ -403,8 +430,9 @@ def cmd_apply(args):
         adb.pull(DEVICE_LIB, stock)
         with open(stock, "rb") as f:
             data = f.read()
-        check_known(data)
-        patched, changes = patch_bytes(data, args.period_s, args.server)
+        app, build = check_known(data)
+        print(f"  pulled library is the app {app} build")
+        patched, changes = patch_bytes(data, build, args.period_s, args.server)
         for c in changes:
             print(f"  {c}")
         with open(patched_path, "wb") as f:

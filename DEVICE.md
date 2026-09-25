@@ -150,8 +150,10 @@ own since 2026-09-07, so this patch is for the stock app only.)
 /usr/bin/python3 tc002-ntp-patch.py revert -s <device-ip>
 ```
 
-`apply` pulls the library, refuses anything but the app 1.1.1 build the
-offsets were worked out on (by sha256), patches the constants, pushes the copy
+`apply` pulls the library, refuses anything but the two builds the offsets
+were worked out on (by sha256: app 1.1.1, and app 1.0.8 — the "unit B" `res`
+of [`FINGERPRINTS.md`](FINGERPRINTS.md); the 1.0.8 offsets were confirmed by
+disassembly), patches the constants, pushes the copy
 to `/tmp`, bind-mounts it over `/res/lib/libzkgui.so`, stops and starts the
 `zkswe` service (this init silently ignores `ctl.restart`) and confirms by
 inode that the new process mapped the copy. `--period` also swaps the
