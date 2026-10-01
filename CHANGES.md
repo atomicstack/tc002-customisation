@@ -6,6 +6,10 @@ refuses a version this file does not know. the github releases carry the same no
 
 ## unreleased
 
+- **`tc002-ntp-patch.py` knows both stock app builds**: beside app 1.1.1 it now patches the
+  app 1.0.8 `libzkgui.so` (the "unit B" `res` of FINGERPRINTS.md) — period literal, first-delay
+  instruction and server slots, all three offsets confirmed by disassembly. unknown builds are
+  still refused, and the refusal now lists the builds it does know.
 - **the night schedule's brightness is eased**, over two seconds, instead of stepped: after a
   reboot the panel used to jump from the flashed daylight level straight to the night one. the
   target is reported at once; the event carries `ramp_ms`; the knob and the api still land at once.
