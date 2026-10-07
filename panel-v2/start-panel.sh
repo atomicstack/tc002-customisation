@@ -25,19 +25,24 @@
 #
 # the preview renderer (panel-v2/tc002-panel.wasm) and the mock's catalogue
 # (panel-v2/scenes.json) are rebuilt from runtime/src on every start when zig is installed, so
-# the console always previews the current scene code against the current catalogue.
+# the console always previews the current scene code against the current catalogue. $ZIG names
+# the compiler if the one on PATH is not the version runtime/build.zig pins.
 #
-# any python3 on PATH, apple's as the fallback. the proxy binds 127.0.0.1 but the calls it makes
-# to the clock are lan calls, and macos 15+ gates those per binary: under a third-party python
-# they fail until the terminal app holds the local network grant, and they fail as "cannot reach"
-# rather than as a permission error. apple's /usr/bin/python3 is exempt from the gate, which is
-# why it is the fallback rather than the rule (see README's macos note).
+# $PYTHON if it is set, otherwise any python3 on PATH, apple's as the fallback. the proxy binds
+# 127.0.0.1 but the calls it makes to the clock are lan calls, and macos gates those per binary:
+# under a third-party python they fail until the terminal app holds the local network grant, and
+# they fail as "cannot reach" rather than as a permission error. apple's /usr/bin/python3 is
+# exempt from the gate, which is why it is the fallback rather than the rule, and why
+# PYTHON=/usr/bin/python3 is the one-command answer when a grant has lapsed -- an os upgrade
+# drops it, and so does a homebrew python upgrade, since the grant is held by the binary and the
+# new one is a different binary (see README's macos note).
 set -eu
 self="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"
 invoked_from=$PWD          # kept before the cd below, so token files beside you are still found
 cd "$(dirname "$self")"
-PY=$(command -v python3 || true)
+PY=${PYTHON:-$(command -v python3 || true)}
 [ -x "$PY" ] || PY=/usr/bin/python3
+[ -n "${PYTHON:-}" ] && echo "start-panel.sh: python: $PY" >&2
 
 host="" port=8777 token_file="" serial="" mock=0 mock_port=18080 open_browser=0
 while [ $# -gt 0 ]; do
@@ -48,7 +53,10 @@ while [ $# -gt 0 ]; do
     --mock) mock=1; shift ;;
     --mock-port) mock_port="$2"; shift 2 ;;
     --open) open_browser=1; shift ;;
-    -h|--help) awk 'NR>1 && /^#/ {if ($0 ~ /^# apple/) exit; sub(/^# ?/, ""); print}' "$self"; exit 0 ;;
+    # the header is the help, and it ends where the code starts. it used to end at a line
+    # beginning "# apple", which stopped being one of the lines here years ago, so --help had
+    # been quietly reciting every comment in the script instead
+    -h|--help) awk 'NR>1 {if (!/^#/) exit; sub(/^# ?/, ""); print}' "$self"; exit 0 ;;
     -*) echo "start-panel.sh: unknown option $1" >&2; exit 2 ;;
     *) host="$1"; shift ;;
   esac
@@ -57,8 +65,22 @@ done
 # the preview draws with the runtime's own renderer, cross-compiled to wasm from runtime/src, and
 # the mock serves the /scenes catalogue generated from the same tables. the wasm is not committed,
 # the catalogue is; refreshing both here means a stale catalogue shows up in `git status`.
-if command -v zig >/dev/null 2>&1; then
-  ( cd ../runtime && zig build wasm scenes ) || { echo "start-panel.sh: zig build wasm scenes failed" >&2; exit 1; }
+ZIG=${ZIG:-zig}
+if command -v "$ZIG" >/dev/null 2>&1; then
+  if ! ( cd ../runtime && "$ZIG" build wasm scenes ); then
+    # a failed build writes nothing, so whatever wasm is already here is exactly as good as it
+    # was a minute ago -- only possibly older than runtime/src. the console is most of what you
+    # came for and the preview is one panel of it, so this warns and carries on. it used to
+    # exit 1, and the morning homebrew moved zig from 0.16 to 0.17 that meant no console at all
+    echo "start-panel.sh: zig build wasm scenes failed (its errors are above)" >&2
+    if [ -f tc002-panel.wasm ]; then
+      echo "                carrying on with the tc002-panel.wasm already built; the preview may" >&2
+      echo "                be older than runtime/src" >&2
+    else
+      echo "                and no tc002-panel.wasm has ever been built, so the preview cannot draw" >&2
+    fi
+    echo "                runtime/build.zig pins one zig version; ZIG=/path/to/zig picks it" >&2
+  fi
 elif [ ! -f tc002-panel.wasm ]; then
   echo "start-panel.sh: zig is not installed and tc002-panel.wasm has never been built;" >&2
   echo "                the console will load but the preview cannot draw" >&2

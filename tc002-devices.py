@@ -3,11 +3,13 @@
 
   tc002-devices.py [--sweep 10.0.0] [--one] [--json] [--adb PATH] [--no-mdns] [--no-listen]
 
-mdns discovery goes through mDNSResponder, which does the multicast for us, so that path runs
-under any python3. the rest still touches the lan directly -- the raw probe it falls back to, the
-udp/55555 listener, and --sweep's http -- and macos 15 gates all of that per binary: under a
-binary without the local network grant they fail as "no clocks" or "host down", never as a
-permission error. apple's /usr/bin/python3 is exempt; see README.md's local network section.
+mdns discovery goes through mDNSResponder -- both halves of it, the browse and the lookup of the
+names the browse returns -- so that path runs under any python3. the rest still touches the lan
+directly: the raw probe it falls back to, the udp/55555 listener, and --sweep's http. macos gates
+all of that per binary, and a binary without the local network grant does not get an error -- the
+probes come back as "no clocks" or "host down", and a `.local` lookup made here rather than
+through the daemon simply never returns. apple's /usr/bin/python3 is exempt; see README.md's local
+network section.
 
 One clock on a LAN needs no discovery and every tool here grew up assuming it.
 With two, "the device" is ambiguous and the failure is silent: a tool picks the
@@ -180,16 +182,46 @@ def mdns_via_dnssd(timeout=1.5):
     # "  1:34:42.339  Add  3  14 local.  _tc002._tcp.  tc002-ccc4b2779e85" -- the instance name is
     # the rest of the line, not a fixed column: a name may contain spaces
     line = re.compile(r"^\s*\S+\s+Add\s+\S+\s+\d+\s+\S+\s+" + re.escape(SERVICE) + r"\.\s+(.+?)\s*$")
+    instances = list(dict.fromkeys(m.group(1) for m in (line.match(l) for l in out.splitlines()) if m))
+    # resolved together: each lookup costs its whole timeout, because `dns-sd -G`, like a browse,
+    # runs until it is killed. in parallel that is one timeout for any number of clocks
     found = {}
-    for instance in (m.group(1) for m in (line.match(l) for l in out.splitlines()) if m):
-        # the runtime's service instance is its host name, which is what the daemon can resolve.
-        # an instance that will not resolve is left out rather than reported at a guessed address
-        try:
-            ip = socket.getaddrinfo(f"{instance}.local", None, socket.AF_INET)[0][4][0]
-        except (socket.gaierror, OSError, IndexError):
-            continue
-        found[(instance, ip)] = {"instance": instance, "ip": ip}
+    with ThreadPoolExecutor(max_workers=max(1, len(instances))) as pool:
+        for instance, ip in zip(instances, pool.map(resolve_local, instances)):
+            # an instance that will not resolve is left out rather than reported at a guessed
+            # address
+            if ip:
+                found[(instance, ip)] = {"instance": instance, "ip": ip}
     return found
+
+
+# "14:38:58.211  Add  40000002  14  tc002-ccc4b2779e85.local.  10.0.0.68  120"
+DNSSD_ADDR = re.compile(r"^\s*\S+\s+Add\s+\S+\s+\d+\s+\S+\s+(\d{1,3}(?:\.\d{1,3}){3})\b", re.M)
+
+
+def resolve_local(instance, timeout=1.0):
+    """ask the daemon for an instance's address instead of resolving it here.
+
+    the other half of the same problem the browse has. `socket.getaddrinfo` on a `.local` name
+    is multicast too, so macos gates it per binary -- and a gated lookup does not fail, it
+    **never returns**: no timeout, nothing raised, the thread simply stops. an os upgrade that
+    dropped the terminal's local-network grant was enough to hang every discovery, and with it
+    `start-panel.sh`, indefinitely. going through dns-sd for this as well means no part of mdns
+    discovery depends on the interpreter holding a grant, which is what this module has claimed
+    all along.
+    """
+    try:
+        p = subprocess.run([DNSSD, "-G", "v4", f"{instance}.local"],
+                           capture_output=True, text=True, timeout=timeout)
+        out = p.stdout
+    except subprocess.TimeoutExpired as e:
+        out = e.stdout or ""      # a getaddrs never exits on its own either
+    except (OSError, ValueError):
+        return None
+    if isinstance(out, bytes):
+        out = out.decode("utf-8", "replace")
+    m = DNSSD_ADDR.search(out)
+    return m.group(1) if m else None
 
 
 def mdns_discover(timeout=2.0, quiet=0.3):

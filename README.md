@@ -241,6 +241,7 @@ by hand it is:
 ```bash
 adb pull /data/tc002/state/credentials/tokens tokens # or let serve.py do it with --adb-pull
 cd runtime && zig build wasm && cd ..                # the preview renderer; start-panel.sh does this for you
+                                                     # (zig 0.16.0 only; $ZIG names it if PATH has another)
 cd panel-v2 && python3 serve.py 8777 --token-file ../tokens
 # open http://127.0.0.1:8777/?host=<device-ip>
 ```
@@ -524,17 +525,29 @@ never a permission error:
 |------|---------|
 | `adb connect` | `failed to connect to '<ip>:5555': No route to host` |
 | `nmap` | `Host seems down` / all ports `filtered (host-unreach)` |
+| `socket.getaddrinfo("<name>.local")` | **never returns** — no error, no timeout, the thread just stops |
 
 that split is the diagnostic: if `/usr/bin/curl` works and
 `/opt/homebrew/bin/nmap` does not, it is the permission, not the network — and
 running the same script under `/usr/bin/python3` and under a homebrew one is the
 same test in a single step.
 
-mdns discovery is the exception, and deliberately: `tc002-devices.py` browses
-through mDNSResponder, so the multicast leaves the daemon rather than the
-interpreter and the gate has nothing to act on. everything else here that
+mdns discovery is the exception, and deliberately: `tc002-devices.py` goes
+through mDNSResponder for both halves of it — the browse **and** the lookup of
+the names the browse returns — so the multicast leaves the daemon rather than
+the interpreter and the gate has nothing to act on. everything else here that
 touches the lan itself — `--sweep`, the udp/55555 listener, the console proxy's
 calls to the clock — is still gated per binary.
+
+**the grant belongs to a binary, not to a name.** upgrading macos drops it, and
+so does upgrading homebrew's python, because the new keg is a different binary
+from the one that was granted. a machine that worked yesterday is the normal way
+to meet this, not a sign you did something wrong. while the grant is missing,
+apple's interpreter gets the console running with nothing reconfigured:
+
+```bash
+PYTHON=/usr/bin/python3 panel-v2/start-panel.sh
+```
 
 **fix:** system settings → privacy & security → local network → enable your
 terminal app, then **fully quit and relaunch it** (the permission is evaluated

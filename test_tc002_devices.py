@@ -167,21 +167,43 @@ class DiscoveryTests(unittest.TestCase):
         " 1:34:42.339  Add        2  14 local.               _tc002._tcp.         tc002-ccc4b277a282\n"
     )
 
-    def dnssd(self, output=None, missing=False, as_bytes=False):
+    # what `dns-sd -G v4 <name>` prints for a name the daemon can resolve
+    DNSSD_ADDRS = {"tc002-ccc4b2779e85.local": "10.0.0.68", "tc002-ccc4b277a282.local": "10.0.0.111"}
+
+    def dnssd(self, output=None, missing=False, as_bytes=False, addrs=None):
         """stand in for the browse and for resolving the names it returns."""
         text = self.DNSSD_OUTPUT if output is None else output
+        addrs = self.DNSSD_ADDRS if addrs is None else addrs
         def run(args, **kwargs):
             if args[0] != devices.DNSSD:
                 return adb_result(args, **kwargs)
-            # a browse never exits on its own: it is killed, and the partial output comes back on
-            # the exception. python does not decode that one even under text=True
-            raise subprocess.TimeoutExpired(args, 1.5, output=text.encode() if as_bytes else text)
-        addrs = {"tc002-ccc4b2779e85.local": "10.0.0.68", "tc002-ccc4b277a282.local": "10.0.0.111"}
+            if args[1] == "-G":
+                ip = addrs.get(args[3])
+                body = "" if ip is None else (
+                    "Timestamp     A/R  Flags     IF  Hostname          Address      TTL\n"
+                    f"14:38:58.211  Add  40000002  14  {args[3]}.  {ip}  120\n")
+            else:
+                body = text
+            # neither a browse nor a getaddrs exits on its own: both are killed, and the partial
+            # output comes back on the exception. python does not decode that one under text=True
+            raise subprocess.TimeoutExpired(args, 1.5, output=body.encode() if as_bytes else body)
         def getaddrinfo(name, *a, **k):
-            if name not in addrs:
-                raise socket.gaierror(f"no such host: {name}")
-            return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", (addrs[name], 80))]
+            # a tripwire, not a stub: resolving a .local name in this interpreter is the half of
+            # discovery that the local-network gate can hang forever, so nothing may reach here
+            raise AssertionError(f"discovery resolved {name} itself instead of asking the daemon")
         return run, getaddrinfo, patch.object(devices.os.path, "exists", return_value=not missing)
+
+    def test_names_are_resolved_by_the_daemon_rather_than_by_this_interpreter(self):
+        # the browse was moved to dns-sd because macos gates multicast per binary; resolving the
+        # instance names it returns was left on socket.getaddrinfo, which is gated the same way.
+        # a gated getaddrinfo on a .local name does not fail, it never returns, so an os upgrade
+        # that dropped the terminal's grant hung every discovery -- and with it the launcher
+        run, getaddrinfo, exists = self.dnssd()
+        with patch.object(devices.subprocess, "run", side_effect=run), \
+             patch.object(devices.socket, "getaddrinfo", side_effect=getaddrinfo), \
+             patch.object(devices, "mdns_query", Mock(return_value={})), exists:
+            found = devices.mdns_discover()
+        self.assertEqual({d["ip"] for d in found.values()}, {"10.0.0.68", "10.0.0.111"})
 
     def test_mdns_asks_the_daemon_rather_than_competing_with_it_for_5353(self):
         # mDNSResponder owns udp/5353 and browses continuously; a raw probe has to share the port

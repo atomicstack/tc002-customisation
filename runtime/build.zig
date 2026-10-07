@@ -1,6 +1,24 @@
 const std = @import("std");
 const builtin = @import("builtin");
 
+/// the one toolchain this tree is known to build with. every zig release so far has moved
+/// something this file stands on.
+const pinned_zig = "0.16.0";
+
+comptime {
+    // checked here rather than inside build(): a @panic in build() only runs if build.zig still
+    // compiles, and the thing a new zig breaks first is build.zig itself. 0.17 dropped
+    // Build.pathFromRoot and renamed the optimize modes, so the check never got the chance to
+    // speak and the toolchain mismatch arrived as a wall of api errors about someone else's
+    // std. a comptime block in the file's own scope is analysed before build()'s body, so this
+    // is now the *first* error printed. the api errors still follow it -- zig reports every
+    // error it finds in a pass -- but the line that says what is actually wrong is at the top.
+    if (!std.mem.eql(u8, builtin.zig_version_string, pinned_zig)) @compileError(
+        "this project pins zig " ++ pinned_zig ++ ", but this is zig " ++ builtin.zig_version_string ++
+            ". install " ++ pinned_zig ++ " and put it on PATH, or point ZIG at it.",
+    );
+}
+
 /// the vendored berry interpreter: one source list, used by every target that embeds it.
 /// be_filelib.c is deliberately absent -- there is no filesystem, and vendor/berry/port/be_port.c
 /// refuses the four entry points the rest of the tree references unconditionally.
@@ -61,8 +79,6 @@ fn buildId(b: *std.Build) []const u8 {
 }
 
 pub fn build(b: *std.Build) void {
-    if (!std.mem.eql(u8, builtin.zig_version_string, "0.16.0")) @panic("this project pins zig 0.16.0");
-
     // where the runtime's binaries live **at runtime**: `/tmp/tc002` for the pushed install,
     // `/res/bin` for a flashed one. this is not cosmetic. the bootstrap execs the supervisor with
     // only `--from-bootstrap`, and the supervisor spawns five children by absolute path, so a

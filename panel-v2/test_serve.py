@@ -1211,14 +1211,23 @@ class CatalogueTests(unittest.TestCase):
         runtime = os.path.join(os.path.dirname(HERE), "runtime")
         if not os.path.isdir(runtime):
             self.skipTest("runtime/ is not present")
+        # $ZIG where the `zig` on PATH is not the pinned one, which is where a package manager
+        # that tracks the newest release leaves everybody. the catalogue is a property of the
+        # repo, and without the compiler that generates it there is nothing to check -- a wrong
+        # version is a reason to skip, not a failure to report
+        zig = os.environ.get("ZIG", "zig")
+        pinned = re.search(r'const pinned_zig = "([^"]+)"',
+                           open(os.path.join(runtime, "build.zig")).read()).group(1)
         try:
-            subprocess.run(["zig", "version"], capture_output=True, check=True)
+            have = subprocess.run([zig, "version"], capture_output=True, text=True, check=True).stdout.strip()
         except (OSError, subprocess.CalledProcessError):
             self.skipTest("zig is not installed")
+        if have != pinned:
+            self.skipTest(f"zig {have} is not the pinned {pinned}; set ZIG to it")
         path = os.path.join(HERE, "scenes.json")
         with open(path, "rb") as f:
             before = f.read()
-        r = subprocess.run(["zig", "build", "scenes"], cwd=runtime, capture_output=True, text=True)
+        r = subprocess.run([zig, "build", "scenes"], cwd=runtime, capture_output=True, text=True)
         self.assertEqual(r.returncode, 0, f"`zig build scenes` failed:\n{r.stderr}")
         with open(path, "rb") as f:
             after = f.read()
@@ -1233,13 +1242,25 @@ class StartScriptTests(unittest.TestCase):
     the script is run for real here, with the lan lister stubbed through TC002_LISTER, and what
     it decided is read off the `console:` url it prints."""
 
-    def launch(self, rows, args=(), tokens="single"):
-        """run start-panel.sh far enough to print its url, with discovery standing in for the lan."""
+    def launch(self, rows, args=(), tokens="single", zig=0, zig_marker=None, python=None):
+        """run start-panel.sh far enough to print its url, with discovery standing in for the lan.
+
+        `zig` is the exit status of the stubbed compiler. the launcher rebuilds the preview on
+        every start, and these tests are about what it decides afterwards, so the real compiler
+        is kept out of it: it would cost seconds a case, and whether it is even the pinned
+        version is a property of the machine rather than of the script."""
         import signal, time
         with tempfile.TemporaryDirectory() as d:
             lister = os.path.join(d, "lister.py")
             with open(lister, "w") as f:
                 f.write(f"import json; print(json.dumps({rows!r}))\n")
+            stub_zig = os.path.join(d, "zig")
+            with open(stub_zig, "w") as f:
+                f.write("#!/bin/sh\n")
+                if zig_marker:
+                    f.write(f"echo \"$@\" > {zig_marker}\n")
+                f.write(f"exit {zig}\n")
+            os.chmod(stub_zig, 0o755)
             sock = socket.socket(); sock.bind(("127.0.0.1", 0)); port = sock.getsockname()[1]; sock.close()
             # tokens so the script does not try to pull them over adb: either one file named on
             # the command line, or the per-clock files a multi-clock setup actually has
@@ -1253,7 +1274,9 @@ class StartScriptTests(unittest.TestCase):
                 for ip in ("10.0.0.68", "10.0.0.111"):
                     with open(os.path.join(d, f"tokens-{ip}"), "w") as f:
                         f.write(body)
-            env = {**os.environ, "TC002_LISTER": lister}
+            env = {**os.environ, "TC002_LISTER": lister, "ZIG": stub_zig}
+            if python:
+                env["PYTHON"] = python
             proc = subprocess.Popen(["/bin/bash", os.path.join(HERE, "start-panel.sh"),
                                      "--port", str(port), *token_args, *args],
                                     stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
@@ -1324,6 +1347,45 @@ class StartScriptTests(unittest.TestCase):
         # device field empty and discovery refreshes it there
         out = self.launch([])
         self.assertIn("console: ", out, out)
+
+    def test_help_is_the_header_and_stops_there(self):
+        # --help read every comment in the file, because it stopped at a sentinel line that had
+        # long since been reworded out of existence. the header ends where the code begins, and
+        # that is a thing the file can be asked rather than told
+        out = subprocess.run(["/bin/bash", os.path.join(HERE, "start-panel.sh"), "--help"],
+                             capture_output=True, text=True).stdout
+        self.assertIn("--mock", out, out)
+        self.assertIn("PYTHON", out, "the help should name the interpreter override")
+        self.assertIn("ZIG", out, "the help should name the compiler override")
+        self.assertNotIn("TC002_LISTER", out, f"internal comments are not help:\n{out}")
+        self.assertNotIn("the silent mis-addressing", out, f"internal comments are not help:\n{out}")
+
+    def test_a_failed_wasm_build_does_not_take_the_console_down_with_it(self):
+        # homebrew moved zig from 0.16 to 0.17 under us and the pinned build stopped compiling,
+        # which stopped the console from starting at all -- for a preview that was already built
+        # and that a failed build cannot have damaged. a stale preview is worth a warning; it is
+        # not worth having no console
+        out = self.launch(self.ONE, zig=1)
+        self.assertIn("console: ", out, out)
+        self.assertIn("zig build wasm scenes failed", out, out)
+
+    def test_the_interpreter_python_names_is_the_one_that_runs(self):
+        # the gate macos puts on lan access is per binary, so which python3 runs the proxy
+        # decides whether it can reach a clock at all. apple's is exempt; $PYTHON picks it
+        # without having to change what `python3` means everywhere else
+        out = self.launch(self.ONE, python="/usr/bin/python3")
+        self.assertIn("console: ", out, out)
+        self.assertIn("python: /usr/bin/python3", out, out)
+
+    def test_the_compiler_zig_names_is_the_one_that_runs(self):
+        # the way out of a package manager that moved the `zig` on PATH, without uninstalling
+        # anything: name the pinned one instead
+        with tempfile.TemporaryDirectory() as d:
+            marker = os.path.join(d, "ran")
+            self.launch(self.ONE, zig_marker=marker)
+            self.assertTrue(os.path.exists(marker), "the launcher should build with $ZIG")
+            with open(marker) as f:
+                self.assertIn("wasm", f.read())
 
     def test_a_stock_clock_is_not_offered_as_the_device(self):
         out = self.launch([{"ip": "10.0.0.9", "kind": "stock", "transport": "10.0.0.9:5555"}])

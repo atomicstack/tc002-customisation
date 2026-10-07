@@ -15,7 +15,11 @@ in [`../RUNTIME.md`](../RUNTIME.md); this file is the build-and-run reference.**
 
 ## build and test
 
-only zig 0.16.0 is required (`brew install zig`); the build refuses other versions.
+only zig 0.16.0 is required; the build refuses any other version, and says so as its first
+error rather than as a wall of complaints about somebody else's `std`. a package manager that
+tracks the newest release will not keep you on it: take the 0.16.0 build from
+[ziglang.org/download](https://ziglang.org/download/), and where a script runs the compiler for
+you (`panel-v2/start-panel.sh`) `ZIG=/path/to/zig` names which one.
 
 ```bash
 cd runtime
