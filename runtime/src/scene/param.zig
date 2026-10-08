@@ -6,8 +6,10 @@
 //! a toggle is 0 or 1.
 const std = @import("std");
 
-/// the most parameters one scene may declare; the settings reserve this many slots for each
-pub const max_per_owner = 8;
+/// the most parameters one scene may declare; the settings reserve this many slots for each.
+/// growing it grows the ipc settings block and the saved file's slot arrays: `config.fromJson`
+/// pads a shorter array from the declared defaults, so a file saved before the growth still loads
+pub const max_per_owner = 9;
 
 pub const Kind = enum(u8) { choice, number, colour, toggle };
 

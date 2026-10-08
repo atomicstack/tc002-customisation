@@ -720,12 +720,17 @@ the same thing and survives a dropped frame (the sketch's 0.1 to 8 is roughly
 `dim chance` how often a spent cell comes back part-lit rather than full,
 `dim floor` and `dim ceiling` the range it comes back into as a percentage of
 full, and `tint` the percentage of pops that use `tint colour` instead of white —
-rolled afresh on every pop, so the colour drifts around the panel. `cell` is the
-one parameter the sketch did not have as a slider: the size of a virtual pixel
-in leds, `1x1` (the default, one cell per led), `2x2` or `4x4`. the sketch drew
-its squares bigger than a led, and at `4x4` the panel is thirteen by four fat
-cells popping, which reads from across a room. the simulation runs on the
-coarser grid, so a pop is one block. a cell is drawn for the led driver, not
+rolled afresh on every pop, so the colour drifts around the panel. `cell` and
+`off ms` are the two the sketch had no slider for. `cell` is the size of a
+virtual pixel in leds, `1x1` (the default, one cell per led), `2x2` or `4x4`.
+the sketch drew its squares bigger than a led, and at `4x4` the panel is
+thirteen by four fat cells popping, which reads from across a room. the
+simulation runs on the coarser grid, so a pop is one block. `off ms` (0–10000,
+500 by default) is the longest a spent cell stays dark before it pops again,
+each pop rolling its own wait up to it; at 0 a spent cell pops at once. in the
+sketch a cell that comes back dim enough reads as black for the rest of its
+life, which is where its dark cells come from, and this gives them a dial of
+their own. a cell is drawn for the led driver, not
 as a frame byte: the driver's level curve has a floor of 50 (see
 [`LED-SPI.md`](LED-SPI.md)), so scaling white by the level would hold every
 dying cell at a fifth of full and then snap it off, and a dim pop starting low
@@ -1156,7 +1161,7 @@ is `0x00RRGGBB`, a toggle is 0 or 1.
 |---|---|
 | clock | `face`, `colour`, `shade`, `colour 2`, `gradient`, `spread`, `digits`, `fade`, `hours` |
 | art | `scene` (the generator), then the showing generator's own |
-| popsquares | `pop ms`, `alive`, `dim chance`, `dim floor`, `dim ceiling`, `tint`, `tint colour`, `cell` |
+| popsquares | `pop ms`, `alive`, `dim chance`, `dim floor`, `dim ceiling`, `tint`, `tint colour`, `cell`, `off ms` |
 | cube | `palette`, `colour`, `hue drift`, `background`, `spin`, `speed`, `zoom` |
 | terrain | `speed`, `height`, `colour drift` |
 | ip | `layout` |
@@ -1189,7 +1194,7 @@ all-zero set is unreachable by editing (speed stops at 1, zoom at 40, a pop at
 250 ms), so it is a safe marker for "never set".
 
 the clock is a fixed part of the runtime and keeps named settings; a **generator is pluggable**, so its parameters live in generic slots
-(`generator_params`, eight `u32` each) which the supervisor replays to the
+(`generator_params`, nine `u32` each) which the supervisor replays to the
 renderer when it starts. `GET /scenes` carries every table with its kinds,
 ranges and choices, which is the contract the console builds its forms from:
 nothing outside the runtime needs to know what a cube is.

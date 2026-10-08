@@ -542,7 +542,7 @@ const demo_table = [_]param.Param{
 };
 
 test "a scene menu walks a table it has never seen before" {
-    var m = Menu.openScene(&demo_table, .{ 0, 2, 0xff0000, 0, 0, 0, 0, 0, 0 }, 0);
+    var m = Menu.openScene(&demo_table, .{ 0, 2, 0xff0000, 0, 0, 0, 0, 0, 0, 0 }, 0);
     try std.testing.expectEqual(@as(usize, 4), m.entries()); // three parameters and the exit
     try std.testing.expectEqualStrings("shape", m.table[m.entry].name);
 
@@ -571,7 +571,7 @@ test "a scene menu walks a table it has never seen before" {
 }
 
 test "a colour parameter draws the colour rather than its digits" {
-    var m = Menu.openScene(&demo_table, .{ 0, 2, 0x00ff00, 0, 0, 0, 0, 0, 0 }, 0);
+    var m = Menu.openScene(&demo_table, .{ 0, 2, 0x00ff00, 0, 0, 0, 0, 0, 0, 0 }, 0);
     m.entry = 2;
     var rgb: geometry.Rgb = undefined;
     m.render(pages.fade_in_ns, &rgb);

@@ -613,7 +613,9 @@ const FileForm = struct {
     clock_digit: []const u8 = "solid",
     clock_fade: bool = false,
     clock_hours: []const u8 = "24h",
-    generator_params: []const param.Values = &scene.generator_defaults,
+    /// one array per owner, as many slots as the build that saved it had. a slice of slices so a
+    /// file from a build with fewer slots per owner still parses; `fromJson` pads it
+    generator_params: []const []const u32 = &.{},
     ip_mode: []const u8 = "lines",
     night: bool = false,
     night_brightness: u8 = 10,
@@ -698,6 +700,8 @@ pub fn toJson(c: *const Config, out: []u8) error{Overflow}![]u8 {
     const ntp: ?[]const u8 = if (c.ntp_server) |s| (std.fmt.bufPrint(&ntp_buf, "{d}.{d}.{d}.{d}", .{ s[0], s[1], s[2], s[3] }) catch unreachable) else null;
     var colour_buf: [6]u8 = undefined;
     var colour2_buf: [6]u8 = undefined;
+    var generator_slices: [param.owner_count][]const u32 = undefined;
+    for (&generator_slices, 0..) |*slots, i| slots.* = &c.generator_params[i];
     const form = FileForm{
         .clock_font = @tagName(enumOr(clock.Font, c.clock_font, .classic)),
         .clock_colour_mode = @tagName(enumOr(clock.ColourMode, c.clock_colour_mode, .solid)),
@@ -708,7 +712,7 @@ pub fn toJson(c: *const Config, out: []u8) error{Overflow}![]u8 {
         .clock_digit = @tagName(enumOr(clockfont.DigitStyle, c.clock_digit, .solid)),
         .clock_fade = c.clock_fade,
         .clock_hours = @tagName(enumOr(clock.Hours, c.clock_hours, .@"24h")),
-        .generator_params = &c.generator_params,
+        .generator_params = &generator_slices,
         .ip_mode = @tagName(enumOr(ip.Mode, c.ip_mode, .lines)),
         .night = c.night,
         .night_brightness = c.night_brightness,
@@ -825,12 +829,17 @@ pub fn fromJson(bytes: []const u8, arena: []u8) error{ Invalid, TooLong }!Config
     c.clock_digit = @backingInt(api.enumByName(clockfont.DigitStyle, f.clock_digit) orelse return error.Invalid);
     c.clock_fade = f.clock_fade;
     c.clock_hours = @backingInt(api.enumByName(clock.Hours, f.clock_hours) orelse return error.Invalid);
-    // older files have fewer owners; retain their slots and default newly appended scenes.
+    // older files have fewer owners, and fewer slots in an owner whose generator has since grown a
+    // parameter: retain what they have over the defaults `c` starts with. an owner saved all zero
+    // was never written and keeps its defaults. a file from a build with more slots than this one
+    // loses the slots this build does not know, not the whole file: refusing it would put every
+    // setting back to its default on the next boot.
     if (f.generator_params.len > param.owner_count) return error.Invalid;
-    for (f.generator_params, 0..) |slots, i| c.generator_params[i] = slots;
-    for (&c.generator_params, 0..) |*slots, i| if (scene.slotsUnset(slots.*)) {
-        slots.* = scene.generator_defaults[i];
-    };
+    for (f.generator_params, 0..) |slots, i| {
+        const given = slots[0..@min(slots.len, param.max_per_owner)];
+        if (std.mem.allEqual(u32, given, 0)) continue;
+        for (given, 0..) |v, k| c.generator_params[i][k] = v;
+    }
     c.ip_mode = @backingInt(api.enumByName(ip.Mode, f.ip_mode) orelse return error.Invalid);
     c.battery.shutdown = f.battery.shutdown;
     if (f.battery.shutdown_mv < api.battery_shutdown_mv_min or f.battery.shutdown_mv > api.battery_shutdown_mv_max) return error.Invalid;
@@ -1337,6 +1346,28 @@ test "terrain upgrades old three-generator settings without losing their values"
     try std.testing.expectEqual(@as(u32, 150), c.generator_params[2][6]);
     try std.testing.expectEqual(@as(usize, 4), c.generator_params.len);
     try std.testing.expectEqualSlices(u32, &scene.generator_defaults[c.generator_params.len - 1], &c.generator_params[c.generator_params.len - 1]);
+}
+
+test "a settings file with fewer slots per generator keeps what it has and defaults the rest" {
+    // a generator that grows a parameter leaves every saved file a slot short. refusing the file
+    // would put every setting back to its default on the next boot, which is the reset the
+    // forward-compatible parser was written to end
+    var arena: [8192]u8 = undefined;
+    const short =
+        \\{"schema":1,"revision":5,"brightness":42,"generator":"popsquares","generator_params":[[3000,80,25,0,100,15,3829413]]}
+    ;
+    const c = try fromJson(short, &arena);
+    try std.testing.expectEqual(@as(u32, 3000), c.generator_params[0][0]);
+    try std.testing.expectEqual(@as(u32, 3829413), c.generator_params[0][6]);
+    for (7..param.max_per_owner) |k| try std.testing.expectEqual(scene.generator_defaults[0][k], c.generator_params[0][k]);
+    // and a file from a build with more slots than this one loses the slots this build does not
+    // know, not the whole file (twelve here: more than any generator declares)
+    const long =
+        \\{"schema":1,"revision":5,"brightness":42,"generator":"popsquares","generator_params":[[3000,80,25,0,100,15,3829413,0,500,1,2,3]]}
+    ;
+    const l = try fromJson(long, &arena);
+    try std.testing.expectEqual(@as(u32, 3000), l.generator_params[0][0]);
+    try std.testing.expectEqual(@as(u32, 3829413), l.generator_params[0][6]);
 }
 
 test "terrain selection and controls round-trip through settings and ipc" {

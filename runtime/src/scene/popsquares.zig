@@ -1,6 +1,7 @@
-//! popsquares: every cell holds a level 0..127 that counts down and snaps back to full (or, now
-//! and then, to a random dim level) when spent. a fixed per-cell rank decides whether the cell
-//! takes part at all. some pops use the tint colour instead of white.
+//! popsquares: every cell holds a level 0..127 that counts down and, when spent, goes dark for a
+//! random time up to `off ms` and then snaps back to full (or, now and then, to a random dim
+//! level). a fixed per-cell rank decides whether the cell takes part at all. some pops use the
+//! tint colour instead of white.
 //!
 //! a cell is one led by default. the sketch drew squares bigger than that, so `cell` makes a
 //! virtual pixel a 2x2 or 4x4 block: the simulation runs on the coarser grid (26x8 or 13x4) and
@@ -37,6 +38,31 @@ test "cells re-arm after a full pop" {
         };
     }
     try std.testing.expect(rose);
+}
+
+test "a spent cell stays off for up to `off ms` before it pops again" {
+    var s = State.init(11);
+    s.setParam(2, 0); // no dim re-arms: a cell that comes back comes back to full
+    // off ms 0: a spent cell comes back in the step that spends it
+    s.setParam(8, 0);
+    for (0..geometry.pixels) |i| s.level[i] = 0.5;
+    s.step(0.1);
+    for (s.level) |l| try std.testing.expectEqual(level_max, l);
+    // off ms 1000: every spent cell is dark after the step that spent it, each for its own
+    // 0..1 s, and all of them are back once a second has passed
+    s.setParam(8, 1000);
+    for (0..geometry.pixels) |i| s.level[i] = 0.5;
+    s.step(0.1);
+    for (s.level) |l| try std.testing.expectEqual(@as(f32, 0.0), l);
+    var rgb: geometry.Rgb = undefined;
+    s.render(100, &rgb);
+    try std.testing.expectEqualSlices(u8, &geometry.black_rgb, &rgb); // dark is off, not the floor
+    s.step(0.5);
+    var back: usize = 0;
+    for (s.level) |l| if (l > 0.0) { back += 1; };
+    try std.testing.expect(back > 0 and back < geometry.pixels); // half way: some back, some not
+    for (0..6) |_| s.step(0.1);
+    for (s.level) |l| try std.testing.expect(l > 0.0);
 }
 
 test "no alive cells renders black" {
@@ -81,6 +107,7 @@ test "the parameters reach the simulation" {
     t.setParam(0, 250);
     t.setParam(5, 100);
     t.setParam(6, 0xff0000);
+    t.setParam(8, 0); // no dark pause: this is about the tint, and a held cell is black in any colour
     t.step(dt_max); // a whole pop, so every cell re-arms
     t.step(0.01);
     var rgb: geometry.Rgb = undefined;
@@ -160,8 +187,9 @@ pub const dt_max: f32 = 0.5;
 pub const spent: f32 = 1e-4;
 
 /// the pixdeck plugin's defaults: pop 2 s, everything alive, 25% dim re-arms over the full range,
-/// 15% tinted, tint = steel blue. this is the working form of `params` below, not a second set of
-/// settings: every field is derived from a declared parameter.
+/// 15% tinted, tint = steel blue; and, ours rather than the plugin's, a spent cell dark for up to
+/// half a second. this is the working form of `params` below, not a second set of settings: every
+/// field is derived from a declared parameter.
 pub const Options = struct {
     pop_s: f32 = 2.0,
     alive: f32 = 1.0,
@@ -172,6 +200,8 @@ pub const Options = struct {
     tint: [3]u8 = .{ 58, 110, 165 },
     /// leds per side of one virtual pixel: 1, 2 or 4. all three divide 52 and 16.
     cell: u8 = 1,
+    /// the longest a spent cell stays dark before it pops again, in seconds; 0 pops it at once
+    off_s: f32 = 0.5,
 };
 
 /// the sliders of the `popsquares_tc002` processing sketch, as parameters. the sketch's other
@@ -182,6 +212,11 @@ pub const Options = struct {
 /// something different at every frame rate: a whole pop in milliseconds says the same thing and
 /// survives a dropped frame. the sketch's 0.1 to 8 covers roughly 20 s down to 0.26 s.
 /// `dim floor` and `dim ceiling` are its `level_min` and `level_max` as a percentage of full.
+///
+/// `cell` and `off ms` are the two the sketch had no slider for. `off ms` is the longest a spent
+/// cell stays dark before it pops again, each pop rolling its own wait up to it: in the sketch a
+/// cell that comes back dim enough reads as black for the rest of its life, which is where its
+/// dark cells come from, and this gives them a dial of their own.
 pub const params = [_]param.Param{
     .{ .name = "pop ms", .kind = .number, .min = 250, .max = 20000, .step = 250, .default = 2000 },
     .{ .name = "alive", .kind = .number, .min = 0, .max = 100, .step = 5, .default = 100 },
@@ -191,6 +226,7 @@ pub const params = [_]param.Param{
     .{ .name = "tint", .kind = .number, .min = 0, .max = 100, .step = 5, .default = 15 },
     .{ .name = "tint colour", .kind = .colour, .default = 0x3a6ea5 },
     .{ .name = "cell", .kind = .choice, .choices = &.{ "1x1", "2x2", "4x4" }, .default = 0 },
+    .{ .name = "off ms", .kind = .number, .min = 0, .max = 10000, .step = 250, .default = 500 },
 };
 
 const cell_sizes = [_]u8{ 1, 2, 4 };
@@ -225,6 +261,7 @@ pub fn optionsOf(v: param.Values) Options {
         .tint_frac = fraction(v[5]),
         .tint = param.valueRgb(v[6]),
         .cell = cellOf(v[7]),
+        .off_s = @as(f32, @floatFromInt(v[8])) / 1000.0,
     };
 }
 
@@ -241,6 +278,8 @@ pub const State = struct {
     level: [geometry.pixels]f32,
     rank: [geometry.pixels]f32,
     tinted: [geometry.pixels]bool,
+    /// seconds a spent cell has left in the dark before it pops again; 0 while it counts down
+    hold: [geometry.pixels]f32,
     rng: scene.Rng,
 
     pub fn init(seed: u32) State {
@@ -258,6 +297,7 @@ pub const State = struct {
             s.level[i] = s.rng.range(0.0, level_max);
             s.rank[i] = s.rng.unit();
             s.tinted[i] = s.rng.unit() < o.tint_frac;
+            s.hold[i] = 0.0;
         }
         return s;
     }
@@ -274,6 +314,16 @@ pub const State = struct {
         self.tinted[i] = self.rng.unit() < o.tint_frac;
     }
 
+    /// a spent cell goes dark for up to `off_s` before it pops again; with nothing to wait for it
+    /// pops at once, without touching the rng, so a scene with `off ms` at 0 plays as it always has.
+    fn spend(self: *State, i: usize, o: Options) void {
+        if (o.off_s <= 0.0) return self.rearm(i, o);
+        const wait = self.rng.range(0.0, o.off_s);
+        if (wait <= 0.0) return self.rearm(i, o);
+        self.level[i] = 0.0;
+        self.hold[i] = wait;
+    }
+
     /// advance every cell by dt seconds of wall time (clamped to dt_max).
     pub fn step(self: *State, dt_s: f32) void {
         const o = self.options();
@@ -283,10 +333,16 @@ pub const State = struct {
         for (0..cellCount(o.cell)) |i| {
             if (self.rank[i] >= o.alive) {
                 self.level[i] = 0.0; // this led sits the animation out
+                self.hold[i] = 0.0;
+                continue;
+            }
+            if (self.hold[i] > 0.0) { // spent, and waiting in the dark
+                self.hold[i] -= dt;
+                if (self.hold[i] <= 0.0) self.rearm(i, o);
                 continue;
             }
             self.level[i] -= drop;
-            if (self.level[i] <= spent) self.rearm(i, o);
+            if (self.level[i] <= spent) self.spend(i, o);
         }
     }
 

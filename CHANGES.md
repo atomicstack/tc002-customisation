@@ -12,6 +12,14 @@ refuses a version this file does not know. the github releases carry the same no
   a cell dimmer than that. each led is now driven at a straight share of its lit level at the
   panel's brightness, as the clock's fade is, and is off once the share falls under the floor.
   `Art.render` takes the brightness for it; the console's preview runs the same renderer.
+- **popsquares cells can stay dark.** a ninth parameter, `off ms` (0–10000, 500 by default), is
+  the longest a spent cell stays off before it pops again, each pop rolling its own wait up to it;
+  0 pops it at once, as before. it is what the processing sketch's lingering black cells look like
+  with a dial on them. popsquares already used all eight generator slots, so every generator now
+  has nine: the ipc settings block grows by sixteen bytes (deploy the binaries together) and the
+  settings file's slot arrays grow by one. a file saved with eight loads, the ninth slot taking its
+  default, and a file with more slots than the build knows loses those slots rather than being
+  refused.
 
 ## v0.3.6 — a twelve-hour clock, built with zig 0.17 (2026-10-08)
 
