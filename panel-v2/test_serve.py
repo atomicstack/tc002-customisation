@@ -480,7 +480,7 @@ class EndToEndTests(unittest.TestCase):
         self.assertEqual([g["name"] for g in sc["generators"]], ["popsquares", "plasma", "cube", "terrain"])
         self.assertEqual([p["name"] for p in sc["parameters"]["art"]], ["scene"])
         self.assertEqual([p["name"] for p in sc["parameters"]["clock"]],
-                         ["face", "colour", "shade", "colour 2", "gradient", "spread", "digits", "fade"])
+                         ["face", "colour", "shade", "colour 2", "gradient", "spread", "digits", "fade", "hours"])
         # ip stopped being a base scene (it is a page of the device menu now), so it has no
         # parameter table any more. its four layouts are still published as their own block,
         # which is what the console's layout select reads
@@ -643,6 +643,34 @@ class EndToEndTests(unittest.TestCase):
         self.assertEqual((status, doc["clock"]["fade"]), (200, False))
         _, st4 = self.call("GET", "status")
         self.assertIs(st4["clock"]["fade"], False)   # a settings change replaces the transient style
+
+    def test_clock_hours_is_a_choice_on_both_routes(self):
+        # 24h or 12h: `clock.hours` in the scene block, `clock_hours` in the settings, named on
+        # both and in every report, 24h unless asked for
+        _, sc = self.call("GET", "scenes")
+        hours = next(p for p in sc["parameters"]["clock"] if p["name"] == "hours")
+        self.assertEqual((hours["kind"], hours["choices"], hours["default"]), ("choice", ["24h", "12h"], 0))
+        self.assertEqual(sc["clock"]["hours"], ["24h", "12h"])
+        _, st = self.call("GET", "status")
+        self.assertEqual(st["clock"]["hours"], "24h")
+        status, _ = self.call("PUT", "scene", {"base": "clock", "clock": {"hours": "12h"},
+                                               "request_id": "e1b", "epoch": st["epoch"]})
+        self.assertEqual(status, 200)
+        _, st2 = self.call("GET", "status")
+        self.assertEqual(st2["clock"]["hours"], "12h")
+        status, doc = self.call("PUT", "scene", {"base": "clock", "clock": {"hours": "13h"},
+                                                 "request_id": "e1c", "epoch": st2["epoch"]})
+        self.assertEqual((status, doc["error"]), (400, "invalid_hours"))
+        _, cfg = self.call("GET", "config")
+        self.assertEqual(cfg["clock"]["hours"], "24h")
+        status, doc = self.call("PATCH", "config", {"clock_hours": "12h", "expected_revision": cfg["revision"]})
+        self.assertEqual((status, doc["clock"]["hours"]), (200, "12h"))
+        status, doc = self.call("PATCH", "config", {"clock_hours": "24h"})
+        self.assertEqual((status, doc["clock"]["hours"]), (200, "24h"))
+        _, st3 = self.call("GET", "status")
+        self.assertEqual(st3["clock"]["hours"], "24h")   # a settings change replaces the transient style
+        status, doc = self.call("PATCH", "config", {"clock_hours": True})
+        self.assertEqual((status, doc["error"]), (400, "invalid_json"))   # a string on the wire
 
     CUBE_DEFAULTS = {"palette": "mono", "colour": "30a0ff", "hue drift": 0, "background": "000000",
                      "spin": "parallel", "speed": 6, "zoom": 100}
@@ -828,7 +856,7 @@ class EndToEndTests(unittest.TestCase):
         # a CLOCK_DIGITS list it kept privately, so a client could not discover the digit styles
         self.assertEqual(scenes["clock"], {"fonts": ["classic", "mini", "segment", "big", "block", "hires"], "colour_modes": ["solid", "gradient"],
                                            "digits": ["solid", "outline", "shadow"],
-                                           "gradients": ["horizontal", "vertical", "diagonal"], "spread": [0, 255], "max_spread": 255})
+                                           "gradients": ["horizontal", "vertical", "diagonal"], "hours": ["24h", "12h"], "spread": [0, 255], "max_spread": 255})
         self.device.config["clock"] = dict(self.DEFAULT_CLOCK); self.device.clock = dict(self.DEFAULT_CLOCK)
         _, st = self.call("GET", "status")
         self.assertEqual(st["clock"], self.DEFAULT_CLOCK)

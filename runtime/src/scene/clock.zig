@@ -14,6 +14,9 @@ pub const ColourMode = enum(u8) { solid = 0, gradient = 1 };
 /// re-exported so callers reach every part of a clock style through this module
 pub const DigitStyle = clockfont.DigitStyle;
 pub const Gradient = enum(u8) { horizontal = 0, vertical = 1, diagonal = 2 };
+/// how the hour is counted: 00..23 with a leading zero, or 12, 1..11 without one. there is no
+/// am/pm marker: no face has a column to spare for one.
+pub const Hours = enum(u8) { @"24h" = 0, @"12h" = 1 };
 
 /// the default `spread`: the whole requested gradient is shown. a smaller value bounds how far
 /// any channel of the end colour may sit from the start colour, for a subtler ramp.
@@ -29,6 +32,7 @@ pub const params = [_]param.Param{
     .{ .name = "spread", .kind = .number, .min = 0, .max = 255, .step = 15, .default = default_spread },
     .{ .name = "digits", .kind = .choice, .choices = param.choicesOf(clockfont.DigitStyle), .default = 0 },
     .{ .name = "fade", .kind = .toggle, .default = 0 },
+    .{ .name = "hours", .kind = .choice, .choices = param.choicesOf(Hours), .default = 0 },
 };
 
 pub fn getParam(style: Style, index: usize) u32 {
@@ -41,6 +45,7 @@ pub fn getParam(style: Style, index: usize) u32 {
         5 => style.spread,
         6 => @backingInt(style.digit),
         7 => @intFromBool(style.fade),
+        8 => @backingInt(style.hours),
         else => 0,
     };
 }
@@ -55,6 +60,7 @@ pub fn setParam(style: *Style, index: usize, value: u32) void {
         5 => style.spread = @intCast(@min(value, 255)),
         6 => style.digit = @fromBackingInt(@intCast(@min(value, params[6].choices.len - 1))),
         7 => style.fade = value != 0,
+        8 => style.hours = @enumFromInt(@min(value, params[8].choices.len - 1)),
         else => {},
     }
 }
@@ -71,6 +77,7 @@ pub const Style = struct {
     /// the block face's digits turn into the next second's over the end of each second, instead
     /// of switching at the boundary. see `fade_ns`.
     fade: bool = false,
+    hours: Hours = .@"24h",
 
     /// the gradient end after the spread bound.
     pub fn effectiveColour2(self: Style) [3]u8 {
@@ -92,6 +99,7 @@ pub const Style = struct {
         if (p.spread) |v| self.spread = v;
         if (p.digit) |v| self.digit = v;
         if (p.fade) |v| self.fade = v;
+        if (p.hours) |v| self.hours = v;
     }
 };
 
@@ -105,6 +113,7 @@ pub const StylePatch = struct {
     spread: ?u8 = null,
     digit: ?clockfont.DigitStyle = null,
     fade: ?bool = null,
+    hours: ?Hours = null,
 };
 
 /// "hh:mm:ss" in the classic font is 47 px wide and 7 px tall; centred on the 52x16 panel.
@@ -205,10 +214,14 @@ pub fn unsetAlpha(wall_ns: u64) u8 {
     return @intCast(@divTrunc(@as(i32, 255) * scale, 1000));
 }
 
-/// local seconds since the epoch -> "hh:mm:ss".
-pub fn formatTime(local_s: i64, buf: *[8]u8) []const u8 {
+/// local seconds since the epoch -> "hh:mm:ss", or "h:mm:ss" for a 12h hour below ten.
+pub fn formatTime(local_s: i64, hours: Hours, buf: *[8]u8) []const u8 {
     const sod: u32 = @intCast(@mod(local_s, 86400));
-    return std.fmt.bufPrint(buf, "{d:0>2}:{d:0>2}:{d:0>2}", .{ sod / 3600, (sod / 60) % 60, sod % 60 }) catch unreachable;
+    const h = sod / 3600;
+    return switch (hours) {
+        .@"24h" => std.fmt.bufPrint(buf, "{d:0>2}:{d:0>2}:{d:0>2}", .{ h, (sod / 60) % 60, sod % 60 }),
+        .@"12h" => std.fmt.bufPrint(buf, "{d}:{d:0>2}:{d:0>2}", .{ if (h % 12 == 0) 12 else h % 12, (sod / 60) % 60, sod % 60 }),
+    } catch unreachable;
 }
 
 /// local seconds since the epoch -> "dd/mm".
@@ -276,7 +289,8 @@ pub const State = struct {
                 return lines[0..1];
             },
             .big => {
-                lines[0] = .{ .x = centre(f, time_text[0..5]), .y = 1, .text = time_text[0..5], .font = f };
+                const hm = time_text[0 .. time_text.len - 3]; // drop ":ss"; a 12h hour may be one digit
+                lines[0] = .{ .x = centre(f, hm), .y = 1, .text = hm, .font = f };
                 return lines[0..1];
             },
             .mini => {
@@ -345,7 +359,7 @@ pub const State = struct {
         var tbuf: [8]u8 = undefined;
         var dbuf: [5]u8 = undefined;
         var mbuf: [3]u8 = undefined;
-        const time_text = formatTime(local_s, &tbuf);
+        const time_text = formatTime(local_s, style.hours, &tbuf);
         const date_text = formatDate(local_s, &dbuf);
         const ms: u32 = @intCast((wall_ns % std.time.ns_per_s) / std.time.ns_per_ms);
         const ms_text = std.fmt.bufPrint(&mbuf, "{d:0>3}", .{ms}) catch unreachable;
@@ -373,7 +387,7 @@ pub const State = struct {
         const local_s = tz.localFromUtc(self.rule, utc_s);
         var tbuf: [8]u8 = undefined;
         var dbuf: [5]u8 = undefined;
-        const time_text = formatTime(local_s, &tbuf);
+        const time_text = formatTime(local_s, style.hours, &tbuf);
         const date_text = formatDate(local_s, &dbuf);
         const ms: u32 = @intCast((wall_ns % std.time.ns_per_s) / std.time.ns_per_ms);
         var mbuf: [3]u8 = undefined;
@@ -386,12 +400,17 @@ pub const State = struct {
         }
         var storage: [2]Line = undefined;
         const lines = layout(style, time_text, date_text, ms_text, &storage);
-        // fading: the time line is on its way to the next second's text
+        // fading: the time line is on its way to the next second's text. the blend pairs glyphs
+        // column by column, so when a 12h hour gains or loses a digit nothing lines up and the
+        // face switches at the boundary instead
         var next_buf: [8]u8 = undefined;
         var t: u8 = 0;
         if (fadeActive(style, wall_ns)) {
-            storage[0].to = formatTime(tz.localFromUtc(self.rule, utc_s + 1), &next_buf);
-            t = fadeProgress(wall_ns);
+            const next = formatTime(tz.localFromUtc(self.rule, utc_s + 1), style.hours, &next_buf);
+            if (next.len == time_text.len) {
+                storage[0].to = next;
+                t = fadeProgress(wall_ns);
+            }
         }
         rgb.* = geometry.black_rgb;
         const hires = style.font == .hires;
@@ -447,9 +466,9 @@ test "the next boundary is the next whole wall second" {
 
 test "time of day is formatted as hh:mm:ss in local time, the date as dd/mm" {
     var buf: [8]u8 = undefined;
-    try std.testing.expectEqualStrings("13:05:09", formatTime(13 * 3600 + 5 * 60 + 9, &buf));
-    try std.testing.expectEqualStrings("00:00:00", formatTime(86400 * 3, &buf));
-    try std.testing.expectEqualStrings("23:59:59", formatTime(-1, &buf));
+    try std.testing.expectEqualStrings("13:05:09", formatTime(13 * 3600 + 5 * 60 + 9, .@"24h", &buf));
+    try std.testing.expectEqualStrings("00:00:00", formatTime(86400 * 3, .@"24h", &buf));
+    try std.testing.expectEqualStrings("23:59:59", formatTime(-1, .@"24h", &buf));
     var dbuf: [5]u8 = undefined;
     try std.testing.expectEqualStrings("07/09", formatDate(1788739200, &dbuf)); // 2026-09-06 08:00 utc as local seconds
     try std.testing.expectEqualStrings("01/01", formatDate(0, &dbuf));
@@ -589,7 +608,7 @@ test "a clock that has never been set is recognised by its own wall time" {
 
 test "an unset clock blanks its digits and keeps its separators" {
     var buf: [8]u8 = undefined;
-    const text = formatTime(3661, &buf); // 01:01:01
+    const text = formatTime(3661, .@"24h", &buf); // 01:01:01
     try std.testing.expectEqualStrings("01:01:01", text);
     blankDigits(buf[0..text.len]);
     try std.testing.expectEqualStrings("  :  :  ", buf[0..text.len]);
@@ -683,7 +702,6 @@ test "the pulse is one breath: full, down to the floor, and back within its leng
 }
 
 test "fade is the clock's eighth parameter, a toggle, off by default" {
-    try std.testing.expectEqual(@as(usize, 8), params.len);
     try std.testing.expectEqualStrings("fade", params[7].name);
     try std.testing.expectEqual(param.Kind.toggle, params[7].kind);
     var s = Style{};
@@ -694,6 +712,104 @@ test "fade is the clock's eighth parameter, a toggle, off by default" {
     try std.testing.expectEqual(@as(u32, 1), getParam(s, 7));
     s.apply(.{ .fade = false });
     try std.testing.expect(!s.fade);
+}
+
+test "hours is the clock's ninth parameter, a choice of 24h or 12h, 24h by default" {
+    try std.testing.expectEqual(@as(usize, 9), params.len);
+    try std.testing.expectEqualStrings("hours", params[8].name);
+    try std.testing.expectEqual(param.Kind.choice, params[8].kind);
+    try std.testing.expectEqualStrings("24h", params[8].choices[0]);
+    try std.testing.expectEqualStrings("12h", params[8].choices[1]);
+    var s = Style{};
+    try std.testing.expectEqual(Hours.@"24h", s.hours);
+    setParam(&s, 8, 1);
+    try std.testing.expectEqual(Hours.@"12h", s.hours);
+    try std.testing.expectEqual(@as(u32, 1), getParam(s, 8));
+    setParam(&s, 8, 99); // past the end clamps, like every other choice
+    try std.testing.expectEqual(Hours.@"12h", s.hours);
+    s.apply(.{ .hours = .@"24h" });
+    try std.testing.expectEqual(Hours.@"24h", s.hours);
+}
+
+test "12h runs 12, 1 .. 11 with no leading zero; 24h keeps its two digits" {
+    var buf: [8]u8 = undefined;
+    const cases = [_]struct { sod: i64, h24: []const u8, h12: []const u8 }{
+        .{ .sod = 0, .h24 = "00:00:00", .h12 = "12:00:00" }, // midnight is twelve
+        .{ .sod = 5 * 60 + 9, .h24 = "00:05:09", .h12 = "12:05:09" },
+        .{ .sod = 3600 + 2, .h24 = "01:00:02", .h12 = "1:00:02" },
+        .{ .sod = 9 * 3600 + 59 * 60 + 59, .h24 = "09:59:59", .h12 = "9:59:59" },
+        .{ .sod = 10 * 3600, .h24 = "10:00:00", .h12 = "10:00:00" },
+        .{ .sod = 12 * 3600 + 30 * 60, .h24 = "12:30:00", .h12 = "12:30:00" }, // noon is twelve too
+        .{ .sod = 13 * 3600, .h24 = "13:00:00", .h12 = "1:00:00" },
+        .{ .sod = 23 * 3600 + 59 * 60 + 59, .h24 = "23:59:59", .h12 = "11:59:59" },
+    };
+    for (cases) |k| {
+        try std.testing.expectEqualStrings(k.h24, formatTime(k.sod, .@"24h", &buf));
+        try std.testing.expectEqualStrings(k.h12, formatTime(k.sod, .@"12h", &buf));
+    }
+}
+
+test "12h is drawn: 13:05:06 reads 1:05:06, centred on its narrower text" {
+    var c = State.init(tz.utc);
+    const pm: u64 = test_wall_base + (13 * 3600 + 5 * 60 + 6) * std.time.ns_per_s;
+    var buf: [8]u8 = undefined;
+    const want = formatTime(13 * 3600 + 5 * 60 + 6, .@"12h", &buf);
+    try std.testing.expectEqualStrings("1:05:06", want);
+    for ([_]Font{ .classic, .segment, .big, .block }) |f| { // mini and hires add a second line
+        c.style = .{ .font = f, .hours = .@"12h" };
+        var afternoon = geometry.black_rgb;
+        c.render(pm, &afternoon);
+        var expected = geometry.black_rgb;
+        var storage: [2]Line = undefined;
+        const laid = State.layout(c.style, want, "", "", &storage);
+        for (laid) |l| clockfont.blitStyled(&expected, l.x, l.y, l.font, l.text, clockfont.Solid{ .colour = c.style.colour }, c.style.digit);
+        try std.testing.expectEqualSlices(u8, &expected, &afternoon);
+    }
+}
+
+test "big shows hours and minutes in 12h too, whichever width the hour is" {
+    var c = State.init(tz.utc);
+    c.style = .{ .font = .big, .hours = .@"12h" };
+    var storage: [2]Line = undefined;
+    try std.testing.expectEqualStrings("1:05", State.layout(c.style, "1:05:06", "", "", &storage)[0].text);
+    try std.testing.expectEqualStrings("11:05", State.layout(c.style, "11:05:06", "", "", &storage)[0].text);
+}
+
+test "12h separators are found where they are drawn, so a sync pulse dims the right pixels" {
+    var c = State.init(tz.utc);
+    const wall_ns: u64 = test_wall_base + (13 * 3600 + 5 * 60 + 6) * std.time.ns_per_s;
+    for ([_]Font{ .classic, .mini, .big, .block }) |f| {
+        c.style = .{ .font = f, .hours = .@"12h" };
+        var plain = geometry.black_rgb;
+        c.render(wall_ns, &plain);
+        var dark = geometry.black_rgb;
+        c.renderPulsed(c.style, wall_ns, 0, 100, &dark);
+        var changed: usize = 0;
+        for (0..geometry.height) |y| for (0..geometry.width) |x| {
+            const i = (y * geometry.width + x) * 3;
+            if (std.mem.eql(u8, plain[i..][0..3], dark[i..][0..3])) continue;
+            changed += 1;
+            try std.testing.expect(c.inSeparator(wall_ns, @intCast(x), @intCast(y)));
+        };
+        try std.testing.expect(changed > 0);
+    }
+}
+
+test "a 12h fade across a change of hour width switches at the boundary instead of blending misaligned digits" {
+    var c = State.init(tz.utc);
+    c.style = .{ .font = .block, .fade = true, .hours = .@"12h" };
+    // 12:59:59 -> 1:00:00: eight characters become seven, so no column lines up with its successor
+    const sec: u64 = test_wall_base + (12 * 3600 + 59 * 60 + 59) * std.time.ns_per_s;
+    var mid = geometry.black_rgb;
+    c.render(sec + std.time.ns_per_s - fade_ns / 2, &mid);
+    var held = geometry.black_rgb;
+    c.render(sec, &held);
+    try std.testing.expectEqualSlices(u8, &held, &mid);
+    // the same width either side still fades: 1:00:00 -> 1:00:01
+    const one: u64 = test_wall_base + 13 * 3600 * std.time.ns_per_s;
+    c.render(one + std.time.ns_per_s - fade_ns / 2, &mid);
+    c.render(one, &held);
+    try std.testing.expect(!std.mem.eql(u8, &held, &mid));
 }
 
 test "the block face fades into the next second's digits through the end of the second, and is exactly the next second at the boundary" {

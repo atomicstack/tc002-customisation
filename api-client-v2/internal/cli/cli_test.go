@@ -96,6 +96,8 @@ func TestRuntimeRequests(t *testing.T) {
 		{[]string{"scene", "clock", "--font", "block", "--fade"}, "PUT", "/scene", `{"base":"clock","clock":{"font":"block","fade":true}}`},
 		{[]string{"scene", "clock", "--fade=false"}, "PUT", "/scene", `{"base":"clock","clock":{"fade":false}}`},
 		{[]string{"config", "set", "--clock-fade=true"}, "PATCH", "/config", `{"clock_fade":true}`},
+		{[]string{"scene", "clock", "--hours", "12h"}, "PUT", "/scene", `{"base":"clock","clock":{"hours":"12h"}}`},
+		{[]string{"config", "set", "--clock-hours", "24h"}, "PATCH", "/config", `{"clock_hours":"24h"}`},
 		{[]string{"reboot"}, "POST", "/reboot", ""},
 		{[]string{"tokens", "create", "ops", "--scope", "status", "--scope", "reboot"}, "POST", "/tokens", `{"name":"ops","scopes":["status","reboot"]}`},
 		// a document notification and a canvas that is shown without being saved

@@ -231,7 +231,7 @@ export fn setIpMode(v: u32, now_ms: f64) void {
 }
 
 /// every field of the clock style at once; -1 in any slot leaves that field alone.
-export fn setClockStyle(font: i32, mode: i32, gradient: i32, spread: i32, digit: i32, colour: i32, colour2: i32, fade: i32, now_ms: f64) void {
+export fn setClockStyle(font: i32, mode: i32, gradient: i32, spread: i32, digit: i32, colour: i32, colour2: i32, fade: i32, hours: i32, now_ms: f64) void {
     var patch: clock.StylePatch = .{};
     patch.font = enumOf(clockfont.Font, font);
     patch.mode = enumOf(clock.ColourMode, mode);
@@ -239,6 +239,7 @@ export fn setClockStyle(font: i32, mode: i32, gradient: i32, spread: i32, digit:
     if (spread >= 0) patch.spread = @intCast(@min(spread, 255));
     patch.digit = enumOf(clockfont.DigitStyle, digit);
     if (fade >= 0) patch.fade = fade != 0;
+    patch.hours = enumOf(clock.Hours, hours);
     if (colour >= 0) patch.colour = rgbOf(colour);
     if (colour2 >= 0) patch.colour2 = rgbOf(colour2);
     _ = arb.apply(.{ .set_clock_style = patch }, toNs(now_ms));
@@ -577,6 +578,9 @@ export fn clockModeNames() u32 {
 }
 export fn gradientNames() u32 {
     return copyOut(enumNames(clock.Gradient));
+}
+export fn hoursNames() u32 {
+    return copyOut(enumNames(clock.Hours));
 }
 export fn digitStyleNames() u32 {
     return copyOut(enumNames(clockfont.DigitStyle));

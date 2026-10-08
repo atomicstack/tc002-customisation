@@ -99,6 +99,7 @@ tc002 ntfy set --url https://ntfy.sh --topic clock
 # --token authenticates to the device; --subscription-token configures ntfy:
 tc002 ntfy set --subscription-token '<ntfy-token>'
 tc002 config set --clock-fade   # the block face fades into each new second
+tc002 config set --clock-hours 12h   # 1:05 rather than 13:05; --hours on `scene clock` for a moment
 tc002 tokens create dashboard --scope status --scope screen
 tc002 tokens create ops --scope status --scope reboot
 tc002 tokens rotate dashboard  # keeps the existing scopes unless --scope is supplied

@@ -36,10 +36,12 @@ IP_MODES = SCENES["ip"]["modes"]
 CLOCK_COLOUR_MODES = SCENES["clock"]["colour_modes"]
 CLOCK_GRADIENTS = SCENES["clock"]["gradients"]
 CLOCK_DIGITS = SCENES["clock"]["digits"]   # only the faces with a body (block, big) honour it
+CLOCK_HOURS = SCENES["clock"]["hours"]
 CLOCK_MAX_SPREAD = SCENES["clock"]["max_spread"]
 DEFAULT_SPREAD = next(p["default"] for p in SCENES["parameters"]["clock"] if p["name"] == "spread")
 DEFAULT_CLOCK = {"font": "classic", "colour_mode": "solid", "colour": "ffffff", "colour2": "ffffff",
-                 "gradient": "horizontal", "spread": DEFAULT_SPREAD, "digits": "solid", "fade": False}
+                 "gradient": "horizontal", "spread": DEFAULT_SPREAD, "digits": "solid", "fade": False,
+                 "hours": "24h"}
 
 
 # raised from 4096 with the canvas, which needs room for a whole document
@@ -253,6 +255,11 @@ def parse_clock_style(fields):
             # a bool on the wire: the block face's digits turn into the next second's
             if not isinstance(value, bool):
                 raise Reject(400, "invalid_json", "the body is not valid json for this schema")
+        elif key == "hours":
+            if not isinstance(value, str):
+                raise Reject(400, "invalid_json", "the body is not valid json for this schema")
+            if value not in CLOCK_HOURS:
+                raise Reject(400, "invalid_hours", "hours must be 24h or 12h")
         else:
             raise Reject(400, "unknown_field", "the body contains a field the schema does not define")
         out[key] = value
@@ -889,7 +896,7 @@ SCHEMAS = {
     "config": ({"brightness", "base", "generator", "timezone", "ntp_server", "ntp_interval_s", "frame_timeout_ms",
                 "metrics_interval_s", "discovery", "discovery_controls", "discovery_prefix", "mdns", "expected_revision",
                 "clock_font", "clock_colour_mode", "clock_colour", "clock_colour2", "clock_gradient", "clock_spread",
-                "clock_digit", "clock_fade", "ip_mode", "generator_params",
+                "clock_digit", "clock_fade", "clock_hours", "ip_mode", "generator_params",
                 "night", "night_brightness", "night_lead_min", "latitude", "longitude", "location_auto",
                 "battery_shutdown", "battery_shutdown_mv", "battery_grace_s"}, set()),
     "config/save": ({"revision"}, set()),

@@ -10,6 +10,12 @@ refuses a version this file does not know. the github releases carry the same no
   app 1.0.8 `libzkgui.so` (the "unit B" `res` of FINGERPRINTS.md) — period literal, first-delay
   instruction and server slots, all three offsets confirmed by disassembly. unknown builds are
   still refused, and the refusal now lists the builds it does know.
+- **the clock can count 12 hours.** a new clock parameter, `hours`, is `24h` (as before, the
+  default) or `12h`: 13:05 is drawn `1:05`, no leading zero and no am/pm, on every face. on the
+  device menu, over `PUT /scene` as `clock.hours`, as the `clock_hours` setting, in the console,
+  the go client (`--hours`, `--clock-hours`) and as a home assistant select. the clock style's
+  `has` field outgrew its byte, so the style is two bytes longer on the ipc: deploy the binaries
+  together. applied `set_clock_style` events now carry `fade` and `hours`, which they omitted.
 - **the night schedule's brightness is eased**, over two seconds, instead of stepped: after a
   reboot the panel used to jump from the flashed daylight level straight to the night one. the
   target is reported at once; the event carries `ramp_ms`; the knob and the api still land at once.

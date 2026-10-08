@@ -182,6 +182,33 @@ test('home assistant controls can be enabled and disabled from device settings',
   }
 });
 
+test('the clock hours select offers what the runtime declares and reaches the device both ways',
+  { skip: chromeAvailable ? false : 'google chrome is not installed' }, async () => {
+  // the transient one, in the scene card: a PUT /scene clock block
+  await waitFor(async () => {
+    if ((await cdp.eval(`[...document.getElementById('khours').options].map(o => o.value).join()`)) !== '24h,12h') throw new Error('waiting for /scenes');
+    return true;
+  });
+  assert.equal(await cdp.eval(`document.getElementById('khours').closest('.field').hidden`), false);
+  await cdp.eval(`(() => { const s = document.getElementById('khours'); s.value = '12h'; s.dispatchEvent(new Event('change')); })()`);
+  await waitFor(async () => {
+    if (await cdp.eval(`call('GET', 'status').then(s => s.clock.hours)`) !== '12h') throw new Error('waiting for the scene put');
+    return true;
+  });
+  // the durable one, in device settings: clock_hours, which replaces the transient style
+  await cdp.eval(`document.querySelector('[data-tab="device"]').click(); loadConfig()`);
+  await waitFor(async () => { if (!(await cdp.eval(`!!CONFIG`))) throw new Error('waiting for config'); return true; });
+  assert.equal(await cdp.eval(`document.getElementById('chours').value`), '24h');
+  await cdp.eval(`document.getElementById('chours').value = '12h'; document.getElementById('capply').click()`);
+  await waitFor(async () => {
+    if (await cdp.eval(`CONFIG.clock.hours`) !== '12h') throw new Error('waiting for settings reply');
+    return true;
+  });
+  assert.equal(await cdp.eval(`call('GET', 'config').then(c => c.clock.hours)`), '12h');
+  await cdp.eval(`document.getElementById('chours').value = '24h'; document.getElementById('capply').click()`);
+  await waitFor(async () => { if (await cdp.eval(`CONFIG.clock.hours`) !== '24h') throw new Error('waiting to put it back'); return true; });
+});
+
 // each control must be named by its own row: a select sitting beside two others under one shared
 // label reads as an anonymous box (the transition rows once put effect, direction and exit under a
 // single "Transition" label)

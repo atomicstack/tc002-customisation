@@ -25,7 +25,7 @@
   /* every enum name comes from the wasm, so a new font or generator needs no edit here */
   let TRANSITION_EFFECTS = [], TRANSITION_DIRECTIONS = [], TRANSITION_EASINGS = [], TRANSITION_EXITS = [];
   let BASES = [], GENERATORS = [], CLOCK_FONTS = [], CLOCK_MODES = [],
-      GRADIENTS = [], DIGIT_STYLES = [], IP_MODES = [];
+      GRADIENTS = [], DIGIT_STYLES = [], HOURS = [], IP_MODES = [];
   let CLOCK_MAX_SPREAD = 255, NOTIFY_MAX_S = 300;
   const DEFAULT_CLOCK_STYLE = { font: 'classic', colour_mode: 'solid', colour: 'ffffff', colour2: 'ffffff', gradient: 'horizontal' };
 
@@ -55,6 +55,7 @@
       CLOCK_MODES = names(E.clockModeNames);
       GRADIENTS = names(E.gradientNames);
       DIGIT_STYLES = names(E.digitStyleNames);
+      HOURS = names(E.hoursNames);
       IP_MODES = names(E.ipModeNames);
       TRANSITION_EFFECTS = names(E.transitionEffectNames);
       TRANSITION_DIRECTIONS = names(E.transitionDirectionNames);
@@ -174,6 +175,7 @@
           hexInt(c.colour, 0xffffff),
           hexInt(c.colour2, 0xffffff),
           c.fade == null ? -1 : (c.fade ? 1 : 0),
+          indexOf(HOURS, c.hours, -1),
           nowMs);
       }
       applied.clock = key;
@@ -438,7 +440,8 @@
                       indexOf(GRADIENTS, c.gradient, -1), c.spread == null ? -1 : c.spread,
                       indexOf(DIGIT_STYLES, c.digits, -1),
                       hexInt(c.colour, -1), hexInt(c.colour2, -1),
-                      c.fade == null ? -1 : (c.fade ? 1 : 0), ev.at);
+                      c.fade == null ? -1 : (c.fade ? 1 : 0),
+                      indexOf(HOURS, c.hours, -1), ev.at);
     },
     notify: (e, ev) => {
       // a document notification the page sent is replayed with the document the page still holds:
@@ -562,6 +565,7 @@
     get CLOCK_MODES() { return CLOCK_MODES; },
     get GRADIENTS() { return GRADIENTS; },
     get DIGIT_STYLES() { return DIGIT_STYLES; },
+    get HOURS() { return HOURS; },
     get IP_MODES() { return IP_MODES; },
     get CLOCK_MAX_SPREAD() { return CLOCK_MAX_SPREAD; },
     get NOTIFY_MAX_S() { return NOTIFY_MAX_S; },

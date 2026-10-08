@@ -15,7 +15,7 @@ pub fn patchPolicy(p: api.ConfigPatch, controls: bool) PatchPolicy {
         } else if (value != null) {
             if (comptime oneOf(name, &.{ "brightness", "base", "generator" })) {
                 // existing transient commands keep working without HA discovery.
-            } else if (comptime oneOf(name, &.{ "clock_font", "clock_colour_mode", "clock_colour", "clock_colour2", "clock_gradient", "clock_spread", "clock_digit", "ip_mode", "timezone", "ntp_server", "ntp_interval_s", "night", "night_brightness", "night_lead_min", "expected_revision" })) {
+            } else if (comptime oneOf(name, &.{ "clock_font", "clock_colour_mode", "clock_colour", "clock_colour2", "clock_gradient", "clock_spread", "clock_digit", "clock_hours", "ip_mode", "timezone", "ntp_server", "ntp_interval_s", "night", "night_brightness", "night_lead_min", "expected_revision" })) {
                 durable = true;
             } else return .rejected;
         }
@@ -30,6 +30,7 @@ fn oneOf(comptime name: []const u8, comptime names: []const []const u8) bool {
 test "mqtt durable settings require opt in and privileged fields never qualify" {
     try std.testing.expectEqual(PatchPolicy.rejected, patchPolicy(.{ .night = true }, false));
     try std.testing.expectEqual(PatchPolicy.durable, patchPolicy(.{ .clock_font = .mini }, true));
+    try std.testing.expectEqual(PatchPolicy.durable, patchPolicy(.{ .clock_hours = .@"12h" }, true));
     try std.testing.expectEqual(PatchPolicy.rejected, patchPolicy(.{ .discovery = true }, true));
     try std.testing.expectEqual(PatchPolicy.rejected, patchPolicy(.{ .berry_enabled = true }, true));
     try std.testing.expectEqual(PatchPolicy.rejected, patchPolicy(.{ .battery_shutdown = false, .brightness = 40 }, true));
@@ -82,6 +83,7 @@ pub const entities = [_]Entity{
     .{ .key = "clock_colour2_control", .name = "clock second colour", .component = .text, .topic = "config", .template = "{{ value_json.clock.colour2 }}", .diagnostic = false, .command = "cmd/config", .command_template = "{{ {\\\"clock_colour2\\\": value} | to_json }}" },
     .{ .key = "clock_gradient_control", .name = "clock gradient", .component = .select, .topic = "config", .template = "{{ value_json.clock.gradient }}", .diagnostic = false, .command = "cmd/config", .command_template = "{{ {\\\"clock_gradient\\\": value} | to_json }}", .options = "\"horizontal\",\"vertical\",\"diagonal\"" },
     .{ .key = "clock_digit_control", .name = "clock digit style", .component = .select, .topic = "config", .template = "{{ value_json.clock.digits }}", .diagnostic = false, .command = "cmd/config", .command_template = "{{ {\\\"clock_digit\\\": value} | to_json }}", .options = "\"solid\",\"outline\",\"shadow\"" },
+    .{ .key = "clock_hours_control", .name = "clock hours", .component = .select, .topic = "config", .template = "{{ value_json.clock.hours }}", .diagnostic = false, .command = "cmd/config", .command_template = "{{ {\\\"clock_hours\\\": value} | to_json }}", .options = "\"24h\",\"12h\"" },
     .{ .key = "clock_spread_control", .name = "clock gradient spread", .component = .number, .topic = "config", .template = "{{ value_json.clock.spread }}", .diagnostic = false, .command = "cmd/config", .command_template = "{{ {\\\"clock_spread\\\": value | int} | to_json }}", .min = 0, .max = 255 },
     .{ .key = "ip_mode_control", .name = "ip layout", .component = .select, .topic = "config", .template = "{{ value_json.ip_mode }}", .diagnostic = false, .command = "cmd/config", .command_template = "{{ {\\\"ip_mode\\\": value} | to_json }}", .options = "\"lines\",\"mini\",\"scroll\",\"big\"" },
     .{ .key = "generator_control", .name = "art generator", .component = .select, .topic = "state", .template = "{{ value_json.generator }}", .diagnostic = false, .command = "cmd/config", .command_template = "{{ {\\\"base\\\": \\\"art\\\", \\\"generator\\\": value} | to_json }}", .options = "\"popsquares\",\"plasma\",\"cube\",\"terrain\"" },
@@ -232,8 +234,9 @@ test "writable discovery includes valid id-free commands and preserves readonly 
         if (std.mem.eql(u8, e.key, "brightness_control")) try std.testing.expectEqual(@as(i32, 1), e.min);
         if (std.mem.eql(u8, e.key, "generator_control")) try std.testing.expect(std.mem.indexOf(u8, e.options, "\"terrain\"") != null);
         if (std.mem.eql(u8, e.key, "scene_control")) try std.testing.expectEqualStrings("\"clock\",\"art\",\"canvas\"", e.options);
+        if (std.mem.eql(u8, e.key, "clock_hours_control")) try std.testing.expectEqualStrings("\"24h\",\"12h\"", e.options);
     }
-    try std.testing.expectEqual(@as(usize, 19), controls);
+    try std.testing.expectEqual(@as(usize, 20), controls);
     try std.testing.expectEqual(@as(usize, 4), readonly);
 }
 fn oneOfRuntime(name: []const u8, names: []const []const u8) bool {

@@ -218,6 +218,7 @@ pub const ConfigPatch = struct {
     clock_spread: ?u8 = null,
     clock_digit: ?clock.DigitStyle = null,
     clock_fade: ?bool = null,
+    clock_hours: ?clock.Hours = null,
     /// resolved generator parameters: which generator, which slot in its table, and the value
     generator_params: []const ResolvedParam = &.{},
     ip_mode: ?ip.Mode = null,
@@ -275,7 +276,7 @@ pub const Reject = struct { status: u16, code: []const u8, message: []const u8 }
 pub const Arena = [json.arena_size]u8;
 
 // json wire schemas (request bodies)
-const ClockBody = struct { font: ?[]const u8 = null, colour_mode: ?[]const u8 = null, colour: ?[]const u8 = null, colour2: ?[]const u8 = null, gradient: ?[]const u8 = null, spread: ?u8 = null, digits: ?[]const u8 = null, fade: ?bool = null };
+const ClockBody = struct { font: ?[]const u8 = null, colour_mode: ?[]const u8 = null, colour: ?[]const u8 = null, colour2: ?[]const u8 = null, gradient: ?[]const u8 = null, spread: ?u8 = null, digits: ?[]const u8 = null, fade: ?bool = null, hours: ?[]const u8 = null };
 /// one generator parameter in a settings patch. the value is always a string and the scene's own
 /// table says how to read it: a choice by its name, a colour as rrggbb, a number in decimal, a
 /// toggle as on or off. `GET /scenes` publishes the table, so a client needs nothing else.
@@ -336,6 +337,7 @@ const ConfigBody = struct {
     clock_spread: ?u8 = null,
     clock_digit: ?[]const u8 = null,
     clock_fade: ?bool = null,
+    clock_hours: ?[]const u8 = null,
     generator_params: ?[]const GenParamBody = null,
     ip_mode: ?[]const u8 = null,
     night: ?bool = null,
@@ -1092,7 +1094,7 @@ pub fn parseBody(kind: BodyKind, body: []const u8, arena: *Arena, generated_id: 
             const rid = if (b.request_id) |t| (parseRequestId(t) orelse return bad("invalid_request_id", "request_id must be 1..16 hex digits")) else generated_id;
             var style: ?clock.StylePatch = null;
             if (b.clock) |cb| {
-                switch (parseClockStyle(cb.font, cb.colour_mode, cb.colour, cb.colour2, cb.gradient, cb.spread, cb.digits, cb.fade)) {
+                switch (parseClockStyle(cb.font, cb.colour_mode, cb.colour, cb.colour2, cb.gradient, cb.spread, cb.digits, cb.fade, cb.hours)) {
                     .reject => |j| return .{ .reject = j },
                     .op => |op| style = op,
                 }
@@ -1180,7 +1182,7 @@ pub fn parseBody(kind: BodyKind, body: []const u8, arena: *Arena, generated_id: 
             if (b.metrics_interval_s) |v| if (v != 0 and (v < 10 or v > 3600)) return bad("invalid_metrics_interval", "metrics_interval_s must be 0 (off) or 10..3600");
             if (b.discovery_prefix) |p| if (p.len == 0 or p.len > 64) return bad("invalid_discovery_prefix", "discovery_prefix must be 1..64 characters");
             const ntp: ?[4]u8 = if (b.ntp_server) |s| (parseIpv4(s) orelse return bad("invalid_ntp_server", "ntp_server must be a dotted ipv4 address")) else null;
-            const style = switch (parseClockStyle(b.clock_font, b.clock_colour_mode, b.clock_colour, b.clock_colour2, b.clock_gradient, b.clock_spread, b.clock_digit, b.clock_fade)) {
+            const style = switch (parseClockStyle(b.clock_font, b.clock_colour_mode, b.clock_colour, b.clock_colour2, b.clock_gradient, b.clock_spread, b.clock_digit, b.clock_fade, b.clock_hours)) {
                 .reject => |j| return .{ .reject = j },
                 .op => |op| op,
             };
@@ -1210,6 +1212,7 @@ pub fn parseBody(kind: BodyKind, body: []const u8, arena: *Arena, generated_id: 
                 .clock_spread = style.spread,
                 .clock_digit = style.digit,
                 .clock_fade = style.fade,
+                .clock_hours = style.hours,
                 .brightness = b.brightness,
                 .base = if (b.base) |t| (parseBase(t) orelse return bad("invalid_base", base_names_message)) else null,
                 .generator = if (b.generator) |g| (parseGenerator(g) orelse return bad("invalid_generator", "unknown generator")) else null,
@@ -1327,7 +1330,7 @@ fn parseGeneratorParams(body: []const GenParamBody, out: []ResolvedParam) Params
 
 const ParamsRoute = union(enum) { op: []const ResolvedParam, reject: Reject };
 
-fn parseClockStyle(font_text: ?[]const u8, mode_text: ?[]const u8, colour_text: ?[]const u8, colour2_text: ?[]const u8, gradient_text: ?[]const u8, spread: ?u8, digit_text: ?[]const u8, fade: ?bool) StyleRoute {
+fn parseClockStyle(font_text: ?[]const u8, mode_text: ?[]const u8, colour_text: ?[]const u8, colour2_text: ?[]const u8, gradient_text: ?[]const u8, spread: ?u8, digit_text: ?[]const u8, fade: ?bool, hours_text: ?[]const u8) StyleRoute {
     var p = clock.StylePatch{ .spread = spread, .fade = fade };
     if (font_text) |s| p.font = enumByName(clock.Font, s) orelse return .{ .reject = .{ .status = 400, .code = "invalid_font", .message = font_names_message } };
     if (mode_text) |s| p.mode = enumByName(clock.ColourMode, s) orelse return .{ .reject = .{ .status = 400, .code = "invalid_colour_mode", .message = "colour_mode must be solid or gradient" } };
@@ -1335,6 +1338,7 @@ fn parseClockStyle(font_text: ?[]const u8, mode_text: ?[]const u8, colour_text: 
     if (colour2_text) |s| p.colour2 = parseColour(s) orelse return .{ .reject = .{ .status = 400, .code = "invalid_colour2", .message = "colour2 must be rrggbb hex" } };
     if (gradient_text) |s| p.gradient = enumByName(clock.Gradient, s) orelse return .{ .reject = .{ .status = 400, .code = "invalid_gradient", .message = "gradient must be horizontal, vertical or diagonal" } };
     if (digit_text) |s| p.digit = enumByName(clock.DigitStyle, s) orelse return .{ .reject = .{ .status = 400, .code = "invalid_digits", .message = "digits must be solid, outline or shadow" } };
+    if (hours_text) |s| p.hours = enumByName(clock.Hours, s) orelse return .{ .reject = .{ .status = 400, .code = "invalid_hours", .message = "hours must be 24h or 12h" } };
     return .{ .op = p };
 }
 
@@ -1433,7 +1437,7 @@ pub const scenes_body = "{\"bases\":" ++ namesJson(Base) ++ ",\"generators\":[" 
     "{\"index\":2,\"name\":\"cube\",\"parameters\":" ++ paramsJson(&cube.params) ++ "}," ++
     "{\"index\":3,\"name\":\"terrain\",\"parameters\":" ++ paramsJson(&terrain.params) ++ "}]," ++
     "\"parameters\":{\"art\":" ++ paramsJson(&scene.art_params) ++ ",\"clock\":" ++ paramsJson(&clock.params) ++ ",\"canvas\":" ++ paramsJson(&canvas.params) ++ "}," ++
-    "\"clock\":{\"fonts\":" ++ namesJson(clock.Font) ++ ",\"colour_modes\":[\"solid\",\"gradient\"],\"digits\":" ++ namesJson(clock.DigitStyle) ++ ",\"gradients\":[\"horizontal\",\"vertical\",\"diagonal\"],\"spread\":[0,255],\"max_spread\":255},\"ip\":{\"modes\":" ++ namesJson(ip.Mode) ++ "},\"notify\":{\"text_max\":128,\"duration_s\":[1,300]},\"frame\":{\"bytes\":2496,\"duration_s\":[1,300]},\"transitions\":{\"effects\":" ++ namesJson(transition.Effect) ++ ",\"directions\":" ++ namesJson(transition.Direction) ++ ",\"exits\":" ++ namesJson(transition.Exit) ++ ",\"easings\":" ++ namesJson(transition.Easing) ++ ",\"duration_ms\":[0,5000]}}";
+    "\"clock\":{\"fonts\":" ++ namesJson(clock.Font) ++ ",\"colour_modes\":[\"solid\",\"gradient\"],\"digits\":" ++ namesJson(clock.DigitStyle) ++ ",\"gradients\":[\"horizontal\",\"vertical\",\"diagonal\"],\"hours\":" ++ namesJson(clock.Hours) ++ ",\"spread\":[0,255],\"max_spread\":255},\"ip\":{\"modes\":" ++ namesJson(ip.Mode) ++ "},\"notify\":{\"text_max\":128,\"duration_s\":[1,300]},\"frame\":{\"bytes\":2496,\"duration_s\":[1,300]},\"transitions\":{\"effects\":" ++ namesJson(transition.Effect) ++ ",\"directions\":" ++ namesJson(transition.Direction) ++ ",\"exits\":" ++ namesJson(transition.Exit) ++ ",\"easings\":" ++ namesJson(transition.Easing) ++ ",\"duration_ms\":[0,5000]}}";
 
 // tests
 
@@ -1774,6 +1778,12 @@ test "config, mqtt and streams routes" {
     const sm2 = route(testReq(.PATCH, "/api/v1/config", "", admin_header, "application/json", null), "{\"clock_fade\":true}", &c, &no_clients, &origins, &arena, test_minted);
     try std.testing.expectEqual(@as(?bool, true), sm2.op.config_patch.clock_fade);
     try std.testing.expectEqual(@as(?bool, null), sp2.op.config_patch.clock_fade);
+    const sh = route(testReq(.PATCH, "/api/v1/config", "", admin_header, "application/json", null), "{\"clock_hours\":\"12h\"}", &c, &no_clients, &origins, &arena, test_minted);
+    try std.testing.expectEqual(@as(?clock.Hours, .@"12h"), sh.op.config_patch.clock_hours);
+    try std.testing.expectEqual(@as(?clock.Hours, null), sp2.op.config_patch.clock_hours);
+    try expectReject(route(testReq(.PATCH, "/api/v1/config", "", admin_header, "application/json", null), "{\"clock_hours\":\"13h\"}", &c, &no_clients, &origins, &arena, test_minted), 400, "invalid_hours");
+    const sh2 = route(testReq(.PUT, "/api/v1/scene", "", control_header, "application/json", null), "{\"base\":\"clock\",\"clock\":{\"hours\":\"12h\"},\"request_id\":\"7\"}", &c, &no_clients, &origins, &arena, test_minted);
+    try std.testing.expectEqual(@as(?clock.Hours, .@"12h"), sh2.op.set_scene.style.?.hours);
     try std.testing.expectEqualStrings("Europe/Amsterdam", sp2.op.config_patch.timezone.?);
     try expectReject(route(testReq(.PATCH, "/api/v1/config", "", admin_header, "application/json", null), "{\"clock_colour_mode\":\"rainbow\"}", &c, &no_clients, &origins, &arena, test_minted), 400, "invalid_colour_mode");
     try std.testing.expect(route(testReq(.POST, "/api/v1/config/save", "", admin_header, "application/json", null), "", &c, &no_clients, &origins, &arena, test_minted).op == .config_save);

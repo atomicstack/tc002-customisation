@@ -890,6 +890,7 @@ const Supervisor = struct {
                 5 => self.cfg.patch(.{ .clock_spread = @as(u8, @truncate(v)) }),
                 6 => self.cfg.patch(.{ .clock_digit = messages.enumFromInt(clockscene.DigitStyle, @as(u8, @truncate(v))) orelse return }),
                 7 => self.cfg.patch(.{ .clock_fade = v != 0 }),
+                8 => self.cfg.patch(.{ .clock_hours = messages.enumFromInt(clockscene.Hours, @as(u8, @truncate(v))) orelse return }),
                 else => return,
             },
             2 => switch (sp.index) { // ip

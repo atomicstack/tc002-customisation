@@ -115,11 +115,28 @@ test('an index past the end of an enum is ignored, not coerced to a neighbour', 
   W.reset('clock', 'popsquares', 1);
   const styled = W.compose(clockStatus({ font: 'big' }), localWith(W), WALL);
   const e = W.exports;
-  e.setClockStyle(99, -1, -1, -1, -1, -1, -1, -1, WALL);   // no such font: leave the style alone
+  e.setClockStyle(99, -1, -1, -1, -1, -1, -1, -1, -1, WALL);   // no such font: leave the style alone
   const after = W.compose(clockStatus({ font: 'big' }), localWith(W), WALL);
   assert.equal(bytesDiffering(styled.rgb, after.rgb), 0, 'a bogus font index changed the render');
   assert.equal(W.renderIpLayout(W.IP_MODES.length - 1, '1.2.3.4', WALL).rgb.length, W.RGB_BYTES);
   assert.throws(() => W.renderIpLayout(W.IP_MODES.length, '1.2.3.4', WALL), /no such ip layout/);
+});
+
+test('the preview counts hours the way the status says: 13:34 in 12h is drawn as 1:34', () => {
+  assert.deepEqual(W.HOURS, ['24h', '12h']);
+  W.reset('clock', 'popsquares', 1);
+  const h24 = W.compose(clockStatus({ hours: '24h' }), localWith(W), WALL);   // 13:34:56 bst
+  const h12 = W.compose(clockStatus({ hours: '12h' }), localWith(W), WALL);
+  assert.ok(bytesDiffering(h24.rgb, h12.rgb) > 0, 'the 12h style drew the 24h face');
+  assert.ok(lit(h12.rgb) < lit(h24.rgb), '"1:34:56" lights fewer leds than "13:34:56"');
+  // and a mirrored restyle event carries it too: followed, so the 24h status does not undo it
+  W.reset('clock', 'popsquares', 1);
+  W.setRevision(6);
+  W.compose(clockStatus({ hours: '24h' }), localWith(W), WALL, true);
+  const r = W.applyStatement({ revision: 7, age_ms: 0, cmd: 'set_clock_style', source: 'api', clock: { hours: '12h' } }, WALL);
+  assert.equal(r.ok, true, r.reason || '');
+  const mirrored = W.compose(clockStatus({ hours: '24h' }), localWith(W), WALL, true);
+  assert.equal(bytesDiffering(mirrored.rgb, h12.rgb), 0, 'the event\'s hours did not reach the preview');
 });
 
 /* ---------- cadence: when the console is told to come back ---------- */

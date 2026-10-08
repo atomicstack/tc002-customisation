@@ -279,7 +279,7 @@ var transitionFields = []field{
 var clockFields = []field{
 	enumField("font", "classic mini segment big block hires"), enumField("colour_mode", "solid gradient"), colourField("colour"), colourField("colour2"),
 	enumField("gradient", "horizontal vertical diagonal"), numberField("spread", 0, 255), enumField("digits", "solid outline shadow"),
-	boolField("fade"),
+	boolField("fade"), enumField("hours", "24h 12h"),
 }
 
 // completeDataFile preserves the @ prefix which distinguishes a file from inline json.

@@ -101,7 +101,7 @@ pub fn event(out: []u8, a: messages.Applied, extra_age_ms: u32) []u8 {
         .reseed => w.fmt(out, &n, ",\"seed\":{d}", .{a.seed}),
         .power => w.fmt(out, &n, ",\"power\":{}", .{a.power != 0}),
         .set_ip_mode => w.fmt(out, &n, ",\"ip_mode\":\"{s}\"", .{enumName(ip.Mode, a.ip_mode)}),
-        .set_clock_style => w.fmt(out, &n, ",\"clock\":{{\"font\":\"{s}\",\"colour_mode\":\"{s}\",\"colour\":\"{x:0>2}{x:0>2}{x:0>2}\",\"colour2\":\"{x:0>2}{x:0>2}{x:0>2}\",\"gradient\":\"{s}\",\"spread\":{d},\"digits\":\"{s}\"}}", .{
+        .set_clock_style => w.fmt(out, &n, ",\"clock\":{{\"font\":\"{s}\",\"colour_mode\":\"{s}\",\"colour\":\"{x:0>2}{x:0>2}{x:0>2}\",\"colour2\":\"{x:0>2}{x:0>2}{x:0>2}\",\"gradient\":\"{s}\",\"spread\":{d},\"digits\":\"{s}\",\"fade\":{},\"hours\":\"{s}\"}}", .{
             enumName(clock.Font, a.style.font),
             enumName(clock.ColourMode, a.style.mode),
             a.style.colour[0],
@@ -113,6 +113,8 @@ pub fn event(out: []u8, a: messages.Applied, extra_age_ms: u32) []u8 {
             enumName(clock.Gradient, a.style.gradient),
             a.style.spread,
             enumName(clock.DigitStyle, a.style.digit),
+            a.style.fade != 0,
+            enumName(clock.Hours, a.style.hours),
         }),
         // these carry nothing beyond the revision and the fact that they happened
         .arm_stream, .overlay_expired => true,
@@ -212,6 +214,8 @@ test "the clock style publishes the resolved style, not the patch that asked for
     // every field is present even though the request named one: a mirror sets the whole style
     try testing.expect(std.mem.indexOf(u8, out, "\"gradient\":") != null);
     try testing.expect(std.mem.indexOf(u8, out, "\"digits\":") != null);
+    try testing.expect(std.mem.indexOf(u8, out, "\"fade\":false") != null);
+    try testing.expect(std.mem.indexOf(u8, out, "\"hours\":\"24h\"") != null);
 }
 
 test "a rich notification's event says so" {

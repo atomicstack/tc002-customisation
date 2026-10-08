@@ -927,6 +927,19 @@ flickering at nearly full. on the panel it is the clock's eighth
 parameter, over `PUT /scene` it is `clock.fade`, in the settings
 `clock_fade`, and every report of the style carries `"fade":bool`.
 
+**hours** is `24h` (the default) or `12h`, and every face honours it. `24h`
+is `00`–`23` with a leading zero, as the tables below show. `12h` counts
+`12`, `1` … `11` through the morning and again through the afternoon, with no
+leading zero: 13:05:06 is drawn `1:05:06`, centred on its narrower text, and
+`big` shows `1:05`. there is no am/pm marker, because no face has a column to
+spare for one; the 12h clock reads like a wall clock rather than a timetable.
+with `fade` on, the two moments a day the hour changes width (`12:59:59` to
+`1:00:00`, `9:59:59` to `10:00:00`) switch at the boundary instead of fading,
+since the blend pairs glyphs column by column and nothing lines up. on the
+panel it is the clock's ninth parameter, over `PUT /scene` it is
+`clock.hours`, in the settings `clock_hours`, on home assistant the "clock
+hours" select, and every report of the style carries `"hours":"24h|12h"`.
+
 
 a clock style is `{font, colour_mode, colour, colour2, gradient, spread}`:
 
@@ -1132,7 +1145,7 @@ is `0x00RRGGBB`, a toggle is 0 or 1.
 
 | scene | parameters |
 |---|---|
-| clock | `face`, `colour`, `shade`, `colour 2`, `gradient`, `spread`, `digits`, `fade` |
+| clock | `face`, `colour`, `shade`, `colour 2`, `gradient`, `spread`, `digits`, `fade`, `hours` |
 | art | `scene` (the generator), then the showing generator's own |
 | popsquares | `pop ms`, `alive`, `dim chance`, `dim floor`, `dim ceiling`, `tint`, `tint colour`, `cell` |
 | cube | `palette`, `colour`, `hue drift`, `background`, `spin`, `speed`, `zoom` |
@@ -1524,7 +1537,7 @@ read-only storage; connection buffers stay the same size.
 |--------|------|-------|------|-------|
 | `GET` | `/status` | `status` | | the [status document](#the-status-document), including `build` — see [which build is running](#which-build-is-running) |
 | `GET` | `/scenes` | `status` | | the static catalogue: bases, generators, notification and frame bounds |
-| `PUT` | `/scene` | `display` | `{"base":"clock\|art\|canvas","generator":"popsquares\|plasma\|cube\|terrain"?,"seed":u32?,"clock":{"font","colour_mode","colour","colour2","gradient","spread","digits","fade"}?,"request_id":hex?,"epoch":u32?}` | `{"status":"applied","revision":n,"epoch":n,"request_id":…}` |
+| `PUT` | `/scene` | `display` | `{"base":"clock\|art\|canvas","generator":"popsquares\|plasma\|cube\|terrain"?,"seed":u32?,"clock":{"font","colour_mode","colour","colour2","gradient","spread","digits","fade","hours"}?,"request_id":hex?,"epoch":u32?}` | `{"status":"applied","revision":n,"epoch":n,"request_id":…}` |
 | `POST` | `/action` | `display` | `{"action":"brightness\|reseed\|arm_stream","brightness":1..100?,"seed":u32?,"request_id":hex?,"epoch":u32?}` | as above |
 | `POST` | `/notify` | `notify` | `{"text":"…"?,"elements":[…]?,"colour":"rrggbb"?,"duration_s":1..300?,"name":"door"?,"stack":bool?,"hold":bool?,"request_id":hex?,"epoch":u32?}` (`duration_s` defaults to 5; `stack` and `hold` default false; `elements` is a [canvas document](#the-canvas), and then `text` is optional) | as above; `409 queue_full` if appending would exceed eight notifications; the canvas's own codes for a bad element |
 | `POST` | `/notify/dismiss` | `notify` | `{"name":"door"?,"request_id":hex?,"epoch":u32?}` (omit `name` for current; empty name is invalid) | as above; missing matches are successful no-ops |
@@ -1769,7 +1782,7 @@ shows up as a revision gap, and the gap is the signal to resync.
 | field | range | live effect |
 |-------|-------|-------------|
 | `brightness` | 1–100 | applied to the renderer at once |
-| `clock_font`, `clock_colour_mode`, `clock_colour`, `clock_colour2`, `clock_gradient`, `clock_spread`, `clock_digit`, `clock_fade` | `classic\|mini\|segment\|big\|block\|hires`; `solid\|gradient`; `rrggbb`; `rrggbb`; `horizontal\|vertical\|diagonal`; 0–255; `solid\|outline\|shadow`; bool | applied at once; reported as a `clock` object in `/config` |
+| `clock_font`, `clock_colour_mode`, `clock_colour`, `clock_colour2`, `clock_gradient`, `clock_spread`, `clock_digit`, `clock_fade`, `clock_hours` | `classic\|mini\|segment\|big\|block\|hires`; `solid\|gradient`; `rrggbb`; `rrggbb`; `horizontal\|vertical\|diagonal`; 0–255; `solid\|outline\|shadow`; bool; `24h\|12h` | applied at once; reported as a `clock` object in `/config` |
 | `ip_mode` | `lines\|mini\|scroll\|big` | the layout of the device menu's ip page, applied at once; see [ip layouts](#ip-layouts) |
 | `base` | `clock`, `art`, `canvas` | applied at once |
 | `generator` | `popsquares`, `plasma`, `cube`, `terrain` | applied at once |
@@ -2311,17 +2324,18 @@ or `PATCH /api/v1/config` with `{"discovery":true,"discovery_controls":true}`.
 the console exposes the same checkbox. turning controls off removes their retained
 discovery records; reconnects retry unacknowledged removals before moving on. old
 prefixes and device identities are cleared before the new set is published. the
-original read-only entity ids stay unchanged; the 19 additional controls use
+original read-only entity ids stay unchanged; the 20 additional controls use
 `*_control` keys:
 
 - display power, brightness, base scene, art generator and notification text;
-- clock font, colour mode, both colours, gradient, digit style, spread and fade;
+- clock font, colour mode, both colours, gradient, digit style, spread and hours (the block
+  face's fade is not a control);
 - ip layout, timezone, ntp server and interval;
 - night dimming, night brightness and night lead.
 
 power/scene/brightness/generator/notification commands are transient. the allowed
 durable fields are `clock_font`, `clock_colour_mode`, `clock_colour`, `clock_colour2`,
-`clock_gradient`, `clock_spread`, `clock_digit`, `clock_fade`, `ip_mode`, `timezone`, `ntp_server`,
+`clock_gradient`, `clock_spread`, `clock_digit`, `clock_hours`, `ip_mode`, `timezone`, `ntp_server`,
 `ntp_interval_s`, `night`, `night_brightness` and `night_lead_min`; `expected_revision`
 may guard a patch. the supervisor validates and saves these exactly as for http.
 with controls enabled, broker write access is the authority for those settings.
