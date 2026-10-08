@@ -12,6 +12,7 @@
 const std = @import("std");
 const param = @import("param.zig");
 const geometry = @import("../panel/geometry.zig");
+const pack = @import("../panel/pack.zig");
 const scene = @import("scene.zig");
 
 test "the same seed renders the same bytes" {
@@ -19,8 +20,8 @@ test "the same seed renders the same bytes" {
     var b = State.init(1);
     var ra: geometry.Rgb = undefined;
     var rb: geometry.Rgb = undefined;
-    a.render(&ra);
-    b.render(&rb);
+    a.render(100, &ra);
+    b.render(100, &rb);
     try std.testing.expectEqualSlices(u8, &ra, &rb);
 }
 
@@ -43,7 +44,7 @@ test "no alive cells renders black" {
     s.setParam(1, 0); // alive 0%
     s.step(0.01);
     var rgb: geometry.Rgb = undefined;
-    s.render(&rgb);
+    s.render(100, &rgb);
     try std.testing.expectEqualSlices(u8, &geometry.black_rgb, &rgb);
 }
 
@@ -83,7 +84,7 @@ test "the parameters reach the simulation" {
     t.step(dt_max); // a whole pop, so every cell re-arms
     t.step(0.01);
     var rgb: geometry.Rgb = undefined;
-    t.render(&rgb);
+    t.render(100, &rgb);
     var lit: usize = 0;
     for (0..geometry.pixels) |i| {
         if (rgb[i * 3] == 0 and rgb[i * 3 + 1] == 0 and rgb[i * 3 + 2] == 0) continue;
@@ -104,7 +105,7 @@ test "a virtual pixel can be a 2x2 or 4x4 block of leds" {
         try std.testing.expectEqual(@as(u8, @intCast(c.cell)), s.options().cell);
         s.step(0.01);
         var rgb: geometry.Rgb = undefined;
-        s.render(&rgb);
+        s.render(100, &rgb);
         var blocks_differ = false;
         for (0..geometry.height) |y| for (0..geometry.width) |x| {
             const i = y * geometry.width + x;
@@ -113,6 +114,33 @@ test "a virtual pixel can be a 2x2 or 4x4 block of leds" {
             if (x >= c.cell and !std.mem.eql(u8, rgb[(origin - c.cell) * 3 ..][0..3], rgb[origin * 3 ..][0..3])) blocks_differ = true;
         };
         try std.testing.expect(blocks_differ);
+    }
+}
+
+test "a cell is driven at a straight share of its lit level, and goes off under the driver's floor" {
+    // the driver's level curve has a floor of 50: any non-zero frame byte lights the led at a fifth
+    // of full or more. a cell counting down to zero through frame bytes 2, 1 would sit at that
+    // floor and then snap off, so the share has to be taken in the driver's own terms, like the
+    // clock's fade does, and a share that falls under the floor is off.
+    for ([_]u8{ 100, 30 }) |brightness| {
+        const lut = pack.buildLut(brightness);
+        var s = State.init(5);
+        s.setParam(5, 0); // nothing tinted: every lit byte is a share of white
+        for (0..geometry.pixels) |i| s.tinted[i] = false;
+        for (0..geometry.pixels) |i| s.level[i] = @as(f32, @floatFromInt(i % 128)); // every level once
+        var rgb: geometry.Rgb = undefined;
+        s.render(brightness, &rgb);
+        for (0..geometry.pixels) |i| {
+            const share: u32 = @intFromFloat(@round(s.level[i] / level_max * 255.0));
+            const target: u32 = @as(u32, lut[255]) * share / 255;
+            const byte = rgb[i * 3];
+            if (target < pack.remap(1)) {
+                try std.testing.expectEqual(@as(u8, 0), byte);
+            } else {
+                const got: i32 = lut[byte];
+                try std.testing.expect(@abs(got - @as(i32, @intCast(target))) <= 2);
+            }
+        }
     }
 }
 
@@ -262,19 +290,23 @@ pub const State = struct {
         }
     }
 
-    /// row-major r,g,b: white or tint scaled by level / 127. every led of a virtual pixel reads
-    /// the same cell.
-    pub fn render(self: *const State, rgb: *geometry.Rgb) void {
+    /// row-major r,g,b: white or tint, driven at the cell's share (level / 127) of the colour's
+    /// lit level. the share is taken in the driver's terms, as the clock's fade takes its blend:
+    /// the level curve has a floor of 50, so scaling the frame byte would hold a dying cell at a
+    /// fifth of full and then snap it off, where `pack.faded` cuts to off once the share falls
+    /// under the floor. `brightness` is the panel's, which the share is shaped for. every led of a
+    /// virtual pixel reads the same cell.
+    pub fn render(self: *const State, brightness: u8, rgb: *geometry.Rgb) void {
         const o = self.options();
         const white = [3]u8{ 255, 255, 255 };
         const cell: usize = o.cell;
         const columns = geometry.width / cell;
         for (0..geometry.height) |y| for (0..geometry.width) |x| {
             const i = (y / cell) * columns + x / cell;
-            const f = std.math.clamp(self.level[i] / level_max, 0.0, 1.0);
+            const share: u8 = @intFromFloat(@round(std.math.clamp(self.level[i] / level_max, 0.0, 1.0) * 255.0));
             const c = if (self.tinted[i]) o.tint else white;
             const p = y * geometry.width + x;
-            inline for (0..3) |k| rgb[p * 3 + k] = @intFromFloat(@as(f32, @floatFromInt(c[k])) * f);
+            inline for (0..3) |k| rgb[p * 3 + k] = pack.faded(c[k], share, brightness);
         };
     }
 };

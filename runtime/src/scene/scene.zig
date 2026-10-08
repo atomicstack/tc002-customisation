@@ -80,7 +80,7 @@ test "selecting plasma renders exactly what a fresh plasma state renders" {
     art.select(.plasma);
     art.step(0.1);
     var from_art: geometry.Rgb = undefined;
-    art.render(&from_art);
+    art.render(100, &from_art);
     var direct = plasma.State.init(9);
     direct.step(0.1);
     var from_direct: geometry.Rgb = undefined;
@@ -91,10 +91,10 @@ test "selecting plasma renders exactly what a fresh plasma state renders" {
 test "reseeding art changes the popsquares output" {
     var art = Art.init(.popsquares, 1);
     var a: geometry.Rgb = undefined;
-    art.render(&a);
+    art.render(100, &a);
     art.reseed(2);
     var b: geometry.Rgb = undefined;
-    art.render(&b);
+    art.render(100, &b);
     try std.testing.expect(!std.mem.eql(u8, &a, &b));
 }
 
@@ -230,13 +230,15 @@ pub const Art = struct {
         }
     }
 
-    pub fn render(self: *const Art, rgb: *geometry.Rgb) void {
-        self.renderGenerator(self.generator, rgb);
+    /// `brightness` is the panel's: popsquares shapes its fading cells for the driver's level curve
+    /// at that brightness, the way the clock's fade does. the other generators draw frame bytes.
+    pub fn render(self: *const Art, brightness: u8, rgb: *geometry.Rgb) void {
+        self.renderGenerator(self.generator, brightness, rgb);
     }
 
-    pub fn renderGenerator(self: *const Art, g: Generator, rgb: *geometry.Rgb) void {
+    pub fn renderGenerator(self: *const Art, g: Generator, brightness: u8, rgb: *geometry.Rgb) void {
         switch (g) {
-            .popsquares => self.popsquares.render(rgb),
+            .popsquares => self.popsquares.render(brightness, rgb),
             .plasma => self.plasma.render(rgb),
             .cube => self.cube.render(rgb),
             .terrain => self.terrain.render(rgb),
@@ -285,9 +287,9 @@ test "terrain is seeded, animated, and fills the panel beneath a black sky" {
     var ra: geometry.Rgb = undefined;
     var rb: geometry.Rgb = undefined;
     var rc: geometry.Rgb = undefined;
-    a.render(&ra);
-    b.render(&rb);
-    c.render(&rc);
+    a.render(100, &ra);
+    b.render(100, &rb);
+    c.render(100, &rc);
     try std.testing.expectEqualSlices(u8, &ra, &rb);
     try std.testing.expect(!std.mem.eql(u8, &ra, &rc));
     try std.testing.expectEqualSlices(u8, geometry.black_rgb[0 .. geometry.width * 3], ra[0 .. geometry.width * 3]);
@@ -296,7 +298,7 @@ test "terrain is seeded, animated, and fills the panel beneath a black sky" {
         try std.testing.expect(ra[offset] != 0 or ra[offset + 1] != 0 or ra[offset + 2] != 0);
     }
     a.step(0.25);
-    a.render(&rb);
+    a.render(100, &rb);
     try std.testing.expect(!std.mem.eql(u8, &ra, &rb));
     try std.testing.expectEqual(Cadence{ .continuous = frame_period_ns }, a.cadence());
     a.select(.popsquares);
@@ -310,9 +312,9 @@ test "terrain controls change the frame and survive reseeding" {
     var a = Art.init(g, 42);
     var before: geometry.Rgb = undefined;
     var after: geometry.Rgb = undefined;
-    a.render(&before);
+    a.render(100, &before);
     a.setParam(2, 160); // taller hills
-    a.render(&after);
+    a.render(100, &after);
     try std.testing.expect(!std.mem.eql(u8, &before, &after));
     a.setParam(1, 12);
     a.setParam(3, 35);
@@ -331,11 +333,11 @@ test "terrain ignores negative time and accumulates small time steps" {
     var a = Art.init(g, 7);
     var before: geometry.Rgb = undefined;
     var after: geometry.Rgb = undefined;
-    a.render(&before);
+    a.render(100, &before);
     a.step(-1);
-    a.render(&after);
+    a.render(100, &after);
     try std.testing.expectEqualSlices(u8, &before, &after);
     for (0..250) |_| a.step(0.001);
-    a.render(&after);
+    a.render(100, &after);
     try std.testing.expect(!std.mem.eql(u8, &before, &after));
 }

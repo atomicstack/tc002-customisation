@@ -480,11 +480,11 @@ test "the outgoing scene stays live through a transition and is dropped when it 
     try std.testing.expect(a.takeTransition() != null);
     try std.testing.expectEqual(Base.art, a.outgoing.?.base);
     try std.testing.expect(a.renderOutgoing(0, &old));
-    a.art.render(&direct);
+    a.art.render(a.brightness, &direct);
     try std.testing.expectEqualSlices(u8, &direct, &old);
     a.tick(100_000_000, 0); // the art moves on and the old layer follows it
     try std.testing.expect(a.renderOutgoing(0, &old));
-    a.art.render(&direct);
+    a.art.render(a.brightness, &direct);
     try std.testing.expectEqualSlices(u8, &direct, &old);
     a.transitionDone();
     try std.testing.expect(!a.renderOutgoing(0, &old));
@@ -510,7 +510,7 @@ test "the outgoing scene stays live through a transition and is dropped when it 
     try std.testing.expectEqual(scene.Generator.popsquares, a.outgoing.?.generator);
     a.tick(3 * s_ns, 0);
     try std.testing.expect(a.renderOutgoing(0, &old));
-    a.art.renderGenerator(.popsquares, &direct);
+    a.art.renderGenerator(.popsquares, a.brightness, &direct);
     try std.testing.expectEqualSlices(u8, &direct, &old);
     // a second command while one is pending keeps the first outgoing layer
     _ = a.apply(.{ .set_base = .clock }, 3 * s_ns);
@@ -856,7 +856,7 @@ pub const Arbiter = struct {
             .raw => |r| rgb.* = r.rgb,
             .stream_arming, .none => {
                 switch (o.base) {
-                    .art => self.art.renderGenerator(o.generator, rgb),
+                    .art => self.art.renderGenerator(o.generator, self.brightness, rgb),
                     .clock => self.clock.renderWith(o.clock_style, wall_ns, self.brightness, rgb),
                     .canvas => rgb.* = self.canvas_frame,
                 }
@@ -1443,7 +1443,7 @@ pub const Arbiter = struct {
 
     fn renderBase(self: *Arbiter, wall_ns: u64, rgb: *geometry.Rgb) void {
         switch (self.base) {
-            .art => self.art.render(rgb),
+            .art => self.art.render(self.brightness, rgb),
             .clock => self.clock.renderPulsed(self.clock.style, wall_ns, self.separatorAlpha(self.last_tick_ns), self.brightness, rgb),
             .canvas => {
                 self.canvas.render(self.last_tick_ns, rgb);

@@ -725,7 +725,16 @@ one parameter the sketch did not have as a slider: the size of a virtual pixel
 in leds, `1x1` (the default, one cell per led), `2x2` or `4x4`. the sketch drew
 its squares bigger than a led, and at `4x4` the panel is thirteen by four fat
 cells popping, which reads from across a room. the simulation runs on the
-coarser grid, so a pop is one block.
+coarser grid, so a pop is one block. a cell is drawn for the led driver, not
+as a frame byte: the driver's level curve has a floor of 50 (see
+[`LED-SPI.md`](LED-SPI.md)), so scaling white by the level would hold every
+dying cell at a fifth of full and then snap it off, and a dim pop starting low
+would never be dimmer than that. instead each led is driven at a straight share
+of its colour's lit level at the panel's brightness, the way the clock's
+[fade](#clock-styles) is, and goes off once that share falls under the floor —
+which, at full brightness, is the last fifth of every pop, and at a night
+brightness most of it. popsquares is the one generator handed the brightness;
+the others draw frame bytes.
 
 **plasma.** the classic sum-of-sines effect, integer only: a 256-entry sine
 table, so it is cheap on the cortex-a7 and deterministic for a seed. it has no

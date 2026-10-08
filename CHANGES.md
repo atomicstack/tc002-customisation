@@ -6,7 +6,12 @@ refuses a version this file does not know. the github releases carry the same no
 
 ## unreleased
 
-nothing yet.
+- **popsquares cells go off instead of hanging at the driver's floor.** the led driver lights any
+  non-zero frame byte at a fifth of full or more, and the generator scaled white by the cell's
+  level, so a dying cell sat at that fifth and then snapped off, and `dim floor` at 0 never showed
+  a cell dimmer than that. each led is now driven at a straight share of its lit level at the
+  panel's brightness, as the clock's fade is, and is off once the share falls under the floor.
+  `Art.render` takes the brightness for it; the console's preview runs the same renderer.
 
 ## v0.3.6 — a twelve-hour clock, built with zig 0.17 (2026-10-08)
 
