@@ -6,6 +6,19 @@ refuses a version this file does not know. the github releases carry the same no
 
 ## unreleased
 
+nothing yet.
+
+## v0.3.6 — a twelve-hour clock, built with zig 0.17 (2026-10-08)
+
+- **the runtime is built with zig 0.17.0**, pinned exactly, up from 0.16.0. 0.17 removed the `**`
+  operator and split enum and struct reflection into two arrays, so the scene and api tables moved
+  with it; the output did not change (`panel-v2/scenes.json` is byte-identical, the console's wasm
+  tests pass against a 0.17 renderer). zig 0.17.0's own `std.debug.simple_panic` does not compile,
+  so `src/sys/panic.zig` carries a corrected copy. a wrong compiler now stops the build with one
+  line naming both versions instead of a wall of api errors.
+- **the console outlives the toolchain moving under it**: `start-panel.sh` keeps serving the wasm
+  already built when a rebuild fails, `$ZIG` names a compiler when the one on `PATH` is not the
+  pinned one, and `PYTHON=/usr/bin/python3` runs it while the macos local network grant is missing.
 - **`tc002-ntp-patch.py` knows both stock app builds**: beside app 1.1.1 it now patches the
   app 1.0.8 `libzkgui.so` (the "unit B" `res` of FINGERPRINTS.md) — period literal, first-delay
   instruction and server slots, all three offsets confirmed by disassembly. unknown builds are

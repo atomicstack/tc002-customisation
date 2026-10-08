@@ -26,6 +26,11 @@ note: this is beta software and changes to APIs / logic / file formats have the
 potential to break between commits. [`CHANGES.md`](CHANGES.md) says what each
 release brought. patches welcome 🫠
 
+the latest release is **v0.3.6**, a twelve-hour clock built with zig 0.17: the
+clock can count `12h` as well as `24h`, the night schedule eases its brightness
+in over two seconds instead of stepping, notification names run to 255
+characters, and `tc002-ntp-patch.py` patches both stock app builds seen so far.
+
 ### for the stock firmware
 
 what ulanzi ships, driven from your own machine instead of ulanzi studio:
