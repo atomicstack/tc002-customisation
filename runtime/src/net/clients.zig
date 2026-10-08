@@ -1,6 +1,8 @@
 //! named api tokens: one per integration, so a caller is an identity rather than an anonymous
 //! holder of one of two shared secrets. the store is fixed-capacity like every buffer here.
 const std = @import("std");
+// zig 0.17 removed `**`; `@splat` covers one element, this covers a longer unit
+const repeat = @import("../repeat.zig");
 const api = @import("api.zig");
 const http = @import("http.zig");
 
@@ -47,14 +49,14 @@ pub const Scope = enum(u4) {
     reboot = 11,
 
     pub fn bit(self: Scope) Set {
-        return @as(Set, 1) << @intFromEnum(self);
+        return @as(Set, 1) << @backingInt(self);
     }
 };
 
 /// a set of scopes. `u16` holds every bit with room for four more.
 pub const Set = u16;
 
-pub const count = @typeInfo(Scope).@"enum".fields.len;
+pub const count = @typeInfo(Scope).@"enum".field_names.len;
 /// every bit: what the admin token holds
 pub const all: Set = (@as(Set, 1) << count) - 1;
 /// what a named client may hold. minting is the one thing that cannot be delegated
@@ -67,7 +69,7 @@ pub fn has(set: Set, scope: Scope) bool {
 /// the widest a scope set is in the credentials file, as `a|b|c`
 pub const text_max = blk: {
     var n: usize = 0;
-    for (@typeInfo(Scope).@"enum".fields) |f| n += f.name.len + 1;
+    for (@typeInfo(Scope).@"enum".field_names) |name| n += name.len + 1;
     break :blk n;
 };
 
@@ -110,7 +112,7 @@ pub fn parseSet(text: []const u8) ?Set {
 /// the widest a scope list can render, as `"a","b",...`
 const scope_list_max = blk: {
     var n: usize = 0;
-    for (@typeInfo(Scope).@"enum".fields) |f| n += f.name.len + 3; // quotes and a comma
+    for (@typeInfo(Scope).@"enum".field_names) |name| n += name.len + 3; // quotes and a comma
     break :blk n;
 };
 
@@ -146,7 +148,7 @@ comptime {
 
 /// a client name as it travels over ipc: fixed width, because every buffer here is.
 pub const Name = struct {
-    bytes: [name_max]u8 = [_]u8{0} ** name_max,
+    bytes: [name_max]u8 = @splat(0),
     len: u8 = 0,
 
     pub fn init(text: []const u8) Name {
@@ -176,7 +178,7 @@ pub fn validName(name: []const u8) bool {
 pub const Client = struct {
     name: Name = .{},
     scopes: Set = 0,
-    token: api.Token = [_]u8{0} ** api.token_len,
+    token: api.Token = @splat(0),
     created_s: i64 = 0,
     last_used_s: i64 = 0,
 };
@@ -209,7 +211,7 @@ pub fn renderList(store: *const Store, out: []u8) ?[]const u8 {
 }
 
 pub const Store = struct {
-    entries: [max_clients]Client = [_]Client{.{}} ** max_clients,
+    entries: [max_clients]Client = @splat(.{}),
     len: usize = 0,
 
     pub fn find(self: *const Store, name: []const u8) ?*const Client {
@@ -266,7 +268,6 @@ pub const Store = struct {
     }
 };
 
-
 // the two sets the old role ladder could express, kept here only so the store's own tests read the
 // way they did. the point of scopes is everything between and beside them.
 const read_set: Set = Scope.status.bit();
@@ -287,7 +288,7 @@ test "a set survives the round trip through the credentials file's text form" {
 
 test "minting is the one thing a named client cannot be given" {
     var s = Store{};
-    try s.add("greedy", all, [_]u8{1} ** 32, 100);
+    try s.add("greedy", all, @splat(1), 100);
     const c = s.find("greedy").?;
     try testing.expect(!has(c.scopes, .tokens));
     try testing.expect(has(c.scopes, .settings)); // everything else it asked for, it got
@@ -296,22 +297,22 @@ test "minting is the one thing a named client cannot be given" {
 
 test "a store holds named clients and refuses a duplicate or a full store" {
     var s = Store{};
-    try s.add("kitchen", control_set, [_]u8{1} ** 32, 100);
-    try testing.expectError(error.NameTaken, s.add("kitchen", read_set, [_]u8{2} ** 32, 101));
+    try s.add("kitchen", control_set, @splat(1), 100);
+    try testing.expectError(error.NameTaken, s.add("kitchen", read_set, @splat(2), 101));
     try testing.expect(has(s.find("kitchen").?.scopes, .display));
     try testing.expect(s.find("absent") == null);
     var i: usize = 1;
     while (i < max_clients) : (i += 1) {
         var buf: [8]u8 = undefined;
-        try s.add(std.fmt.bufPrint(&buf, "c{d}", .{i}) catch unreachable, read_set, [_]u8{@intCast(i & 0xff)} ** 32, 100);
+        try s.add(std.fmt.bufPrint(&buf, "c{d}", .{i}) catch unreachable, read_set, @splat(@intCast(i & 0xff)), 100);
     }
-    try testing.expectError(error.StoreFull, s.add("one-too-many", read_set, [_]u8{9} ** 32, 100));
+    try testing.expectError(error.StoreFull, s.add("one-too-many", read_set, @splat(9), 100));
 }
 
 test "removing frees the slot and does not disturb the others" {
     var s = Store{};
-    try s.add("a", read_set, [_]u8{1} ** 32, 100);
-    try s.add("b", control_set, [_]u8{2} ** 32, 100);
+    try s.add("a", read_set, @splat(1), 100);
+    try s.add("b", control_set, @splat(2), 100);
     try testing.expect(s.remove("a"));
     try testing.expect(!s.remove("a"));
     try testing.expect(s.find("a") == null);
@@ -321,18 +322,18 @@ test "removing frees the slot and does not disturb the others" {
 
 test "a token matches its own client and nothing else" {
     var s = Store{};
-    try s.add("a", read_set, [_]u8{1} ** 32, 100);
-    try s.add("b", control_set, [_]u8{2} ** 32, 100);
-    try testing.expectEqual(@as(?usize, 0), s.match([_]u8{1} ** 32));
-    try testing.expectEqual(@as(?usize, 1), s.match([_]u8{2} ** 32));
-    try testing.expect(s.match([_]u8{3} ** 32) == null);
+    try s.add("a", read_set, @splat(1), 100);
+    try s.add("b", control_set, @splat(2), 100);
+    try testing.expectEqual(@as(?usize, 0), s.match(@splat(1)));
+    try testing.expectEqual(@as(?usize, 1), s.match(@splat(2)));
+    try testing.expect(s.match(@splat(3)) == null);
 }
 
 test "names are path segments and log tokens, so they stay boring" {
     try testing.expect(validName("kitchen"));
     try testing.expect(validName("home-assistant.bins"));
     try testing.expect(!validName(""));
-    try testing.expect(!validName("x" ** (name_max + 1)));
+    try testing.expect(!validName(repeat.bytes("x", (name_max + 1))));
     try testing.expect(!validName(".hidden"));
     try testing.expect(!validName("has space"));
     try testing.expect(!validName("slash/es"));
@@ -341,7 +342,7 @@ test "names are path segments and log tokens, so they stay boring" {
 
 test "an invalid name never reaches the store" {
     var s = Store{};
-    try testing.expectError(error.InvalidName, s.add("has space", read_set, [_]u8{1} ** 32, 100));
+    try testing.expectError(error.InvalidName, s.add("has space", read_set, @splat(1), 100));
     try testing.expectEqual(@as(usize, 0), s.len);
 }
 
@@ -351,29 +352,29 @@ test "rotation replaces the secret in place, and works when the store is full" {
     var i: usize = 0;
     while (i < max_clients) : (i += 1) {
         var buf: [8]u8 = undefined;
-        try s.add(std.fmt.bufPrint(&buf, "c{d}", .{i}) catch unreachable, control_set, [_]u8{@intCast(i & 0xff)} ** 32, 100);
+        try s.add(std.fmt.bufPrint(&buf, "c{d}", .{i}) catch unreachable, control_set, @splat(@intCast(i & 0xff)), 100);
     }
-    try testing.expectError(error.StoreFull, s.add("another", read_set, [_]u8{9} ** 32, 200));
+    try testing.expectError(error.StoreFull, s.add("another", read_set, @splat(9), 200));
 
     const before = s.find("c0").?.*;
-    try testing.expect(s.rotate("c0", [_]u8{0xee} ** 32, 500, null));
+    try testing.expect(s.rotate("c0", @splat(0xee), 500, null));
     const after = s.find("c0").?;
-    try testing.expectEqual([_]u8{0xee} ** 32, after.token);
+    try testing.expectEqual(@as(api.Token, @splat(0xee)), after.token);
     try testing.expectEqual(@as(i64, 500), after.created_s); // the age that matters is the secret's
     try testing.expectEqual(@as(i64, 0), after.last_used_s); // nothing has picked the new one up yet
     try testing.expectEqual(before.scopes, after.scopes); // unchanged when none is supplied
     try testing.expectEqual(max_clients, s.len); // no slot consumed
-    try testing.expect(s.match([_]u8{0} ** 32) == null); // the old secret is gone
-    try testing.expectEqual(@as(?usize, 0), s.match([_]u8{0xee} ** 32));
+    try testing.expect(s.match(@splat(0)) == null); // the old secret is gone
+    try testing.expectEqual(@as(?usize, 0), s.match(@splat(0xee)));
 }
 
 test "rotation can change the scopes, and refuses a name that is not a client" {
     var s = Store{};
-    try s.add("wall", read_set, [_]u8{1} ** 32, 100);
-    try testing.expect(s.rotate("wall", [_]u8{2} ** 32, 200, control_set));
+    try s.add("wall", read_set, @splat(1), 100);
+    try testing.expect(s.rotate("wall", @splat(2), 200, control_set));
     try testing.expect(has(s.find("wall").?.scopes, .display));
     // control and admin are not clients and are not in this namespace
-    try testing.expect(!s.rotate("absent", [_]u8{3} ** 32, 200, null));
-    try testing.expect(!s.rotate("control", [_]u8{3} ** 32, 200, null));
-    try testing.expect(!s.rotate("admin", [_]u8{3} ** 32, 200, null));
+    try testing.expect(!s.rotate("absent", @splat(3), 200, null));
+    try testing.expect(!s.rotate("control", @splat(3), 200, null));
+    try testing.expect(!s.rotate("admin", @splat(3), 200, null));
 }

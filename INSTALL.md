@@ -21,13 +21,13 @@ broken.
 | `adb` | the only way in; the device ships with adbd open and root on `:5555` | `brew install android-platform-tools` · `apt install adb` |
 | `python3` | the image tool and the adoption scripts | ships with macOS at `/usr/bin/python3`; homebrew's is fine too, see the LAN note below |
 | `squashfs-tools` | `res` is a squashfs; your image is repacked locally | `brew install squashfs-tools` · `apt install squashfs-tools` |
-| `zig` **0.16.0 exactly** | **only from a git checkout** — see below | [ziglang.org/download](https://ziglang.org/download/) — `brew install zig` tracks the newest release, which will not be 0.16.0 |
+| `zig` **0.17.0 exactly** | **only from a git checkout** — see below | `brew install zig` while 0.17.0 is current, otherwise [ziglang.org/download](https://ziglang.org/download/) |
 | `go` 1.24+ | `tc002`, the command-line client for the runtime's api (`make build` in [`api-client-v2/`](api-client-v2/README.md)); optional, the adoption script does not need it | `brew install go` · `apt install golang` |
 
 **"No compiler" is true only from a release tarball.** The tarball carries the
 ARM binaries and the static busybox prebuilt. From a **git checkout**,
 `tc002-mkimage.sh` detects `build.zig` and builds the payload itself, so you
-need zig 0.16.0 exactly — any other version stops the build with a line
+need zig 0.17.0 exactly — any other version stops the build with a line
 naming the one it wants — and one
 `runtime/tools/tc002-mkbusybox.sh` run to produce the busybox and its applet
 list.
@@ -200,7 +200,7 @@ is running.
 ## 7. Building a release yourself
 
 ```bash
-./tc002-mkrelease.sh            # needs zig 0.16.0 exactly; writes dist/
+./tc002-mkrelease.sh            # needs zig 0.17.0 exactly; writes dist/
 ```
 
 It builds the ARM binaries **with `-Dbin_dir=/res/bin -Dnetup=true`** — these

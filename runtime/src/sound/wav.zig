@@ -6,6 +6,8 @@
 //! an asset and a pixel clock's notification chirp does not need more. anything else (ima adpcm,
 //! a-law, 24- and 32-bit, float) is refused by name rather than played as noise.
 const std = @import("std");
+// zig 0.17 removed `**`; `@splat` covers one element, this covers a longer unit
+const repeat = @import("../repeat.zig");
 
 pub const Error = error{
     NotRiff,
@@ -194,7 +196,7 @@ test "8-bit wave data is unsigned, so silence is 128 and not 0" {
 
 test "duration is frames over rate, and stereo halves the frames for the same bytes" {
     var buf: [1024]u8 = undefined;
-    const samples: [320]u8 = [_]u8{0} ** 320; // 160 s16 samples
+    const samples: [320]u8 = @splat(0); // 160 s16 samples
     const mono = try parse(build(&buf, 1, 1, 8000, 16, &samples));
     try testing.expectEqual(@as(u32, 160), mono.frames());
     try testing.expectEqual(@as(u32, 20), mono.durationMs());
@@ -264,8 +266,8 @@ test "everything this device cannot play is refused by name" {
 
 test "a file that is not a wave at all is refused before anything is read from it" {
     try testing.expectError(Error.Truncated, parse("RIFF"));
-    try testing.expectError(Error.NotRiff, parse("MThd" ++ [_]u8{0} ** 16));
-    try testing.expectError(Error.NotWave, parse("RIFF" ++ [_]u8{0} ** 4 ++ "AVI " ++ [_]u8{0} ** 8));
+    try testing.expectError(Error.NotRiff, parse("MThd" ++ repeat.bytes("\x00", 16)));
+    try testing.expectError(Error.NotWave, parse("RIFF" ++ repeat.bytes("\x00", 4) ++ "AVI " ++ repeat.bytes("\x00", 8)));
     // a wave with a format but no samples is legal and simply has nothing to play
     var buf: [64]u8 = undefined;
     const hdr = build(&buf, 1, 1, 16000, 16, &[_]u8{});

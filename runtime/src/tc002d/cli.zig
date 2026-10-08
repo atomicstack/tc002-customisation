@@ -112,7 +112,7 @@ pub fn parse(args: []const [:0]const u8) ParseError!Outcome {
         } else if (std.mem.eql(u8, a, "--base")) {
             c.base = if (std.mem.eql(u8, v, "clock")) .clock else if (std.mem.eql(u8, v, "art")) .art else if (std.mem.eql(u8, v, "canvas")) .canvas else return error.BadValue;
         } else if (std.mem.eql(u8, a, "--generator")) {
-            c.generator = @enumFromInt(try parseU32(v, 0, scene.generator_count - 1));
+            c.generator = @fromBackingInt(@intCast(try parseU32(v, 0, scene.generator_count - 1)));
         } else if (std.mem.eql(u8, a, "--seed")) {
             c.seed = try parseU32(v, 0, std.math.maxInt(u32));
         } else if (std.mem.eql(u8, a, "--brightness")) {

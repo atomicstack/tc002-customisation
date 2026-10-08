@@ -327,8 +327,7 @@ fn waveTable(comptime n: usize, comptime amp: i32) [n]i32 {
 /// what `random` picks from: every effect but the two that are not really one
 const random_pool = blk: {
     var pool: []const Effect = &.{};
-    for (std.meta.fields(Effect)) |f| {
-        const e: Effect = @enumFromInt(f.value);
+    for (std.meta.tags(Effect)) |e| {
         if (e != .cut and e != .random) pool = pool ++ &[_]Effect{e};
     }
     const out = pool[0..pool.len].*;
@@ -555,11 +554,13 @@ test "cut and fade" {
 }
 
 test "every effect shows only the old frame at the start" {
-    inline for (std.meta.fields(Effect)) |f| {
-        const e: Effect = @enumFromInt(f.value);
-        if (e == .cut) continue;
-        const out = run(e, .left, 0);
-        try std.testing.expectEqual(@as(usize, 0), countNew(&out));
+    inline for (std.meta.tags(Effect)) |e| {
+        // `cut` has no in-between to show, and an `inline for` cannot `continue` past it: the
+        // condition is comptime-known, which 0.17 refuses inside a runtime block
+        if (e != .cut) {
+            const out = run(e, .left, 0);
+            try std.testing.expectEqual(@as(usize, 0), countNew(&out));
+        }
     }
 }
 
@@ -844,7 +845,7 @@ test "interlace slides alternate lines out opposite ways" {
 }
 
 test "random resolves to a concrete effect when a run begins" {
-    var seen = std.EnumSet(Effect).initEmpty();
+    var seen: std.EnumSet(Effect) = .empty;
     var seed: u64 = 0;
     while (seed < 400) : (seed += 1) {
         const s = (Spec{ .effect = .random, .direction = .up, .duration_ns = 9 }).resolved(seed * 16_666_667);
@@ -868,8 +869,7 @@ test "easing reshapes progress and a reversed exit mirrors it" {
     try std.testing.expectEqual(@as(u32, 128), Easing.ease_in_out.apply(128));
     try std.testing.expect(Easing.ease_in_out.apply(64) < 64);
     try std.testing.expect(Easing.ease_in_out.apply(192) > 192);
-    inline for (std.meta.fields(Easing)) |f| {
-        const e: Easing = @enumFromInt(f.value);
+    inline for (std.meta.tags(Easing)) |e| {
         try std.testing.expectEqual(@as(u32, 0), e.apply(0));
         try std.testing.expectEqual(@as(u32, 256), e.apply(256));
         var last: u32 = 0;

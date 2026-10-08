@@ -114,11 +114,11 @@ pub const State = struct {
     }
 
     fn palette(self: *const State) Palette {
-        return @enumFromInt(@min(self.values[0], 1));
+        return @fromBackingInt(@intCast(@min(self.values[0], 1)));
     }
 
     fn spin(self: *const State) Spin {
-        return @enumFromInt(@min(self.values[4], 2));
+        return @fromBackingInt(@intCast(@min(self.values[4], 2)));
     }
 
     fn speed(self: *const State) f32 {
@@ -250,7 +250,7 @@ pub const State = struct {
 /// output row. a cube at this size is mostly edges, and whole-pixel edges are what make it look
 /// like a staircase rather than a solid.
 fn fillQuad(rgb: *geometry.Rgb, q: [4][2]f32, colour: [3]u8) void {
-    var coverage = [_]u8{0} ** (geometry.width * geometry.height);
+    var coverage: [geometry.width * geometry.height]u8 = @splat(0);
     var top: f32 = q[0][1];
     var bottom: f32 = q[0][1];
     for (q[1..]) |p| {

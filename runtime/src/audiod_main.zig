@@ -26,7 +26,8 @@ const store = @import("sound/store.zig");
 const wav = @import("sound/wav.zig");
 const vendor = @import("sound/vendor.zig");
 
-pub const panic = std.debug.simple_panic;
+// simple_panic, with the one function 0.17.0 cannot compile replaced
+pub const panic = @import("sys/panic.zig");
 pub const std_options: std.Options = .{ .enable_segfault_handler = false };
 
 const supervisor_fd: sys.Fd = 3;
@@ -136,7 +137,7 @@ fn send(msg: messages.Message) void {
 
 fn report() void {
     send(.{ .sound_status = .{
-        .state = @intFromEnum(state),
+        .state = @backingInt(state),
         .playing = playing.name,
         .ms_left = playing.msLeft(),
         .underruns = underruns,
@@ -146,7 +147,7 @@ fn report() void {
 /// re-read the store. called at startup and whenever the supervisor says it changed.
 fn reload(state_dir: []const u8) void {
     var path_buf: [192]u8 = undefined;
-    const path = std.fmt.bufPrintZ(&path_buf, "{s}/config/sounds.bin", .{state_dir}) catch return;
+    const path = std.fmt.bufPrintSentinel(&path_buf, "{s}/config/sounds.bin", .{state_dir}, 0) catch return;
     const bytes = sys.readFile(path.ptr, &file_buf) catch |e| {
         log.info("no sounds to load: {s}", .{sys.errText(e)});
         return;

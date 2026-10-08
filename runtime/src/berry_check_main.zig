@@ -7,7 +7,8 @@ const std = @import("std");
 const sys = @import("sys/linux.zig");
 const berry = @import("berry/vm.zig");
 
-pub const panic = std.debug.simple_panic;
+// simple_panic, with the one function 0.17.0 cannot compile replaced
+pub const panic = @import("sys/panic.zig");
 pub const std_options: std.Options = .{ .enable_segfault_handler = false };
 
 var out_len: usize = 0;

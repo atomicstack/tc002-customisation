@@ -36,13 +36,13 @@ fn expectRejected(res: Result, why: Reject) !void {
 
 test "notification bounds: 128 printable ascii characters, 1..300 seconds" {
     var a = fresh();
-    const long = [_]u8{'x'} ** 129;
+    const long: [129]u8 = @splat('x');
     try expectRejected(a.apply(.{ .notify = .{ .text = &long, .colour = white, .duration_s = 5 } }, 0), .invalid_text);
     try expectRejected(a.apply(.{ .notify = .{ .text = "a\x01b", .colour = white, .duration_s = 5 } }, 0), .invalid_text);
     try expectRejected(a.apply(.{ .notify = .{ .text = "ok", .colour = white, .duration_s = 0 } }, 0), .invalid_duration);
     try expectRejected(a.apply(.{ .notify = .{ .text = "ok", .colour = white, .duration_s = 301 } }, 0), .invalid_duration);
     try std.testing.expectEqual(@as(u32, 0), a.revision);
-    const ok = [_]u8{'y'} ** 128;
+    const ok: [128]u8 = @splat('y');
     try std.testing.expectEqual(Result{ .applied = 1 }, a.apply(.{ .notify = .{ .text = &ok, .colour = white, .duration_s = 300 } }, 0));
 }
 
@@ -600,7 +600,7 @@ test "ip and time updates redraw without changing the revision" {
     a.render(0, &rgb);
     var expected = geometry.black_rgb;
     font.blit(&expected, 11, 4, "no ip", white);
-    pages.draw(&expected, menu.count, @intFromEnum(menu.Item.ip), pages.alphaAt(0));
+    pages.draw(&expected, menu.count, @backingInt(menu.Item.ip), pages.alphaAt(0));
     try std.testing.expectEqualSlices(u8, &expected, &rgb);
     try std.testing.expectEqual(Result{ .applied = 0 }, a.apply(.{ .ip_changed = .{ 10, 0, 0, 5 } }, 0));
     try std.testing.expect(a.takeDirty());
@@ -641,9 +641,9 @@ pub const scroll_period_ns: u64 = 33_333_333;
 
 /// the next (or previous) value of an enum, wrapping around
 fn cycle(comptime E: type, v: E, forward: bool) E {
-    const n = @typeInfo(E).@"enum".fields.len;
-    const i: usize = @intFromEnum(v);
-    return @enumFromInt(if (forward) (i + 1) % n else (i + n - 1) % n);
+    const n = @typeInfo(E).@"enum".field_names.len;
+    const i: usize = @backingInt(v);
+    return @fromBackingInt(@intCast(if (forward) (i + 1) % n else (i + n - 1) % n));
 }
 const arming_wait_ns: u64 = 2 * s_ns;
 
@@ -746,7 +746,7 @@ pub const Statement = struct {
     stack: bool = false,
     hold: bool = false,
     text_len: u8 = 0,
-    text: [text_max]u8 = [_]u8{0} ** text_max,
+    text: [text_max]u8 = @splat(0),
     /// the notification is a document; `text` is its summary
     rich: bool = false,
     /// a brightness that eases over this many milliseconds; 0 lands at once
@@ -969,7 +969,7 @@ pub const Arbiter = struct {
                 if (b != self.base) {
                     // between the base scenes the default is a slide that follows where their
                     // buttons sit: a scene further right comes in from the right, like pages
-                    const forward = @intFromEnum(b) > @intFromEnum(self.base);
+                    const forward = @backingInt(b) > @backingInt(self.base);
                     self.pending = spec orelse .{ .effect = .slide, .direction = if (forward) .left else .right, .duration_ns = self.default_transition.duration_ns };
                 } else if (self.overlay != .none) self.mark(spec);
                 self.base = b;
@@ -1159,8 +1159,8 @@ pub const Arbiter = struct {
     /// the pages the dial walks in the showing scene, and the one it is on
     fn pageSet(self: *const Arbiter) struct { count: usize, index: usize } {
         return switch (self.base) {
-            .art => .{ .count = @typeInfo(scene.Generator).@"enum".fields.len, .index = @intFromEnum(self.art.generator) },
-            .clock => .{ .count = @typeInfo(clock.Font).@"enum".fields.len, .index = @intFromEnum(self.clock.style.font) },
+            .art => .{ .count = @typeInfo(scene.Generator).@"enum".field_names.len, .index = @backingInt(self.art.generator) },
+            .clock => .{ .count = @typeInfo(clock.Font).@"enum".field_names.len, .index = @backingInt(self.clock.style.font) },
             .canvas => .{ .count = 0, .index = 0 },
         };
     }
@@ -1203,8 +1203,8 @@ pub const Arbiter = struct {
     /// a parameter of a named generator, whichever one is showing. art's own first parameter is
     /// the generator selector, so the generator's own slots start one along.
     pub fn setGeneratorParam(self: *Arbiter, owner: u8, slot: u8, value: u32) void {
-        if (owner >= @typeInfo(scene.Generator).@"enum".fields.len) return;
-        const g: scene.Generator = @enumFromInt(owner);
+        if (owner >= @typeInfo(scene.Generator).@"enum".field_names.len) return;
+        const g: scene.Generator = @fromBackingInt(@intCast(owner));
         const was = self.art.generator;
         self.art.generator = g;
         self.art.setParam(@as(usize, slot) + scene.art_params.len, value);
@@ -1229,7 +1229,7 @@ pub const Arbiter = struct {
     /// the settings of whatever is showing, opened by a short press of the knob
     pub fn openSceneMenu(self: *Arbiter, now_ns: u64) void {
         const table = self.sceneParams();
-        var values: param.PageValues = [_]u32{0} ** param.max_per_page;
+        var values: param.PageValues = @splat(0);
         for (table, 0..) |_, i| values[i] = self.getSceneParam(i);
         self.menu_state = menu.Menu.openScene(table, values, now_ns);
         self.dirty = true;

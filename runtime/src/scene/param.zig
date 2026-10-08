@@ -16,7 +16,7 @@ pub const Kind = enum(u8) { choice, number, colour, toggle };
 /// live in these slots instead. the order is the storage layout, so new generators go on the end.
 pub const Owner = enum(u8) { popsquares = 0, plasma = 1, cube = 2, terrain = 3 };
 
-pub const owner_count = @typeInfo(Owner).@"enum".fields.len;
+pub const owner_count = @typeInfo(Owner).@"enum".field_names.len;
 
 pub const Param = struct {
     name: []const u8,
@@ -150,9 +150,9 @@ pub fn hueOf(v: u32) u8 {
 /// an enum's field names as a choices list, so a table follows the enum it stands for
 pub fn choicesOf(comptime E: type) []const []const u8 {
     comptime {
-        const fields = @typeInfo(E).@"enum".fields;
-        var names: [fields.len][]const u8 = undefined;
-        for (fields, 0..) |f, i| names[i] = f.name;
+        const field_names = @typeInfo(E).@"enum".field_names;
+        var names: [field_names.len][]const u8 = undefined;
+        for (field_names, 0..) |name, i| names[i] = name;
         const frozen = names;
         return &frozen;
     }
@@ -168,7 +168,7 @@ pub const PageValues = [max_per_page]u32;
 
 /// fill in every declared default
 pub fn defaults(table: []const Param) Values {
-    var v: Values = [_]u32{0} ** max_per_owner;
+    var v: Values = @splat(0);
     for (table, 0..) |p, i| {
         if (i >= max_per_owner) break;
         v[i] = p.clamp(p.default);

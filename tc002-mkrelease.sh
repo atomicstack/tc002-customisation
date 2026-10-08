@@ -13,7 +13,7 @@
 # two clocks measured here are sixteen days apart. every user's image is built
 # on their own machine from a dump of their own device. see FINGERPRINTS.md.
 #
-# zig 0.16 is required HERE and nowhere downstream. publishing is deliberately
+# zig 0.17 is required HERE and nowhere downstream. publishing is deliberately
 # manual: this script prints the `gh release create` line, it does not run it.
 
 set -eu
@@ -33,7 +33,7 @@ STAGE="$OUTDIR/$NAME"
 say() { printf '== %s\n' "$*"; }
 
 say "version $VERSION"
-command -v zig >/dev/null || { echo "need zig 0.16 to build the payload" >&2; exit 1; }
+command -v zig >/dev/null || { echo "need zig 0.17 to build the payload" >&2; exit 1; }
 
 # -Dbin_dir and -Dnetup are not optional here. they are compiled in: the flashed
 # supervisor spawns its five children by absolute path and never sees an

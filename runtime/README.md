@@ -15,11 +15,31 @@ in [`../RUNTIME.md`](../RUNTIME.md); this file is the build-and-run reference.**
 
 ## build and test
 
-only zig 0.16.0 is required; the build refuses any other version, and says so as its first
-error rather than as a wall of complaints about somebody else's `std`. a package manager that
-tracks the newest release will not keep you on it: take the 0.16.0 build from
-[ziglang.org/download](https://ziglang.org/download/), and where a script runs the compiler for
-you (`panel-v2/start-panel.sh`) `ZIG=/path/to/zig` names which one.
+only zig 0.17.0 is required; the build refuses any other version, and says so as its first
+error rather than as a wall of complaints about somebody else's `std`. where a package manager
+has moved on, take the 0.17.0 build from [ziglang.org/download](https://ziglang.org/download/),
+and where a script runs the compiler for you (`panel-v2/start-panel.sh`) `ZIG=/path/to/zig` names
+which one.
+
+the move from 0.16.0 to 0.17.0 was not a version bump. what it took, so nobody has to find out
+twice:
+
+| 0.16 | 0.17 |
+|---|---|
+| `a ** n` | **the operator is gone.** `@splat(a)` where the result type is known, `@as([n]T, @splat(a))` where it is not, and `repeat.bytes("ab", n)` for a unit longer than one element |
+| `@typeInfo(E).@"enum".fields` with `f.name` / `f.value` | `field_names` and `field_values`, two arrays in step — zip them, or use `std.meta.tags(E)` when only the value is wanted. `@"struct"` splits the same way into `field_names` / `field_types` |
+| `std.meta.fields` | `std.meta.fieldNames` (it is a `@compileError` now) |
+| `@intFromEnum` / `@enumFromInt` | `@backingInt` / `@fromBackingInt` — `zig fmt` rewrites these for you |
+| `std.fmt.bufPrintZ(buf, f, a)` | `std.fmt.bufPrintSentinel(buf, f, a, 0)` |
+| `std.ascii.indexOfIgnoreCase` | gone; only `eqlIgnoreCase` and the `startsWith`/`endsWith` pair remain |
+| `std.EnumSet(E).initEmpty()` | `.empty` |
+| `linux.wait4(pid, *u32, ...)` | the status is `*i32` |
+| `b.pathFromRoot(".")` | `b.root`, a `Cache.Path`: `.toString(alloc)` or `.joinString(alloc, sub)` |
+| `b.args` (the `zig build run -- …` channel) | gone, with no replacement; `led-zig` takes `-Dargs` instead |
+| `.ReleaseSafe` as an enum literal | `.safe` |
+
+an `inline for` whose body compares a comptime value can no longer `continue` past it — 0.17 calls
+that comptime control flow inside a runtime block. bind the value to a `const` or invert the test.
 
 ```bash
 cd runtime
@@ -197,9 +217,17 @@ normal firmware builds embed the checked-in artifacts and do not require python 
   nothing is tossed from the buffer until the head completes, but that is an implementation detail
   rather than a contract, and it is quadratic in the number of partial reads. the streaming response
   we actually needed is one extra header builder in `net/sse.zig`.
-- **no tls**: zig 0.16's std has a tls client but no server, and no tls library is vendored. only the
+- **no tls**: zig 0.17's std has a tls client but no server, and no tls library is vendored. only the
   plaintext profile ships; status reports `transport: plaintext`; an mqtt `tls: true` setting stays
   disconnected instead of falling back. tokens are exposed to anyone on the lan path.
+- **two small files exist only because zig 0.17 left a hole.** `src/sys/panic.zig` re-exports
+  `std.debug.simple_panic` and replaces the one function in it that does not compile (0.17.0's
+  `unexpectedErrorCode` discards an error value, which 0.17 made an error) — without it nothing
+  targeting the device builds at all, and `std.debug.FullPanic`, the sanctioned alternative,
+  formats its messages and would pull std.fmt into six size-audited binaries. `src/repeat.zig` is
+  a comptime string repeater: 0.17 removed `**`, `@splat` replaces it for a single element, and
+  nothing replaces it for a longer unit (`"ab" ** 32`, which is how the token tests are written).
+  **delete the first as soon as a zig release fixes simple_panic**; the second is permanent.
 - **relay through the supervisor** instead of a netd→renderer channel: one fewer descriptor to pass
   across renderer restarts; the supervisor forwards typed messages and parses no http or mqtt.
 - **`std.json` for bodies** (validated utf-8, strict fields) rather than a hand parser: costs code
@@ -430,7 +458,7 @@ runtime/tools/tc002-mkbusybox.sh [workdir] [out]   # -> a static armv7 busybox, 
 it fetches a pinned busybox tarball, **checks it against a recorded sha256**, configures from
 `allnoconfig` up (so the applet list is a decision, not a default), and cross-compiles.
 
-**zig is the entire toolchain.** the repo already pins zig 0.16 for the runtime and `zig cc` ships
+**zig is the entire toolchain.** the repo already pins zig 0.17 for the runtime and `zig cc` ships
 musl and the linux headers, so this adds no dependency: no docker, no crosstool, no homebrew
 binutils. `zig ar` stands in for gnu `ar` and `zig cc` drives the relocatable link, because macos
 ships bsd versions of both that busybox's makefiles cannot use.

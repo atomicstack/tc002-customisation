@@ -11,6 +11,8 @@
 //! and the whole store has to fit a buffer the supervisor can write atomically. the count is then
 //! whatever fits, and a full store reports bytes rather than "no free slot".
 const std = @import("std");
+// zig 0.17 removed `**`; `@splat` covers one element, this covers a longer unit
+const repeat = @import("../repeat.zig");
 
 test "a script goes in and comes back" {
     var s = Store{};
@@ -44,7 +46,7 @@ test "removing frees the bytes back" {
 
 test "the bounds are the physical ones, and each says which" {
     var s = Store{};
-    const long_name = "x" ** (name_max + 1);
+    const long_name = repeat.bytes("x", (name_max + 1));
     try std.testing.expectError(error.NameTooLong, s.put(long_name, "1"));
     try std.testing.expectError(error.EmptyName, s.put("", "1"));
 
@@ -85,7 +87,7 @@ test "entries keep their insertion order, so a listing is stable" {
 test "the file round-trips, and junk is refused rather than half-read" {
     var s = Store{};
     try s.put("autoexec", "print('boot')");
-    try s.put("rules", "var x = 2")    ;
+    try s.put("rules", "var x = 2");
     var file: [budget + 64]u8 = undefined;
     const bytes = s.save(&file);
 
@@ -118,7 +120,7 @@ pub const budget = 64 * 1024;
 
 /// a script name as it travels over ipc: fixed width, because every buffer here is.
 pub const Name = struct {
-    bytes: [name_max]u8 = [_]u8{0} ** name_max,
+    bytes: [name_max]u8 = @splat(0),
     len: u8 = 0,
 
     pub fn init(text: []const u8) Name {
@@ -150,7 +152,7 @@ test "names are path segments and log tokens, so they stay boring" {
     try std.testing.expect(validName("rules.doorbell"));
     try std.testing.expect(validName("a-b_c9"));
     try std.testing.expect(!validName(""));
-    try std.testing.expect(!validName("x" ** (name_max + 1)));
+    try std.testing.expect(!validName(repeat.bytes("x", (name_max + 1))));
     try std.testing.expect(!validName("has space"));
     try std.testing.expect(!validName("../escape"));
     try std.testing.expect(!validName(".hidden"));

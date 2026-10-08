@@ -53,7 +53,7 @@ test "a late mac moves the device, and nothing else does" {
     var a: [max]u8 = undefined;
     var b: [max]u8 = undefined;
     const mac = [6]u8{ 0xde, 0xad, 0xbe, 0xef, 0x00, 0x01 };
-    const boot = deviceId(&a, false, .{0} ** 6, 0x1234);
+    const boot = deviceId(&a, false, @splat(0), 0x1234);
     var boot_copy: [max]u8 = undefined;
     @memcpy(boot_copy[0..boot.len], boot);
     const real = deviceId(&b, true, mac, 0x1234);
@@ -103,5 +103,5 @@ test "the mdns host name is the device id, not a second scheme" {
 test "every id fits the buffer" {
     var a: [max]u8 = undefined;
     try std.testing.expect(deviceId(&a, true, .{ 0xff, 0xff, 0xff, 0xff, 0xff, 0xff }, 0xffffffff).len <= max);
-    try std.testing.expect(deviceId(&a, false, .{0} ** 6, 0xffffffff).len <= max);
+    try std.testing.expect(deviceId(&a, false, @splat(0), 0xffffffff).len <= max);
 }

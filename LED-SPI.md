@@ -115,7 +115,7 @@ option rather than read from the device's settings.
 
 ## `led-zig/`: the same renderer in idiomatic zig
 
-[`led-zig/`](led-zig/) is a from-scratch zig 0.16 implementation with the same
+[`led-zig/`](led-zig/) is a from-scratch zig 0.17 implementation with the same
 panel bytes, popsquares behaviour, cli, timing, shutdown, and adb workflow:
 
 | concern | `led/` c | `led-zig/` zig |

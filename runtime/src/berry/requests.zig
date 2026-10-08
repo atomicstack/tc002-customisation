@@ -43,7 +43,7 @@ test "named run selects stored source without changing the store" {
     try testing.expectEqualStrings("hello", w.name.slice());
     try testing.expectEqualStrings("print('stored')", w.slice());
     // an eval, so the supervisor answers it and never writes it back
-    try testing.expectEqual(@intFromEnum(messages.BerryScript.Op.eval), w.op);
+    try testing.expectEqual(@backingInt(messages.BerryScript.Op.eval), w.op);
     try testing.expectEqualDeep(before, scripts);
 }
 

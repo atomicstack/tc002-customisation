@@ -15,7 +15,8 @@ const sys = @import("sys/linux.zig");
 const codec = @import("ipc/codec.zig");
 const linux = std.os.linux;
 
-pub const panic = std.debug.simple_panic;
+// simple_panic, with the one function 0.17.0 cannot compile replaced
+pub const panic = @import("sys/panic.zig");
 pub const std_options: std.Options = .{ .enable_segfault_handler = false };
 
 const sizes = [_]usize{ 1024, 2048, 4096, codec.max_message, 16384, 32768, 65536, 131072, 262144 };

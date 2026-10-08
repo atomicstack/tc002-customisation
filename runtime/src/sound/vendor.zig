@@ -86,7 +86,7 @@ pub fn load() ?Api {
 /// the 52-byte attribute payload, exactly as `media::SoundDevice::init` builds it. copied rather
 /// than interpreted: the field names are still unknown and do not need to be.
 pub fn attrBytes(rate: u32, channels: u32) [52]u8 {
-    var a = [_]u8{0} ** 52;
+    var a: [52]u8 = @splat(0);
     std.mem.writeInt(u32, a[0..4], rate, .little);
     if (channels == 2) std.mem.writeInt(u32, a[12..16], 1, .little);
     std.mem.writeInt(u32, a[16..20], 4, .little);
@@ -98,7 +98,7 @@ pub fn attrBytes(rate: u32, channels: u32) [52]u8 {
 /// `MI_AUDIO_Frame_t`: 288 bytes with the pcm at +8 and the byte count at +84, as
 /// `media::SoundDevice::output` builds it.
 pub const Frame = struct {
-    bytes: [288]u8 = [_]u8{0} ** 288,
+    bytes: [288]u8 = @splat(0),
 
     pub fn init(pcm: []const u8) Frame {
         var f = Frame{};
@@ -140,7 +140,7 @@ test "the attribute payload is the vendor's bytes" {
 
 test "a frame carries the buffer and its length where the driver looks" {
     const testing = std.testing;
-    var pcm = [_]u8{0} ** 64;
+    var pcm: [64]u8 = @splat(0);
     const f = Frame.init(&pcm);
     try testing.expectEqual(@as(u32, 64), std.mem.readInt(u32, f.bytes[84..88], .little));
     try testing.expectEqual(@as(usize, 288), f.bytes.len);

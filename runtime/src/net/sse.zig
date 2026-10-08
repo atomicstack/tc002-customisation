@@ -9,6 +9,8 @@
 //! than a truncated frame, because half an event is worse than no event -- a mirror that sees a
 //! revision gap resyncs, but one that parses half a statement does not know it should.
 const std = @import("std");
+// zig 0.17 removed `**`; `@splat` covers one element, this covers a longer unit
+const repeat = @import("../repeat.zig");
 const messages = @import("../ipc/messages.zig");
 const arbiter = @import("../scene/arbiter.zig");
 const scene = @import("../scene/scene.zig");
@@ -193,7 +195,7 @@ test "a buffer too small yields nothing at all, never half a statement" {
     var st = arbiter.Statement{ .kind = .notify, .revision = 4294967295, .duration_s = 65535 };
     st.text_len = arbiter.Statement.text_max;
     @memset(st.text[0..st.text_len], 0x01);
-    st.name = arbiter.notification.Name.init("n" ** arbiter.notification.name_max);
+    st.name = arbiter.notification.Name.init(repeat.bytes("n", arbiter.notification.name_max));
     st.stack = true;
     st.hold = true;
     st.rich = true;

@@ -1,6 +1,8 @@
 //! one line of a ntfy json stream (https://docs.ntfy.sh/subscribe/api/): the event kind, and
 //! for a message the text the panel shows and its colour by priority. pure.
 const std = @import("std");
+// zig 0.17 removed `**`; `@splat` covers one element, this covers a longer unit
+const repeat = @import("../repeat.zig");
 
 pub const max_text = 128;
 pub const max_id = 32;
@@ -8,9 +10,9 @@ pub const max_id = 32;
 pub const Event = enum { message, keepalive, open, other };
 
 pub const Notification = struct {
-    id: [max_id]u8 = [_]u8{0} ** max_id,
+    id: [max_id]u8 = @splat(0),
     id_len: u8 = 0,
-    text: [max_text]u8 = [_]u8{0} ** max_text,
+    text: [max_text]u8 = @splat(0),
     len: u8 = 0,
     colour: [3]u8 = .{ 255, 255, 255 },
 
@@ -103,7 +105,7 @@ test "text is printable ascii, folded, replaced and bounded; an empty message is
     var arena: [4096]u8 = undefined;
     const u = try parse("{\"event\":\"message\",\"message\":\"caf\\u00e9\\n\\ttime \\ud83d\\ude00!\"}", &arena);
     try std.testing.expectEqualStrings("caf?  time ?!", u.notification.?.textSlice());
-    const long = "{\"event\":\"message\",\"message\":\"" ++ "x" ** 200 ++ "\"}";
+    const long = "{\"event\":\"message\",\"message\":\"" ++ repeat.bytes("x", 200) ++ "\"}";
     const l = try parse(long, &arena);
     try std.testing.expectEqual(@as(u8, max_text), l.notification.?.len);
     const e = try parse("{\"event\":\"message\",\"message\":\"  \\n \"}", &arena);

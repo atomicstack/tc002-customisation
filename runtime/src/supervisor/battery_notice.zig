@@ -175,7 +175,6 @@ pub const Notices = struct {
     pub fn style(self: *const Notices) Style {
         return styleFor(self.showing_pct);
     }
-
 };
 
 // -- tests -------------------------------------------------------------------------------------

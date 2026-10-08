@@ -11,7 +11,7 @@ pub const Error = error{ WouldBlock, Interrupted, NotFound, AccessDenied, Busy, 
 
 pub fn errno(rc: usize) linux.E {
     const signed: isize = @bitCast(rc);
-    if (signed < 0 and signed > -4096) return @enumFromInt(@as(u16, @intCast(-signed)));
+    if (signed < 0 and signed > -4096) return @fromBackingInt(@intCast(@as(u16, @intCast(-signed))));
     return .SUCCESS;
 }
 
@@ -299,10 +299,12 @@ pub fn execve(path: [*:0]const u8, argv: [*:null]const ?[*:0]const u8, envp: [*:
 /// reap without blocking: the wait status when the child has exited, null while it is alive.
 pub fn waitNoHang(pid: Pid) Error!?u32 {
     while (true) {
-        var status: u32 = 0;
+        // 0.17 types the wait status as the signed int wait(2) actually writes; the callers here
+        // read it as the bit pattern, which is what `W.EXITSTATUS` and friends expect
+        var status: i32 = 0;
         const rc = linux.wait4(pid, &status, linux.W.NOHANG, null);
         return switch (errno(rc)) {
-            .SUCCESS => if (rc == 0) null else status,
+            .SUCCESS => if (rc == 0) null else @as(u32, @bitCast(status)),
             .INTR => continue,
             .CHILD => error.NoChild,
             else => error.Unexpected,
@@ -340,7 +342,7 @@ pub fn writeSmallFile(path: [*:0]const u8, text: []const u8) Error!void {
 }
 
 pub fn prctlPdeathsig(sig: linux.SIG) Error!void {
-    _ = try check(linux.prctl(@intFromEnum(linux.PR.SET_PDEATHSIG), @intFromEnum(sig), 0, 0, 0));
+    _ = try check(linux.prctl(@backingInt(linux.PR.SET_PDEATHSIG), @backingInt(sig), 0, 0, 0));
 }
 
 pub fn exit(status: u8) noreturn {
@@ -690,7 +692,7 @@ pub const Timex = extern struct {
     errcnt: c_long = 0,
     stbcnt: c_long = 0,
     tai: c_int = 0,
-    pad: [11]c_int = [_]c_int{0} ** 11,
+    pad: [11]c_int = @splat(0),
 };
 
 const adj_offset_singleshot: c_uint = 0x8001;

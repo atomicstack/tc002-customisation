@@ -135,9 +135,9 @@ pub const Vm = struct {
         const n = @min(name.len, name_buf.len - 1);
         @memcpy(name_buf[0..n], name[0..n]);
         name_buf[n] = 0;
-        const loaded: Status = @enumFromInt(be_loadbuffer(self.handle, @ptrCast(&name_buf), source.ptr, source.len));
+        const loaded: Status = @fromBackingInt(@intCast(be_loadbuffer(self.handle, @ptrCast(&name_buf), source.ptr, source.len)));
         if (loaded != .ok) return loaded;
-        return @enumFromInt(be_pcall(self.handle, 0));
+        return @fromBackingInt(@intCast(be_pcall(self.handle, 0)));
     }
 
     /// compile without running. this is what `PUT /berry/scripts/{name}` is checked with: a script
@@ -147,7 +147,7 @@ pub const Vm = struct {
         const n = @min(name.len, name_buf.len - 1);
         @memcpy(name_buf[0..n], name[0..n]);
         name_buf[n] = 0;
-        const st: Status = @enumFromInt(be_loadbuffer(self.handle, @ptrCast(&name_buf), source.ptr, source.len));
+        const st: Status = @fromBackingInt(@intCast(be_loadbuffer(self.handle, @ptrCast(&name_buf), source.ptr, source.len)));
         // a successful compile leaves the closure on the stack; nothing here wants it
         if (st == .ok) be_pop(self.handle, 1);
         return st;

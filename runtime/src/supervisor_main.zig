@@ -46,7 +46,8 @@ const linux = std.os.linux;
 
 /// no symbolised stack traces on the device: a panic prints its message and exits. this keeps the
 /// dwarf unwinder and its tables out of the binary (it more than halves .text).
-pub const panic = std.debug.simple_panic;
+// simple_panic, with the one function 0.17.0 cannot compile replaced
+pub const panic = @import("sys/panic.zig");
 /// and no segfault handler: it would drag the dwarf unwinder back in.
 pub const std_options: std.Options = .{ .enable_segfault_handler = false };
 
@@ -64,7 +65,7 @@ const tick_ns: u64 = 100_000_000;
 /// no faster than this, and asking costs a few dozen floating point operations
 const night_poll_ns: u64 = 10 * ns_per_s;
 /// the build id, widened to the wire field once at startup
-var snapshot_build: [messages.build_id_max]u8 = [_]u8{0} ** messages.build_id_max;
+var snapshot_build: [messages.build_id_max]u8 = @splat(0);
 /// the low-battery policy is evaluated every second so a countdown can report every second, and
 /// so a cable plugged in during one is noticed within a second of the mcu saying so.
 const power_poll_ns: u64 = 1 * ns_per_s;
@@ -237,14 +238,14 @@ const McuLink = struct {
         self.replies +|= 1;
         self.last_ok_ns = now;
         switch (f.cmd) {
-            @intFromEnum(mcu.Command.query_version) => {
+            @backingInt(mcu.Command.query_version) => {
                 const n = @min(f.payload.len, self.version.len);
                 @memcpy(self.version[0..n], f.payload[0..n]);
                 self.version_len = n;
                 log.info("mcu version reply: {s} ({d} bytes)", .{ self.version[0..n], f.payload.len });
-                self.send(@intFromEnum(mcu.Command.query_battery), "", now);
+                self.send(@backingInt(mcu.Command.query_battery), "", now);
             },
-            @intFromEnum(mcu.Command.query_battery) => {
+            @backingInt(mcu.Command.query_battery) => {
                 if (mcu.parseBattery(f.payload)) |b| {
                     s.snapshot.battery_mv = b.millivolts;
                     s.snapshot.battery_pct = if (b.raw_first <= 100) b.raw_first else 255;
@@ -252,7 +253,7 @@ const McuLink = struct {
                     if (s.cfg_stats) log.info("mcu battery: first={d} raw={d} -> {d} mv", .{ b.raw_first, b.raw_value, b.millivolts });
                 } else log.warn("mcu battery reply too short: {d} bytes", .{f.payload.len});
             },
-            @intFromEnum(mcu.Command.query_usb) => {
+            @backingInt(mcu.Command.query_usb) => {
                 if (f.payload.len >= 1) {
                     const now_usb: u8 = if (f.payload[0] != 0) 1 else 0;
                     // logged on every change rather than only under --stats: this is the line that
@@ -289,19 +290,19 @@ const McuLink = struct {
             if (now < self.next_poll_ns) return;
             self.next_poll_ns = now + self.poll_ns;
             self.version_asked = true;
-            self.send(@intFromEnum(mcu.Command.query_version), "", now);
+            self.send(@backingInt(mcu.Command.query_version), "", now);
             return;
         }
         // one outstanding request at a time, so the two cadences take turns: whichever is due.
         // usb first when both are -- it is the one with someone watching the panel for it.
         if (now >= self.next_usb_ns) {
             self.next_usb_ns = now + usb_poll_ns;
-            self.send(@intFromEnum(mcu.Command.query_usb), "", now);
+            self.send(@backingInt(mcu.Command.query_usb), "", now);
             return;
         }
         if (now >= self.next_poll_ns) {
             self.next_poll_ns = now + self.poll_ns;
-            self.send(@intFromEnum(mcu.Command.query_battery), "", now);
+            self.send(@backingInt(mcu.Command.query_battery), "", now);
         }
     }
 };
@@ -366,7 +367,7 @@ const SntpLink = struct {
             }
             return;
         };
-        sys.epollAdd(s.ep, fd, linux.EPOLL.IN, @intFromEnum(Tag.sntp)) catch |e| {
+        sys.epollAdd(s.ep, fd, linux.EPOLL.IN, @backingInt(Tag.sntp)) catch |e| {
             sys.close(fd);
             self.sock.failed(now);
             if (!self.open_failed_logged) {
@@ -546,7 +547,7 @@ const Supervisor = struct {
     /// is replaced on a settings change and reconnects on its own schedule; this is the copy that
     /// survives both and is replayed when either happens.
     berry_topics: [berry_topic_max][messages.BerryEvent.topic_max]u8 = undefined,
-    berry_topic_len: [berry_topic_max]u8 = [_]u8{0} ** berry_topic_max,
+    berry_topic_len: [berry_topic_max]u8 = @splat(0),
     berry_topic_count: u8 = 0,
     /// a `PUT` waiting for berryd to say whether it compiles. one at a time: puts are rare, and a
     /// queue here would only buy the ability to have two broken scripts in flight at once.
@@ -554,7 +555,7 @@ const Supervisor = struct {
     berry_pending_script: messages.BerryScript = .{},
     /// the running subscriber is being replaced after a settings change: its exit is expected
     ntfy_replacing: bool = false,
-    relays: [relay_max]Relay = [_]Relay{.{}} ** relay_max,
+    relays: [relay_max]Relay = @splat(.{}),
     snapshot: messages.StatusSnapshot = .{},
     last_heartbeat: messages.Heartbeat = .{ .presented = 0, .revision = 0, .state = 0 },
     hb_presented_at_ns: u64 = 0,
@@ -624,7 +625,7 @@ const Supervisor = struct {
     // credentials and configuration
 
     fn pathIn(self: *Supervisor, buf: []u8, comptime rel: []const u8) [:0]const u8 {
-        return std.fmt.bufPrintZ(buf, "{s}/" ++ rel, .{self.cfg_dir()}) catch unreachable;
+        return std.fmt.bufPrintSentinel(buf, "{s}/" ++ rel, .{self.cfg_dir()}, 0) catch unreachable;
     }
 
     fn cfg_dir(self: *Supervisor) []const u8 {
@@ -633,7 +634,7 @@ const Supervisor = struct {
 
     /// settings and credentials; the relative layout matches pathIn so the two can be swapped
     fn statePathIn(self: *Supervisor, buf: []u8, comptime rel: []const u8) [:0]const u8 {
-        return std.fmt.bufPrintZ(buf, "{s}/" ++ rel, .{self.state_dir_text}) catch unreachable;
+        return std.fmt.bufPrintSentinel(buf, "{s}/" ++ rel, .{self.state_dir_text}, 0) catch unreachable;
     }
 
     /// create every component of the state directory. /data is mounted by init before the app
@@ -818,13 +819,15 @@ const Supervisor = struct {
         var frame: geometry.Rgb = geometry.black_rgb;
         banner.draw(&frame, reboot_notice_text, reboot_notice_colour);
         self.notice_stream_seq +%= 1;
-        _ = self.sendRenderer(.{ .stream_frame = .{
-            .seq = self.notice_stream_seq,
-            // outlast the delay by a wide margin: if the exec fails the notice expires on its own
-            // and the clock comes back, rather than the device sitting on a lie.
-            .timeout_ms = reboot_notice_hold_ms,
-            .rgb = frame,
-        } }, 0, lifecycle.epoch);
+        _ = self.sendRenderer(.{
+            .stream_frame = .{
+                .seq = self.notice_stream_seq,
+                // outlast the delay by a wide margin: if the exec fails the notice expires on its own
+                // and the clock comes back, rather than the device sitting on a lie.
+                .timeout_ms = reboot_notice_hold_ms,
+                .rgb = frame,
+            },
+        }, 0, lifecycle.epoch);
         self.reboot_at_ns = now + reboot_notice_ns;
         log.info("reboot: panel reads \"{s}\"; /bin/reboot in {d} ms", .{ reboot_notice_text, reboot_notice_ns / std.time.ns_per_ms });
     }
@@ -853,7 +856,7 @@ const Supervisor = struct {
     /// renderer applies each to the generator it belongs to, whichever one is showing.
     fn sendGeneratorParams(self: *Supervisor) void {
         for (self.cfg.generator_params, 0..) |slots, owner| {
-            const declared = scene.paramsFor(@enumFromInt(@as(u8, @intCast(owner)))).len - scene.art_params.len;
+            const declared = scene.paramsFor(@fromBackingInt(@intCast(@as(u8, @intCast(owner))))).len - scene.art_params.len;
             for (slots[0..@min(declared, slots.len)], 0..) |v, slot| {
                 self.send(.{ .set_param = .{ .base = 0x80 | @as(u8, @intCast(owner)), .index = @intCast(slot), .value = v } });
             }
@@ -1047,7 +1050,7 @@ const Supervisor = struct {
         sys.close(fds[1]);
         self.netd_fd = fds[0];
         self.netd_pid = pid;
-        sys.epollAdd(self.ep, fds[0], linux.EPOLL.IN, @intFromEnum(Tag.netd)) catch {};
+        sys.epollAdd(self.ep, fds[0], linux.EPOLL.IN, @backingInt(Tag.netd)) catch {};
         log.info("spawned netd pid {d} as uid {d}", .{ pid, netd_uid });
         self.sendNetd(.{ .credentials = self.creds }, 0);
         self.pushClients();
@@ -1140,7 +1143,7 @@ const Supervisor = struct {
         self.ntfy_fd = fds[0];
         self.ntfy_pid = pid;
         self.ntfy_spawned_ns = now;
-        sys.epollAdd(self.ep, fds[0], linux.EPOLL.IN, @intFromEnum(Tag.ntfy)) catch {};
+        sys.epollAdd(self.ep, fds[0], linux.EPOLL.IN, @backingInt(Tag.ntfy)) catch {};
         log.info("spawned the ntfy subscriber pid {d} as uid {d}", .{ pid, netd_uid });
         self.sendNtfy(self.ntfyConfigMessage());
         self.snapshot.ntfy = .{ .state = 1, .messages = self.snapshot.ntfy.messages, .ca_set = self.caSet() };
@@ -1322,7 +1325,7 @@ const Supervisor = struct {
         self.berry_pid = pid;
         self.berry_spawned_ns = now;
         self.berry_heard_ns = now;
-        sys.epollAdd(self.ep, fds[0], linux.EPOLL.IN, @intFromEnum(Tag.berry)) catch {};
+        sys.epollAdd(self.ep, fds[0], linux.EPOLL.IN, @backingInt(Tag.berry)) catch {};
         log.info("spawned berryd pid {d} as uid {d}", .{ pid, netd_uid });
         self.sendBerry(self.berryConfigMessage());
         self.pushScripts();
@@ -1399,7 +1402,7 @@ const Supervisor = struct {
             // deliberately *not* dropping privileges: /dev/mi_ao and /dev/mi_sys are root-only,
             // the same trade the renderer makes for spidev
             var state_z: [160]u8 = undefined;
-            const sd = std.fmt.bufPrintZ(&state_z, "{s}", .{self.state_dir_text}) catch sys.exit(126);
+            const sd = std.fmt.bufPrintSentinel(&state_z, "{s}", .{self.state_dir_text}, 0) catch sys.exit(126);
             const argv = [_:null]?[*:0]const u8{ self.audio_path.ptr, "--state", sd.ptr };
             const envp = [_:null]?[*:0]const u8{};
             sys.execve(self.audio_path.ptr, &argv, &envp) catch {};
@@ -1409,7 +1412,7 @@ const Supervisor = struct {
         self.audio_fd = fds[0];
         self.audio_pid = pid;
         self.audio_heard_ns = now;
-        sys.epollAdd(self.ep, fds[0], linux.EPOLL.IN, @intFromEnum(Tag.audio)) catch {};
+        sys.epollAdd(self.ep, fds[0], linux.EPOLL.IN, @backingInt(Tag.audio)) catch {};
         log.info("spawned audiod pid {d} as root", .{pid});
         self.sendAudio(.{ .sound_config = .{ .enabled = @intFromBool(self.cfg.sound.enabled), .volume = self.cfg.sound.volume } });
     }
@@ -1527,7 +1530,7 @@ const Supervisor = struct {
                     self.sendNetd(.{ .status = self.snapshot }, 0);
                 },
                 .berry_result => |r| self.onBerryResult(r),
-                .berry_event => |e| switch (@as(messages.BerryEvent.Op, @enumFromInt(@min(e.kind, messages.BerryEvent.op_max)))) {
+                .berry_event => |e| switch (@as(messages.BerryEvent.Op, @fromBackingInt(@intCast(@min(e.kind, messages.BerryEvent.op_max))))) {
                     .subscribe => self.onBerrySubscribe(e),
                     .unsubscribe => self.onBerryUnsubscribe(e),
                     .publish => self.sendNetd(.{ .berry_event = e }, 0),
@@ -1751,7 +1754,7 @@ const Supervisor = struct {
             return self.berryResultToNetd(pending.request_id, r.outcome, name, r.text.slice());
         }
         // an eval is a snippet someone typed, not a script: it is answered, never stored
-        if (self.berry_pending_script.op == @intFromEnum(messages.BerryScript.Op.eval)) {
+        if (self.berry_pending_script.op == @backingInt(messages.BerryScript.Op.eval)) {
             return self.berryResultToNetd(pending.request_id, 0, name, r.text.slice());
         }
         script_store.put(name, self.berry_pending_script.slice()) catch |e| {
@@ -1955,7 +1958,7 @@ const Supervisor = struct {
                     }
                 },
                 .berry_script => |w| {
-                    const op: messages.BerryScript.Op = @enumFromInt(@min(w.op, 3));
+                    const op: messages.BerryScript.Op = @fromBackingInt(@intCast(@min(w.op, 3)));
                     switch (op) {
                         .put => self.onScriptPut(w, p.request_id, now),
                         .delete => {
@@ -2165,7 +2168,7 @@ const Supervisor = struct {
     fn cpuJiffiesOf(pid: ?sys.Pid) ?u64 {
         const p = pid orelse return null;
         var path: [48]u8 = undefined;
-        const text = sys.readFile(std.fmt.bufPrintZ(&path, "/proc/{d}/stat", .{p}) catch return null, &proc_buf) catch return null;
+        const text = sys.readFile(std.fmt.bufPrintSentinel(&path, "/proc/{d}/stat", .{p}, 0) catch return null, &proc_buf) catch return null;
         const close = std.mem.lastIndexOfScalar(u8, text, ')') orelse return null;
         var it = std.mem.tokenizeScalar(u8, text[close + 1 ..], ' ');
         var i: usize = 0;
@@ -2340,8 +2343,8 @@ const Supervisor = struct {
             sys.setSignalDisposition(.TERM, linux.SIG.DFL);
             var bb_buf: [192]u8 = undefined;
             var sh_buf: [192]u8 = undefined;
-            const bb = std.fmt.bufPrintZ(&bb_buf, "{s}/busybox", .{dir}) catch sys.exit(127);
-            const sh = std.fmt.bufPrintZ(&sh_buf, "{s}/tc002-netup.sh", .{dir}) catch sys.exit(127);
+            const bb = std.fmt.bufPrintSentinel(&bb_buf, "{s}/busybox", .{dir}, 0) catch sys.exit(127);
+            const sh = std.fmt.bufPrintSentinel(&sh_buf, "{s}/tc002-netup.sh", .{dir}, 0) catch sys.exit(127);
             // the second argument is a writable directory for udhcpc's pidfile: `dir` itself is
             // read-only on a flashed image
             const argv = [_:null]?[*:0]const u8{ bb.ptr, "sh", sh.ptr, dir.ptr, self.cfg_cli.dir.ptr };
@@ -2406,7 +2409,7 @@ const Supervisor = struct {
     fn killNetClients(self: *Supervisor) void {
         if (!self.netup_requested) return;
         var path_buf: [192]u8 = undefined;
-        const path = std.fmt.bufPrintZ(&path_buf, "{s}/udhcpc.pid", .{self.cfg_cli.dir}) catch return;
+        const path = std.fmt.bufPrintSentinel(&path_buf, "{s}/udhcpc.pid", .{self.cfg_cli.dir}, 0) catch return;
         var buf: [16]u8 = undefined;
         const text = sys.readFile(path, &buf) catch return;
         const pid = std.fmt.parseInt(i32, std.mem.trim(u8, text, " \t\r\n"), 10) catch return;
@@ -2450,7 +2453,7 @@ const Supervisor = struct {
     fn rssOf(pid: ?sys.Pid) u32 {
         const p = pid orelse return 0;
         var path: [48]u8 = undefined;
-        const text = sys.readFile(std.fmt.bufPrintZ(&path, "/proc/{d}/status", .{p}) catch return 0, &proc_buf) catch return 0;
+        const text = sys.readFile(std.fmt.bufPrintSentinel(&path, "/proc/{d}/status", .{p}, 0) catch return 0, &proc_buf) catch return 0;
         return @intCast(@min(procValue(text, "VmRSS:") orelse 0, 0xffffffff));
     }
 
@@ -2469,7 +2472,7 @@ const Supervisor = struct {
             if (lines.next()) |cpu| {
                 var it = std.mem.tokenizeScalar(u8, cpu, ' ');
                 _ = it.next();
-                var fields: [8]u64 = .{0} ** 8;
+                var fields: [8]u64 = @splat(0);
                 var i: usize = 0;
                 while (it.next()) |f| : (i += 1) {
                     if (i >= fields.len) break;
@@ -2628,7 +2631,7 @@ const Supervisor = struct {
         const path = if (lifecycle.slot == .candidate) self.paths.renderer else self.paths.fallback;
         const epoch = lifecycle.epoch + 1;
         var epoch_buf: [16]u8 = undefined;
-        const epoch_text = std.fmt.bufPrintZ(&epoch_buf, "{d}", .{epoch}) catch unreachable;
+        const epoch_text = std.fmt.bufPrintSentinel(&epoch_buf, "{d}", .{epoch}, 0) catch unreachable;
         var argv: cli.Argv = undefined;
         _ = cli.spawnArgv(self.cfg_cli, path, self.paths.renderer, epoch_text, &argv);
 
@@ -2678,7 +2681,7 @@ const Supervisor = struct {
         self.child_fd = fds[0];
         self.child_pid = pid;
         self.child_spawned_ns = now;
-        sys.epollAdd(self.ep, fds[0], linux.EPOLL.IN, @intFromEnum(Tag.ipc)) catch |e| log.err("epoll add failed: {s}", .{sys.errText(e)});
+        sys.epollAdd(self.ep, fds[0], linux.EPOLL.IN, @backingInt(Tag.ipc)) catch |e| log.err("epoll add failed: {s}", .{sys.errText(e)});
         lifecycle.onSpawned(now);
         log.info("spawned renderer pid {d} epoch {d} slot {s} path {s}", .{ pid, lifecycle.epoch, @tagName(lifecycle.slot), path });
     }
@@ -2710,7 +2713,7 @@ const Supervisor = struct {
     fn drainSignals(self: *Supervisor, now: u64) void {
         while (sys.readSignal(self.sigfd) catch null) |info| {
             switch (info.signo) {
-                @intFromEnum(linux.SIG.CHLD) => {
+                @backingInt(linux.SIG.CHLD) => {
                     self.reap(now);
                     self.reapNetd(now);
                     self.reapNtfy(now);
@@ -2790,9 +2793,9 @@ const Supervisor = struct {
                     // whether the command behind it arrived from the api or from ntfy. the relay
                     // slot does -- it is still live, because `.applied` is sent before `.result`.
                     var out = a;
-                    if (a.source == @intFromEnum(messages.Applied.Source.local)) {
+                    if (a.source == @backingInt(messages.Applied.Source.local)) {
                         for (&self.relays) |*rel| if (rel.used and rel.id == p.request_id) {
-                            out.source = @intFromEnum(if (rel.from_ntfy)
+                            out.source = @backingInt(if (rel.from_ntfy)
                                 messages.Applied.Source.ntfy
                             else
                                 messages.Applied.Source.api);
@@ -2913,19 +2916,21 @@ const Supervisor = struct {
         self.next_device_push = now + 5 * ns_per_s;
         if (self.snapshot.renderer_state != 2) return;
         const st = self.snapshot;
-        self.send(.{ .device_status = .{
-            .battery_pct = st.battery_pct,
-            .usb = st.usb_present,
-            .wifi_quality = st.wifi_quality,
-            .wifi_dbm = st.wifi_level_dbm,
-            .time_synced = @intFromBool(st.time_state == 1), // 1 is synced; 2 is stale
-            .mqtt_on = @intFromBool(self.cfg.mqtt.enabled),
-            .ntfy_on = @intFromBool(self.cfg.ntfy.enabled),
-            .uptime_s = st.uptime_s,
-            .night_on = @intFromBool(self.cfg.night),
-            .night_level = self.cfg.night_brightness,
-            .night_placed = @intFromBool(self.night.point != null),
-        } });
+        self.send(.{
+            .device_status = .{
+                .battery_pct = st.battery_pct,
+                .usb = st.usb_present,
+                .wifi_quality = st.wifi_quality,
+                .wifi_dbm = st.wifi_level_dbm,
+                .time_synced = @intFromBool(st.time_state == 1), // 1 is synced; 2 is stale
+                .mqtt_on = @intFromBool(self.cfg.mqtt.enabled),
+                .ntfy_on = @intFromBool(self.cfg.ntfy.enabled),
+                .uptime_s = st.uptime_s,
+                .night_on = @intFromBool(self.cfg.night),
+                .night_level = self.cfg.night_brightness,
+                .night_placed = @intFromBool(self.night.point != null),
+            },
+        });
     }
 
     /// the low-battery policy: warn, count down, and then put the device away.
@@ -3059,7 +3064,7 @@ const Supervisor = struct {
         }
         self.send(.{ .power = .{ .on = 0 } });
         self.snapshot.power = 0;
-        self.mcu_link.send(@intFromEnum(mcu.Command.power_off), "", sys.monotonicNs());
+        self.mcu_link.send(@backingInt(mcu.Command.power_off), "", sys.monotonicNs());
         log.warn("battery shutdown: power-off sent to the mcu", .{});
     }
 
@@ -3073,7 +3078,7 @@ const Supervisor = struct {
         const unix = unixNow();
         const want = self.night.target(unix); // null while a hand-set brightness still stands
         const plan = self.night.plan(unix);
-        const phase: u8 = if (plan) |p| @as(u8, @intFromEnum(p.phase)) + 1 else 0;
+        const phase: u8 = if (plan) |p| @as(u8, @backingInt(p.phase)) + 1 else 0;
         if (phase != self.snapshot.night_phase) {
             if (plan) |p| log.info("night: {s}, brightness {d}{s}", .{ p.phase.text(), p.brightness, if (want == null) " (held)" else "" });
         }
@@ -3187,7 +3192,7 @@ fn audit(environ: anytype, args: []const [:0]const u8, close_inherited: bool) vo
     var fd: i32 = 0;
     var inherited: u32 = 0;
     while (fd < 256) : (fd += 1) {
-        const path = std.fmt.bufPrintZ(&path_buf, "/proc/self/fd/{d}", .{fd}) catch unreachable;
+        const path = std.fmt.bufPrintSentinel(&path_buf, "/proc/self/fd/{d}", .{fd}, 0) catch unreachable;
         const t = sys.readlink(path, &target) catch continue;
         log.info("inherited fd {d} -> {s}", .{ fd, t });
         if (fd > 2) {
@@ -3221,7 +3226,7 @@ fn audit(environ: anytype, args: []const [:0]const u8, close_inherited: bool) vo
 /// when the loader exec'd us, stderr is whatever the loader had; keep the log in the runtime dir.
 fn redirectLog(cfg: cli.Config) void {
     var path_buf: [128]u8 = undefined;
-    const path = std.fmt.bufPrintZ(&path_buf, "{s}/supervisor.log", .{cfg.dir}) catch return;
+    const path = std.fmt.bufPrintSentinel(&path_buf, "{s}/supervisor.log", .{cfg.dir}, 0) catch return;
     sys.mkdir(cfg.dir, 0o711) catch {};
     const fd = sys.open(path, .{ .ACCMODE = .WRONLY, .CREAT = true, .APPEND = true, .CLOEXEC = true }, 0o644) catch return;
     sys.dup2(fd, 1) catch {};
@@ -3252,10 +3257,10 @@ fn yieldToUpgrade(environ: anytype) bool {
     var dir_buf: [128]u8 = undefined;
     const dir = props.get("sys.zkupgrade.dir", &dir_buf, property_timeout_ns, workspace) catch "";
     var path_buf: [256]u8 = undefined;
-    const path = std.fmt.bufPrintZ(&path_buf, "{s}/{s}", .{
+    const path = std.fmt.bufPrintSentinel(&path_buf, "{s}/{s}", .{
         if (dir.len > 0) dir else recovery.default_upgrade_dir,
         recovery.upgrade_image_name,
-    }) catch {
+    }, 0) catch {
         log.warn("sys.zkupgrade.dir is too long to use; assuming no upgrade is pending", .{});
         return false;
     };
@@ -3284,7 +3289,7 @@ fn run(cfg_in: cli.Config, environ: anytype, args: []const [:0]const u8) !u8 {
     var cfg = cfg_in;
     var tz_buf: [config.text_max + 1]u8 = undefined;
     if (tz.resolve(cfg.tz_rule)) |rule| {
-        if (!std.mem.eql(u8, rule, cfg.tz_rule)) cfg.tz_rule = std.fmt.bufPrintZ(&tz_buf, "{s}", .{rule}) catch cfg.tz_rule;
+        if (!std.mem.eql(u8, rule, cfg.tz_rule)) cfg.tz_rule = std.fmt.bufPrintSentinel(&tz_buf, "{s}", .{rule}, 0) catch cfg.tz_rule;
     } else log.warn("--tz {s} is neither a posix rule nor a zone name; the renderer will refuse it", .{cfg.tz_rule});
     // every path that hangs off the binary directory, worked out once and before anything is
     // spawned. the buffers are locals of `run`, which does not return while the device is up.
@@ -3364,9 +3369,9 @@ fn run(cfg_in: cli.Config, environ: anytype, args: []const [:0]const u8) !u8 {
     const ep = try sys.epollCreate();
     const timer = try sys.timerfdCreate();
     const sigfd = try sys.signalfdFor(&.{ .CHLD, .TERM, .INT });
-    try sys.epollAdd(ep, timer, linux.EPOLL.IN, @intFromEnum(Tag.timer));
-    try sys.epollAdd(ep, sigfd, linux.EPOLL.IN, @intFromEnum(Tag.signals));
-    if (keys) |fd| try sys.epollAdd(ep, fd, linux.EPOLL.IN, @intFromEnum(Tag.keys));
+    try sys.epollAdd(ep, timer, linux.EPOLL.IN, @backingInt(Tag.timer));
+    try sys.epollAdd(ep, sigfd, linux.EPOLL.IN, @backingInt(Tag.signals));
+    if (keys) |fd| try sys.epollAdd(ep, fd, linux.EPOLL.IN, @backingInt(Tag.keys));
 
     // what is running, carried in the status document so a device can be asked rather than inferred
     {
@@ -3388,7 +3393,7 @@ fn run(cfg_in: cli.Config, environ: anytype, args: []const [:0]const u8) !u8 {
     // the children's log lines come through a pipe so the ring sees them; the file still gets them
     if (sys.pipeNonblock()) |lp| {
         s.log_pipe = lp;
-        try sys.epollAdd(ep, lp[0], linux.EPOLL.IN, @intFromEnum(Tag.logs));
+        try sys.epollAdd(ep, lp[0], linux.EPOLL.IN, @backingInt(Tag.logs));
     } else |e| log.warn("no log pipe ({s}); the log ring holds only the supervisor's lines", .{sys.errText(e)});
     log.info("supervising {s} (fallback {s}) profile {s} pid {d}", .{ s.paths.renderer, s.paths.fallback, @tagName(cfg.profile), s.self_pid });
     log.info("binaries in {s}", .{s.paths.bin_dir});
@@ -3432,7 +3437,7 @@ fn run(cfg_in: cli.Config, environ: anytype, args: []const [:0]const u8) !u8 {
         s.mcu_link.configured_poll_ns = s.mcu_link.poll_ns;
         if (sys.uartOpen(cfg.mcu_path, cfg.mcu_baud)) |fd| {
             s.mcu_link.fd = fd;
-            try sys.epollAdd(ep, fd, linux.EPOLL.IN, @intFromEnum(Tag.mcu));
+            try sys.epollAdd(ep, fd, linux.EPOLL.IN, @backingInt(Tag.mcu));
             log.info("mcu link {s} at {d} baud, polling every {d} s", .{ cfg.mcu_path, cfg.mcu_baud, cfg.mcu_poll_s });
         } else |e| log.warn("mcu link unavailable ({s}: {s}); battery telemetry stays unknown", .{ cfg.mcu_path, sys.errText(e) });
     }
@@ -3490,9 +3495,9 @@ fn run(cfg_in: cli.Config, environ: anytype, args: []const [:0]const u8) !u8 {
         try sys.timerfdArmAt(timer, now + tick_ns);
         const n = try sys.epollWait(ep, &events, -1);
         for (events[0..n]) |ev| {
-            if (ev.data.u64 == @intFromEnum(Tag.timer)) sys.timerfdDrain(timer);
-            if (ev.data.u64 == @intFromEnum(Tag.mcu)) s.mcu_link.readable(&s, sys.monotonicNs());
-            if (ev.data.u64 == @intFromEnum(Tag.sntp)) s.sntp_link.readable(&s, sys.monotonicNs()); // sntp
+            if (ev.data.u64 == @backingInt(Tag.timer)) sys.timerfdDrain(timer);
+            if (ev.data.u64 == @backingInt(Tag.mcu)) s.mcu_link.readable(&s, sys.monotonicNs());
+            if (ev.data.u64 == @backingInt(Tag.sntp)) s.sntp_link.readable(&s, sys.monotonicNs()); // sntp
         }
     }
     s.killNetClients();
@@ -3528,4 +3533,3 @@ pub fn main(init: std.process.Init.Minimal) u8 {
         return 1;
     };
 }
-

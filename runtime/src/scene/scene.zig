@@ -27,7 +27,7 @@ pub const Cadence = union(enum) {
 pub const Action = enum { left, middle, right, left_long, middle_long, right_long, knob_short, knob_long, rotate_cw, rotate_ccw };
 
 pub const Generator = enum(u8) { popsquares = 0, plasma = 1, cube = 2, terrain = 3 };
-pub const generator_count: u8 = @typeInfo(Generator).@"enum".fields.len;
+pub const generator_count: u8 = @typeInfo(Generator).@"enum".field_names.len;
 
 pub const frame_period_ns: u64 = 16_666_667; // 60 hz
 
@@ -116,7 +116,7 @@ const params_terrain = art_params ++ terrain.params;
 pub const generator_defaults: [param.owner_count]param.Values = blk: {
     var out: [param.owner_count]param.Values = undefined;
     for (0..param.owner_count) |i| {
-        const own = paramsFor(@enumFromInt(@as(u8, @intCast(i))))[art_params.len..];
+        const own = paramsFor(@fromBackingInt(@intCast(@as(u8, @intCast(i)))))[art_params.len..];
         out[i] = param.defaults(own);
     }
     break :blk out;
@@ -178,9 +178,9 @@ pub const Art = struct {
 
     /// the generator after (or before) the current one in the catalogue
     pub fn neighbour(self: *const Art, forward: bool) Generator {
-        const n: u8 = @intFromEnum(self.generator);
+        const n: u8 = @backingInt(self.generator);
         const next: u8 = if (forward) (n + 1) % generator_count else (n + generator_count - 1) % generator_count;
-        return @enumFromInt(next);
+        return @fromBackingInt(@intCast(next));
     }
 
     pub fn nextGenerator(self: *Art, forward: bool) void {
@@ -192,7 +192,7 @@ pub const Art = struct {
     }
 
     pub fn getParam(self: *const Art, index: usize) u32 {
-        if (index == 0) return @intFromEnum(self.generator);
+        if (index == 0) return @backingInt(self.generator);
         const i = index - art_params.len;
         return switch (self.generator) {
             .popsquares => self.popsquares.getParam(i),
@@ -204,7 +204,7 @@ pub const Art = struct {
 
     pub fn setParam(self: *Art, index: usize, value: u32) void {
         if (index == 0) {
-            self.select(@enumFromInt(@min(value, art_params[0].choices.len - 1)));
+            self.select(@fromBackingInt(@intCast(@min(value, art_params[0].choices.len - 1))));
             return;
         }
         const i = index - art_params.len;

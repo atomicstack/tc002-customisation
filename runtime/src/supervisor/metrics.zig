@@ -43,7 +43,7 @@ pub fn parseNetDev(text: []const u8, iface: []const u8) ?Net {
         const colon = std.mem.indexOfScalar(u8, t, ':') orelse continue;
         if (!std.mem.eql(u8, t[0..colon], iface)) continue;
         var it = std.mem.tokenizeAny(u8, t[colon + 1 ..], " \t");
-        var f: [16]u64 = .{0} ** 16;
+        var f: [16]u64 = @splat(0);
         var i: usize = 0;
         while (it.next()) |tok| : (i += 1) {
             if (i >= f.len) break;
@@ -51,8 +51,14 @@ pub fn parseNetDev(text: []const u8, iface: []const u8) ?Net {
         }
         if (i < 16) return null; // a short line is a kernel we do not understand, not a zero
         return .{
-            .rx_bytes = f[0],   .rx_packets = f[1], .rx_errors = f[2],  .rx_dropped = f[3],
-            .tx_bytes = f[8],   .tx_packets = f[9], .tx_errors = f[10], .tx_dropped = f[11],
+            .rx_bytes = f[0],
+            .rx_packets = f[1],
+            .rx_errors = f[2],
+            .rx_dropped = f[3],
+            .tx_bytes = f[8],
+            .tx_packets = f[9],
+            .tx_errors = f[10],
+            .tx_dropped = f[11],
         };
     }
     return null;

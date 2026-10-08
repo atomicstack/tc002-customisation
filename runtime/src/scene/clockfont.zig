@@ -11,7 +11,7 @@ const font = @import("font.zig");
 /// `hires` is a layout of the clock scene (classic time, a bar, mini milliseconds) that borrows the
 /// classic glyphs here.
 pub const Font = enum(u8) { classic = 0, mini = 1, segment = 2, big = 3, block = 4, hires = 5 };
-pub const font_count: u8 = @typeInfo(Font).@"enum".fields.len;
+pub const font_count: u8 = @typeInfo(Font).@"enum".field_names.len;
 
 pub const max_h = 14;
 pub const max_w = 10;
@@ -66,7 +66,7 @@ pub fn blended(a: Glyph, b: Glyph, t: u8) Glyph {
     return out;
 }
 
-const blank = Glyph{ .w = 0, .h = 0, .a = [_][max_w]u8{[_]u8{0} ** max_w} ** max_h };
+const blank = Glyph{ .w = 0, .h = 0, .a = @splat(@splat(0)) };
 
 pub fn glyphHeight(f: Font) u8 {
     return switch (f) {
@@ -375,8 +375,7 @@ const Counting = struct {
 };
 
 test "every digit in every font lights something inside its cell and digits differ" {
-    inline for (@typeInfo(Font).@"enum".fields) |f| {
-        const fnt: Font = @enumFromInt(f.value);
+    inline for (std.meta.tags(Font)) |fnt| {
         var d: u8 = '0';
         while (d <= '9') : (d += 1) {
             const g = glyph(fnt, d);

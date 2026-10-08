@@ -103,7 +103,6 @@ test "high water survives a free, because it is what sizing decisions need" {
     try std.testing.expectEqual(peak, a.high_water);
 }
 
-
 test "sizeOf reports the block a pointer belongs to, which is what c realloc cannot pass" {
     var buf: [1024]u8 align(8) = undefined;
     var a = Arena.init(&buf);

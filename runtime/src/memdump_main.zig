@@ -17,10 +17,10 @@ const linux = std.os.linux;
 
 /// no symbolised stack traces on the device: a panic prints its message and exits. this keeps the
 /// dwarf unwinder and its tables out of the binary (it more than halves .text).
-pub const panic = std.debug.simple_panic;
+// simple_panic, with the one function 0.17.0 cannot compile replaced
+pub const panic = @import("sys/panic.zig");
 /// and no segfault handler: it would drag the dwarf unwinder back in.
 pub const std_options: std.Options = .{ .enable_segfault_handler = false };
-
 
 const chunk = 64 * 1024;
 const max_mapping = 512 * 1024 * 1024;
@@ -70,7 +70,7 @@ fn record(kind: u8, len: u64) void {
 
 fn textRecord(kind: u8, comptime name: []const u8, pid: i32) void {
     var path: [64]u8 = undefined;
-    const p = std.fmt.bufPrintZ(&path, "/proc/{d}/" ++ name, .{pid}) catch return;
+    const p = std.fmt.bufPrintSentinel(&path, "/proc/{d}/" ++ name, .{pid}, 0) catch return;
     const text = sys.readFile(p, &text_buf) catch return;
     record(kind, text.len);
     out(text);
@@ -96,13 +96,13 @@ pub fn main(init: std.process.Init.Minimal) u8 {
     textRecord(4, "statm", pid);
 
     var path: [64]u8 = undefined;
-    const maps_path = std.fmt.bufPrintZ(&path, "/proc/{d}/maps", .{pid}) catch return 1;
+    const maps_path = std.fmt.bufPrintSentinel(&path, "/proc/{d}/maps", .{pid}, 0) catch return 1;
     const maps = sys.readFile(maps_path, &text_buf) catch return 1;
-    const mem_fd = sys.open(std.fmt.bufPrintZ(&path, "/proc/{d}/mem", .{pid}) catch return 1, .{ .ACCMODE = .RDONLY, .CLOEXEC = true }, 0) catch {
+    const mem_fd = sys.open(std.fmt.bufPrintSentinel(&path, "/proc/{d}/mem", .{pid}, 0) catch return 1, .{ .ACCMODE = .RDONLY, .CLOEXEC = true }, 0) catch {
         sys.writeAll(2, "cannot open mem\n") catch {};
         return 1;
     };
-    const pagemap_fd = sys.open(std.fmt.bufPrintZ(&path, "/proc/{d}/pagemap", .{pid}) catch return 1, .{ .ACCMODE = .RDONLY, .CLOEXEC = true }, 0) catch -1;
+    const pagemap_fd = sys.open(std.fmt.bufPrintSentinel(&path, "/proc/{d}/pagemap", .{pid}, 0) catch return 1, .{ .ACCMODE = .RDONLY, .CLOEXEC = true }, 0) catch -1;
 
     var lines = std.mem.splitScalar(u8, maps, '\n');
     while (lines.next()) |line| {

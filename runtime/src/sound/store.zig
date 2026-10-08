@@ -15,6 +15,8 @@
 //!   cost the cap times eight connection slots in static buffers. so a sound arrives in chunks and
 //!   is assembled here, which is what `putChunk` is for.
 const std = @import("std");
+// zig 0.17 removed `**`; `@splat` covers one element, this covers a longer unit
+const repeat = @import("../repeat.zig");
 
 /// one sound. 192 kb is six seconds of 16-bit 16 khz mono, or twenty-four of 8-bit 8 khz -- past
 /// the point where a pixel clock is a pixel clock rather than a speaker.
@@ -44,7 +46,7 @@ pub fn validName(name: []const u8) bool {
 
 /// a sound name as it travels over ipc: fixed width, because every buffer here is.
 pub const Name = struct {
-    bytes: [name_max]u8 = [_]u8{0} ** name_max,
+    bytes: [name_max]u8 = @splat(0),
     len: u8 = 0,
 
     pub fn init(text: []const u8) Name {
@@ -272,7 +274,7 @@ test "the budget is a byte count, so the number of sounds is whatever fits" {
     var s = testing.allocator.create(Store) catch unreachable;
     defer testing.allocator.destroy(s);
     s.* = .{};
-    const big = [_]u8{0} ** (sound_max);
+    const big: [sound_max]u8 = @splat(0);
     try s.put("one", &big);
     // a second full-size sound does not fit in a 256 kb budget alongside the first
     try testing.expectError(Error.NoRoom, s.put("two", &big));
@@ -285,7 +287,7 @@ test "a sound larger than one sound is refused before anything is copied" {
     var s = testing.allocator.create(Store) catch unreachable;
     defer testing.allocator.destroy(s);
     s.* = .{};
-    const huge = [_]u8{0} ** (sound_max + 1);
+    const huge: [sound_max + 1]u8 = @splat(0);
     try testing.expectError(Error.TooLarge, s.put("big", &huge));
     try testing.expectEqual(@as(usize, 0), s.count());
 }
@@ -297,7 +299,7 @@ test "names are path segments and log tokens, so they stay boring" {
     try testing.expect(!validName(".hidden"));
     try testing.expect(!validName("has space"));
     try testing.expect(!validName("has/slash"));
-    try testing.expect(!validName("a" ** (name_max + 1)));
+    try testing.expect(!validName(repeat.bytes("a", (name_max + 1))));
 }
 
 test "a store round-trips through the file it is saved as" {
@@ -362,7 +364,7 @@ test "an upload is bounded by both the chunk size and the sound size" {
     u.* = .{};
     try testing.expectError(Error.NameInvalid, u.begin("no slashes/here"));
     try u.begin("chime");
-    const over = [_]u8{0} ** (chunk_max + 1);
+    const over: [chunk_max + 1]u8 = @splat(0);
     try testing.expectError(Error.TooLarge, u.chunk(0, &over));
     u.cancel();
     try testing.expectError(Error.NotFound, u.chunk(0, "a"));

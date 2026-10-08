@@ -717,8 +717,8 @@ else. Steps:
 
 1. `FROM debian:bookworm`, install `squashfs-tools` (xz support is in the
    package), `python3`, `curl`, `xz-utils`.
-2. Fetch zig **0.16.0** for the build host (`build.zig` refuses any other
-   version): `https://ziglang.org/download/0.16.0/zig-<arch>-linux-0.16.0.tar.xz`,
+2. Fetch zig **0.17.0** for the build host (`build.zig` refuses any other
+   version): `https://ziglang.org/download/0.17.0/zig-<arch>-linux-0.17.0.tar.xz`,
    sha256 `ea4b09bf…534f17` for aarch64, `70e49664…ba3d00` for x86_64 (the
    index at `ziglang.org/download/index.json` is authoritative).
 3. `zig build -Dbin_dir=/res/bin -Dnetup=true`

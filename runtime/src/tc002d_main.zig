@@ -27,7 +27,8 @@ const linux = std.os.linux;
 
 /// no symbolised stack traces on the device: a panic prints its message and exits. this keeps the
 /// dwarf unwinder and its tables out of the binary (it more than halves .text).
-pub const panic = std.debug.simple_panic;
+// simple_panic, with the one function 0.17.0 cannot compile replaced
+pub const panic = @import("sys/panic.zig");
 /// and no segfault handler: it would drag the dwarf unwinder back in.
 pub const std_options: std.Options = .{ .enable_segfault_handler = false };
 
@@ -212,21 +213,21 @@ const Renderer = struct {
     fn sendMenuRequest(self: *Renderer, r: menu.Request) void {
         if (r == .scene_param) {
             // the scene it belongs to is whatever is showing: the menu is that scene's own
-            self.send(.{ .set_param = .{ .base = @intFromEnum(arb.base), .index = r.scene_param.index, .value = r.scene_param.value } }, 0);
+            self.send(.{ .set_param = .{ .base = @backingInt(arb.base), .index = r.scene_param.index, .value = r.scene_param.value } }, 0);
             return;
         }
         const K = messages.MenuRequest.Kind;
         const m: messages.MenuRequest = switch (r) {
-            .brightness => |v| .{ .kind = @intFromEnum(K.brightness), .value = v },
-            .clock_font => |f| .{ .kind = @intFromEnum(K.clock_font), .value = @intFromEnum(f) },
-            .generator => |g| .{ .kind = @intFromEnum(K.generator), .value = @intFromEnum(g) },
-            .ip_mode => |v| .{ .kind = @intFromEnum(K.ip_mode), .value = @intFromEnum(v) },
-            .mqtt => |on| .{ .kind = @intFromEnum(K.mqtt), .value = @intFromBool(on) },
-            .ntfy => |on| .{ .kind = @intFromEnum(K.ntfy), .value = @intFromBool(on) },
-            .night => |on| .{ .kind = @intFromEnum(K.night), .value = @intFromBool(on) },
-            .night_level => |v| .{ .kind = @intFromEnum(K.night_level), .value = v },
-            .power_off => .{ .kind = @intFromEnum(K.power_off) },
-            .reboot => .{ .kind = @intFromEnum(K.reboot) },
+            .brightness => |v| .{ .kind = @backingInt(K.brightness), .value = v },
+            .clock_font => |f| .{ .kind = @backingInt(K.clock_font), .value = @backingInt(f) },
+            .generator => |g| .{ .kind = @backingInt(K.generator), .value = @backingInt(g) },
+            .ip_mode => |v| .{ .kind = @backingInt(K.ip_mode), .value = @backingInt(v) },
+            .mqtt => |on| .{ .kind = @backingInt(K.mqtt), .value = @intFromBool(on) },
+            .ntfy => |on| .{ .kind = @backingInt(K.ntfy), .value = @intFromBool(on) },
+            .night => |on| .{ .kind = @backingInt(K.night), .value = @intFromBool(on) },
+            .night_level => |v| .{ .kind = @backingInt(K.night_level), .value = v },
+            .power_off => .{ .kind = @backingInt(K.power_off) },
+            .reboot => .{ .kind = @backingInt(K.reboot) },
             // a reseed is not a setting and a close is nobody else's business
             .none, .close, .reseed, .scene_param => return,
         };
@@ -234,7 +235,7 @@ const Renderer = struct {
     }
 
     fn sendEdges(self: *Renderer, edges: *const actions.EdgeQueue) void {
-        for (edges.slice()) |e| self.send(.{ .input = .{ .control = @intFromEnum(e.control), .event = @intFromEnum(e.event), .position = e.position } }, 0);
+        for (edges.slice()) |e| self.send(.{ .input = .{ .control = @backingInt(e.control), .event = @backingInt(e.event), .position = e.position } }, 0);
         if (edges.dropped > 0) log.warn("dropped {d} input edges under load", .{edges.dropped});
     }
 
@@ -273,17 +274,17 @@ const Renderer = struct {
             .presented = pres.transfers,
             .revision = arb.revision,
             .state = state,
-            .base = @intFromEnum(arb.base),
-            .generator = @intFromEnum(arb.art.generator),
+            .base = @backingInt(arb.base),
+            .generator = @backingInt(arb.art.generator),
             .overlay = overlay,
             .brightness = arb.brightness,
             .power = @intFromBool(arb.power),
             .clock = messages.ClockStyle.full(arb.clock.style),
-            .ip_mode = @intFromEnum(arb.ip.mode),
+            .ip_mode = @backingInt(arb.ip.mode),
             .seed = arb.art.seed,
-            .menu = if (arb.menu_state) |m| @as(u8, @intFromEnum(m.kind)) + 1 else 0,
-            .menu_item = if (arb.menu_state) |m| (if (m.kind == .device) @intFromEnum(m.item) else @as(u8, @intCast(m.entry))) else 0,
-            .menu_state = if (arb.menu_state) |m| @intFromEnum(m.state) else 0,
+            .menu = if (arb.menu_state) |m| @as(u8, @backingInt(m.kind)) + 1 else 0,
+            .menu_item = if (arb.menu_state) |m| (if (m.kind == .device) @backingInt(m.item) else @as(u8, @intCast(m.entry))) else 0,
+            .menu_state = if (arb.menu_state) |m| @backingInt(m.state) else 0,
         } }, 0);
     }
 
@@ -617,11 +618,11 @@ fn run(cfg: cli.Config) !u8 {
 
     const ep = try sys.epollCreate();
     const timer = try sys.timerfdCreate();
-    try sys.epollAdd(ep, timer, linux.EPOLL.IN, @intFromEnum(Tag.timer));
-    try sys.epollAdd(ep, sigfd, linux.EPOLL.IN, @intFromEnum(Tag.signals));
-    if (keys) |fd| try sys.epollAdd(ep, fd, linux.EPOLL.IN, @intFromEnum(Tag.keys));
-    if (knob) |fd| try sys.epollAdd(ep, fd, linux.EPOLL.IN, @intFromEnum(Tag.knob));
-    if (cfg.ipc_fd) |fd| try sys.epollAdd(ep, fd, linux.EPOLL.IN, @intFromEnum(Tag.ipc));
+    try sys.epollAdd(ep, timer, linux.EPOLL.IN, @backingInt(Tag.timer));
+    try sys.epollAdd(ep, sigfd, linux.EPOLL.IN, @backingInt(Tag.signals));
+    if (keys) |fd| try sys.epollAdd(ep, fd, linux.EPOLL.IN, @backingInt(Tag.keys));
+    if (knob) |fd| try sys.epollAdd(ep, fd, linux.EPOLL.IN, @backingInt(Tag.knob));
+    if (cfg.ipc_fd) |fd| try sys.epollAdd(ep, fd, linux.EPOLL.IN, @backingInt(Tag.ipc));
 
     const seed = if (cfg.seed != 0) cfg.seed else seedFromClock();
     arb = arbiter.Arbiter.init(cfg.base, cfg.generator, seed, rule);
@@ -638,20 +639,8 @@ fn run(cfg: cli.Config) !u8 {
     }
 
     const started = sys.monotonicNs();
-    var r = Renderer{
-        .cfg = cfg,
-        .ep = ep,
-        .timer = timer,
-        .sigfd = sigfd,
-        .keys = keys,
-        .knob = knob,
-        .lock = lock,
-        .device = device,
-        .mapper = actions.Mapper.init(cfg.keymap),
-        .started_ns = started,
-        .next_heartbeat = started,
-        .next_stats = started + stats_period_ns, .unrevealed = cfg.start_dark };
-    log.info("epoch {d} seed {d} base {s} generator {d} {s}", .{ cfg.epoch, seed, @tagName(cfg.base), @intFromEnum(cfg.generator), if (cfg.dry_run) "dry run" else "panel open" });
+    var r = Renderer{ .cfg = cfg, .ep = ep, .timer = timer, .sigfd = sigfd, .keys = keys, .knob = knob, .lock = lock, .device = device, .mapper = actions.Mapper.init(cfg.keymap), .started_ns = started, .next_heartbeat = started, .next_stats = started + stats_period_ns, .unrevealed = cfg.start_dark };
+    log.info("epoch {d} seed {d} base {s} generator {d} {s}", .{ cfg.epoch, seed, @tagName(cfg.base), @backingInt(cfg.generator), if (cfg.dry_run) "dry run" else "panel open" });
 
     var events: [8]sys.Event = undefined;
     while (true) {
@@ -700,7 +689,7 @@ fn run(cfg: cli.Config) !u8 {
         r.wake_target = armed;
         try sys.timerfdArmAt(r.timer, armed);
         const n = try sys.epollWait(r.ep, &events, -1);
-        for (events[0..n]) |ev| if (ev.data.u64 == @intFromEnum(Tag.timer)) sys.timerfdDrain(r.timer);
+        for (events[0..n]) |ev| if (ev.data.u64 == @backingInt(Tag.timer)) sys.timerfdDrain(r.timer);
     }
 
     const elapsed = sys.monotonicNs() - started;

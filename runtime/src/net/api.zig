@@ -2,6 +2,8 @@
 //! the origin policy, route matching, request bodies into typed operations, and results into
 //! response bodies. netd owns the sockets and the relay; this module never blocks.
 const std = @import("std");
+// zig 0.17 removed `**`; `@splat` covers one element, this covers a longer unit
+const repeat = @import("../repeat.zig");
 const http = @import("http.zig");
 const clients = @import("clients.zig");
 const json = @import("json.zig");
@@ -284,8 +286,8 @@ const RotateBody = struct { scopes: ?[]const []const u8 = null };
 /// every scope name, for the one error message that has to list them
 const scope_names = blk: {
     var out: []const u8 = "";
-    for (@typeInfo(clients.Scope).@"enum".fields, 0..) |f, i| {
-        out = out ++ (if (i == 0) "" else ", ") ++ f.name;
+    for (@typeInfo(clients.Scope).@"enum".field_names, 0..) |name, i| {
+        out = out ++ (if (i == 0) "" else ", ") ++ name;
     }
     break :blk out;
 };
@@ -579,9 +581,10 @@ fn parseCanvas(body: []const ElementBody, doc: *canvas.Document) CanvasRoute {
     for (body) |*b| {
         const kind = enumByName(canvas.Kind, b.type) orelse
             return .{ .reject = canvasBad("invalid_element_type", "type must be text, rect, line, circle, pixel, bar or sparkline") };
-        inline for (@typeInfo(ElementBody).@"struct".fields) |f| {
-            if (comptime @typeInfo(f.type) == .optional) {
-                if (@field(b, f.name) != null and !allowedField(kind, f.name)) {
+        const eb = @typeInfo(ElementBody).@"struct";
+        inline for (eb.field_names, eb.field_types) |fname, ftype| {
+            if (comptime @typeInfo(ftype) == .optional) {
+                if (@field(b, fname) != null and !allowedField(kind, fname)) {
                     return .{ .reject = canvasBad("invalid_element_field", "that field does not belong to that element type") };
                 }
             }
@@ -736,7 +739,8 @@ pub fn generatorName(g: scene.Generator) []const u8 {
 }
 
 fn parseGenerator(text: []const u8) ?scene.Generator {
-    inline for (@typeInfo(scene.Generator).@"enum".fields) |f| if (std.mem.eql(u8, text, f.name)) return @enumFromInt(f.value);
+    const info = @typeInfo(scene.Generator).@"enum";
+    inline for (info.field_names, info.field_values) |name, value| if (std.mem.eql(u8, text, name)) return @fromBackingInt(@intCast(value));
     return null;
 }
 
@@ -1023,7 +1027,8 @@ pub fn route(req: http.Request, body: []const u8, creds: *const Credentials, sto
 pub const BodyKind = enum { scene, action, notify, dismiss_notify, config_patch, config_save, mqtt_put, ntfy_put, input, canvas_put, canvas_patch, sound };
 
 pub fn enumByName(comptime E: type, text: []const u8) ?E {
-    inline for (@typeInfo(E).@"enum".fields) |f| if (std.mem.eql(u8, text, f.name)) return @enumFromInt(f.value);
+    const info = @typeInfo(E).@"enum";
+    inline for (info.field_names, info.field_values) |name, value| if (std.mem.eql(u8, text, name)) return @fromBackingInt(@intCast(value));
     return null;
 }
 
@@ -1102,8 +1107,9 @@ pub fn parseBody(kind: BodyKind, body: []const u8, arena: *Arena, generated_id: 
             const b = json.parse(ActionBody, body, arena, &where) catch |e| return jsonError(e, where, arena);
             const rid = if (b.request_id) |t| (parseRequestId(t) orelse return bad("invalid_request_id", "request_id must be 1..16 hex digits")) else generated_id;
             var kind_found: ?ActionKind = null;
-            inline for (@typeInfo(ActionKind).@"enum".fields) |f| if (std.mem.eql(u8, b.action, f.name)) {
-                kind_found = @enumFromInt(f.value);
+            const ak = @typeInfo(ActionKind).@"enum";
+            inline for (ak.field_names, ak.field_values) |name, value| if (std.mem.eql(u8, b.action, name)) {
+                kind_found = @fromBackingInt(@intCast(value));
             };
             const k = kind_found orelse return bad("invalid_action", "unknown action");
             if (k == .brightness) {
@@ -1314,7 +1320,7 @@ fn parseGeneratorParams(body: []const GenParamBody, out: []ResolvedParam) Params
         const own = table[scene.art_params.len..];
         const slot = param.indexOf(own, entry.name) orelse return .{ .reject = .{ .status = 400, .code = "invalid_param", .message = "no such parameter on that scene" } };
         const value = parseParamValue(own[slot], entry.value) orelse return .{ .reject = .{ .status = 400, .code = "invalid_param_value", .message = "the value does not fit that parameter" } };
-        out[i] = .{ .owner = @intFromEnum(g), .slot = @intCast(slot), .value = value };
+        out[i] = .{ .owner = @backingInt(g), .slot = @intCast(slot), .value = value };
     }
     return .{ .op = out[0..body.len] };
 }
@@ -1367,7 +1373,7 @@ const font_names_message = "font must be one of " ++ namesList(clock.Font);
 fn namesJson(comptime E: type) []const u8 {
     comptime {
         var out: []const u8 = "[";
-        for (std.meta.fields(E), 0..) |f, i| out = out ++ (if (i == 0) "\"" else ",\"") ++ f.name ++ "\"";
+        for (std.meta.fieldNames(E), 0..) |name, i| out = out ++ (if (i == 0) "\"" else ",\"") ++ name ++ "\"";
         return out ++ "]";
     }
 }
@@ -1375,7 +1381,7 @@ fn namesJson(comptime E: type) []const u8 {
 fn namesList(comptime E: type) []const u8 {
     comptime {
         var out: []const u8 = "";
-        for (std.meta.fields(E), 0..) |f, i| out = out ++ (if (i == 0) "" else ", ") ++ f.name;
+        for (std.meta.fieldNames(E), 0..) |name, i| out = out ++ (if (i == 0) "" else ", ") ++ name;
         return out;
     }
 }
@@ -1442,8 +1448,8 @@ fn testCreds() Credentials {
 const test_minted: u64 = generated_mask | 0x5ee;
 /// most route tests predate named clients and care only about the built-in tokens
 const no_clients = clients.Store{};
-const control_header = "Bearer " ++ "11" ** 32;
-const admin_header = "Bearer " ++ "22" ** 32;
+const control_header = "Bearer " ++ repeat.bytes("11", 32);
+const admin_header = "Bearer " ++ repeat.bytes("22", 32);
 
 fn testReq(method: http.Method, path: []const u8, query: []const u8, auth: ?[]const u8, ct: ?[]const u8, origin: ?[]const u8) http.Request {
     return .{ .method = method, .path = path, .query = query, .authorization = auth, .content_type = ct, .origin = origin, .head_len = 0 };
@@ -1560,9 +1566,9 @@ test "authentication is constant-time bearer matching of either token" {
     try std.testing.expectEqual(control_scopes, authenticate(&c, &no_clients, control_header).scopes);
     try std.testing.expectEqual(admin_scopes, authenticate(&c, &no_clients, admin_header).scopes);
     try std.testing.expectEqual(@as(clients.Set, 0), authenticate(&c, &no_clients, null).scopes);
-    try std.testing.expectEqual(@as(clients.Set, 0), authenticate(&c, &no_clients, "Bearer " ++ "11" ** 31 ++ "12").scopes);
-    try std.testing.expectEqual(@as(clients.Set, 0), authenticate(&c, &no_clients, "Basic " ++ "11" ** 32).scopes);
-    try std.testing.expectEqual(@as(clients.Set, 0), authenticate(&c, &no_clients, "Bearer zz" ++ "11" ** 31).scopes);
+    try std.testing.expectEqual(@as(clients.Set, 0), authenticate(&c, &no_clients, "Bearer " ++ repeat.bytes("11", 31) ++ "12").scopes);
+    try std.testing.expectEqual(@as(clients.Set, 0), authenticate(&c, &no_clients, "Basic " ++ repeat.bytes("11", 32)).scopes);
+    try std.testing.expectEqual(@as(clients.Set, 0), authenticate(&c, &no_clients, "Bearer zz" ++ repeat.bytes("11", 31)).scopes);
 }
 
 test "status codes: origin, route, method, credentials, authority" {
@@ -1596,7 +1602,7 @@ test "transition fields become a spec with the effect's natural direction and 50
     try expectReject(route(testReq(.POST, "/api/v1/notify", "", control_header, "application/json", null), "{\"text\":\"x\",\"request_id\":\"1\",\"epoch\":1,\"transition\":\"warp\"}", &c, &no_clients, &origins, &arena, test_minted), 400, "invalid_transition");
     try expectReject(route(testReq(.PUT, "/api/v1/scene", "", control_header, "application/json", null), "{\"base\":\"art\",\"direction\":\"sideways\",\"request_id\":\"7\"}", &c, &no_clients, &origins, &arena, test_minted), 400, "invalid_direction");
     try expectReject(route(testReq(.PUT, "/api/v1/scene", "", control_header, "application/json", null), "{\"base\":\"art\",\"transition_ms\":5001,\"request_id\":\"7\"}", &c, &no_clients, &origins, &arena, test_minted), 400, "invalid_transition_ms");
-    const frame = [_]u8{7} ** geometry.rgb_bytes;
+    const frame: [geometry.rgb_bytes]u8 = @splat(7);
     const f = route(testReq(.POST, "/api/v1/frame", "duration_s=5&request_id=ab&epoch=1&transition=expand&transition_ms=0", control_header, "application/octet-stream", null), &frame, &c, &no_clients, &origins, &arena, test_minted);
     try std.testing.expectEqual(transition.Spec{ .effect = .expand, .direction = .left, .duration_ns = 0 }, f.op.frame.transition.?);
     const plain = route(testReq(.POST, "/api/v1/frame", "duration_s=5&request_id=ab&epoch=1", control_header, "application/octet-stream", null), &frame, &c, &no_clients, &origins, &arena, test_minted);
@@ -1625,7 +1631,7 @@ test "easing is one more optional transition field on scenes, notifications and 
     const r = route(testReq(.POST, "/api/v1/notify", "", control_header, "application/json", null), "{\"text\":\"x\",\"request_id\":\"1\",\"epoch\":1,\"transition\":\"random\"}", &c, &no_clients, &origins, &arena, test_minted);
     try std.testing.expectEqual(transition.Spec{ .effect = .random, .direction = .left, .duration_ns = 500_000_000 }, r.op.notify.transition.?);
     try expectReject(route(testReq(.POST, "/api/v1/notify", "", control_header, "application/json", null), "{\"text\":\"x\",\"request_id\":\"1\",\"epoch\":1,\"easing\":\"bouncy\"}", &c, &no_clients, &origins, &arena, test_minted), 400, "invalid_easing");
-    const frame = [_]u8{7} ** geometry.rgb_bytes;
+    const frame: [geometry.rgb_bytes]u8 = @splat(7);
     const f = route(testReq(.POST, "/api/v1/frame", "duration_s=5&request_id=ab&epoch=1&easing=ease_in", control_header, "application/octet-stream", null), &frame, &c, &no_clients, &origins, &arena, test_minted);
     try std.testing.expectEqual(transition.Spec{ .effect = .cut, .direction = .left, .easing = .ease_in }, f.op.frame.transition.?);
     try expectReject(route(testReq(.POST, "/api/v1/frame", "duration_s=5&request_id=ab&epoch=1&easing=x", control_header, "application/octet-stream", null), &frame, &c, &no_clients, &origins, &arena, test_minted), 400, "invalid_easing");
@@ -1714,14 +1720,14 @@ test "frames are raw octets with query parameters; oversized json is 413" {
     const c = testCreds();
     var arena: Arena = undefined;
     const origins = OriginPolicy{};
-    const frame = [_]u8{7} ** geometry.rgb_bytes;
+    const frame: [geometry.rgb_bytes]u8 = @splat(7);
     const r = route(testReq(.POST, "/api/v1/frame", "duration_s=5&request_id=ab&epoch=1", control_header, "application/octet-stream", null), &frame, &c, &no_clients, &origins, &arena, test_minted);
     try std.testing.expectEqual(@as(u16, 5), r.op.frame.duration_s);
     try std.testing.expectEqual(@as(u8, 7), r.op.frame.rgb[100]);
     try expectReject(route(testReq(.POST, "/api/v1/frame", "duration_s=5&request_id=ab&epoch=1", control_header, "application/octet-stream", null), frame[0..100], &c, &no_clients, &origins, &arena, test_minted), 400, "invalid_frame");
     try expectReject(route(testReq(.POST, "/api/v1/frame", "request_id=ab&epoch=1", control_header, "application/octet-stream", null), &frame, &c, &no_clients, &origins, &arena, test_minted), 400, "missing_duration");
     try expectReject(route(testReq(.POST, "/api/v1/frame", "duration_s=5", control_header, "application/json", null), &frame, &c, &no_clients, &origins, &arena, test_minted), 415, "unsupported_media_type");
-    const big = [_]u8{' '} ** (json.max_body + 1);
+    const big: [json.max_body + 1]u8 = @splat(' ');
     try expectReject(route(testReq(.POST, "/api/v1/notify", "", control_header, "application/json", null), &big, &c, &no_clients, &origins, &arena, test_minted), 413, "body_too_large");
 }
 
@@ -2111,28 +2117,28 @@ test "a client token authenticates as its own scopes and names itself" {
     const c = testCreds();
     const kitchen = clients.Scope.notify.bit() | clients.Scope.display.bit();
     var store = clients.Store{};
-    try store.add("kitchen", kitchen, [_]u8{0x33} ** 32, 1000);
-    try store.add("wall", clients.Scope.status.bit(), [_]u8{0x44} ** 32, 1000);
+    try store.add("kitchen", kitchen, @splat(0x33), 1000);
+    try store.add("wall", clients.Scope.status.bit(), @splat(0x44), 1000);
 
-    const a = authenticate(&c, &store, "Bearer " ++ "33" ** 32);
+    const a = authenticate(&c, &store, "Bearer " ++ repeat.bytes("33", 32));
     try std.testing.expectEqual(kitchen, a.scopes);
     try std.testing.expectEqualStrings("kitchen", a.client.?.slice());
 
-    const b = authenticate(&c, &store, "Bearer " ++ "44" ** 32);
+    const b = authenticate(&c, &store, "Bearer " ++ repeat.bytes("44", 32));
     try std.testing.expectEqual(clients.Scope.status.bit(), b.scopes);
     try std.testing.expectEqualStrings("wall", b.client.?.slice());
 
     // the built-in tokens are not clients and carry no name
     try std.testing.expectEqual(admin_scopes, authenticate(&c, &store, admin_header).scopes);
     try std.testing.expect(authenticate(&c, &store, control_header).client == null);
-    try std.testing.expectEqual(@as(clients.Set, 0), authenticate(&c, &store, "Bearer " ++ "99" ** 32).scopes);
+    try std.testing.expectEqual(@as(clients.Set, 0), authenticate(&c, &store, "Bearer " ++ repeat.bytes("99", 32)).scopes);
 }
 
 test "a status-only client is refused everything else, including the log ring" {
     const c = testCreds();
     var store = clients.Store{};
-    try store.add("wall", clients.Scope.status.bit(), [_]u8{0x44} ** 32, 1000);
-    const hdr = "Bearer " ++ "44" ** 32;
+    try store.add("wall", clients.Scope.status.bit(), @splat(0x44), 1000);
+    const hdr = "Bearer " ++ repeat.bytes("44", 32);
     var arena: Arena = undefined;
     const origins = OriginPolicy{};
     try expectReject(route(testReq(.POST, "/api/v1/notify", "", hdr, "application/json", null), "{\"text\":\"x\"}", &c, &store, &origins, &arena, test_minted), 403, "forbidden");
@@ -2147,8 +2153,8 @@ test "a status-only client is refused everything else, including the log ring" {
 test "a notify-only client can say something and do nothing else" {
     const c = testCreds();
     var store = clients.Store{};
-    try store.add("kitchen", clients.Scope.notify.bit(), [_]u8{0x33} ** 32, 1000);
-    const hdr = "Bearer " ++ "33" ** 32;
+    try store.add("kitchen", clients.Scope.notify.bit(), @splat(0x33), 1000);
+    const hdr = "Bearer " ++ repeat.bytes("33", 32);
     var arena: Arena = undefined;
     const origins = OriginPolicy{};
     try std.testing.expect(route(testReq(.POST, "/api/v1/notify", "", hdr, "application/json", null), "{\"text\":\"x\"}", &c, &store, &origins, &arena, test_minted) == .op);
@@ -2201,8 +2207,8 @@ test "a full store still renders a listing that fits one response" {
     var i: usize = 0;
     while (i < clients.max_clients) : (i += 1) {
         var name: [clients.name_max]u8 = undefined;
-        _ = std.fmt.bufPrint(&name, "{s}{d:0>4}", .{ "n" ** (clients.name_max - 4), i }) catch unreachable;
-        try store.add(&name, clients.grantable, [_]u8{@intCast(i & 0xff)} ** 32, std.math.minInt(i64));
+        _ = std.fmt.bufPrint(&name, "{s}{d:0>4}", .{ repeat.bytes("n", (clients.name_max - 4)), i }) catch unreachable;
+        try store.add(&name, clients.grantable, @splat(@intCast(i & 0xff)), std.math.minInt(i64));
     }
     var buf: [http.response_buf_len]u8 = undefined;
     const listing = clients.renderList(&store, &buf);
@@ -2257,8 +2263,8 @@ test "a stored script can be read back, and reading source needs the scripts sco
     // reading a script's source needs `scripts`, not the `status` that lists their names: with a
     // real scope set the split protects something, where under the old ladder it protected little
     var store = clients.Store{};
-    try store.add("wall", clients.Scope.status.bit(), [_]u8{0x77} ** 32, 1);
-    try expectReject(route(testReq(.GET, "/api/v1/berry/scripts/autoexec", "", "Bearer " ++ "77" ** 32, null, null), "", &c, &store, &origins, &arena, test_minted), 403, "forbidden");
+    try store.add("wall", clients.Scope.status.bit(), @splat(0x77), 1);
+    try expectReject(route(testReq(.GET, "/api/v1/berry/scripts/autoexec", "", "Bearer " ++ repeat.bytes("77", 32), null, null), "", &c, &store, &origins, &arena, test_minted), 403, "forbidden");
     try expectReject(R.go(&c, &origins, &arena, .GET, "/api/v1/berry/scripts/has space", admin_header), 400, "invalid_script_name");
 }
 
@@ -2304,7 +2310,7 @@ test "notification options validate names types durations and preserve defaults"
     const queued = parseBody(.notify, "{\"text\":\"hello\",\"name\":\"door-1\",\"stack\":true,\"hold\":true}", &arena, test_minted).op.notify;
     try std.testing.expect(queued.stack and queued.hold);
     try std.testing.expectEqualStrings("door-1", queued.name);
-    const longest = "n" ** 255;
+    const longest = repeat.bytes("n", 255);
     const at_most = parseBody(.notify, "{\"text\":\"x\",\"name\":\"" ++ longest ++ "\"}", &arena, test_minted).op.notify;
     try std.testing.expectEqualStrings(longest, at_most.name);
     const dismissed = parseBody(.dismiss_notify, "{\"name\":\"" ++ longest ++ "\"}", &arena, test_minted).op.dismiss_notify;
@@ -2329,8 +2335,8 @@ test "notification dismissal requires notify scope" {
     var store = clients.Store{};
     var origins = OriginPolicy{};
     var arena: Arena = undefined;
-    try store.add("notifier", clients.Scope.notify.bit(), [_]u8{0x33} ** 32, 1000);
-    const auth = "Bearer " ++ ("33" ** 32);
+    try store.add("notifier", clients.Scope.notify.bit(), @splat(0x33), 1000);
+    const auth = "Bearer " ++ (repeat.bytes("33", 32));
     const r = route(testReq(.POST, "/api/v1/notify/dismiss", "", auth, "application/json", null), "{}", &c, &store, &origins, &arena, test_minted);
     try std.testing.expect(r == .op);
     try expectReject(route(testReq(.POST, "/api/v1/notify/dismiss", "", null, "application/json", null), "{}", &c, &store, &origins, &arena, test_minted), 401, "unauthorized");

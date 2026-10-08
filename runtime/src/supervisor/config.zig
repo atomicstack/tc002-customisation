@@ -18,7 +18,7 @@ const night = @import("night.zig");
 pub const text_max = 64;
 
 pub const Text = struct {
-    bytes: [text_max]u8 = [_]u8{0} ** text_max,
+    bytes: [text_max]u8 = @splat(0),
     len: u8 = 0,
 
     pub fn init(s: []const u8) Text {
@@ -177,8 +177,8 @@ pub const Config = struct {
         if (p.expected_revision) |want| if (want != self.revision) return error.RevisionConflict;
         var next = self.*;
         if (p.brightness) |v| next.brightness = v;
-        if (p.base) |b| next.base = @intFromEnum(b);
-        if (p.generator) |g| next.generator = @intFromEnum(g);
+        if (p.base) |b| next.base = @backingInt(b);
+        if (p.generator) |g| next.generator = @backingInt(g);
         if (p.timezone) |t| {
             try next.timezone.set(t);
             if (tz.resolve(t) == null) return error.Invalid;
@@ -191,19 +191,19 @@ pub const Config = struct {
         if (p.discovery_controls) |v| next.discovery_controls = v;
         if (p.mdns) |v| next.mdns = v;
         if (p.discovery_prefix) |v| try next.discovery_prefix.set(v);
-        if (p.clock_font) |v| next.clock_font = @intFromEnum(v);
-        if (p.clock_colour_mode) |v| next.clock_colour_mode = @intFromEnum(v);
+        if (p.clock_font) |v| next.clock_font = @backingInt(v);
+        if (p.clock_colour_mode) |v| next.clock_colour_mode = @backingInt(v);
         if (p.clock_colour) |v| next.clock_colour = v;
         if (p.clock_colour2) |v| next.clock_colour2 = v;
-        if (p.clock_gradient) |v| next.clock_gradient = @intFromEnum(v);
+        if (p.clock_gradient) |v| next.clock_gradient = @backingInt(v);
         if (p.clock_spread) |v| next.clock_spread = v;
-        if (p.clock_digit) |v| next.clock_digit = @intFromEnum(v);
+        if (p.clock_digit) |v| next.clock_digit = @backingInt(v);
         if (p.clock_fade) |v| next.clock_fade = v;
         for (p.generator_params) |rp| {
             if (rp.owner >= param.owner_count or rp.slot >= param.max_per_owner) return error.Invalid;
             next.generator_params[rp.owner][rp.slot] = rp.value;
         }
-        if (p.ip_mode) |v| next.ip_mode = @intFromEnum(v);
+        if (p.ip_mode) |v| next.ip_mode = @backingInt(v);
         if (p.night) |v| next.night = v;
         if (p.night_brightness) |v| {
             if (v < 1 or v > 100) return error.Invalid;
@@ -296,7 +296,7 @@ pub const Config = struct {
 };
 
 fn enumOr(comptime E: type, value: u8, default: E) E {
-    inline for (@typeInfo(E).@"enum".fields) |f| if (f.value == value) return @enumFromInt(f.value);
+    inline for (@typeInfo(E).@"enum".field_values) |v| if (v == value) return @fromBackingInt(@intCast(v));
     return default;
 }
 
@@ -657,14 +657,14 @@ const FileForm = struct {
 /// cube applied it live, wrote `plasma` to flash, and gave back plasma on the next boot -- and had
 /// a `cube` ever reached the file by another route, `fromFileForm` would have rejected the whole
 /// settings document as invalid. deriving them means the next generator cannot repeat it.
-fn enumNames(comptime E: type) [@typeInfo(E).@"enum".fields.len][]const u8 {
-    const fields = @typeInfo(E).@"enum".fields;
-    var out: [fields.len][]const u8 = undefined;
-    for (fields, 0..) |f, i| {
+fn enumNames(comptime E: type) [@typeInfo(E).@"enum".field_names.len][]const u8 {
+    const info = @typeInfo(E).@"enum";
+    var out: [info.field_names.len][]const u8 = undefined;
+    for (info.field_names, info.field_values, 0..) |field_name, value, i| {
         // the enum value is the index these are looked up by, so a gap or a reordering would hand
         // back someone else's name rather than fail
-        if (f.value != i) @compileError("enum " ++ @typeName(E) ++ " field " ++ f.name ++ " is not its own index");
-        out[i] = f.name;
+        if (value != i) @compileError("enum " ++ @typeName(E) ++ " field " ++ field_name ++ " is not its own index");
+        out[i] = field_name;
     }
     return out;
 }
@@ -808,13 +808,13 @@ pub fn fromJson(bytes: []const u8, arena: []u8) error{ Invalid, TooLong }!Config
     c.ntfy.insecure = f.ntfy.insecure;
     if (c.ntfy.url.len > 0) _ = ntfy_url.parse(c.ntfy.url.slice()) catch return error.Invalid;
     if (c.ntfy.duration_s < 1 or c.ntfy.duration_s > 300) return error.Invalid;
-    c.clock_font = @intFromEnum(api.enumByName(clock.Font, f.clock_font) orelse return error.Invalid);
-    c.clock_colour_mode = @intFromEnum(api.enumByName(clock.ColourMode, f.clock_colour_mode) orelse return error.Invalid);
+    c.clock_font = @backingInt(api.enumByName(clock.Font, f.clock_font) orelse return error.Invalid);
+    c.clock_colour_mode = @backingInt(api.enumByName(clock.ColourMode, f.clock_colour_mode) orelse return error.Invalid);
     c.clock_colour = api.parseColour(f.clock_colour) orelse return error.Invalid;
     c.clock_colour2 = api.parseColour(f.clock_colour2) orelse return error.Invalid;
-    c.clock_gradient = @intFromEnum(api.enumByName(clock.Gradient, f.clock_gradient) orelse return error.Invalid);
+    c.clock_gradient = @backingInt(api.enumByName(clock.Gradient, f.clock_gradient) orelse return error.Invalid);
     c.clock_spread = f.clock_spread;
-    c.clock_digit = @intFromEnum(api.enumByName(clockfont.DigitStyle, f.clock_digit) orelse return error.Invalid);
+    c.clock_digit = @backingInt(api.enumByName(clockfont.DigitStyle, f.clock_digit) orelse return error.Invalid);
     c.clock_fade = f.clock_fade;
     // older files have fewer owners; retain their slots and default newly appended scenes.
     if (f.generator_params.len > param.owner_count) return error.Invalid;
@@ -822,7 +822,7 @@ pub fn fromJson(bytes: []const u8, arena: []u8) error{ Invalid, TooLong }!Config
     for (&c.generator_params, 0..) |*slots, i| if (scene.slotsUnset(slots.*)) {
         slots.* = scene.generator_defaults[i];
     };
-    c.ip_mode = @intFromEnum(api.enumByName(ip.Mode, f.ip_mode) orelse return error.Invalid);
+    c.ip_mode = @backingInt(api.enumByName(ip.Mode, f.ip_mode) orelse return error.Invalid);
     c.battery.shutdown = f.battery.shutdown;
     if (f.battery.shutdown_mv < api.battery_shutdown_mv_min or f.battery.shutdown_mv > api.battery_shutdown_mv_max) return error.Invalid;
     c.battery.shutdown_mv = f.battery.shutdown_mv;
@@ -910,7 +910,7 @@ test "patches validate, bump the revision, and honour the expected revision" {
     try std.testing.expectEqual(@as(u8, 40), c.brightness);
     try c.patch(.{ .brightness = 50, .expected_revision = 1 });
     try std.testing.expectEqual(@as(u32, 2), c.revision);
-    const long = [_]u8{'x'} ** 65;
+    const long: [65]u8 = @splat('x');
     try std.testing.expectError(error.TooLong, c.patch(.{ .timezone = &long }));
     try std.testing.expectError(error.Invalid, c.patch(.{ .timezone = "Mars/Olympus" }));
     try std.testing.expectEqual(@as(u32, 2), c.revision); // a failed patch changes nothing
@@ -1105,18 +1105,19 @@ pub fn reportChanges(before: *const Config, after: *const Config, sink: anytype)
 }
 
 fn reportStruct(comptime T: type, before: *const T, after: *const T, comptime prefix: []const u8, sink: anytype) void {
-    inline for (@typeInfo(T).@"struct".fields) |f| {
-        const name = prefix ++ f.name;
+    const info = @typeInfo(T).@"struct";
+    inline for (info.field_names, info.field_types) |field_name, field_type| {
+        const name = prefix ++ field_name;
         // the revision moves on every patch by definition; saying so every time is noise
         if (comptime std.mem.eql(u8, name, "revision") or std.mem.eql(u8, name, "saved_revision")) continue;
-        const a = &@field(before, f.name);
-        const b = &@field(after, f.name);
-        if (comptime isSecret(f.name)) {
+        const a = &@field(before, field_name);
+        const b = &@field(after, field_name);
+        if (comptime isSecret(field_name)) {
             if (!std.meta.eql(a.*, b.*)) sink.line("setting {s} changed", .{name});
-        } else if (f.type == Text) {
+        } else if (field_type == Text) {
             if (!std.meta.eql(a.*, b.*)) sink.line("setting {s} \"{s}\" -> \"{s}\"", .{ name, a.slice(), b.slice() });
-        } else switch (@typeInfo(f.type)) {
-            .@"struct" => reportStruct(f.type, a, b, name ++ ".", sink),
+        } else switch (@typeInfo(field_type)) {
+            .@"struct" => reportStruct(field_type, a, b, name ++ ".", sink),
             .int, .bool => {
                 if (a.* != b.*) sink.line("setting {s} {any} -> {any}", .{ name, a.*, b.* });
             },
@@ -1134,7 +1135,7 @@ fn reportStruct(comptime T: type, before: *const T, after: *const T, comptime pr
 
 const TestSink = struct {
     buf: [16][160]u8 = undefined,
-    lens: [16]usize = [_]usize{0} ** 16,
+    lens: [16]usize = @splat(0),
     n: usize = 0,
 
     fn line(self: *TestSink, comptime fmt: []const u8, args: anytype) void {
@@ -1255,13 +1256,13 @@ test "every base and every generator survives the settings file" {
     // keeps working when the next generator is added.
     var arena: [4096]u8 = undefined;
     var out: [file_max]u8 = undefined;
-    inline for (@typeInfo(arbiter.Base).@"enum".fields) |bf| {
-        inline for (@typeInfo(scene.Generator).@"enum".fields) |gf| {
+    inline for (std.meta.tags(arbiter.Base)) |base| {
+        inline for (std.meta.tags(scene.Generator)) |gen| {
             var c = Config{};
-            try c.patch(.{ .base = @enumFromInt(bf.value), .generator = @enumFromInt(gf.value) });
+            try c.patch(.{ .base = base, .generator = gen });
             const back = try fromJson(try toJson(&c, &out), &arena);
-            try std.testing.expectEqual(@as(u8, @intCast(bf.value)), back.base);
-            try std.testing.expectEqual(@as(u8, @intCast(gf.value)), back.generator);
+            try std.testing.expectEqual(@backingInt(base), back.base);
+            try std.testing.expectEqual(@backingInt(gen), back.generator);
         }
     }
 }

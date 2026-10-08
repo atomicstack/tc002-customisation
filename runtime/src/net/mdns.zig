@@ -829,7 +829,7 @@ test "established ownership ignores rr types it does not own" {
     w.u16v(CLASS_IN);
     w.u32v(120);
     w.u16v(16);
-    w.bytes(&(.{0} ** 16));
+    w.bytes(&@as([16]u8, @splat(0)));
     try testing.expectEqual(Conflict.none, ours.conflict(buf[0..w.at], false));
     try testing.expectEqual(Conflict.answer, ours.conflict(buf[0..w.at], true));
 }

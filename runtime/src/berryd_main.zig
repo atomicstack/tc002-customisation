@@ -25,7 +25,8 @@ const berry_api = @import("berry/api.zig");
 const config = @import("supervisor/config.zig");
 const actions = @import("input/actions.zig");
 
-pub const panic = std.debug.simple_panic;
+// simple_panic, with the one function 0.17.0 cannot compile replaced
+pub const panic = @import("sys/panic.zig");
 pub const std_options: std.Options = .{ .enable_segfault_handler = false };
 
 const supervisor_fd: sys.Fd = 3;
@@ -90,7 +91,7 @@ fn waitConfig() ?messages.BerryConfig {
 
 /// what the supervisor asked for: compile a script, forget one, evaluate a snippet, or start over.
 fn onScript(vm: *berry.Vm, w: messages.BerryScript, handler_ms: u16) void {
-    const op: messages.BerryScript.Op = @enumFromInt(@min(w.op, 3));
+    const op: messages.BerryScript.Op = @fromBackingInt(@intCast(@min(w.op, 3)));
     const name = w.name.slice();
     switch (op) {
         .put => {
@@ -186,8 +187,8 @@ pub fn main(init: std.process.Init.Minimal) u8 {
         log.err("timerfd: {s}", .{sys.errText(e)});
         return 1;
     };
-    sys.epollAdd(ep, supervisor_fd, linux.EPOLL.IN, @intFromEnum(Tag.ipc)) catch return 1;
-    sys.epollAdd(ep, timer, linux.EPOLL.IN, @intFromEnum(Tag.timer)) catch return 1;
+    sys.epollAdd(ep, supervisor_fd, linux.EPOLL.IN, @backingInt(Tag.ipc)) catch return 1;
+    sys.epollAdd(ep, timer, linux.EPOLL.IN, @backingInt(Tag.timer)) catch return 1;
 
     var last_tick = sys.monotonicNs();
     var next_report = last_tick + report_interval_ns;
@@ -201,7 +202,7 @@ pub fn main(init: std.process.Init.Minimal) u8 {
             return 1;
         };
         for (events[0..n]) |ev| {
-            switch (@as(Tag, @enumFromInt(ev.data.u64))) {
+            switch (@as(Tag, @fromBackingInt(@intCast(ev.data.u64)))) {
                 .ipc => while (sys.recvPacket(supervisor_fd, &packet_buf) catch |e| {
                     // the supervisor is gone: so are we, and pdeathsig would have done it anyway
                     log.info("the supervisor closed the channel: {s}", .{sys.errText(e)});
@@ -227,7 +228,7 @@ pub fn main(init: std.process.Init.Minimal) u8 {
                             const topic_z = berry_api.zcopy(&z.topic, e.topicSlice());
                             const payload_z = berry_api.zcopy(&z.payload, e.payloadSlice());
                             const filter_z = berry_api.zcopy(&z.filter, e.filterSlice());
-                            const which: []const u8 = if (e.kind == @intFromEnum(messages.BerryEvent.Op.ntfy)) "ntfy" else "mqtt";
+                            const which: []const u8 = if (e.kind == @backingInt(messages.BerryEvent.Op.ntfy)) "ntfy" else "mqtt";
                             if (!berry_api.callGlobal(&vm, "_tc002_dispatch", &.{
                                 .{ .text = if (std.mem.eql(u8, which, "ntfy")) "ntfy" else "mqtt" },
                                 .{ .text = topic_z },

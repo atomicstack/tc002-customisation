@@ -84,7 +84,6 @@ pub const Config = struct {
     /// the build (-Dnetup), which is how a flashed image turns it on without an argument.
     netup_dir: ?[:0]const u8 = null,
     from_bootstrap: bool = false,
-
 };
 
 /// the longest path the supervisor will build for one of its own binaries. bounded because these
@@ -124,7 +123,7 @@ pub const ResolveError = error{NameTooLong};
 /// refused rather than truncated: a truncated exec path is a binary that silently is not there,
 /// and the supervisor would report it as a child that would not start.
 fn joinZ(buf: []u8, dir: []const u8, name: []const u8) ResolveError![:0]const u8 {
-    return std.fmt.bufPrintZ(buf, "{s}/{s}", .{ dir, name }) catch error.NameTooLong;
+    return std.fmt.bufPrintSentinel(buf, "{s}/{s}", .{ dir, name }, 0) catch error.NameTooLong;
 }
 
 pub fn resolve(cfg: Config, defaults: Defaults, buf: *Buffers) ResolveError!Paths {

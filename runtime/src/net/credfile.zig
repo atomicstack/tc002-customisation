@@ -11,6 +11,8 @@
 //! the two halves are interchangeable to look at, and picking the wrong one silently grants admin,
 //! because an admin token satisfies a control route.
 const std = @import("std");
+// zig 0.17 removed `**`; `@splat` covers one element, this covers a longer unit
+const repeat = @import("../repeat.zig");
 const api = @import("api.zig");
 const clients = @import("clients.zig");
 
@@ -131,13 +133,13 @@ pub fn parse(bytes: []const u8) ?Parsed {
 }
 
 const testing = std.testing;
-const sample = Credentials{ .control = [_]u8{0xab} ** 32, .admin = [_]u8{0xcd} ** 32 };
+const sample = Credentials{ .control = @splat(0xab), .admin = @splat(0xcd) };
 const empty_store = clients.Store{};
 
 test "the text form round-trips and is exactly what a shell would expect to read" {
     var buf: [encoded_len]u8 = undefined;
     const text = encode(sample, &empty_store, &buf);
-    try testing.expectEqualStrings("control=" ++ "ab" ** 32 ++ "\nadmin=" ++ "cd" ** 32 ++ "\n", text);
+    try testing.expectEqualStrings("control=" ++ repeat.bytes("ab", 32) ++ "\nadmin=" ++ repeat.bytes("cd", 32) ++ "\n", text);
     const p = parse(text).?;
     try testing.expectEqual(sample, p.creds);
     try testing.expect(!p.legacy);
@@ -153,23 +155,23 @@ test "the raw 64-byte form still reads, and says so" {
 }
 
 test "reading tolerates line endings and a missing final newline" {
-    try testing.expectEqual(sample, parse("control=" ++ "ab" ** 32 ++ "\r\nadmin=" ++ "cd" ** 32).?.creds);
-    try testing.expectEqual(sample, parse("\ncontrol=" ++ "ab" ** 32 ++ "\n\nadmin=" ++ "cd" ** 32 ++ "\n\n").?.creds);
+    try testing.expectEqual(sample, parse("control=" ++ repeat.bytes("ab", 32) ++ "\r\nadmin=" ++ repeat.bytes("cd", 32)).?.creds);
+    try testing.expectEqual(sample, parse("\ncontrol=" ++ repeat.bytes("ab", 32) ++ "\n\nadmin=" ++ repeat.bytes("cd", 32) ++ "\n\n").?.creds);
 }
 
 test "order does not matter, because a file a human edited need not keep ours" {
-    try testing.expectEqual(sample, parse("admin=" ++ "cd" ** 32 ++ "\ncontrol=" ++ "ab" ** 32 ++ "\n").?.creds);
+    try testing.expectEqual(sample, parse("admin=" ++ repeat.bytes("cd", 32) ++ "\ncontrol=" ++ repeat.bytes("ab", 32) ++ "\n").?.creds);
 }
 
 test "anything half-understood is refused rather than half-applied" {
     try testing.expect(parse("") == null);
-    try testing.expect(parse("control=" ++ "ab" ** 32 ++ "\n") == null); // no admin
-    try testing.expect(parse("admin=" ++ "cd" ** 32 ++ "\n") == null); // no control
-    try testing.expect(parse("control=" ++ "ab" ** 31 ++ "\nadmin=" ++ "cd" ** 32 ++ "\n") == null); // short
-    try testing.expect(parse("control=" ++ "zz" ** 32 ++ "\nadmin=" ++ "cd" ** 32 ++ "\n") == null); // not hex
-    try testing.expect(parse("control=" ++ "ab" ** 32 ++ "\ncontrol=" ++ "ab" ** 32 ++ "\nadmin=" ++ "cd" ** 32 ++ "\n") == null); // duplicate
-    try testing.expect(parse("token=" ++ "ab" ** 32 ++ "\nadmin=" ++ "cd" ** 32 ++ "\n") == null); // unknown key
-    try testing.expect(parse("control=" ++ "ab" ** 32 ++ "\nadmin=" ++ "cd" ** 32 ++ "\njunk\n") == null);
+    try testing.expect(parse("control=" ++ repeat.bytes("ab", 32) ++ "\n") == null); // no admin
+    try testing.expect(parse("admin=" ++ repeat.bytes("cd", 32) ++ "\n") == null); // no control
+    try testing.expect(parse("control=" ++ repeat.bytes("ab", 31) ++ "\nadmin=" ++ repeat.bytes("cd", 32) ++ "\n") == null); // short
+    try testing.expect(parse("control=" ++ repeat.bytes("zz", 32) ++ "\nadmin=" ++ repeat.bytes("cd", 32) ++ "\n") == null); // not hex
+    try testing.expect(parse("control=" ++ repeat.bytes("ab", 32) ++ "\ncontrol=" ++ repeat.bytes("ab", 32) ++ "\nadmin=" ++ repeat.bytes("cd", 32) ++ "\n") == null); // duplicate
+    try testing.expect(parse("token=" ++ repeat.bytes("ab", 32) ++ "\nadmin=" ++ repeat.bytes("cd", 32) ++ "\n") == null); // unknown key
+    try testing.expect(parse("control=" ++ repeat.bytes("ab", 32) ++ "\nadmin=" ++ repeat.bytes("cd", 32) ++ "\njunk\n") == null);
 }
 
 test "the two forms cannot be confused for one another" {
@@ -183,13 +185,13 @@ test "client lines round-trip alongside the built-in tokens" {
     const kitchen = clients.Scope.notify.bit() | clients.Scope.display.bit();
     const wall = clients.Scope.status.bit();
     var store = clients.Store{};
-    try store.add("kitchen", kitchen, [_]u8{0x11} ** 32, 1000);
-    try store.add("wall", wall, [_]u8{0x22} ** 32, 1001);
+    try store.add("kitchen", kitchen, @splat(0x11), 1000);
+    try store.add("wall", wall, @splat(0x22), 1001);
     var buf: [encoded_max]u8 = undefined;
     const text = encode(sample, &store, &buf);
     // the scope set is written the way it is meant to be read, in enum order
-    try testing.expect(std.mem.indexOf(u8, text, "client=kitchen,notify|display," ++ "11" ** 32 ++ "\n") != null);
-    try testing.expect(std.mem.indexOf(u8, text, "client=wall,status," ++ "22" ** 32 ++ "\n") != null);
+    try testing.expect(std.mem.indexOf(u8, text, "client=kitchen,notify|display," ++ repeat.bytes("11", 32) ++ "\n") != null);
+    try testing.expect(std.mem.indexOf(u8, text, "client=wall,status," ++ repeat.bytes("22", 32) ++ "\n") != null);
     const p = parse(text).?;
     try testing.expectEqual(sample, p.creds);
     try testing.expectEqual(@as(usize, 2), p.clients.len);
@@ -201,15 +203,15 @@ test "a file written before scopes keeps its clients, migrated rather than throw
     // this is not hypothetical: the device had exactly this file when the scopes build was first
     // deployed to it. refusing it would have made the supervisor generate new tokens and silently
     // invalidate every integration on the network.
-    const older = "control=" ++ "ab" ** 32 ++ "\nadmin=" ++ "cd" ** 32 ++
-        "\nclient=kitchen,control," ++ "11" ** 32 ++ "\nclient=wall,read," ++ "22" ** 32 ++ "\n";
+    const older = "control=" ++ repeat.bytes("ab", 32) ++ "\nadmin=" ++ repeat.bytes("cd", 32) ++
+        "\nclient=kitchen,control," ++ repeat.bytes("11", 32) ++ "\nclient=wall,read," ++ repeat.bytes("22", 32) ++ "\n";
     const p = parse(older).?;
     try testing.expectEqual(@as(usize, 2), p.clients.len);
     try testing.expectEqual(api.control_scopes, p.clients.find("kitchen").?.scopes);
     try testing.expectEqual(clients.Scope.status.bit() | clients.Scope.screen.bit(), p.clients.find("wall").?.scopes);
     // the built-in secrets are untouched, which is the whole point
-    try testing.expectEqual([_]u8{0xab} ** 32, p.creds.control);
-    try testing.expectEqual([_]u8{0xcd} ** 32, p.creds.admin);
+    try testing.expectEqual(@as([32]u8, @splat(0xab)), p.creds.control);
+    try testing.expectEqual(@as([32]u8, @splat(0xcd)), p.creds.admin);
     // and it is reported as legacy, so the caller rewrites the file in the new form and the
     // migration happens once rather than on every start
     try testing.expect(p.legacy);
@@ -226,12 +228,12 @@ test "a file written before scopes keeps its clients, migrated rather than throw
 test "a scope name this build does not know refuses the whole file" {
     // granting less than the file says is a silent downgrade of someone's integration; refusing to
     // start is loud, and the log ring says which file could not be read.
-    const line = "control=" ++ "ab" ** 32 ++ "\nadmin=" ++ "cd" ** 32 ++ "\nclient=x,notify|teleport," ++ "11" ** 32 ++ "\n";
+    const line = "control=" ++ repeat.bytes("ab", 32) ++ "\nadmin=" ++ repeat.bytes("cd", 32) ++ "\nclient=x,notify|teleport," ++ repeat.bytes("11", 32) ++ "\n";
     try testing.expect(parse(line) == null);
 }
 
 test "a file with no client lines is still valid, and yields an empty store" {
-    const p = parse("control=" ++ "ab" ** 32 ++ "\nadmin=" ++ "cd" ** 32 ++ "\n").?;
+    const p = parse("control=" ++ repeat.bytes("ab", 32) ++ "\nadmin=" ++ repeat.bytes("cd", 32) ++ "\n").?;
     try testing.expectEqual(@as(usize, 0), p.clients.len);
 }
 
@@ -245,11 +247,11 @@ test "the raw legacy form yields an empty store rather than failing" {
 }
 
 test "a malformed client line refuses the whole file" {
-    const base = "control=" ++ "ab" ** 32 ++ "\nadmin=" ++ "cd" ** 32 ++ "\n";
+    const base = "control=" ++ repeat.bytes("ab", 32) ++ "\nadmin=" ++ repeat.bytes("cd", 32) ++ "\n";
     try testing.expect(parse(base ++ "client=kitchen,control\n") == null); // no token
-    try testing.expect(parse(base ++ "client=kitchen,wizard," ++ "11" ** 32 ++ "\n") == null); // unknown role
-    try testing.expect(parse(base ++ "client=,control," ++ "11" ** 32 ++ "\n") == null); // empty name
-    try testing.expect(parse(base ++ "client=has space,control," ++ "11" ** 32 ++ "\n") == null);
-    try testing.expect(parse(base ++ "client=a,control," ++ "11" ** 31 ++ "\n") == null); // short token
-    try testing.expect(parse(base ++ "client=dup,read," ++ "11" ** 32 ++ "\nclient=dup,read," ++ "22" ** 32 ++ "\n") == null);
+    try testing.expect(parse(base ++ "client=kitchen,wizard," ++ repeat.bytes("11", 32) ++ "\n") == null); // unknown role
+    try testing.expect(parse(base ++ "client=,control," ++ repeat.bytes("11", 32) ++ "\n") == null); // empty name
+    try testing.expect(parse(base ++ "client=has space,control," ++ repeat.bytes("11", 32) ++ "\n") == null);
+    try testing.expect(parse(base ++ "client=a,control," ++ repeat.bytes("11", 31) ++ "\n") == null); // short token
+    try testing.expect(parse(base ++ "client=dup,read," ++ repeat.bytes("11", 32) ++ "\nclient=dup,read," ++ repeat.bytes("22", 32) ++ "\n") == null);
 }

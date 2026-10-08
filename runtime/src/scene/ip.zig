@@ -35,7 +35,7 @@ pub const State = struct {
 
     pub fn getParam(self: *const State, index: usize) u32 {
         return switch (index) {
-            0 => @intFromEnum(self.mode),
+            0 => @backingInt(self.mode),
             1 => param.rgbValue(self.colour),
             else => 0,
         };
@@ -43,7 +43,7 @@ pub const State = struct {
 
     pub fn setParam(self: *State, index: usize, value: u32) void {
         switch (index) {
-            0 => _ = self.setMode(@enumFromInt(@min(value, params[0].choices.len - 1))),
+            0 => _ = self.setMode(@fromBackingInt(@intCast(@min(value, params[0].choices.len - 1)))),
             1 => self.colour = param.valueRgb(value),
             else => {},
         }
@@ -134,8 +134,8 @@ test "set and setMode report only real changes" {
 }
 
 test "no address renders the no ip text in every mode" {
-    inline for (std.meta.fields(Mode)) |f| {
-        const s = State{ .mode = @enumFromInt(f.value) };
+    inline for (std.meta.tags(Mode)) |mode| {
+        const s = State{ .mode = mode };
         var rgb = geometry.black_rgb;
         s.render(7_000_000_000, &rgb);
         var expected = geometry.black_rgb;

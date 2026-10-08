@@ -51,7 +51,12 @@ pub fn build(b: *std.Build) void {
     });
 
     const run_cmd = b.addRunArtifact(native_exe);
-    if (b.args) |args| run_cmd.addArgs(args);
+    // zig 0.17 removed `b.args`, the channel that carried `zig build run -- ...` into a run step.
+    // -Dargs is the same thing by another route; the binary in zig-out/bin takes them directly too
+    if (b.option([]const u8, "args", "arguments for `zig build run`, space separated")) |args| {
+        var it = std.mem.tokenizeScalar(u8, args, ' ');
+        while (it.next()) |arg| run_cmd.addArg(arg);
+    }
     const run_step = b.step("run", "run the native executable");
     run_step.dependOn(&run_cmd.step);
 

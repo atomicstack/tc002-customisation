@@ -1,6 +1,8 @@
 //! typed payloads for the renderer <-> supervisor channel, as one tagged union with fixed-size
 //! big-endian encodings, plus the dedup-relevant result status.
 const std = @import("std");
+// zig 0.17 removed `**`; `@splat` covers one element, this covers a longer unit
+const repeat = @import("../repeat.zig");
 const codec = @import("codec.zig");
 const geometry = @import("../panel/geometry.zig");
 const transition = @import("../panel/transition.zig");
@@ -25,7 +27,7 @@ test "every message kind round-trips through a packet" {
     var patch = canvas.Patch{};
     patch.add(.{ .id = canvas.Id.init("hdr"), .has = canvas.Field.colour, .colour = .{ 1, 2, 3 } }) catch unreachable;
     const all = [_]Message{
-        .{ .canvas = CanvasView{ .doc = doc, .doc_age_ms = 1234, .element_age_ms = [_]u32{777} ++ [_]u32{0} ** (canvas.max_elements - 1) } },
+        .{ .canvas = CanvasView{ .doc = doc, .doc_age_ms = 1234, .element_age_ms = [_]u32{777} ++ @as([canvas.max_elements - 1]u32, @splat(0)) } },
         .{ .canvas = CanvasView{ .doc = doc, .persist = false } },
         .canvas_get,
         .{ .canvas_patch = patch },
@@ -63,7 +65,7 @@ test "every message kind round-trips through a packet" {
             try std.testing.expect(l.add(43, ""));
             break :blk l;
         } },
-        .{ .credentials = .{ .control = [_]u8{0x11} ** 32, .admin = [_]u8{0x22} ** 32 } },
+        .{ .credentials = .{ .control = @splat(0x11), .admin = @splat(0x22) } },
         .{ .config = blk: {
             var c = config.Config{};
             try c.patch(.{ .brightness = 9, .timezone = "JST-9", .ntp_server = .{ 1, 2, 3, 4 } });
@@ -108,13 +110,13 @@ test "every message kind round-trips through a packet" {
             _ = l.add("beep", 128);
             break :blk l;
         } },
-        .{ .applied = Applied.init(.{ .kind = .notify, .revision = 42, .at_ns = 0, .colour = .{ 1, 2, 3 }, .duration_s = 9, .text_len = 2, .text = [_]u8{ 'h', 'i' } ++ [_]u8{0} ** 126 }, .ntfy, 7) },
+        .{ .applied = Applied.init(.{ .kind = .notify, .revision = 42, .at_ns = 0, .colour = .{ 1, 2, 3 }, .duration_s = 9, .text_len = 2, .text = [_]u8{ 'h', 'i' } ++ @as([arbiter.Statement.text_max - 2]u8, @splat(0)) }, .ntfy, 7) },
         .{ .berry_event = BerryEvent.init(.mqtt, "home/doorbell", "pressed").? },
         .{ .berry_event = BerryEvent.init(.subscribe, "home/+/state", "").? },
         .{ .berry_event = BerryEvent.init(.mqtt, "home/hall/state", "21.4").?.matching("home/+/state").? },
         .{ .stream_frame = .{ .seq = 12345, .timeout_ms = 250, .rgb = geometry.black_rgb } },
-        .{ .menu_request = .{ .kind = @intFromEnum(MenuRequest.Kind.brightness), .value = 70 } },
-        .{ .menu_request = .{ .kind = @intFromEnum(MenuRequest.Kind.reboot) } },
+        .{ .menu_request = .{ .kind = @backingInt(MenuRequest.Kind.brightness), .value = 70 } },
+        .{ .menu_request = .{ .kind = @backingInt(MenuRequest.Kind.reboot) } },
         .{ .set_param = .{ .base = 1, .index = 3, .value = 0xff8000 } },
         .{ .device_status = .{ .battery_pct = 80, .usb = 1, .wifi_quality = 49, .wifi_dbm = -61, .time_synced = 1, .mqtt_on = 1, .uptime_s = 90061 } },
         .status_get,
@@ -146,7 +148,7 @@ test "fixed hex vectors" {
     try std.testing.expectEqualSlices(u8, &unhex("54434931" ++ "01" ++ "11" ++ "0000" ++ "0000000000000000" ++ "00000000" ++ "000f" ++ "0000" ++ "ff8000" ++ "012c" ++ "01" ++ "07" ++ "03" ++ "012c" ++ "00" ++ "00" ++ "02" ++ "6869"), nt);
     const fr = try encodePacket(.{ .frame = .{ .duration_s = 1, .rgb = geometry.black_rgb } }, 0, 0, &buf);
     try std.testing.expectEqual(@as(usize, codec.header_len + 2 + Transition.wire_len + geometry.rgb_bytes), fr.len);
-    try std.testing.expectEqual(@as(u8, @intFromEnum(Kind.frame)), fr[5]);
+    try std.testing.expectEqual(@as(u8, @backingInt(Kind.frame)), fr[5]);
 }
 
 test "sound settings survive the ipc patch too, which is the layer that drops what it does not know" {
@@ -240,30 +242,30 @@ test "malformed payloads are rejected" {
     var buf: [codec.max_message]u8 = undefined;
     var src: [codec.max_message]u8 = undefined;
     const hb = try encodePacket(.{ .heartbeat = .{ .presented = 1, .revision = 1, .state = 1 } }, 0, 0, &src);
-    const short = try codec.encode(.{ .kind = @intFromEnum(Kind.heartbeat), .request_id = 0, .epoch = 0, .payload_len = 12 }, hb[codec.header_len .. codec.header_len + 12], &buf);
+    const short = try codec.encode(.{ .kind = @backingInt(Kind.heartbeat), .request_id = 0, .epoch = 0, .payload_len = 12 }, hb[codec.header_len .. codec.header_len + 12], &buf);
     try std.testing.expectError(error.BadPayload, decodePacket(short));
     const unknown = try codec.encode(.{ .kind = 200, .request_id = 0, .epoch = 0, .payload_len = 0 }, "", &buf);
     try std.testing.expectError(error.UnknownKind, decodePacket(unknown));
     // a notify claiming 200 text bytes
-    const long_notify = try codec.encode(.{ .kind = @intFromEnum(Kind.notify), .request_id = 0, .epoch = 0, .payload_len = 6 + 200 }, &([_]u8{ 0, 0, 0, 0, 5, 200 } ++ [_]u8{'a'} ** 200), &buf);
+    const long_notify = try codec.encode(.{ .kind = @backingInt(Kind.notify), .request_id = 0, .epoch = 0, .payload_len = 6 + 200 }, &([_]u8{ 0, 0, 0, 0, 5, 200 } ++ @as([200]u8, @splat('a'))), &buf);
     try std.testing.expectError(error.BadPayload, decodePacket(long_notify));
     // a frame one byte short
-    const short_frame = try codec.encode(.{ .kind = @intFromEnum(Kind.frame), .request_id = 0, .epoch = 0, .payload_len = 2497 }, &([_]u8{0} ** 2497), &buf);
+    const short_frame = try codec.encode(.{ .kind = @backingInt(Kind.frame), .request_id = 0, .epoch = 0, .payload_len = 2497 }, &@as([2497]u8, @splat(0)), &buf);
     try std.testing.expectError(error.BadPayload, decodePacket(short_frame));
     // trailing bytes on a fixed-size message
-    const trailing = try codec.encode(.{ .kind = @intFromEnum(Kind.stop), .request_id = 0, .epoch = 0, .payload_len = 1 }, "x", &buf);
+    const trailing = try codec.encode(.{ .kind = @backingInt(Kind.stop), .request_id = 0, .epoch = 0, .payload_len = 1 }, "x", &buf);
     try std.testing.expectError(error.BadPayload, decodePacket(trailing));
     // a log page whose record runs past its data, and one whose count lies
-    const overrun = try codec.encode(.{ .kind = @intFromEnum(Kind.log_lines), .request_id = 0, .epoch = 0, .payload_len = 7 + 6 }, &([_]u8{ 0, 0, 0, 2, 1, 0, 6 } ++ [_]u8{ 0, 0, 0, 1, 9, 'a' }), &buf);
+    const overrun = try codec.encode(.{ .kind = @backingInt(Kind.log_lines), .request_id = 0, .epoch = 0, .payload_len = 7 + 6 }, &([_]u8{ 0, 0, 0, 2, 1, 0, 6 } ++ [_]u8{ 0, 0, 0, 1, 9, 'a' }), &buf);
     try std.testing.expectError(error.BadPayload, decodePacket(overrun));
-    const miscount = try codec.encode(.{ .kind = @intFromEnum(Kind.log_lines), .request_id = 0, .epoch = 0, .payload_len = 7 + 6 }, &([_]u8{ 0, 0, 0, 2, 2, 0, 6 } ++ [_]u8{ 0, 0, 0, 1, 1, 'a' }), &buf);
+    const miscount = try codec.encode(.{ .kind = @backingInt(Kind.log_lines), .request_id = 0, .epoch = 0, .payload_len = 7 + 6 }, &([_]u8{ 0, 0, 0, 2, 2, 0, 6 } ++ [_]u8{ 0, 0, 0, 1, 1, 'a' }), &buf);
     try std.testing.expectError(error.BadPayload, decodePacket(miscount));
 }
 
 test "log pages iterate their records and refuse to overfill" {
     var l = LogLines{ .next = 0 };
     var i: u32 = 0;
-    while (l.add(i, "x" ** log_line_max)) : (i += 1) {}
+    while (l.add(i, repeat.bytes("x", log_line_max))) : (i += 1) {}
     try std.testing.expectEqual(@as(u32, log_lines_per_reply), i);
     try std.testing.expectEqual(@as(u16, log_data_max), l.len);
     var it = l.iterator();
@@ -274,7 +276,7 @@ test "log pages iterate their records and refuse to overfill" {
     }
     try std.testing.expectEqual(@as(u32, log_lines_per_reply), n);
     var short = LogLines{ .next = 0 };
-    try std.testing.expect(short.add(7, "x" ** 200)); // truncated to the line maximum
+    try std.testing.expect(short.add(7, repeat.bytes("x", 200))); // truncated to the line maximum
     var sit = short.iterator();
     try std.testing.expectEqual(@as(usize, log_line_max), sit.next().?.text.len);
 }
@@ -510,7 +512,7 @@ pub const BerryEvent = struct {
         unsubscribe = 4,
     };
     /// how many ops there are, for the `@min` that keeps a bad byte off the enum
-    pub const op_max = @intFromEnum(Op.unsubscribe);
+    pub const op_max = @backingInt(Op.unsubscribe);
 
     /// as many topics as a device will subscribe to on a script's behalf.
     ///
@@ -566,14 +568,14 @@ pub const BerryEvent = struct {
 
     kind: u8 = 0,
     topic_len: u8 = 0,
-    topic: [topic_max]u8 = [_]u8{0} ** topic_max,
+    topic: [topic_max]u8 = @splat(0),
     payload_len: u16 = 0,
-    payload: [payload_max]u8 = [_]u8{0} ** payload_max,
+    payload: [payload_max]u8 = @splat(0),
     /// for an arrival, the filter that matched it. netd is the one that matched, so it is the one
     /// that knows; carrying it means a script can be handed only its own topics without the
     /// wildcard rules being written a second time in berry.
     filter_len: u8 = 0,
-    filter: [topic_max]u8 = [_]u8{0} ** topic_max,
+    filter: [topic_max]u8 = @splat(0),
 
     /// the topic and the payload are written at their real lengths, so a ten-byte arrival costs a
     /// ten-byte datagram. the whole struct is what it *may* reach, not what it usually does --
@@ -591,7 +593,7 @@ pub const BerryEvent = struct {
     /// json document that parses and means something else, which is worse than not delivering it.
     pub fn init(op: Op, topic: []const u8, payload: []const u8) ?BerryEvent {
         if (topic.len > topic_max or payload.len > payload_max) return null;
-        var e = BerryEvent{ .kind = @intFromEnum(op) };
+        var e = BerryEvent{ .kind = @backingInt(op) };
         e.topic_len = @intCast(topic.len);
         @memcpy(e.topic[0..e.topic_len], topic);
         e.payload_len = @intCast(payload.len);
@@ -665,7 +667,7 @@ pub const BerryScript = struct {
     pub const wire_len = fixed_len + store.script_max;
 
     pub fn init(op: Op, name: []const u8, source: []const u8) BerryScript {
-        var b = BerryScript{ .op = @intFromEnum(op), .name = store.Name.init(name) };
+        var b = BerryScript{ .op = @backingInt(op), .name = store.Name.init(name) };
         b.len = @intCast(@min(source.len, store.script_max));
         @memcpy(b.source[0..b.len], source[0..b.len]);
         return b;
@@ -694,7 +696,7 @@ pub const BerryScripts = struct {
     used: u32 = 0,
     budget: u32 = 0,
     count: u8 = 0,
-    items: [max]Entry = [_]Entry{.{}} ** max,
+    items: [max]Entry = @splat(.{}),
 
     pub const wire_len = 4 + 4 + 1 + max * (1 + store.name_max + 2 + 1);
 };
@@ -704,7 +706,7 @@ pub const SpriteList = struct {
     pub const Entry = struct { id: canvas.Id = .{}, w: u8 = 0, h: u8 = 0 };
 
     count: u8 = 0,
-    items: [canvas.sprite_max]Entry = [_]Entry{.{}} ** canvas.sprite_max,
+    items: [canvas.sprite_max]Entry = @splat(.{}),
 
     pub const wire_len = 1 + canvas.sprite_max * 11;
 };
@@ -775,11 +777,11 @@ pub const ClockStyle = struct {
         var w = ClockStyle{};
         if (p.font) |v| {
             w.has |= F.font;
-            w.font = @intFromEnum(v);
+            w.font = @backingInt(v);
         }
         if (p.mode) |v| {
             w.has |= F.mode;
-            w.mode = @intFromEnum(v);
+            w.mode = @backingInt(v);
         }
         if (p.colour) |v| {
             w.has |= F.colour;
@@ -791,11 +793,11 @@ pub const ClockStyle = struct {
         }
         if (p.digit) |v| {
             w.has |= F.digit;
-            w.digit = @intFromEnum(v);
+            w.digit = @backingInt(v);
         }
         if (p.gradient) |v| {
             w.has |= F.gradient;
-            w.gradient = @intFromEnum(v);
+            w.gradient = @backingInt(v);
         }
         if (p.spread) |v| {
             w.has |= F.spread;
@@ -809,7 +811,7 @@ pub const ClockStyle = struct {
     }
 
     pub fn full(s: clock.Style) ClockStyle {
-        return .{ .has = F.all, .font = @intFromEnum(s.font), .mode = @intFromEnum(s.mode), .colour = s.colour, .colour2 = s.colour2, .gradient = @intFromEnum(s.gradient), .spread = s.spread, .digit = @intFromEnum(s.digit), .fade = @intFromBool(s.fade) };
+        return .{ .has = F.all, .font = @backingInt(s.font), .mode = @backingInt(s.mode), .colour = s.colour, .colour2 = s.colour2, .gradient = @backingInt(s.gradient), .spread = s.spread, .digit = @backingInt(s.digit), .fade = @intFromBool(s.fade) };
     }
 
     /// the patch view; fields with an unknown enum value are dropped.
@@ -885,7 +887,7 @@ pub const Applied = struct {
     /// a brightness eased over this many milliseconds; 0 lands at once
     ramp_ms: u16 = 0,
     text_len: u8 = 0,
-    text: [arbiter.Statement.text_max]u8 = [_]u8{0} ** arbiter.Statement.text_max,
+    text: [arbiter.Statement.text_max]u8 = @splat(0),
 
     pub const rich_len = 1;
     pub const ramp_len = 2;
@@ -893,16 +895,16 @@ pub const Applied = struct {
 
     pub fn init(st: arbiter.Statement, source: Source, age_ms: u32) Applied {
         return .{
-            .kind = @intFromEnum(st.kind),
-            .source = @intFromEnum(source),
+            .kind = @backingInt(st.kind),
+            .source = @backingInt(source),
             .revision = st.revision,
             .age_ms = age_ms,
-            .base = @intFromEnum(st.base),
-            .generator = @intFromEnum(st.generator),
+            .base = @backingInt(st.base),
+            .generator = @backingInt(st.generator),
             .seed = st.seed,
             .brightness = st.brightness,
             .power = @intFromBool(st.power),
-            .ip_mode = @intFromEnum(st.ip_mode),
+            .ip_mode = @backingInt(st.ip_mode),
             .style = ClockStyle.full(st.style),
             .duration_s = st.duration_s,
             .colour = st.colour,
@@ -1024,12 +1026,12 @@ pub const SoundPut = struct {
     name: sound_store.Name = .{},
     offset: u32 = 0,
     len: u16 = 0,
-    data: [sound_store.chunk_max]u8 = [_]u8{0} ** sound_store.chunk_max,
+    data: [sound_store.chunk_max]u8 = @splat(0),
 
     pub const wire_len = 1 + 1 + sound_store.name_max + 4 + 2 + sound_store.chunk_max;
 
     pub fn init(op: Op, name: []const u8, offset: u32, data: []const u8) SoundPut {
-        var p = SoundPut{ .kind = @intFromEnum(op), .name = sound_store.Name.init(name), .offset = offset };
+        var p = SoundPut{ .kind = @backingInt(op), .name = sound_store.Name.init(name), .offset = offset };
         p.len = @intCast(@min(data.len, sound_store.chunk_max));
         @memcpy(p.data[0..p.len], data[0..p.len]);
         return p;
@@ -1081,7 +1083,7 @@ pub const SoundCmd = struct {
     pub const wire_len = 1 + 1 + sound_store.name_max + 1 + 1;
 
     pub fn init(op: Op, name: []const u8, volume: u8, loop: bool) SoundCmd {
-        return .{ .kind = @intFromEnum(op), .name = sound_store.Name.init(name), .volume = volume, .loop = @intFromBool(loop) };
+        return .{ .kind = @backingInt(op), .name = sound_store.Name.init(name), .volume = volume, .loop = @intFromBool(loop) };
     }
 
     fn put(self: *const SoundCmd, out: []u8) void {
@@ -1106,8 +1108,8 @@ pub const SoundList = struct {
 
     count: u8 = 0,
     used: u32 = 0,
-    names: [max_entries]sound_store.Name = [_]sound_store.Name{.{}} ** max_entries,
-    bytes: [max_entries]u32 = [_]u32{0} ** max_entries,
+    names: [max_entries]sound_store.Name = @splat(.{}),
+    bytes: [max_entries]u32 = @splat(0),
 
     pub const wire_len = 1 + 4 + max_entries * (1 + sound_store.name_max + 4);
 
@@ -1223,7 +1225,7 @@ pub const Transition = struct {
 
     pub fn fromSpec(spec: ?transition.Spec) Transition {
         const t = spec orelse return .{};
-        return .{ .has = 1, .effect = @intFromEnum(t.effect), .direction = @intFromEnum(t.direction), .duration_ms = @intCast(t.duration_ns / 1_000_000), .exit = @intFromEnum(t.exit), .easing = @intFromEnum(t.easing) };
+        return .{ .has = 1, .effect = @backingInt(t.effect), .direction = @backingInt(t.direction), .duration_ms = @intCast(t.duration_ns / 1_000_000), .exit = @backingInt(t.exit), .easing = @backingInt(t.easing) };
     }
 
     /// null for the default and for values this build does not know
@@ -1351,7 +1353,7 @@ pub const Notify = struct {
     const text_at = len_at + 1;
 
     pub fn init(text: []const u8, colour: [3]u8, duration_s: u16, t: Transition) Notify {
-        var n = Notify{ .colour = colour, .duration_s = duration_s, .len = @intCast(text.len), .text = [_]u8{0} ** 128, .transition = t };
+        var n = Notify{ .colour = colour, .duration_s = duration_s, .len = @intCast(text.len), .text = @splat(0), .transition = t };
         @memcpy(n.text[0..text.len], text);
         return n;
     }
@@ -1458,10 +1460,10 @@ pub const ClientResult = struct {
     name: clients.Name = .{},
     scopes: clients.Set = 0,
     /// zero on a revoke; the freshly issued secret on an add
-    token: api.Token = [_]u8{0} ** api.token_len,
+    token: api.Token = @splat(0),
 
     pub fn put(self: ClientResult, out: []u8) void {
-        out[0] = @intFromEnum(self.status);
+        out[0] = @backingInt(self.status);
         out[1] = self.name.len;
         @memcpy(out[2..][0..clients.name_max], &self.name.bytes);
         std.mem.writeInt(clients.Set, out[2 + clients.name_max ..][0..2], self.scopes, .big);
@@ -1491,7 +1493,7 @@ pub const ClientSet = struct {
     index: u8 = 0,
     name: clients.Name = .{},
     scopes: clients.Set = 0,
-    token: api.Token = [_]u8{0} ** api.token_len,
+    token: api.Token = @splat(0),
     /// when it was issued. netd renders the listing from its own copy, so it needs this; it does
     /// not need last_used, which netd is the one to observe and keeps in memory.
     created_s: i64 = 0,
@@ -1541,7 +1543,7 @@ pub const ConfigPatch = struct {
     /// generator parameters carried with the rest of a settings change, so one request is one
     /// round trip and one revision
     param_count: u8 = 0,
-    params: [api.max_params_per_patch]api.ResolvedParam = [_]api.ResolvedParam{.{ .owner = 0, .slot = 0, .value = 0 }} ** api.max_params_per_patch,
+    params: [api.max_params_per_patch]api.ResolvedParam = @splat(.{ .owner = 0, .slot = 0, .value = 0 }),
     ip_mode: u8 = 0,
     night: u8 = 0,
     night_brightness: u8 = 0,
@@ -1634,11 +1636,11 @@ pub const ConfigPatch = struct {
         }
         if (p.base) |v| {
             w.has |= F.base;
-            w.base = @intFromEnum(v);
+            w.base = @backingInt(v);
         }
         if (p.generator) |v| {
             w.has |= F.generator;
-            w.generator = @intFromEnum(v);
+            w.generator = @backingInt(v);
         }
         if (p.timezone) |v| {
             w.has |= F.timezone;
@@ -1682,11 +1684,11 @@ pub const ConfigPatch = struct {
         }
         if (p.clock_font) |v| {
             w.has |= F.clock_font;
-            w.clock_font = @intFromEnum(v);
+            w.clock_font = @backingInt(v);
         }
         if (p.clock_colour_mode) |v| {
             w.has |= F.clock_colour_mode;
-            w.clock_colour_mode = @intFromEnum(v);
+            w.clock_colour_mode = @backingInt(v);
         }
         if (p.clock_colour) |v| {
             w.has |= F.clock_colour;
@@ -1698,11 +1700,11 @@ pub const ConfigPatch = struct {
         }
         if (p.clock_gradient) |v| {
             w.has |= F.clock_gradient;
-            w.clock_gradient = @intFromEnum(v);
+            w.clock_gradient = @backingInt(v);
         }
         if (p.clock_digit) |v| {
             w.has |= F.clock_digit;
-            w.clock_digit = @intFromEnum(v);
+            w.clock_digit = @backingInt(v);
         }
         if (p.clock_fade) |v| {
             w.has |= F.clock_fade;
@@ -1716,7 +1718,7 @@ pub const ConfigPatch = struct {
         }
         if (p.ip_mode) |v| {
             w.has |= F.ip_mode;
-            w.ip_mode = @intFromEnum(v);
+            w.ip_mode = @backingInt(v);
         }
         if (p.night) |v| {
             w.has |= F.night;
@@ -2108,7 +2110,7 @@ pub const SaveResult = struct { status: Status, saved_revision: u32 };
 pub const CanvasView = struct {
     doc: canvas.Document = .{},
     doc_age_ms: u32 = 0,
-    element_age_ms: [canvas.max_elements]u32 = [_]u32{0} ** canvas.max_elements,
+    element_age_ms: [canvas.max_elements]u32 = @splat(0),
     /// netd asking: write it to flash or only show it. the supervisor answering: whether the
     /// live document is the durable one
     persist: bool = true,
@@ -2212,7 +2214,7 @@ pub const StatusSnapshot = struct {
     berry: BerryStatus = .{},
     // v11: which build is running. `boot_id` says the runtime restarted; this says what into.
     // null-padded rather than length-prefixed because it is only ever read as a whole.
-    build: [build_id_max]u8 = [_]u8{0} ** build_id_max,
+    build: [build_id_max]u8 = @splat(0),
 
     pub const wire_len = build_id_max + 4 + 3 + 2 + 1 + 4 + 4 + 8 + 4 + 4 + 4 + 1 + 4 + 4 + 4 + 4 + 2 + 1 + 4 + 1 + 4 + 4 + 4 + 4 + 4 + (6 + 1 + 2 + 4 + 2 + 1 + 2 + 2 + 2 + 4 + 2 + 1 + 1) + 1 + ClockStyle.wire_len + 1 + NtfyStatus.wire_len + 4 * 4 + (10 * 4) + (4 * 4) + (4 + 4 + 4 + 2) + (1 + BerryStatus.wire_len);
 };
@@ -2423,7 +2425,7 @@ fn encodePayload(msg: Message, out: []u8) usize {
             return SoundPut.wire_len;
         },
         .sound_result => |r| {
-            out[0] = @intFromEnum(r.status);
+            out[0] = @backingInt(r.status);
             std.mem.writeInt(u32, out[1..5], r.used, .big);
             return 5;
         },
@@ -2609,7 +2611,7 @@ fn encodePayload(msg: Message, out: []u8) usize {
             return 5;
         },
         .save_result => |r| {
-            out[0] = @intFromEnum(r.status);
+            out[0] = @backingInt(r.status);
             std.mem.writeInt(u32, out[1..5], r.saved_revision, .big);
             return 5;
         },
@@ -2749,7 +2751,7 @@ fn encodePayload(msg: Message, out: []u8) usize {
             return o;
         },
         .result => |r| {
-            out[0] = @intFromEnum(r.status);
+            out[0] = @backingInt(r.status);
             std.mem.writeInt(u32, out[1..5], r.revision, .big);
             return 5;
         },
@@ -2797,12 +2799,12 @@ fn encodePayload(msg: Message, out: []u8) usize {
 pub fn encodePacket(msg: Message, request_id: u64, epoch: u32, out: []u8) error{Overflow}![]u8 {
     var payload: [codec.max_payload]u8 = undefined;
     const n = encodePayload(msg, &payload);
-    return codec.encode(.{ .kind = @intFromEnum(msg), .request_id = request_id, .epoch = epoch, .payload_len = @intCast(n) }, payload[0..n], out);
+    return codec.encode(.{ .kind = @backingInt(msg), .request_id = request_id, .epoch = epoch, .payload_len = @intCast(n) }, payload[0..n], out);
 }
 
 /// a non-exhaustive-safe integer -> enum conversion: null for values without a tag.
 pub fn enumFromInt(comptime E: type, value: @typeInfo(E).@"enum".tag_type) ?E {
-    inline for (@typeInfo(E).@"enum".fields) |f| if (f.value == value) return @enumFromInt(f.value);
+    inline for (@typeInfo(E).@"enum".field_values) |v| if (v == value) return @fromBackingInt(@intCast(v));
     return null;
 }
 
@@ -3415,7 +3417,7 @@ test "a client set survives the wire, and the union still fits a packet" {
         .index = 3,
         .name = clients.Name.init("kitchen"),
         .scopes = clients.Scope.notify.bit() | clients.Scope.settings.bit(),
-        .token = [_]u8{0x55} ** 32,
+        .token = @splat(0x55),
         .created_s = 1758000000,
     } };
     const packet = try encodePacket(msg, 7, 1, &buf);
@@ -3424,7 +3426,7 @@ test "a client set survives the wire, and the union still fits a packet" {
     try std.testing.expectEqualStrings("kitchen", p.message.client_set.name.slice());
     // the widest scope bit has to survive, not just the low byte: a set is two bytes on the wire
     try std.testing.expectEqual(clients.Scope.notify.bit() | clients.Scope.settings.bit(), p.message.client_set.scopes);
-    try std.testing.expectEqual([_]u8{0x55} ** 32, p.message.client_set.token);
+    try std.testing.expectEqual(@as([32]u8, @splat(0x55)), p.message.client_set.token);
     try std.testing.expectEqual(@as(i64, 1758000000), p.message.client_set.created_s);
 
     const reset = try decodePacket(try encodePacket(.{ .clients_reset = .{ .count = 2 } }, 8, 1, &buf));
@@ -3507,7 +3509,7 @@ test "notification queue options survive applied events" {
 
 test "dismissal and notification event metadata round-trip with bounded names" {
     var buf: [codec.max_message]u8 = undefined;
-    for ([_][]const u8{ "", "door", "abcdefghijklmnopqrstuvwxyz012345", "n" ** 255 }) |name| {
+    for ([_][]const u8{ "", "door", "abcdefghijklmnopqrstuvwxyz012345", repeat.bytes("n", 255) }) |name| {
         const msg = Message{ .dismiss_notify = arbiter.notification.Name.init(name) };
         const packet = try encodePacket(msg, 4, 9, &buf);
         const decoded = try decodePacket(packet);
@@ -3517,10 +3519,10 @@ test "dismissal and notification event metadata round-trip with bounded names" {
     const applied = Applied.init(.{ .kind = .notify, .name = arbiter.notification.Name.init("door"), .hold = true, .stack = true }, .api, 0);
     const packet = try encodePacket(.{ .applied = applied }, 4, 9, &buf);
     try std.testing.expectEqualDeep(applied, (try decodePacket(packet)).message.applied);
-    const long = Applied.init(.{ .kind = .notify, .name = arbiter.notification.Name.init("n" ** 255), .hold = true }, .api, 0);
+    const long = Applied.init(.{ .kind = .notify, .name = arbiter.notification.Name.init(repeat.bytes("n", 255)), .hold = true }, .api, 0);
     const long_packet = try encodePacket(.{ .applied = long }, 4, 9, &buf);
     try std.testing.expectEqualDeep(long, (try decodePacket(long_packet)).message.applied);
-    const named = Notify.init("hi", .{ 1, 2, 3 }, 5, .{}).withOptions("n" ** 255, true, false);
+    const named = Notify.init("hi", .{ 1, 2, 3 }, 5, .{}).withOptions(repeat.bytes("n", 255), true, false);
     const named_packet = try encodePacket(.{ .notify = named }, 4, 9, &buf);
     try std.testing.expectEqualDeep(named, (try decodePacket(named_packet)).message.notify);
     const full = try encodePacket(.{ .result = .{ .status = .queue_full, .revision = 17 } }, 4, 9, &buf);
@@ -3535,7 +3537,7 @@ test "notification ipc rejects malformed lengths names and flags" {
     const end = len - notification_options_len;
     const Cases = struct {
         fn rejected(p: []const u8, out: []u8) !void {
-            const bytes = try codec.encode(.{ .kind = @intFromEnum(Kind.notify), .request_id = 0, .epoch = 0, .payload_len = @intCast(p.len) }, p, out);
+            const bytes = try codec.encode(.{ .kind = @backingInt(Kind.notify), .request_id = 0, .epoch = 0, .payload_len = @intCast(p.len) }, p, out);
             try std.testing.expectError(error.BadPayload, decodePacket(bytes));
         }
     };
@@ -3564,7 +3566,7 @@ test "a rich notification round-trips with its document, and a short one is refu
     // the document's own header says how long it is; a packet shorter than that is refused
     var payload: [codec.max_message]u8 = undefined;
     const plen = encodePayload(msg, &payload);
-    const cut = try codec.encode(.{ .kind = @intFromEnum(Kind.notify_rich), .request_id = 0, .epoch = 0, .payload_len = @intCast(plen - 7) }, payload[0 .. plen - 7], &buf);
+    const cut = try codec.encode(.{ .kind = @backingInt(Kind.notify_rich), .request_id = 0, .epoch = 0, .payload_len = @intCast(plen - 7) }, payload[0 .. plen - 7], &buf);
     try std.testing.expectError(error.BadPayload, decodePacket(cut));
     // an empty document is not a rich notification
     const none = Message{ .notify_rich = .{ .notify = n, .doc = .{} } };
@@ -3585,7 +3587,7 @@ test "a canvas view without the persist byte reads as persistent" {
     const v = CanvasView{ .doc = .{}, .persist = false };
     const plen = encodePayload(.{ .canvas = v }, &payload);
     try std.testing.expect(!(try decodePacket(try encodePacket(.{ .canvas = v }, 0, 0, &buf))).message.canvas.persist);
-    const trimmed = try codec.encode(.{ .kind = @intFromEnum(Kind.canvas), .request_id = 0, .epoch = 0, .payload_len = @intCast(plen - CanvasView.persist_len) }, payload[0 .. plen - CanvasView.persist_len], &buf);
+    const trimmed = try codec.encode(.{ .kind = @backingInt(Kind.canvas), .request_id = 0, .epoch = 0, .payload_len = @intCast(plen - CanvasView.persist_len) }, payload[0 .. plen - CanvasView.persist_len], &buf);
     try std.testing.expect((try decodePacket(trimmed)).message.canvas.persist);
 }
 
@@ -3596,7 +3598,7 @@ test "a brightness may ask to be eased, and one without the ramp bytes lands at 
     const plain = Message{ .brightness = .{ .value = 20 } };
     try std.testing.expectEqualDeep(plain, (try decodePacket(try encodePacket(plain, 1, 1, &buf))).message);
     // one byte, as an older sender writes it: the ramp reads as zero
-    const short = try codec.encode(.{ .kind = @intFromEnum(Kind.brightness), .request_id = 0, .epoch = 0, .payload_len = 1 }, &[_]u8{20}, &buf);
+    const short = try codec.encode(.{ .kind = @backingInt(Kind.brightness), .request_id = 0, .epoch = 0, .payload_len = 1 }, &[_]u8{20}, &buf);
     try std.testing.expectEqualDeep(plain, (try decodePacket(short)).message);
     // an applied brightness statement carries the ramp too
     const applied = Applied.init(.{ .kind = .brightness, .brightness = 20, .ramp_ms = 2000 }, .local, 0);
@@ -3609,7 +3611,7 @@ test "the largest rich notification still fits one packet with the longest name"
     // the encoder answers 0 bytes, not an error, when the document does not fit behind the
     // notification, so the bound is held here rather than discovered on the device
     var head: [codec.max_payload]u8 = undefined;
-    const n = Notify.init("t" ** arbiter.Statement.text_max, .{ 1, 2, 3 }, 5, .{}).withOptions("n" ** arbiter.notification.name_max, true, true);
+    const n = Notify.init(repeat.bytes("t", arbiter.Statement.text_max), .{ 1, 2, 3 }, 5, .{}).withOptions(repeat.bytes("n", arbiter.notification.name_max), true, true);
     const header = putNotify(&head, n, true);
     try std.testing.expect(header + canvas.wire_max <= codec.max_payload);
 }

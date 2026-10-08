@@ -11,12 +11,13 @@ const sys = @import("sys/linux.zig");
 const log = @import("sys/log.zig");
 const mi = @import("sound/mi.zig");
 
-pub const panic = std.debug.simple_panic;
+// simple_panic, with the one function 0.17.0 cannot compile replaced
+pub const panic = @import("sys/panic.zig");
 pub const std_options: std.Options = .{ .enable_segfault_handler = false };
 
 /// the 52 bytes `media::SoundDevice::init` builds, copied rather than interpreted
 fn attrBytes(rate: u32, channels: u32) [52]u8 {
-    var a = [_]u8{0} ** 52;
+    var a: [52]u8 = @splat(0);
     std.mem.writeInt(u32, a[0..4], rate, .little);
     if (channels == 2) std.mem.writeInt(u32, a[12..16], 1, .little);
     std.mem.writeInt(u32, a[16..20], 4, .little);
@@ -49,25 +50,25 @@ fn run(rate: u32, channels: u32, try_frame: bool, try_mmap: bool) !u8 {
     defer sys.close(ao_fd);
     log.info("  both open (mi_sys fd {d}, mi_ao fd {d})", .{ sys_fd, ao_fd });
 
-    var dev = [_]u8{0} ** 4; // device 0
+    var dev: [4]u8 = @splat(0); // device 0
     _ = step("MI_SYS_Init", mi.call(sys_fd, mi.mi_sys.init, &dev));
 
     log.info("configuring: {d} hz, {d} channel(s)", .{ rate, channels });
-    var attr: [56]u8 = [_]u8{0} ** 56;
+    var attr: [56]u8 = @splat(0);
     const a = attrBytes(rate, channels);
     @memcpy(attr[4..56], &a); // +0 is the device id, then the 52-byte payload
     if (!step("MI_AO_SetPubAttr", mi.call(ao_fd, mi.ao.set_pub_attr, &attr))) return 2;
     if (!step("MI_AO_Enable", mi.call(ao_fd, mi.ao.enable, &dev))) return 2;
 
-    var chn = [_]u8{0} ** 8; // device 0, channel 0
+    var chn: [8]u8 = @splat(0); // device 0, channel 0
     _ = step("MI_AO_EnableChn", mi.call(ao_fd, mi.ao.enable_chn, &chn));
 
     // mute before anything else can possibly be heard
-    var mute = [_]u8{0} ** 12;
+    var mute: [12]u8 = @splat(0);
     std.mem.writeInt(u32, mute[8..12], 1, .little);
     _ = step("MI_AO_SetMute(on)", mi.call(ao_fd, mi.ao.set_mute, &mute));
 
-    var stat = [_]u8{0} ** 20;
+    var stat: [20]u8 = @splat(0);
     if (step("MI_AO_QueryChnStat", mi.call(ao_fd, mi.ao.query_chn_stat, &stat))) {
         log.info("    chn stat words: {d} {d} {d} {d} {d}", .{
             std.mem.readInt(u32, stat[0..4], .little),
@@ -101,15 +102,15 @@ fn run(rate: u32, channels: u32, try_frame: bool, try_mmap: bool) !u8 {
         // the unknown: MI_AO_SendFrame's ioctl carries eight bytes, and the vendor's 288-byte
         // frame (pcm at +8, length at +84) has to reach the driver through them somehow. the
         // buffer here is **silence**, so every variant can be tried without a sound.
-        var frame = [_]u8{0} ** 288;
-        var pcm = [_]u8{0} ** 2048; // 1024 silent 16-bit samples
+        var frame: [288]u8 = @splat(0);
+        var pcm: [2048]u8 = @splat(0); // 1024 silent 16-bit samples
         const pcm_addr: u32 = @truncate(@intFromPtr(&pcm));
         const frame_addr: u32 = @truncate(@intFromPtr(&frame));
         std.mem.writeInt(u32, frame[8..12], pcm_addr, .little);
         std.mem.writeInt(u32, frame[84..88], pcm.len, .little);
 
         log.info("trying SendFrame payloads (silence, so nothing can be heard)", .{});
-        var payload = [_]u8{0} ** 8;
+        var payload: [8]u8 = @splat(0);
 
         std.mem.writeInt(u32, payload[0..4], 0, .little);
         std.mem.writeInt(u32, payload[4..8], 0, .little);

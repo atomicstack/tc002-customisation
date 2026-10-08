@@ -11,6 +11,8 @@
 //!
 //! pure: no allocation, no clock of its own, nothing but the buffer it is handed.
 const std = @import("std");
+// zig 0.17 removed `**`; `@splat` covers one element, this covers a longer unit
+const repeat = @import("../repeat.zig");
 const param = @import("param.zig");
 const geometry = @import("../panel/geometry.zig");
 const font = @import("font.zig");
@@ -43,7 +45,7 @@ pub const Sprite = struct {
     id: Id = .{},
     w: u8 = 0,
     h: u8 = 0,
-    rgb: [sprite_bytes_max]u8 = [_]u8{0} ** sprite_bytes_max,
+    rgb: [sprite_bytes_max]u8 = @splat(0),
 
     pub const wire_len = 9 + 2 + sprite_bytes_max;
 
@@ -54,7 +56,7 @@ pub const Sprite = struct {
 
 /// the renderer's sprite cache: volatile, replayed by the supervisor when the renderer restarts
 pub const Sprites = struct {
-    items: [sprite_max]Sprite = [_]Sprite{.{}} ** sprite_max,
+    items: [sprite_max]Sprite = @splat(.{}),
     count: u8 = 0,
 
     pub fn find(self: *const Sprites, id: []const u8) ?*const Sprite {
@@ -116,7 +118,7 @@ pub const Align = enum(u8) { left, centre, right };
 pub const Style = enum(u8) { line, bars, area };
 
 pub const Id = struct {
-    bytes: [id_max]u8 = [_]u8{0} ** id_max,
+    bytes: [id_max]u8 = @splat(0),
     len: u8 = 0,
 
     pub fn init(text: []const u8) Id {
@@ -220,11 +222,11 @@ pub const Element = struct {
 pub const Error = error{ Full, TooLong };
 
 pub const Document = struct {
-    elements: [max_elements]Element = [_]Element{.{ .body = .pixel }} ** max_elements,
+    elements: [max_elements]Element = @splat(.{ .body = .pixel }),
     count: u8 = 0,
-    text: [text_pool]u8 = [_]u8{0} ** text_pool,
+    text: [text_pool]u8 = @splat(0),
     text_len: u16 = 0,
-    data: [data_pool]u8 = [_]u8{0} ** data_pool,
+    data: [data_pool]u8 = @splat(0),
     data_len: u16 = 0,
     /// bumped on every accepted change, so a client can tell which document it is looking at
     revision: u32 = 0,
@@ -739,7 +741,7 @@ fn drawSparkline(rgb: *geometry.Rgb, d: *const Document, e: *const Element, offs
 /// installs at its own instant and every animated element is permanently out of phase. both sides
 /// run this one comparison over the same pair of documents, so they agree.
 pub const Clocks = struct {
-    started_ns: [max_elements]u64 = [_]u64{0} ** max_elements,
+    started_ns: [max_elements]u64 = @splat(0),
     epoch_ns: u64 = 0,
 
     /// work out what changed between two documents. an element whose value is new restarts its
@@ -747,7 +749,7 @@ pub const Clocks = struct {
     /// does not make the text beside it scramble all over again. an element with no id has nothing
     /// to be recognised by and always restarts.
     pub fn install(self: *Clocks, old: *const Document, new: *const Document, now_ns: u64) void {
-        var restart: [max_elements]bool = [_]bool{true} ** max_elements;
+        var restart: [max_elements]bool = @splat(true);
         for (new.elements[0..new.count], 0..) |*e, i| {
             if (e.id.len == 0) continue;
             for (old.elements[0..old.count], 0..) |*old_e, j| {
@@ -1132,7 +1134,7 @@ test "text draws in every font, aligns inside its box and is clipped by it" {
 }
 
 test "tiles and rows divide the panel without gaps or overlaps" {
-    var covered = [_]bool{false} ** geometry.width;
+    var covered: [geometry.width]bool = @splat(false);
     for (0..3) |i| {
         const b = Box.tile(@intCast(i), 3);
         var x = b.x;
@@ -1144,7 +1146,7 @@ test "tiles and rows divide the panel without gaps or overlaps" {
     for (covered) |c| try std.testing.expect(c); // and no gap
     try std.testing.expectEqual(@as(i16, geometry.height), Box.tile(0, 3).h);
 
-    var rows = [_]bool{false} ** geometry.height;
+    var rows: [geometry.height]bool = @splat(false);
     for (0..4) |i| {
         const b = Box.row(@intCast(i), 4);
         var y = b.y;
@@ -1180,8 +1182,8 @@ test "the pools fill, compact and refuse what will never fit" {
     try std.testing.expectEqualStrings("0123456789", d.textOf(d.elements[0].body.text.span));
     try std.testing.expect(d.text_len <= text_pool);
 
-    try std.testing.expectError(error.TooLong, d.addText(&[_]u8{'x'} ** (text_pool + 1)));
-    try std.testing.expectError(error.TooLong, d.addData(&[_]u8{0} ** (samples_max + 1)));
+    try std.testing.expectError(error.TooLong, d.addText(repeat.bytes("x", text_pool + 1)));
+    try std.testing.expectError(error.TooLong, d.addData(repeat.bytes("\x00", samples_max + 1)));
 
     var full = Document{};
     var n: usize = 0;
@@ -1244,7 +1246,7 @@ pub const Update = struct {
     has: u8 = 0,
     /// the replacement string or samples, whichever the element takes
     len: u8 = 0,
-    bytes: [patch_bytes_max]u8 = [_]u8{0} ** patch_bytes_max,
+    bytes: [patch_bytes_max]u8 = @splat(0),
     value: u8 = 0,
     colour: [3]u8 = .{ 0, 0, 0 },
 
@@ -1257,7 +1259,7 @@ pub const Update = struct {
 
 pub const Patch = struct {
     count: u8 = 0,
-    items: [max_elements]Update = [_]Update{.{}} ** max_elements,
+    items: [max_elements]Update = @splat(.{}),
 
     pub const wire_max = 1 + max_elements * Update.wire_len;
 
@@ -1311,7 +1313,7 @@ pub fn applyPatch(d: *Document, p: *const Patch) ApplyError!void {
 /// `std.meta.intToEnum` went away in zig 0.16; this is the same thing the ipc codec uses, kept
 /// local because a scene has no business importing the ipc layer.
 fn enumFromInt(comptime E: type, value: u8) ?E {
-    inline for (@typeInfo(E).@"enum".fields) |f| if (f.value == value) return @enumFromInt(f.value);
+    inline for (@typeInfo(E).@"enum".field_values) |v| if (v == value) return @fromBackingInt(@intCast(v));
     return null;
 }
 
@@ -1330,18 +1332,18 @@ fn putElement(e: *const Element, out: []u8) void {
     @memcpy(out[1..9], &e.id.bytes);
     inline for (.{ e.box.x, e.box.y, e.box.w, e.box.h }, 0..) |v, i| std.mem.writeInt(i16, out[9 + i * 2 ..][0..2], v, .little);
     @memcpy(out[17..20], &e.colour);
-    out[20] = @intFromEnum(e.anim.kind);
+    out[20] = @backingInt(e.anim.kind);
     std.mem.writeInt(u16, out[21..23], e.anim.ms, .little);
     out[23] = e.anim.phase;
     out[24] = e.anim.amount;
     out[25] = @intFromBool(e.anim.axis_x);
-    out[26] = @intFromEnum(e.kind());
+    out[26] = @backingInt(e.kind());
     const v = out[27..];
     switch (e.body) {
         .text => |t| {
             putSpan(v, t.span);
-            v[4] = @intFromEnum(t.face);
-            v[5] = @intFromEnum(t.alignment);
+            v[4] = @backingInt(t.face);
+            v[5] = @backingInt(t.alignment);
         },
         .rect => |r| v[0] = @intFromBool(r.filled),
         .line => |l| {
@@ -1360,7 +1362,7 @@ fn putElement(e: *const Element, out: []u8) void {
         },
         .sparkline => |s| {
             putSpan(v, s.span);
-            v[4] = @intFromEnum(s.style);
+            v[4] = @backingInt(s.style);
             v[5] = s.min;
             v[6] = s.max;
             v[7] = s.threshold;

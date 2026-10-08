@@ -2,7 +2,7 @@
 const std = @import("std");
 const mdns = @import("mdns.zig");
 pub const Owner = struct {
-    mac: [6]u8 = .{0} ** 6,
+    mac: [6]u8 = @splat(0),
     ip: ?[4]u8 = null,
     name: [mdns.name_capacity]u8 = undefined,
     name_len: usize = 0,

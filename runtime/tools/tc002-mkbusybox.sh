@@ -7,7 +7,7 @@
 # which the device's own busybox does not have. rather than take somebody's prebuilt binary and put
 # it in flash, this builds one from a pinned, checksummed upstream tarball.
 #
-# **zig is the whole toolchain.** the repo already pins zig 0.16 for the runtime, and `zig cc` is a
+# **zig is the whole toolchain.** the repo already pins zig 0.17 for the runtime, and `zig cc` is a
 # cross compiler with musl and linux headers in the box, so there is no new dependency here -- no
 # docker, no crosstool, no homebrew binutils, and nothing downloaded but the busybox source.
 set -euo pipefail

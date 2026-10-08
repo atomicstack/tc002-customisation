@@ -1,5 +1,7 @@
 //! bounded notification storage; the arbiter owns display timing and transitions.
 const std = @import("std");
+// zig 0.17 removed `**`; `@splat` covers one element, this covers a longer unit
+const repeat = @import("../repeat.zig");
 const transition = @import("../panel/transition.zig");
 const canvas = @import("canvas.zig");
 
@@ -14,7 +16,7 @@ pub fn validName(name: []const u8) bool {
 
 pub const Name = struct {
     len: u8 = 0,
-    bytes: [name_max]u8 = [_]u8{0} ** name_max,
+    bytes: [name_max]u8 = @splat(0),
 
     pub fn init(s: []const u8) Name {
         std.debug.assert(s.len <= name_max);
@@ -64,8 +66,8 @@ pub const Waiting = struct {
 };
 
 test "a name is 1 to 255 letters, digits, underscores or hyphens" {
-    try std.testing.expect(validName("n" ** 255));
-    try std.testing.expect(!validName("n" ** 256));
+    try std.testing.expect(validName(repeat.bytes("n", 255)));
+    try std.testing.expect(!validName(repeat.bytes("n", 256)));
     try std.testing.expect(!validName(""));
     try std.testing.expect(!validName("a b"));
 }

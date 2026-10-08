@@ -11,7 +11,7 @@ pub const frame_bytes = height * row_bytes; // 3072
 pub const Rgb = [rgb_bytes]u8;
 pub const Frame = [frame_bytes]u8;
 
-pub const black_rgb: Rgb = [_]u8{0} ** rgb_bytes;
+pub const black_rgb: Rgb = @splat(0);
 
 pub fn pixelOffset(x: usize, y: usize) usize {
     return (y * width + x) * 3;

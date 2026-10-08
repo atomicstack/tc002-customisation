@@ -54,13 +54,13 @@ pub const Item = enum(u8) {
     }
 };
 
-pub const count = @typeInfo(Item).@"enum".fields.len;
+pub const count = @typeInfo(Item).@"enum".field_names.len;
 
 /// the readouts of the info page, in the order the knob walks them. the address is not among them:
 /// it has an item of its own, which draws it the way the ip scene used to.
 pub const Readout = enum(u8) { wifi = 0, battery, time, uptime };
 
-const readout_count = @typeInfo(Readout).@"enum".fields.len;
+const readout_count = @typeInfo(Readout).@"enum".field_names.len;
 
 pub const State = enum { browsing, adjusting, confirming };
 
@@ -134,7 +134,7 @@ pub const Menu = struct {
     kind: Kind = .device,
     /// scene menus only: the table being walked and the values as they stand
     table: []const param.Param = &.{},
-    values: param.PageValues = [_]u32{0} ** param.max_per_page,
+    values: param.PageValues = @splat(0),
     /// scene menus only: which entry is showing; table.len is the exit at the end
     entry: usize = 0,
     item: Item = .brightness,
@@ -422,7 +422,7 @@ pub const Menu = struct {
             var state = ip.State{ .addr = self.status.address, .mode = self.settings.ip_mode };
             state.colour = if (self.state == .adjusting) amber else bright;
             state.render(now, rgb);
-            pages.draw(rgb, count, @intFromEnum(self.item), pages.alphaAt(now -| self.pages_at));
+            pages.draw(rgb, count, @backingInt(self.item), pages.alphaAt(now -| self.pages_at));
             return;
         }
         drawLine(rgb, 1, self.item.label(), dim, now, self.scroll_start_ns);
@@ -434,7 +434,7 @@ pub const Menu = struct {
             for (0..lit) |x| setPixel(rgb, @intCast(x), 15, colour);
         } else {
             // one dot per item, the current one solid, up only for a while after the last move
-            pages.draw(rgb, count, @intFromEnum(self.item), pages.alphaAt(now -| self.pages_at));
+            pages.draw(rgb, count, @backingInt(self.item), pages.alphaAt(now -| self.pages_at));
         }
     }
 
@@ -477,10 +477,10 @@ fn uptimeText(seconds: u32, buf: []u8) []const u8 {
 }
 
 fn cycle(comptime E: type, v: E, forward: bool) E {
-    const n = @typeInfo(E).@"enum".fields.len;
-    const i: usize = @intFromEnum(v);
+    const n = @typeInfo(E).@"enum".field_names.len;
+    const i: usize = @backingInt(v);
     const next = if (forward) (i + 1) % n else (i + n - 1) % n;
-    return @enumFromInt(next);
+    return @fromBackingInt(@intCast(next));
 }
 
 fn setPixel(rgb: *geometry.Rgb, x: i32, y: i32, colour: [3]u8) void {
@@ -786,7 +786,7 @@ test "the ip item draws the address full-panel, and the dial pages its four layo
     var state = ip.State{ .addr = .{ 10, 0, 0, 111 }, .mode = .mini };
     state.colour = bright;
     state.render(0, &expected);
-    pages.draw(&expected, count, @intFromEnum(Item.ip), pages.alphaAt(0));
+    pages.draw(&expected, count, @backingInt(Item.ip), pages.alphaAt(0));
     try std.testing.expectEqualSlices(u8, &expected, &rgb);
 
     // the label row is not drawn over it: the address owns the whole panel
@@ -815,7 +815,7 @@ test "the ip item draws the address full-panel, and the dial pages its four layo
     var empty = ip.State{ .addr = null, .mode = .lines };
     empty.colour = bright;
     empty.render(0, &none);
-    pages.draw(&none, count, @intFromEnum(Item.ip), pages.alphaAt(0));
+    pages.draw(&none, count, @backingInt(Item.ip), pages.alphaAt(0));
     try std.testing.expectEqualSlices(u8, &none, &rgb);
 }
 

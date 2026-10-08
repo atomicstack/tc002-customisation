@@ -69,7 +69,7 @@ test "unknown keys and repeats are ignored and the queue is bounded" {
     m.feed(key(999, 0), 1, &q, &e);
     m.feed(key(108, 2), 2, &q, &e); // autorepeat
     try std.testing.expectEqual(@as(usize, 0), q.len);
-    const over = 4;   // enough past the bound to prove it holds, whatever the bound is
+    const over = 4; // enough past the bound to prove it holds, whatever the bound is
     var i: u32 = 0;
     while (i < ActionQueue.capacity + over) : (i += 1) {
         m.feed(key(108, 1), i * 10, &q, &e);
@@ -106,7 +106,7 @@ pub const Control = enum(u8) { left = 0, middle = 1, right = 2, knob = 3, rotary
 
 /// how many of those are buttons that can be held. the rotary is a dial with no press, and it is
 /// last in the enum so that the buttons are exactly `0..button_count`.
-pub const button_count = @intFromEnum(Control.rotary);
+pub const button_count = @backingInt(Control.rotary);
 
 /// what happened on a control, and the whole of what one can report: every button and the knob
 /// report press and release, any of them reports `long` once held past the threshold, and the
@@ -192,8 +192,8 @@ pub const Mapper = struct {
     long_press_ns: u64 = 700_000_000,
     /// when each button went down and whether its long press has already been reported, indexed by
     /// `Control`. the rotary has no hold, so its slot is never used.
-    down_since: [button_count]?u64 = [_]?u64{null} ** button_count,
-    long_sent: [button_count]bool = [_]bool{false} ** button_count,
+    down_since: [button_count]?u64 = @splat(null),
+    long_sent: [button_count]bool = @splat(false),
     /// detents since start, cw positive; reported with every rotary edge.
     position: i32 = 0,
     /// the last keycode that matched nothing, for the renderer to log; 0 = none.
@@ -234,7 +234,7 @@ pub const Mapper = struct {
                 };
                 edges.push(.{ .control = control, .event = if (down) .press else .release, .position = self.position });
                 if (down) self.last_press = .{ .code = ev.code, .control = control };
-                const i = @intFromEnum(control);
+                const i = @backingInt(control);
                 if (down) {
                     self.down_since[i] = now_ns;
                     self.long_sent[i] = false;
@@ -293,7 +293,7 @@ pub const Mapper = struct {
             const since = self.down_since[i] orelse continue;
             if (self.long_sent[i] or now_ns - since < self.long_press_ns) continue;
             self.long_sent[i] = true;
-            const control: Control = @enumFromInt(i);
+            const control: Control = @fromBackingInt(@intCast(i));
             _ = out.push(longActionOf(control));
             edges.push(.{ .control = control, .event = .long, .position = self.position });
         }
@@ -326,7 +326,7 @@ pub const Mapper = struct {
             .long => {
                 if (control == .rotary) return false;
                 self.feed(key(code, 1), now_ns, out, edges);
-                self.long_sent[@intFromEnum(control)] = true;
+                self.long_sent[@backingInt(control)] = true;
                 _ = out.push(longActionOf(control));
                 edges.push(.{ .control = control, .event = .long, .position = self.position });
                 self.feed(key(code, 0), now_ns, out, edges);
@@ -473,16 +473,15 @@ test "every button has a long press, and a hold is not also a tap" {
     try std.testing.expectEqual(@as(usize, 0), q.len);
 }
 
-
 test "both input vocabularies are contiguous, and neither leaves room for the other" {
     // each is its own wire encoding -- `input` carries an EdgeEvent and `inject_input` an
     // InputRequest -- so they are pinned separately and neither needs a hole in it.
-    inline for (@typeInfo(EdgeEvent).@"enum".fields, 0..) |f, i| {
-        try std.testing.expectEqual(i, f.value);
+    inline for (@typeInfo(EdgeEvent).@"enum".field_values, 0..) |value, i| {
+        try std.testing.expectEqual(i, value);
     }
-    inline for (@typeInfo(InputRequest).@"enum".fields, 0..) |f, i| {
-        try std.testing.expectEqual(i, f.value);
+    inline for (@typeInfo(InputRequest).@"enum".field_values, 0..) |value, i| {
+        try std.testing.expectEqual(i, value);
     }
-    try std.testing.expectEqual(@as(u8, 2), @intFromEnum(EdgeEvent.long));
-    try std.testing.expectEqual(@as(u8, 2), @intFromEnum(InputRequest.click));
+    try std.testing.expectEqual(@as(u8, 2), @backingInt(EdgeEvent.long));
+    try std.testing.expectEqual(@as(u8, 2), @backingInt(InputRequest.click));
 }

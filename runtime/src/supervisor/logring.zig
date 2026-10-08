@@ -2,6 +2,8 @@
 //! served in pages over the local channel. children write their lines into a pipe the supervisor
 //! drains; the supervisor's own lines arrive through `log.sink`. fixed storage, no allocation.
 const std = @import("std");
+// zig 0.17 removed `**`; `@splat` covers one element, this covers a longer unit
+const repeat = @import("../repeat.zig");
 const messages = @import("../ipc/messages.zig");
 
 pub const slots = 64;
@@ -9,7 +11,7 @@ pub const line_max = messages.log_line_max;
 
 pub const Ring = struct {
     lines: [slots][line_max]u8 = undefined,
-    lens: [slots]u8 = [_]u8{0} ** slots,
+    lens: [slots]u8 = @splat(0),
     /// the sequence number the next pushed line will get; lines are numbered from 1.
     next_seq: u32 = 1,
 
@@ -112,7 +114,7 @@ test "the ring numbers lines from one, evicts the oldest, and pages after a sequ
 
 test "long lines are cut at the line maximum" {
     var r = Ring{};
-    r.push("y" ** 300);
+    r.push(repeat.bytes("y", 300));
     var page = messages.LogLines{ .next = 0 };
     r.page(0, &page);
     var it = page.iterator();
@@ -134,7 +136,7 @@ test "the assembler joins a line split across reads and drops nothing on exact b
     try std.testing.expectEqualStrings("tc002d 2 warn x", it.next().?.text);
     a.feed("\n\n", &sink, TestSink.line); // empty lines are lines too
     try std.testing.expectEqual(@as(u32, 5), r.next_seq);
-    a.feed("z" ** 400, &sink, TestSink.line); // an overlong partial line is cut, not spilled
+    a.feed(repeat.bytes("z", 400), &sink, TestSink.line); // an overlong partial line is cut, not spilled
     a.feed("\n", &sink, TestSink.line);
     try std.testing.expectEqual(@as(u32, 6), r.next_seq);
 }

@@ -122,10 +122,10 @@ pub fn parseBattery(payload: []const u8) ?Battery {
 
 test "the vendor's four-byte queries encode with their known checksums" {
     var out: [max_frame]u8 = undefined;
-    try std.testing.expectEqualSlices(u8, &.{ 0xff, 0x55, 0x03, 0x00, 0x01, 0x57 }, try encode(&out, @intFromEnum(Command.query_battery), ""));
-    try std.testing.expectEqualSlices(u8, &.{ 0xff, 0x55, 0x02, 0x00, 0x01, 0x56 }, try encode(&out, @intFromEnum(Command.query_usb), ""));
-    try std.testing.expectEqualSlices(u8, &.{ 0xff, 0x55, 0x04, 0x01, 0x00, 0x01, 0x59 }, try encode(&out, @intFromEnum(Command.set_auto_mic_report), &.{0}));
-    try std.testing.expectEqualSlices(u8, &.{ 0xff, 0x55, 0x11, 0x00, 0x01, 0x65 }, try encode(&out, @intFromEnum(Command.query_version), ""));
+    try std.testing.expectEqualSlices(u8, &.{ 0xff, 0x55, 0x03, 0x00, 0x01, 0x57 }, try encode(&out, @backingInt(Command.query_battery), ""));
+    try std.testing.expectEqualSlices(u8, &.{ 0xff, 0x55, 0x02, 0x00, 0x01, 0x56 }, try encode(&out, @backingInt(Command.query_usb), ""));
+    try std.testing.expectEqualSlices(u8, &.{ 0xff, 0x55, 0x04, 0x01, 0x00, 0x01, 0x59 }, try encode(&out, @backingInt(Command.set_auto_mic_report), &.{0}));
+    try std.testing.expectEqualSlices(u8, &.{ 0xff, 0x55, 0x11, 0x00, 0x01, 0x65 }, try encode(&out, @backingInt(Command.query_version), ""));
     var tiny: [4]u8 = undefined;
     try std.testing.expectError(error.Overflow, encode(&tiny, 1, ""));
 }
@@ -172,7 +172,7 @@ test "the synchroniser skips garbage and mic reports and yields whole frames" {
 
 test "a flood larger than the buffer keeps the newest bytes" {
     var s = Sync{};
-    const junk = [_]u8{0xaa} ** 300;
+    const junk: [300]u8 = @splat(0xaa);
     s.push(&junk);
     try std.testing.expectEqual(@as(usize, 128), s.len);
     try std.testing.expect(s.next() == null);

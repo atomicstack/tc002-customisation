@@ -80,7 +80,7 @@ pub const Request = struct { bytes: [packet_len]u8, sent: Timestamp };
 /// li 0, version 4, mode 3 (client); only the transmit timestamp is set: our seconds with a random
 /// fraction, which the server echoes back as the originate timestamp.
 pub fn buildRequest(now_unix_ns: u64, nonce: u32) Request {
-    var r = Request{ .bytes = [_]u8{0} ** packet_len, .sent = Timestamp.fromUnixNs(now_unix_ns) };
+    var r = Request{ .bytes = @splat(0), .sent = Timestamp.fromUnixNs(now_unix_ns) };
     r.sent.frac = nonce;
     r.bytes[0] = 0x23;
     r.sent.write(r.bytes[40..48]);
@@ -287,7 +287,7 @@ pub const Client = struct {
 const ref_2026: u64 = build_reference_unix_s + 10 * 86_400; // 2026-09-11
 
 fn serverReply(sent: Timestamp, t2_unix_ns: u64, t3_unix_ns: u64, stratum: u8, li: u2) [packet_len]u8 {
-    var b = [_]u8{0} ** packet_len;
+    var b: [packet_len]u8 = @splat(0);
     b[0] = (@as(u8, li) << 6) | (4 << 3) | 4;
     b[1] = stratum;
     b[12..16].* = "GPS ".*;

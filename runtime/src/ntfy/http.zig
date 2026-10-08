@@ -2,6 +2,8 @@
 //! few headers that matter, then the body as a stream of lines, with chunked transfer encoding
 //! unwrapped. pure; tested on fixed readers.
 const std = @import("std");
+// zig 0.17 removed `**`; `@splat` covers one element, this covers a longer unit
+const repeat = @import("../repeat.zig");
 const Reader = std.Io.Reader;
 
 pub const Head = struct { status: u16, chunked: bool = false, content_length: ?u64 = null };
@@ -18,6 +20,17 @@ fn takeLine(r: *Reader) Error![]const u8 {
 }
 
 /// the status line and the headers, up to and including the blank line
+/// zig 0.17 dropped `std.ascii.indexOfIgnoreCase`, and `eqlIgnoreCase` is not a substitute here:
+/// transfer-encoding is a list, so "gzip, chunked" has to count as chunked.
+fn containsIgnoreCase(haystack: []const u8, needle: []const u8) bool {
+    if (needle.len > haystack.len) return false;
+    var i: usize = 0;
+    while (i + needle.len <= haystack.len) : (i += 1) {
+        if (std.ascii.eqlIgnoreCase(haystack[i..][0..needle.len], needle)) return true;
+    }
+    return false;
+}
+
 pub fn readHead(r: *Reader) Error!Head {
     const status_line = try takeLine(r);
     if (!std.mem.startsWith(u8, status_line, "HTTP/1.")) return error.BadResponse;
@@ -35,7 +48,7 @@ pub fn readHead(r: *Reader) Error!Head {
         const name = line[0..colon];
         const value = std.mem.trim(u8, line[colon + 1 ..], " \t");
         if (std.ascii.eqlIgnoreCase(name, "transfer-encoding")) {
-            head.chunked = std.ascii.indexOfIgnoreCase(value, "chunked") != null;
+            head.chunked = containsIgnoreCase(value, "chunked");
         } else if (std.ascii.eqlIgnoreCase(name, "content-length")) {
             head.content_length = std.fmt.parseInt(u64, value, 10) catch return error.BadResponse;
         }
@@ -140,7 +153,7 @@ test "a bounded body, an unbounded one and bad heads" {
     try std.testing.expect((try b2.nextLine(&buf)) == null);
     var r3: Reader = .fixed("SMTP 220 hi\r\n\r\n");
     try std.testing.expectError(error.BadResponse, readHead(&r3));
-    var r4: Reader = .fixed("HTTP/1.1 200 OK\r\n\r\n" ++ "x" ** 40 ++ "\n");
+    var r4: Reader = .fixed("HTTP/1.1 200 OK\r\n\r\n" ++ repeat.bytes("x", 40) ++ "\n");
     const h4 = try readHead(&r4);
     var b4 = Body.init(&r4, h4);
     try std.testing.expectError(error.LineTooLong, b4.nextLine(&buf));

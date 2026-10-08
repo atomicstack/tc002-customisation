@@ -1,7 +1,7 @@
 # the custom runtime (`runtime/`)
 
 a replacement for the stock application on the tc002: six arm binaries
-and one tiny shared object, written in zig 0.16, that take over the panel, the
+and one tiny shared object, written in zig 0.17, that take over the panel, the
 buttons and the knob, and expose an authenticated http and mqtt api of their own.
 `tc002-berryd` links libc for the [script interpreter](#scripting-berry), and
 `tc002-audiod` is dynamically linked because it uses the device's own audio
@@ -26,18 +26,20 @@ does; how to build and run it is in [`runtime/README.md`](runtime/README.md).
 | binary | runs as | size¹ | role |
 |--------|---------|------:|------|
 | `libtc002-bootstrap.so` | inside the vendor loader | 4.3 kb | the "startup library" the loader `dlopen`s. its constructor `execve`s the supervisor in place, passing `--from-bootstrap` and the loader's environment. no libc, no `DT_NEEDED`. if the exec fails it prints one line and exits 1; it never touches the anti-brick property |
-| `tc002-supervisor` | root | 1,078 kb | sets `sys.zkapp.state=running` first, then owns everything privileged: spawns and watches the renderer, binds port 80, generates the api tokens, keeps the settings file, reads the maintenance gesture, polls `wlan0`, relays api commands, samples `/proc` |
-| `tc002d` | root | 534 kb | the renderer. the only process that opens `/dev/spidev0.0` and the latch gpio. scenes, overlays, physical input, paced presentation, heartbeats |
-| `tc002-netd` | uid 1001 | 873 kb | the network daemon: an http/1.1 server for `/api/v1`, an mqtt 3.1.1 client and an mdns responder for the clock's own name ([discovery](#discovery-mdns)). holds no authoritative state; every command is relayed through the supervisor to the live renderer |
-| `tc002-ntfy` | uid 1001 | 1,231 kb | the ntfy subscriber: dns, tcp, tls 1.3 with the standard library (that is the size), the json stream; sends `notify` to the supervisor. only runs while `ntfy.enabled` |
-| `tc002-berryd` | uid 1001 | 749 kb | the [script interpreter](#scripting-berry): one berry vm on a fixed heap. the only binary that links libc. no network descriptor at all. only runs while `berry.enabled` |
-| `tc002-audiod` | root | 397 kb | the speaker: one sound at a time from the store, decoded and handed to the audio-out. root because `/dev/mi_ao` is `crw-------`, the same trade the renderer makes for spidev. only runs while `sound.enabled` |
-| `tc002-memdump` | root, by hand | 167 kb | a maintenance tool that streams a sparse memory snapshot of one process over adb ([memory audits](#memory-audits)) |
+| `tc002-supervisor` | root | 1,111 kb | sets `sys.zkapp.state=running` first, then owns everything privileged: spawns and watches the renderer, binds port 80, generates the api tokens, keeps the settings file, reads the maintenance gesture, polls `wlan0`, relays api commands, samples `/proc` |
+| `tc002d` | root | 579 kb | the renderer. the only process that opens `/dev/spidev0.0` and the latch gpio. scenes, overlays, physical input, paced presentation, heartbeats |
+| `tc002-netd` | uid 1001 | 1,102 kb | the network daemon: an http/1.1 server for `/api/v1`, an mqtt 3.1.1 client and an mdns responder for the clock's own name ([discovery](#discovery-mdns)). holds no authoritative state; every command is relayed through the supervisor to the live renderer |
+| `tc002-ntfy` | uid 1001 | 1,326 kb | the ntfy subscriber: dns, tcp, tls 1.3 with the standard library (that is the size), the json stream; sends `notify` to the supervisor. only runs while `ntfy.enabled` |
+| `tc002-berryd` | uid 1001 | 787 kb | the [script interpreter](#scripting-berry): one berry vm on a fixed heap. the only binary that links libc. no network descriptor at all. only runs while `berry.enabled` |
+| `tc002-audiod` | root | 393 kb | the speaker: one sound at a time from the store, decoded and handed to the audio-out. root because `/dev/mi_ao` is `crw-------`, the same trade the renderer makes for spidev. only runs while `sound.enabled` |
+| `tc002-memdump` | root, by hand | 172 kb | a maintenance tool that streams a sparse memory snapshot of one process over adb ([memory audits](#memory-audits)) |
 
-¹ ReleaseSafe, stripped, measured at `v0.1.0-87` on 2026-09-15. ~~as built on
+¹ ReleaseSafe, stripped, measured at `v0.3.5-8` on 2026-10-08, built with zig 0.17.0. the
+move from 0.16.0 cost 16 kb across the eight of them, +0.3%, with individual binaries going both
+ways — netd lost 57 kb, ntfy gained 75. ~~as built on
 2026-09-06 … roughly 66 / 147 / 170 kb for the three daemons~~ — **✗ those
 figures were two to three times too small and are gone.** the six runtime
-binaries total about 5.0 mb; in the flashed image, squashfs-compressed, the whole
+binaries total about 5.2 mb; in the flashed image, squashfs-compressed, the whole
 `res` comes to 4.45 mb of the 8 mib partition. on the `/tmp` path the binaries
 sit in tmpfs, so their size is ram.
 
@@ -2531,7 +2533,7 @@ all on a warm device that had been up for days, under the lock, on
 
 ## what is not there yet
 
-- **tls.** zig 0.16's standard library has a tls client but no server, and no
+- **tls.** zig 0.17's standard library has a tls client but no server, and no
   tls library is vendored. only the plaintext `isolated-lan` profile exists,
   and `/status` says so (`transport: plaintext`). the tokens are readable by
   anyone on the network path.

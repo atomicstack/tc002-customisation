@@ -151,18 +151,18 @@ export fn expireOverlay(now_ms: f64) u32 {
 /// every count here comes from the enum itself: the console sends indices into the lists it read
 /// out of `generatorNames` and friends, and those lists change whenever the runtime's enums do.
 fn enumOf(comptime E: type, v: i64) ?E {
-    const fields = @typeInfo(E).@"enum".fields;
-    if (v < 0 or v >= fields.len) return null;
-    return @enumFromInt(@as(@typeInfo(E).@"enum".tag_type, @intCast(v)));
+    const names = @typeInfo(E).@"enum".field_names;
+    if (v < 0 or v >= names.len) return null;
+    return @fromBackingInt(@intCast(@as(@typeInfo(E).@"enum".tag_type, @intCast(v))));
 }
 
 fn baseOf(v: u32) arbiter.Base {
     // the default is whatever the enum calls zero, not a name written down here: the bases are
     // being renumbered into the panel's left/middle/right order, and `ip` is leaving them
-    return enumOf(arbiter.Base, v) orelse @enumFromInt(0);
+    return enumOf(arbiter.Base, v) orelse @fromBackingInt(@intCast(0));
 }
 fn generatorOf(v: u32) scene.Generator {
-    return enumOf(scene.Generator, v) orelse @enumFromInt(0);
+    return enumOf(scene.Generator, v) orelse @fromBackingInt(@intCast(0));
 }
 
 export fn setBase(v: u32, now_ms: f64) void {
@@ -426,7 +426,7 @@ export fn canvasRejectReason() u32 {
 /// the ages GET /canvas publishes, one per element, written here by the console before it calls
 /// `backdateCanvas`. a u32 window rather than the scratch buffer because scratch still holds the
 /// document json at that point.
-var canvas_ages: [canvas.max_elements]u32 = [_]u32{0} ** canvas.max_elements;
+var canvas_ages: [canvas.max_elements]u32 = @splat(0);
 
 export fn canvasAgesPtr() [*]u32 {
     return &canvas_ages;
@@ -522,8 +522,8 @@ export fn canvasMaxElements() u32 {
 // ---- input, so the preview can drive the menu the way the dial does ----
 
 export fn action(a: u32, now_ms: f64) void {
-    if (a >= @typeInfo(scene.Action).@"enum".fields.len) return;
-    arb.action(@enumFromInt(@as(u8, @intCast(a))), toNs(now_ms));
+    if (a >= @typeInfo(scene.Action).@"enum".field_names.len) return;
+    arb.action(@fromBackingInt(@intCast(@as(u8, @intCast(a)))), toNs(now_ms));
 }
 export fn openMenu(now_ms: f64) void {
     arb.openMenu(toNs(now_ms));
@@ -543,7 +543,7 @@ export fn takeDirty() u32 {
 /// the effect of the pending transition, or 255 when none is pending. taking it also clears it.
 export fn takeTransition() u32 {
     const spec = arb.takeTransition() orelse return 255;
-    return @intFromEnum(spec.effect);
+    return @backingInt(spec.effect);
 }
 export fn transitionDone() void {
     arb.transitionDone();
@@ -553,8 +553,8 @@ export fn transitionDone() void {
 
 fn enumNames(comptime E: type) []const u8 {
     comptime var buf: []const u8 = "";
-    inline for (@typeInfo(E).@"enum".fields, 0..) |f, i| {
-        buf = buf ++ (if (i == 0) "" else ",") ++ f.name;
+    inline for (@typeInfo(E).@"enum".field_names, 0..) |name, i| {
+        buf = buf ++ (if (i == 0) "" else ",") ++ name;
     }
     return buf;
 }

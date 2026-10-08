@@ -3,6 +3,8 @@
 //! machine driven by monotonic time (keepalive, ping timeout, bounded reconnect backoff with
 //! jitter). the tcp socket lives in netd.
 const std = @import("std");
+// zig 0.17 removed `**`; `@splat` covers one element, this covers a longer unit
+const repeat = @import("../repeat.zig");
 
 pub const max_packet = 4096;
 
@@ -101,7 +103,7 @@ pub fn encodeConnect(out: []u8, o: ConnectOptions) Error!usize {
     }
     if (o.username) |u| p += try writeString(out[p..], u);
     if (o.password) |pw| p += try writeString(out[p..], pw);
-    return frame(out, @as(u8, @intFromEnum(PacketType.connect)) << 4, p - 5);
+    return frame(out, @as(u8, @backingInt(PacketType.connect)) << 4, p - 5);
 }
 
 pub const PublishOptions = struct { topic: []const u8, payload: []const u8, qos: u2 = 0, retain: bool = false, packet_id: u16 = 0, dup: bool = false };
@@ -118,7 +120,7 @@ pub fn encodePublish(out: []u8, o: PublishOptions) Error!usize {
     if (out.len < p + o.payload.len) return error.Overflow;
     @memcpy(out[p .. p + o.payload.len], o.payload);
     p += o.payload.len;
-    var first: u8 = @as(u8, @intFromEnum(PacketType.publish)) << 4;
+    var first: u8 = @as(u8, @backingInt(PacketType.publish)) << 4;
     if (o.dup) first |= 0x08;
     first |= @as(u8, o.qos) << 1;
     if (o.retain) first |= 0x01;
@@ -127,7 +129,7 @@ pub fn encodePublish(out: []u8, o: PublishOptions) Error!usize {
 
 pub fn encodePuback(out: []u8, packet_id: u16) Error!usize {
     if (out.len < 4) return error.Overflow;
-    out[0] = @as(u8, @intFromEnum(PacketType.puback)) << 4;
+    out[0] = @as(u8, @backingInt(PacketType.puback)) << 4;
     out[1] = 2;
     std.mem.writeInt(u16, out[2..4], packet_id, .big);
     return 4;
@@ -145,7 +147,7 @@ pub fn encodeSubscribe(out: []u8, packet_id: u16, topics: []const []const u8, qo
         out[p] = qos;
         p += 1;
     }
-    return frame(out, (@as(u8, @intFromEnum(PacketType.subscribe)) << 4) | 0x02, p - 5);
+    return frame(out, (@as(u8, @backingInt(PacketType.subscribe)) << 4) | 0x02, p - 5);
 }
 
 /// unsubscribe carries the filters alone -- no qos byte, unlike subscribe. the broker answers
@@ -158,19 +160,19 @@ pub fn encodeUnsubscribe(out: []u8, packet_id: u16, topics: []const []const u8) 
     std.mem.writeInt(u16, out[p..][0..2], packet_id, .big);
     p += 2;
     for (topics) |t| p += try writeString(out[p..], t);
-    return frame(out, (@as(u8, @intFromEnum(PacketType.unsubscribe)) << 4) | 0x02, p - 5);
+    return frame(out, (@as(u8, @backingInt(PacketType.unsubscribe)) << 4) | 0x02, p - 5);
 }
 
 pub fn encodePingreq(out: []u8) Error!usize {
     if (out.len < 2) return error.Overflow;
-    out[0] = @as(u8, @intFromEnum(PacketType.pingreq)) << 4;
+    out[0] = @as(u8, @backingInt(PacketType.pingreq)) << 4;
     out[1] = 0;
     return 2;
 }
 
 pub fn encodeDisconnect(out: []u8) Error!usize {
     if (out.len < 2) return error.Overflow;
-    out[0] = @as(u8, @intFromEnum(PacketType.disconnect)) << 4;
+    out[0] = @as(u8, @backingInt(PacketType.disconnect)) << 4;
     out[1] = 0;
     return 2;
 }
@@ -198,11 +200,11 @@ pub fn decode(buf: []const u8) Error!Decoded {
     const used = start + rl.len;
     const kind: u4 = @intCast(first >> 4);
     switch (kind) {
-        @intFromEnum(PacketType.connack) => {
+        @backingInt(PacketType.connack) => {
             if (body.len != 2) return error.Malformed;
             return .{ .packet = .{ .connack = .{ .session_present = body[0] & 1 == 1, .return_code = body[1] } }, .used = used };
         },
-        @intFromEnum(PacketType.publish) => {
+        @backingInt(PacketType.publish) => {
             const qos: u2 = @intCast((first >> 1) & 0x3);
             if (qos == 3) return error.Malformed;
             const t = try readString(body);
@@ -215,15 +217,15 @@ pub fn decode(buf: []const u8) Error!Decoded {
             }
             return .{ .packet = .{ .publish = .{ .topic = t.s, .payload = body[p..], .qos = qos, .retain = first & 1 == 1, .dup = first & 0x08 != 0, .packet_id = packet_id } }, .used = used };
         },
-        @intFromEnum(PacketType.puback) => {
+        @backingInt(PacketType.puback) => {
             if (body.len != 2) return error.Malformed;
             return .{ .packet = .{ .puback = std.mem.readInt(u16, body[0..2], .big) }, .used = used };
         },
-        @intFromEnum(PacketType.suback) => {
+        @backingInt(PacketType.suback) => {
             if (body.len < 3) return error.Malformed;
             return .{ .packet = .{ .suback = .{ .packet_id = std.mem.readInt(u16, body[0..2], .big), .return_codes = body[2..] } }, .used = used };
         },
-        @intFromEnum(PacketType.pingresp) => {
+        @backingInt(PacketType.pingresp) => {
             if (body.len != 0) return error.Malformed;
             return .{ .packet = .pingresp, .used = used };
         },
@@ -544,7 +546,7 @@ pub fn subscribeSpace(count: usize, total_len: usize) usize {
 
 test "subscribing needs more room than the packet it produces" {
     var buf: [256]u8 = undefined;
-    const filter = "a" ** 96;
+    const filter = repeat.bytes("a", 96);
     const n = try encodeSubscribe(&buf, 1, &.{filter}, 1);
     try std.testing.expectEqual(@as(usize, 103), n);
     try std.testing.expectEqual(@as(usize, 106), subscribeSpace(1, filter.len));

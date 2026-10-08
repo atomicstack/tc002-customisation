@@ -116,7 +116,7 @@ fn sceneFn(vm: ?*Bvm) callconv(.c) c_int {
         .canvas
     else
         return refuse(v, "a scene is clock, art or canvas");
-    send(.{ .set_base = .{ .base = @intFromEnum(base), .generator = 0xff, .seed = 0 } });
+    send(.{ .set_base = .{ .base = @backingInt(base), .generator = 0xff, .seed = 0 } });
     return be_returnnilvalue(v);
 }
 
@@ -484,7 +484,7 @@ pub fn callGlobal(vm: *vm_mod.Vm, name: [*:0]const u8, args: []const Arg, budget
     };
     if (vm_mod.clock) |f| vm_mod.deadline_ns = f() + budget_ns;
     defer vm_mod.deadline_ns = 0;
-    const st: vm_mod.Status = @enumFromInt(be_pcall(vm.handle, @intCast(args.len)));
+    const st: vm_mod.Status = @fromBackingInt(@intCast(be_pcall(vm.handle, @intCast(args.len))));
     if (st != .ok) return false;
     be_pop(vm.handle, 1); // the return value; nothing here wants it
     return true;

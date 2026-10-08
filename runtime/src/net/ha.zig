@@ -1,12 +1,14 @@
 const std = @import("std");
+// zig 0.17 removed `**`; `@splat` covers one element, this covers a longer unit
+const repeat = @import("../repeat.zig");
 const api = @import("api.zig");
 pub const PatchPolicy = enum { transient, durable, rejected };
 pub fn patchPolicy(p: api.ConfigPatch, controls: bool) PatchPolicy {
     @setEvalBranchQuota(10000);
     var durable = false;
     // default-deny every field not named here, including fields added to the API later.
-    inline for (@typeInfo(api.ConfigPatch).@"struct".fields) |field| {
-        const name = field.name;
+    inline for (@typeInfo(api.ConfigPatch).@"struct".field_names) |field_name| {
+        const name = field_name;
         const value = @field(p, name);
         if (comptime std.mem.eql(u8, name, "generator_params")) {
             if (value.len != 0) return .rejected;
@@ -244,7 +246,7 @@ test "every discovery document is valid json and static power payloads mint fres
     if (comptime @hasDecl(@This(), "render")) {
         var out: [1024]u8 = undefined;
         for (entities) |e| {
-            const body = try @field(@This(), "render")(&out, e, "tc002_001122334455", "p" ** 64, 30);
+            const body = try @field(@This(), "render")(&out, e, "tc002_001122334455", repeat.bytes("p", 64), 30);
             const doc = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, body, .{});
             defer doc.deinit();
             if (e.command.len > 0) try std.testing.expect(doc.value.object.contains("command_topic"));

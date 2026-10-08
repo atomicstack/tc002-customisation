@@ -41,7 +41,8 @@ const linux = std.os.linux;
 
 /// no symbolised stack traces on the device: a panic prints its message and exits. this keeps the
 /// dwarf unwinder and its tables out of the binary (it more than halves .text).
-pub const panic = std.debug.simple_panic;
+// simple_panic, with the one function 0.17.0 cannot compile replaced
+pub const panic = @import("sys/panic.zig");
 /// and no segfault handler: it would drag the dwarf unwinder back in.
 pub const std_options: std.Options = .{ .enable_segfault_handler = false };
 
@@ -209,10 +210,10 @@ const Netd = struct {
     m_out: [mqtt.out_buf_len]u8 = undefined,
     m_out_len: usize = 0,
     m_out_off: usize = 0,
-    m_pending: [mqtt_pending_max]MqttPending = [_]MqttPending{.{}} ** mqtt_pending_max,
+    m_pending: [mqtt_pending_max]MqttPending = @splat(.{}),
     m_connected: bool = false,
     berry_topics: [berry_topics_max][messages.BerryEvent.topic_max]u8 = undefined,
-    berry_topic_len: [berry_topics_max]u8 = [_]u8{0} ** berry_topics_max,
+    berry_topic_len: [berry_topics_max]u8 = @splat(0),
     berry_topic_count: u8 = 0,
     m_last_error: [64]u8 = undefined,
     m_last_error_len: usize = 0,
@@ -411,7 +412,7 @@ const Netd = struct {
     fn connTag(self: *Netd, c: *Conn) u64 {
         _ = self;
         const index = (@intFromPtr(c) - @intFromPtr(&conns)) / @sizeOf(Conn);
-        return @intFromEnum(Tag.conn_base) + index;
+        return @backingInt(Tag.conn_base) + index;
     }
 
     fn acceptAll(self: *Netd, now: u64) void {
@@ -590,7 +591,7 @@ const Netd = struct {
                 self.respond(c, 200, "application/json", api.scenes_body);
                 self.flushConn(c, now);
             },
-            .set_scene => |s| self.relay(c, .{ .set_base = .{ .base = @intFromEnum(s.base), .generator = if (s.generator) |g| @intFromEnum(g) else 0xff, .seed = s.seed orelse 0, .style = if (s.style) |st| messages.ClockStyle.fromPatch(st) else .{}, .transition = messages.Transition.fromSpec(s.transition) } }, s.request_id, s.epoch orelse 0, now),
+            .set_scene => |s| self.relay(c, .{ .set_base = .{ .base = @backingInt(s.base), .generator = if (s.generator) |g| @backingInt(g) else 0xff, .seed = s.seed orelse 0, .style = if (s.style) |st| messages.ClockStyle.fromPatch(st) else .{}, .transition = messages.Transition.fromSpec(s.transition) } }, s.request_id, s.epoch orelse 0, now),
             .action => |a| switch (a.kind) {
                 .brightness => self.relay(c, .{ .brightness = .{ .value = a.brightness.? } }, a.request_id, a.epoch orelse 0, now),
                 .reseed => self.relay(c, .{ .reseed = .{ .seed = a.seed orelse @truncate(now ^ a.request_id) } }, a.request_id, a.epoch orelse 0, now),
@@ -602,7 +603,7 @@ const Netd = struct {
                 self.ask(c, .screen_get, .screen, now);
             },
             .logs => |l| self.ask(c, .{ .log_get = .{ .after = l.after } }, .logs, now),
-            .input => |i| self.relay(c, .{ .inject_input = .{ .control = @intFromEnum(i.control), .event = @intFromEnum(i.event), .steps = i.steps } }, i.request_id, i.epoch orelse 0, now),
+            .input => |i| self.relay(c, .{ .inject_input = .{ .control = @backingInt(i.control), .event = @backingInt(i.event), .steps = i.steps } }, i.request_id, i.epoch orelse 0, now),
             .dismiss_notify => |n| self.relay(c, .{ .dismiss_notify = notification.Name.init(n.name) }, n.request_id, n.epoch orelse 0, now),
             .notify => |n| {
                 const base = messages.Notify.init(n.text, n.colour, n.duration_s, messages.Transition.fromSpec(n.transition)).withOptions(n.name, n.stack, n.hold);
@@ -911,10 +912,11 @@ const Netd = struct {
     fn generatorParamsJson(self: *Netd, o: *Out, c: *const config.Config) void {
         _ = self;
         o.add(",\"generators\":{");
-        inline for (@typeInfo(scene.Generator).@"enum".fields, 0..) |f, gi| {
+        const gen = @typeInfo(scene.Generator).@"enum";
+        inline for (gen.field_names, gen.field_values, 0..) |name, value, gi| {
             if (gi > 0) o.add(",");
-            o.fmt("\"{s}\":{{", .{f.name});
-            const own = comptime scene.paramsFor(@enumFromInt(f.value))[scene.art_params.len..];
+            o.fmt("\"{s}\":{{", .{name});
+            const own = comptime scene.paramsFor(@fromBackingInt(@intCast(value)))[scene.art_params.len..];
             inline for (own, 0..) |pm, i| {
                 if (i > 0) o.add(",");
                 const v = if (gi < param.owner_count and i < param.max_per_owner) c.generator_params[gi][i] else 0;
@@ -1280,15 +1282,16 @@ const Netd = struct {
     }
 
     fn deviceMenuItem(index: u8) []const u8 {
-        inline for (@typeInfo(menu.Item).@"enum".fields) |f| {
-            if (f.value == index) return f.name;
+        const info = @typeInfo(menu.Item).@"enum";
+        inline for (info.field_names, info.field_values) |name, value| {
+            if (value == index) return name;
         }
         return "unknown";
     }
 
     fn nightPhaseName(p: u8) []const u8 {
         return switch (p) {
-            1...4 => night.Phase.text(@enumFromInt(p - 1)),
+            1...4 => night.Phase.text(@fromBackingInt(@intCast(p - 1))),
             else => "unknown",
         };
     }
@@ -1635,7 +1638,7 @@ const Netd = struct {
         while (self.m_out_off < self.m_out_len) {
             const n = sys.write(fd, self.m_out[self.m_out_off..self.m_out_len]) catch |e| switch (e) {
                 error.WouldBlock => {
-                    sys.epollMod(self.ep, fd, linux.EPOLL.IN | linux.EPOLL.OUT, @intFromEnum(Tag.mqtt));
+                    sys.epollMod(self.ep, fd, linux.EPOLL.IN | linux.EPOLL.OUT, @backingInt(Tag.mqtt));
                     return;
                 },
                 error.Interrupted => continue,
@@ -1648,7 +1651,7 @@ const Netd = struct {
         }
         self.m_out_len = 0;
         self.m_out_off = 0;
-        sys.epollMod(self.ep, fd, linux.EPOLL.IN, @intFromEnum(Tag.mqtt));
+        sys.epollMod(self.ep, fd, linux.EPOLL.IN, @backingInt(Tag.mqtt));
     }
 
     fn mqttDirective(self: *Netd, d: mqtt.Directive, now: u64) void {
@@ -1666,7 +1669,7 @@ const Netd = struct {
                     return;
                 };
                 self.mfd = fd;
-                sys.epollAdd(self.ep, fd, linux.EPOLL.IN | linux.EPOLL.OUT, @intFromEnum(Tag.mqtt)) catch {};
+                sys.epollAdd(self.ep, fd, linux.EPOLL.IN | linux.EPOLL.OUT, @backingInt(Tag.mqtt)) catch {};
             },
             .send_connect => {
                 var will_topic: [96]u8 = undefined;
@@ -1892,14 +1895,14 @@ const Netd = struct {
                 self.mqttPublish("result", o.slice(), 0, false);
             },
             .op => |op| switch (op) {
-                .set_scene => |s| self.mqttRelay(.{ .set_base = .{ .base = @intFromEnum(s.base), .generator = if (s.generator) |g| @intFromEnum(g) else 0xff, .seed = s.seed orelse 0, .style = if (s.style) |st| messages.ClockStyle.fromPatch(st) else .{}, .transition = messages.Transition.fromSpec(s.transition) } }, s.request_id, s.epoch orelse 0, now),
+                .set_scene => |s| self.mqttRelay(.{ .set_base = .{ .base = @backingInt(s.base), .generator = if (s.generator) |g| @backingInt(g) else 0xff, .seed = s.seed orelse 0, .style = if (s.style) |st| messages.ClockStyle.fromPatch(st) else .{}, .transition = messages.Transition.fromSpec(s.transition) } }, s.request_id, s.epoch orelse 0, now),
                 .action => |a| switch (a.kind) {
                     .brightness => self.mqttRelay(.{ .brightness = .{ .value = a.brightness.? } }, a.request_id, a.epoch orelse 0, now),
                     .reseed => self.mqttRelay(.{ .reseed = .{ .seed = a.seed orelse @truncate(now ^ a.request_id) } }, a.request_id, a.epoch orelse 0, now),
                     .arm_stream => self.mqttRelay(.arm_stream, a.request_id, a.epoch orelse 0, now),
                     .power => self.mqttRelay(.{ .power = .{ .on = @intFromBool(a.power.?) } }, a.request_id, a.epoch orelse 0, now),
                 },
-                .input => |i| self.mqttRelay(.{ .inject_input = .{ .control = @intFromEnum(i.control), .event = @intFromEnum(i.event), .steps = i.steps } }, i.request_id, i.epoch orelse 0, now),
+                .input => |i| self.mqttRelay(.{ .inject_input = .{ .control = @backingInt(i.control), .event = @backingInt(i.event), .steps = i.steps } }, i.request_id, i.epoch orelse 0, now),
                 // sound is the first ask-style command to reach mqtt: the supervisor answers with a
                 // `sound_result` rather than an `applied`, which is why `onSoundResult` grew an
                 // mqtt arm. the id is minted here the way `cmd/screen` mints one -- the body has no
@@ -1929,7 +1932,7 @@ const Netd = struct {
                     }
                     const ids = ha.transientIds(&self.next_id);
                     if (cp.brightness) |b| self.mqttRelay(.{ .brightness = .{ .value = b } }, ids.brightness, 0, now);
-                    if (cp.base orelse (if (cp.generator != null) @as(?api.Base, .art) else null)) |b| self.mqttRelay(.{ .set_base = .{ .base = @intFromEnum(b), .generator = if (cp.generator) |g| @intFromEnum(g) else 0xff, .seed = 0 } }, ids.scene, 0, now);
+                    if (cp.base orelse (if (cp.generator != null) @as(?api.Base, .art) else null)) |b| self.mqttRelay(.{ .set_base = .{ .base = @backingInt(b), .generator = if (cp.generator) |g| @backingInt(g) else 0xff, .seed = 0 } }, ids.scene, 0, now);
                 },
                 else => {},
             },
@@ -2018,7 +2021,7 @@ const Netd = struct {
             self.mdns_fail_logged = true;
             return;
         };
-        sys.epollAdd(self.ep, fd, linux.EPOLL.IN, @intFromEnum(Tag.mdns)) catch {
+        sys.epollAdd(self.ep, fd, linux.EPOLL.IN, @backingInt(Tag.mdns)) catch {
             sys.close(fd);
             return;
         };
@@ -2156,7 +2159,7 @@ const Netd = struct {
     /// topics a script asked for, handed over by the supervisor. netd does the subscribing because
     /// it owns the broker connection; the supervisor owns the list because it outlives this process.
     fn onBerryEvent(self: *Netd, e: messages.BerryEvent, now: u64) void {
-        switch (@as(messages.BerryEvent.Op, @enumFromInt(@min(e.kind, messages.BerryEvent.op_max)))) {
+        switch (@as(messages.BerryEvent.Op, @fromBackingInt(@intCast(@min(e.kind, messages.BerryEvent.op_max))))) {
             .subscribe => {
                 const wanted = e.topicSlice();
                 for (0..self.berry_topic_count) |i| {
@@ -2259,9 +2262,9 @@ fn run(stats: bool) !u8 {
     for (&conns) |*c| c.reset();
     const ep = try sys.epollCreate();
     const timer = try sys.timerfdCreate();
-    try sys.epollAdd(ep, timer, linux.EPOLL.IN, @intFromEnum(Tag.timer));
-    try sys.epollAdd(ep, supervisor_fd, linux.EPOLL.IN, @intFromEnum(Tag.supervisor));
-    try sys.epollAdd(ep, listener_fd, linux.EPOLL.IN, @intFromEnum(Tag.listener));
+    try sys.epollAdd(ep, timer, linux.EPOLL.IN, @backingInt(Tag.timer));
+    try sys.epollAdd(ep, supervisor_fd, linux.EPOLL.IN, @backingInt(Tag.supervisor));
+    try sys.epollAdd(ep, listener_fd, linux.EPOLL.IN, @backingInt(Tag.listener));
     const sigfd = try sys.signalfdFor(&.{ .TERM, .INT });
     sys.setSignalDisposition(.PIPE, linux.SIG.IGN);
     var n = Netd{ .ep = ep, .timer = timer, .stats = stats };
@@ -2289,15 +2292,15 @@ fn run(stats: bool) !u8 {
         const t = sys.monotonicNs();
         for (events[0..count]) |ev| {
             const tag = ev.data.u64;
-            if (tag == @intFromEnum(Tag.timer)) {
+            if (tag == @backingInt(Tag.timer)) {
                 sys.timerfdDrain(timer);
-            } else if (tag == @intFromEnum(Tag.supervisor)) {
+            } else if (tag == @backingInt(Tag.supervisor)) {
                 n.drainSupervisor(t);
-            } else if (tag == @intFromEnum(Tag.mdns)) {
+            } else if (tag == @backingInt(Tag.mdns)) {
                 n.mdnsReadable(t);
-            } else if (tag == @intFromEnum(Tag.listener)) {
+            } else if (tag == @backingInt(Tag.listener)) {
                 n.acceptAll(t);
-            } else if (tag == @intFromEnum(Tag.mqtt)) {
+            } else if (tag == @backingInt(Tag.mqtt)) {
                 if (n.client.state == .connecting and ev.events & linux.EPOLL.OUT != 0) {
                     const ok = if (n.mfd) |fd| sys.socketConnected(fd) else false;
                     if (!ok) n.setError("connect failed");
@@ -2306,8 +2309,8 @@ fn run(stats: bool) !u8 {
                     if (ev.events & (linux.EPOLL.IN | linux.EPOLL.HUP | linux.EPOLL.ERR) != 0) n.mqttReadable(t);
                     if (ev.events & linux.EPOLL.OUT != 0) n.mqttFlush();
                 }
-            } else if (tag >= @intFromEnum(Tag.conn_base) and tag < @intFromEnum(Tag.conn_base) + max_conns) {
-                const c = &conns[@as(usize, @intCast(tag - @intFromEnum(Tag.conn_base)))];
+            } else if (tag >= @backingInt(Tag.conn_base) and tag < @backingInt(Tag.conn_base) + max_conns) {
+                const c = &conns[@as(usize, @intCast(tag - @backingInt(Tag.conn_base)))];
                 if (c.state == .free) continue;
                 if (c.state == .writing) {
                     n.flushConn(c, t);

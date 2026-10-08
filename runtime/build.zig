@@ -3,7 +3,7 @@ const builtin = @import("builtin");
 
 /// the one toolchain this tree is known to build with. every zig release so far has moved
 /// something this file stands on.
-const pinned_zig = "0.16.0";
+const pinned_zig = "0.17.0";
 
 comptime {
     // checked here rather than inside build(): a @panic in build() only runs if build.zig still
@@ -32,8 +32,8 @@ const berry_sources = [_][]const u8{
     "src/be_object.c",    "src/be_oslib.c",         "src/be_parser.c",    "src/be_rangelib.c",
     "src/be_repl.c",      "src/be_solidifylib.c",   "src/be_strictlib.c", "src/be_string.c",
     "src/be_strlib.c",    "src/be_syslib.c",        "src/be_timelib.c",   "src/be_undefinedlib.c",
-    "src/be_var.c",       "src/be_vector.c",        "src/be_vm.c",
-    "port/be_port.c",     "port/be_modtab.c",
+    "src/be_var.c",       "src/be_vector.c",        "src/be_vm.c",        "port/be_port.c",
+    "port/be_modtab.c",
 };
 
 /// add berry's headers and sources to a module. the module must link libc: berry's error model is
@@ -48,7 +48,6 @@ fn addBerry(b: *std.Build, m: *std.Build.Module) void {
         .flags = &.{ "-std=c99", "-Os", "-Wall", "-Wextra" },
     });
 }
-
 
 /// what this build is, for a device to report back.
 ///
@@ -65,7 +64,9 @@ fn addBerry(b: *std.Build, m: *std.Build.Module) void {
 /// no git, no repository, or a git that fails: "unknown". a build id is a convenience and must
 /// never be the reason a build does not happen.
 fn buildId(b: *std.Build) []const u8 {
-    const argv = [_][]const u8{ "git", "-C", b.pathFromRoot("."), "describe", "--always", "--dirty", "--abbrev=12" };
+    // b.root is the directory holding build.zig, which is the repository this id describes
+    const root = b.root.toString(b.allocator) catch @panic("out of memory");
+    const argv = [_][]const u8{ "git", "-C", root, "describe", "--always", "--dirty", "--abbrev=12" };
     var code: u8 = 0;
     // `runAllowFail` rather than `run`: `run` aborts the build when the command fails, and a
     // missing git is not a reason to refuse to compile a clock
@@ -104,7 +105,7 @@ pub fn build(b: *std.Build) void {
         .abi = .musleabihf,
     });
     // device binaries default to ReleaseSafe; -Doptimize=ReleaseSmall/ReleaseFast for size/speed comparisons
-    const optimize = b.option(std.builtin.OptimizeMode, "optimize", "optimize mode for the device binaries") orelse .ReleaseSafe;
+    const optimize = b.option(std.builtin.OptimizeMode, "optimize", "optimize mode for the device binaries") orelse .safe;
     const strip = b.option(bool, "strip", "strip the device binaries (false keeps symbols for memory audits)") orelse true;
 
     inline for (.{ .{ "tc002d", "src/tc002d_main.zig" }, .{ "tc002-supervisor", "src/supervisor_main.zig" }, .{ "tc002-netd", "src/netd_main.zig" }, .{ "tc002-ntfy", "src/ntfy_main.zig" }, .{ "tc002-memdump", "src/memdump_main.zig" } }) |spec| {
@@ -342,7 +343,7 @@ pub fn build(b: *std.Build) void {
     }) });
     const bootstrap_test_step = b.step("test-bootstrap", "dlopen the host-built bootstrap and verify it execs the supervisor path");
     const variants = [_]struct { name: []const u8, path: []const u8, code: u8 }{
-        .{ .name = "tc002-bootstrap-host-ok", .path = b.pathFromRoot("test/fake-supervisor.sh"), .code = 0 },
+        .{ .name = "tc002-bootstrap-host-ok", .path = b.root.joinString(b.allocator, "test/fake-supervisor.sh") catch @panic("out of memory"), .code = 0 },
         .{ .name = "tc002-bootstrap-host-missing", .path = "/nonexistent/tc002-supervisor", .code = 1 },
     };
     for (variants) |v| {

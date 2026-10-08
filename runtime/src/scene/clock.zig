@@ -33,13 +33,13 @@ pub const params = [_]param.Param{
 
 pub fn getParam(style: Style, index: usize) u32 {
     return switch (index) {
-        0 => @intFromEnum(style.font),
+        0 => @backingInt(style.font),
         1 => param.rgbValue(style.colour),
-        2 => @intFromEnum(style.mode),
+        2 => @backingInt(style.mode),
         3 => param.rgbValue(style.colour2),
-        4 => @intFromEnum(style.gradient),
+        4 => @backingInt(style.gradient),
         5 => style.spread,
-        6 => @intFromEnum(style.digit),
+        6 => @backingInt(style.digit),
         7 => @intFromBool(style.fade),
         else => 0,
     };
@@ -47,13 +47,13 @@ pub fn getParam(style: Style, index: usize) u32 {
 
 pub fn setParam(style: *Style, index: usize, value: u32) void {
     switch (index) {
-        0 => style.font = @enumFromInt(@min(value, params[0].choices.len - 1)),
+        0 => style.font = @fromBackingInt(@intCast(@min(value, params[0].choices.len - 1))),
         1 => style.colour = param.valueRgb(value),
-        2 => style.mode = @enumFromInt(@min(value, params[2].choices.len - 1)),
+        2 => style.mode = @fromBackingInt(@intCast(@min(value, params[2].choices.len - 1))),
         3 => style.colour2 = param.valueRgb(value),
-        4 => style.gradient = @enumFromInt(@min(value, params[4].choices.len - 1)),
+        4 => style.gradient = @fromBackingInt(@intCast(@min(value, params[4].choices.len - 1))),
         5 => style.spread = @intCast(@min(value, 255)),
-        6 => style.digit = @enumFromInt(@min(value, params[6].choices.len - 1)),
+        6 => style.digit = @fromBackingInt(@intCast(@min(value, params[6].choices.len - 1))),
         7 => style.fade = value != 0,
         else => {},
     }
