@@ -292,6 +292,17 @@ normal firmware builds embed the checked-in artifacts and do not require python 
   on output, and ipv6. cost: about 28 kb of
   `.text` in netd over main (1,097 kb to 1,125 kb) and one udp socket; gain: a clock is reachable by
   name with nothing installed on the host, and two clocks are two names.
+- **twenty imported pixel faces are one 212 kb blob compiled into every binary that draws text**
+  (`src/scene/faces.bin`, 217,454 bytes for 13,850 glyphs: an 11-byte index entry per glyph is
+  most of it, the bitmaps one bit per pixel the rest). it is `@embedFile`d, read in place with a
+  binary search per character, and never copied or allocated. the index could be halved by storing
+  codepoint ranges, at the price of a more involved lookup; it was not worth it at this size.
+  the sources (bdf, windows `.fon`, one opentype bitmap `.otb`) are read by
+  `tools/gen-fonts.py`, about 300 lines of stdlib python, instead of a font library: builds never
+  read the sources, exactly as `zones.zig` never needs zoneinfo. each face's line box is trimmed to
+  the rows its ascii and latin-1 use, which clips the box-drawing characters of the cp437 faces to
+  those rows. text is decoded as utf-8; there is no shaping, so combining marks draw as their own
+  advance.
 
 ## running it on the device (volatile)
 
