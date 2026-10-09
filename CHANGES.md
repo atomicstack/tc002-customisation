@@ -20,6 +20,14 @@ refuses a version this file does not know. the github releases carry the same no
   text, which used to be drawn as `?`, are now refused.
 - **paired binaries required** for both: the canvas and clock font bytes, the notification
   options, the settings patch, the settings block and the device status each grew.
+- **flash this before saving an imported face.** a clock running this build in place falls back
+  to its flashed build on a power cycle, and every earlier build (v0.3.6 and before) refuses a
+  settings file whose `clock_font` it does not know: it starts on its defaults (utc, the classic
+  face, full brightness, no mqtt) and its next save overwrites the file with them. an earlier
+  build also drops a saved canvas that uses an imported face. so keep imported faces out of the
+  saved settings and the persisted canvas until the flashed image carries this build. this build
+  itself loads an unknown `clock_font` as `classic` and an unknown or too-tall `menu_font` as
+  `mini`, so the next face added will not repeat the trap.
 - **popsquares cells go off instead of hanging at the driver's floor.** the led driver lights any
   non-zero frame byte at a fifth of full or more, and the generator scaled white by the cell's
   level, so a dying cell sat at that fifth and then snapped off, and `dim floor` at 0 never showed

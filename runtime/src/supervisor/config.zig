@@ -840,7 +840,9 @@ pub fn fromJson(bytes: []const u8, arena: []u8) error{ Invalid, TooLong }!Config
     c.ntfy.insecure = f.ntfy.insecure;
     if (c.ntfy.url.len > 0) _ = ntfy_url.parse(c.ntfy.url.slice()) catch return error.Invalid;
     if (c.ntfy.duration_s < 1 or c.ntfy.duration_s > 300) return error.Invalid;
-    c.clock_font = @backingInt(api.enumByName(clock.Font, f.clock_font) orelse return error.Invalid);
+    // the font list only grows, so a name a newer build saved may be one this build lacks: that is
+    // a face it cannot draw, not a corrupt file, and refusing the file would cost every setting
+    c.clock_font = @backingInt(api.enumByName(clock.Font, f.clock_font) orelse clock.Font.classic);
     c.clock_colour_mode = @backingInt(api.enumByName(clock.ColourMode, f.clock_colour_mode) orelse return error.Invalid);
     c.clock_colour = api.parseColour(f.clock_colour) orelse return error.Invalid;
     c.clock_colour2 = api.parseColour(f.clock_colour2) orelse return error.Invalid;
@@ -1065,7 +1067,8 @@ test "json persistence round-trips and rejects junk" {
     try std.testing.expectError(error.Invalid, fromJson("{\"schema\":1,\"clock_hours\":\"13h\"}", &arena));
     try std.testing.expectError(error.Invalid, fromJson("{\"schema\":1,\"timezone\":\"Nowhere/Land\"}", &arena));
     try std.testing.expect(std.mem.indexOf(u8, text, "\"clock_colour\":\"ff8000\"") != null);
-    try std.testing.expectError(error.Invalid, fromJson("{\"schema\":1,\"clock_font\":\"comic\"}", &arena));
+    // an unknown clock font is a face this build lacks, not junk: it loads as classic
+    try std.testing.expectEqual(@backingInt(clock.Font.classic), (try fromJson("{\"schema\":1,\"clock_font\":\"comic\"}", &arena)).clock_font);
     try std.testing.expectError(error.Invalid, fromJson("{\"schema\":1,\"ip_mode\":\"huge\"}", &arena));
     try std.testing.expectError(error.Invalid, fromJson("{\"schema\":1,\"clock_colour\":\"red\"}", &arena));
     try std.testing.expectError(error.Invalid, fromJson("{\"schema\":1,\"brightness\":0}", &arena));
@@ -1360,6 +1363,16 @@ test "menu_font is mini until set, round-trips, and a face too tall for the menu
     // than drawing a menu off the panel or refusing the whole file
     try std.testing.expectEqual(canvas.Font.mini, (try fromJson("{\"schema\":1,\"menu_font\":\"phoenix\"}", &arena)).menu_font);
     try std.testing.expectEqual(canvas.Font.mini, (try fromJson("{\"schema\":1,\"menu_font\":\"from-the-future\"}", &arena)).menu_font);
+}
+
+test "a clock font this build does not know loads as classic rather than refusing the file" {
+    // faces are only ever appended, so a file saved by a newer build can name one this build has
+    // never heard of. refusing the whole file for it would put the clock back on its defaults
+    var arena: [8192]u8 = undefined;
+    const c = try fromJson("{\"schema\":1,\"clock_font\":\"from-the-future\",\"timezone\":\"Europe/Amsterdam\",\"brightness\":42}", &arena);
+    try std.testing.expectEqual(@backingInt(clock.Font.classic), c.clock_font);
+    try std.testing.expectEqual(@as(u8, 42), c.brightness);
+    try std.testing.expectEqualStrings("Europe/Amsterdam", c.timezone.slice());
 }
 
 test "a settings file written by a newer build still loads on this one" {
