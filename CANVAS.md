@@ -352,6 +352,14 @@ a sparkline draws itself in from the left, and starts again whenever its data ch
 
 ![an area chart drawing itself in from the left edge](runtime/screenshots/canvas/anim-sweep.png)
 
+### glide
+
+a bar whose value changes eases to it from wherever it was drawn: quickly at first, settling
+gently, over `ms` (1,000 unless given). a new value arriving mid-glide sets off from the point the
+bar had reached, so a stream of patches — a download, a progress count — moves it smoothly rather
+than in jumps. a bar that appears gliding grows from empty. a renderer that only knows a document's
+published ages (the console after a reload) draws a gliding bar at its value.
+
 ### together
 
 each element runs on its own clock, so a document mixes them freely.
@@ -376,8 +384,13 @@ it by, `stack` to queue it behind the current one — and its arrival animations
 it is shown, not when it was queued. the base scene comes back when it leaves, and a restart drops
 it, because notifications live in the renderer's memory and never on flash. `tc002 notify --data
 @doc.json` sends one; the console's canvas builder has a "send as notification" button; the
-`Updating...` the update tools show is one of these, the mini face pulsing, held until the new
-runtime is up. a document that should show without being saved but is not a notification is a
+`Updating...` the update tools show is one of these, the mini face pulsing over a gliding bar of
+how much has been copied, held until the new runtime is up.
+
+**posting a document under the name of the one showing updates it in place**: no transition, its
+continuous animations keep their phase, and an element whose value changed starts its arrival
+again — a gliding bar easing to the new value. that is how the update tools drive their bar: the
+same notice, posted again with the bar's new value, a few times a second. a document that should show without being saved but is not a notification is a
 `PUT /canvas` with `"persist": false`.
 
 ## trying it

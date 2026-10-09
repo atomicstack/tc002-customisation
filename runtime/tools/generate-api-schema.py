@@ -178,7 +178,7 @@ def request_schemas():
     update('RotateBody', scopes=array(SCOPES, minItems=1))
     update('SoundBody', name=NAME)
     schemas['SoundBody']['anyOf'] = [{'properties': {'stop': {'const': True}}, 'required': ['stop']}, {**nonnull('name'), 'properties': {'name': NAME, 'volume': nullable(integer(1, 100))}}]
-    update('AnimateBody', kind=enum('hue', 'bounce', 'scramble', 'scroll', 'blink', 'pulse', 'typewriter', 'sweep'), ms=integer(1, 65535), phase=integer(0, 100), axis=enum('x', 'y'))
+    update('AnimateBody', kind=enum('hue', 'bounce', 'scramble', 'scroll', 'blink', 'pulse', 'typewriter', 'sweep', 'glide'), ms=integer(1, 65535), phase=integer(0, 100), axis=enum('x', 'y'))
     update('ElementBody', type=enum_source('scene/canvas.zig', 'Kind'), id=ID, colour=COLOUR, background=COLOUR, over=COLOUR, accent=COLOUR, sprite=ID, font=enum_source('scene/canvas.zig', 'Font'), align=enum('left', 'centre', 'right'), style=enum('line', 'bars', 'area'), data=SAMPLES, data_hex=HEX_SAMPLES, text=string(maxLength=256), label=string(maxLength=256), value_text=string(maxLength=256), size=array(integer(0, 32767), minItems=2, maxItems=2))
     update('ValueBody', id=ID, text=string(maxLength=64), colour=COLOUR, data=SAMPLES, data_hex=HEX_SAMPLES)
     update('CanvasBody', elements=array(ref('ElementBody'), maxItems=24), persist={**BOOL, 'default': True, 'description': 'false shows the document without writing it to flash; a restart brings the last persisted one back'})
@@ -200,8 +200,8 @@ def request_schemas():
             then['anyOf'] = [nonnull('icon'), nonnull('sprite')]
         rules.append(condition('type', kind, then))
     rules += [{'if': nonnull('tile'), 'then': {'allOf': [nonnull('of')], 'properties': {'row': {'type': 'null'}, 'at': {'type': 'null'}, 'size': {'type': 'null'}}}}, {'if': nonnull('row'), 'then': {'allOf': [nonnull('of')], 'properties': {'tile': {'type': 'null'}, 'at': {'type': 'null'}, 'size': {'type': 'null'}}}}, {'if': nonnull('of'), 'then': {'anyOf': [nonnull('tile'), nonnull('row')]}}]
-    for motion in ('scramble', 'typewriter', 'scroll', 'sweep'):
-        rules.append({'if': {'allOf': [nonnull('animate')], 'properties': {'animate': {'properties': {'kind': {'const': motion}}}}}, 'then': {'properties': {'type': {'const': 'sparkline' if motion == 'sweep' else 'text'}}}})
+    for motion in ('scramble', 'typewriter', 'scroll', 'sweep', 'glide'):
+        rules.append({'if': {'allOf': [nonnull('animate')], 'properties': {'animate': {'properties': {'kind': {'const': motion}}}}}, 'then': {'properties': {'type': {'const': {'sweep': 'sparkline', 'glide': 'bar'}.get(motion, 'text')}}}})
     schemas['ElementBody']['allOf'] = rules
     schemas['ElementBody']['description'] = 'drawing primitive; at/size are pixel coordinates, or use zero-based tile/row with of. shared document pools: 256 text bytes and 1024 sample bytes. tile/row indices are clamped to the supplied count; zero of behaves as one. sprite and icon names are resolved by the runtime.'
     schemas['ValueBody']['anyOf'] = [nonnull(key) for key in ('text', 'data', 'data_hex', 'value', 'colour')]

@@ -614,12 +614,13 @@ fn parseCanvas(body: []const ElementBody, doc: *canvas.Document) CanvasRoute {
         if (b.colour) |c| e.colour = parseColour(c) orelse return .{ .reject = canvasBad("invalid_colour", "colour must be rrggbb hex") };
         if (b.animate) |a| {
             const motion = enumByName(canvas.Motion, a.kind) orelse
-                return .{ .reject = canvasBad("invalid_motion", "kind must be hue, bounce, scramble, scroll, blink, pulse, typewriter or sweep") };
+                return .{ .reject = canvasBad("invalid_motion", "kind must be hue, bounce, scramble, scroll, blink, pulse, typewriter, sweep or glide") };
             if (motion == .none) return .{ .reject = canvasBad("invalid_motion", "leave animate out rather than asking for none") };
             // an animation that only makes sense on some kinds says so rather than doing nothing
             const suits = switch (motion) {
                 .scramble, .typewriter, .scroll => kind == .text,
                 .sweep => kind == .sparkline,
+                .glide => kind == .bar,
                 else => true,
             };
             if (!suits) return .{ .reject = canvasBad("invalid_motion", "that motion does not suit that element type") };
@@ -2051,6 +2052,9 @@ test "an animation is declared per element, and only where it makes sense" {
     // a motion that cannot mean anything for that element is refused rather than ignored
     try expectReject(route(put, "{\"elements\":[{\"type\":\"rect\",\"animate\":{\"kind\":\"scramble\"}}]}", &c, &no_clients, &origins, &arena, test_minted), 400, "invalid_motion");
     try expectReject(route(put, "{\"elements\":[{\"type\":\"text\",\"text\":\"x\",\"animate\":{\"kind\":\"sweep\"}}]}", &c, &no_clients, &origins, &arena, test_minted), 400, "invalid_motion");
+    try expectReject(route(put, "{\"elements\":[{\"type\":\"text\",\"text\":\"x\",\"animate\":{\"kind\":\"glide\"}}]}", &c, &no_clients, &origins, &arena, test_minted), 400, "invalid_motion");
+    const glide = parseBody(.canvas_put, "{\"elements\":[{\"type\":\"bar\",\"at\":[0,0],\"size\":[52,2],\"value\":40,\"animate\":{\"kind\":\"glide\",\"ms\":400}}]}", &arena, 0);
+    try std.testing.expectEqual(canvas.Motion.glide, glide.op.canvas_put.doc.elements[0].anim.kind);
     try expectReject(route(put, "{\"elements\":[{\"type\":\"pixel\",\"animate\":{\"kind\":\"wobble\"}}]}", &c, &no_clients, &origins, &arena, test_minted), 400, "invalid_motion");
     try expectReject(route(put, "{\"elements\":[{\"type\":\"pixel\",\"animate\":{\"kind\":\"none\"}}]}", &c, &no_clients, &origins, &arena, test_minted), 400, "invalid_motion");
     try expectReject(route(put, "{\"elements\":[{\"type\":\"pixel\",\"animate\":{\"kind\":\"blink\",\"ms\":0}}]}", &c, &no_clients, &origins, &arena, test_minted), 400, "invalid_motion");

@@ -89,12 +89,13 @@ pub const Sprites = struct {
 };
 
 /// what an element does on its own, so an integration pushes once and walks away. five run
-/// continuously; `scramble`, `typewriter` and `sweep` are arrivals, which run once and then hold,
-/// and start again when the value they are showing changes.
-pub const Motion = enum(u8) { none, hue, bounce, scramble, scroll, blink, pulse, typewriter, sweep };
+/// continuously; `scramble`, `typewriter`, `sweep` and `glide` are arrivals, which run once and
+/// then hold, and start again when the value they are showing changes. `glide` is a bar's: a new
+/// value eases in from wherever the bar was drawn, so a run of patches moves it smoothly.
+pub const Motion = enum(u8) { none, hue, bounce, scramble, scroll, blink, pulse, typewriter, sweep, glide };
 
 pub fn arrival(m: Motion) bool {
-    return m == .scramble or m == .typewriter or m == .sweep;
+    return m == .scramble or m == .typewriter or m == .sweep or m == .glide;
 }
 
 pub const Animation = struct {
@@ -591,15 +592,27 @@ fn drawCircle(rgb: *geometry.Rgb, e: *const Element, offset: [2]i32, colour: [3]
     }
 }
 
-fn drawBar(rgb: *geometry.Rgb, e: *const Element, offset: [2]i32, colour: [3]u8) void {
+/// how full a bar is drawn at `now_ns`, in thousandths: its value, or for a glide a point on the
+/// way there from `from`, easing out (quick at first, settling gently)
+fn barPermille(e: *const Element, from: u16, started_ns: u64, now_ns: u64) u16 {
+    const to: i32 = @as(i32, @min(e.body.bar.value, 100)) * 10;
+    if (e.anim.kind != .glide or from == Clocks.no_glide) return @intCast(to);
+    const p: i32 = @intCast(progress(e.anim, (now_ns -| started_ns) / std.time.ns_per_ms));
+    const left = 256 - p;
+    const eased = 256 * 256 - left * left; // out of 65536
+    const start: i32 = from;
+    return @intCast(start + @divTrunc((to - start) * eased, 256 * 256));
+}
+
+fn drawBar(rgb: *geometry.Rgb, e: *const Element, permille: u16, offset: [2]i32, colour: [3]u8) void {
     const b = e.body.bar;
     const w = e.box.width(geometry.width - e.box.x);
     const h = e.box.height(1);
     const x0: i32 = @as(i32, e.box.x) + offset[0];
     const y0: i32 = @as(i32, e.box.y) + offset[1];
-    const pct: i32 = @min(b.value, 100);
+    const pm: i32 = permille;
     // the filled extent, rounded so 1% of a wide bar still lights a pixel and 99% leaves one dark
-    const span = if (b.vertical) @divTrunc(pct * h + 99, 100) else @divTrunc(pct * w + 99, 100);
+    const span = if (b.vertical) @divTrunc(pm * h + 999, 1000) else @divTrunc(pm * w + 999, 1000);
     var y: i32 = y0;
     while (y < y0 + h) : (y += 1) {
         var x: i32 = x0;
@@ -765,6 +778,11 @@ fn drawSparkline(rgb: *geometry.Rgb, d: *const Document, e: *const Element, offs
 pub const Clocks = struct {
     started_ns: [max_elements]u64 = @splat(0),
     epoch_ns: u64 = 0,
+    /// a gliding bar's starting point, in thousandths: where it was drawn when its value changed.
+    /// `no_glide` draws the value as it is, for a clock set from published ages alone
+    glide_from: [max_elements]u16 = @splat(0),
+
+    pub const no_glide: u16 = 0xffff;
 
     /// work out what changed between two documents. an element whose value is new restarts its
     /// arrival animation; one that merely kept its place does not, so a patch that moves a bar
@@ -772,6 +790,9 @@ pub const Clocks = struct {
     /// to be recognised by and always restarts.
     pub fn install(self: *Clocks, old: *const Document, new: *const Document, now_ns: u64) void {
         var restart: [max_elements]bool = @splat(true);
+        // the clocks as the old document had them: a gliding bar sets off from where it was drawn
+        const before = self.*;
+        self.glide_from = @splat(0);
         for (new.elements[0..new.count], 0..) |*e, i| {
             if (e.id.len == 0) continue;
             for (old.elements[0..old.count], 0..) |*old_e, j| {
@@ -784,7 +805,10 @@ pub const Clocks = struct {
                 // it keeps its clock only if it is showing the same thing it was
                 if (same) {
                     restart[i] = false;
-                    self.started_ns[i] = self.started_ns[j];
+                    self.started_ns[i] = before.started_ns[j];
+                    self.glide_from[i] = before.glide_from[j];
+                } else if (e.body == .bar and old_e.body == .bar) {
+                    self.glide_from[i] = barPermille(old_e, before.glide_from[j], before.started_ns[j], now_ns);
                 }
                 break;
             }
@@ -814,6 +838,8 @@ pub const Clocks = struct {
             const age = if (i < element_age_ms.len) element_age_ms[i] else doc_age_ms;
             self.started_ns[i] = now_ns -| (@as(u64, age) * std.time.ns_per_ms);
         }
+        // where a glide set off from is not published; the bar is drawn where it is going
+        self.glide_from = @splat(no_glide);
     }
 
     fn clampMs(delta_ns: u64) u32 {
@@ -842,6 +868,14 @@ pub const State = struct {
     pub fn install(self: *State, doc: Document, now_ns: u64) void {
         self.clocks.install(&self.doc, &doc, now_ns);
         self.doc = doc;
+    }
+
+    /// the same document carried on with new values: like `install`, but the continuous motions
+    /// keep their phase, so a pulse does not jump back to its start on every update
+    pub fn update(self: *State, doc: Document, now_ns: u64) void {
+        const epoch = self.clocks.epoch_ns;
+        self.install(doc, now_ns);
+        self.clocks.epoch_ns = epoch;
     }
 
     fn elapsedMs(self: *const State, i: usize, now_ns: u64) u64 {
@@ -884,7 +918,7 @@ pub const State = struct {
                     const o = animatedOffset(e, ms, 0, 0);
                     setPx(rgb, @as(i32, e.box.x) + o[0], @as(i32, e.box.y) + o[1], colour);
                 },
-                .bar => drawBar(rgb, e, animatedOffset(e, ms, 0, 0), colour),
+                .bar => drawBar(rgb, e, barPermille(e, self.clocks.glide_from[i], self.clocks.started_ns[i], now_ns), animatedOffset(e, ms, 0, 0), colour),
                 .sparkline => drawSparkline(rgb, &self.doc, e, animatedOffset(e, ms, 0, 0), colour, reveal),
                 .icon => {
                     const o = animatedOffset(e, ms, 0, 0);
@@ -951,7 +985,7 @@ pub const State = struct {
         for (self.doc.elements[0..self.doc.count], 0..) |*e, i| {
             switch (e.anim.kind) {
                 .none => {},
-                .scramble, .typewriter, .sweep => {
+                .scramble, .typewriter, .sweep, .glide => {
                     if (progress(e.anim, self.elapsedMs(i, now_ns)) < 256) return .{ .continuous = scene.frame_period_ns };
                 },
                 .scroll => {
@@ -2385,4 +2419,53 @@ test "a newline in a tile's label or value reads as a space" {
     const want = try Draw.tile("in side", "21 C");
     const got = try Draw.tile("in\nside", "21\nC");
     try std.testing.expectEqualSlices(u8, &want, &got);
+}
+
+fn gliding(value: u8) !Document {
+    var d = Document{};
+    try d.add(.{ .id = Id.init("b"), .box = .{ .x = 0, .y = 0, .w = 50, .h = 2 }, .colour = white, .anim = .{ .kind = .glide, .ms = 1000 }, .body = .{ .bar = .{ .value = value } } });
+    return d;
+}
+
+test "a gliding bar eases from where it was drawn to its new value, quickly at first" {
+    var s = State{};
+    s.install(try gliding(0), 0);
+    var rgb: geometry.Rgb = undefined;
+    s.render(5000 * std.time.ns_per_ms, &rgb);
+    try std.testing.expectEqual(@as(usize, 0), lit(&rgb));
+    const t0 = 5000 * std.time.ns_per_ms;
+    s.install(try gliding(100), t0);
+    s.render(t0, &rgb);
+    try std.testing.expectEqual(@as(usize, 0), lit(&rgb)); // it starts where it was
+    s.render(t0 + 500 * std.time.ns_per_ms, &rgb);
+    const half = lit(&rgb);
+    try std.testing.expect(half > 50 and half < 100); // past halfway at half time: it eases out
+    s.render(t0 + 1000 * std.time.ns_per_ms, &rgb);
+    try std.testing.expectEqual(@as(usize, 100), lit(&rgb)); // and lands exactly
+}
+
+test "a bar re-aimed mid-glide sets off from where it is, not from where it was going" {
+    var s = State{};
+    s.install(try gliding(0), 0);
+    s.install(try gliding(100), 2000 * std.time.ns_per_ms);
+    var mid: geometry.Rgb = undefined;
+    const t = 2500 * std.time.ns_per_ms;
+    s.render(t, &mid);
+    s.install(try gliding(0), t);
+    var now: geometry.Rgb = undefined;
+    s.render(t, &now);
+    try std.testing.expectEqualSlices(u8, &mid, &now);
+}
+
+test "a bar that appears gliding grows from empty, and one whose value stays put does not move" {
+    var s = State{};
+    s.install(try gliding(60), 0);
+    var rgb: geometry.Rgb = undefined;
+    s.render(0, &rgb);
+    try std.testing.expectEqual(@as(usize, 0), lit(&rgb));
+    s.render(1000 * std.time.ns_per_ms, &rgb);
+    const full = lit(&rgb);
+    s.install(try gliding(60), 1200 * std.time.ns_per_ms); // the same value again
+    s.render(1200 * std.time.ns_per_ms, &rgb);
+    try std.testing.expectEqual(full, lit(&rgb));
 }

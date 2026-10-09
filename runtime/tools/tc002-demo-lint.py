@@ -28,8 +28,8 @@ PER_TYPE = {
     "icon": {"icon"}, "sprite": {"sprite"},
     "tile": {"icon", "sprite", "label", "value_text", "accent"},
 }
-MOTIONS = {"hue", "bounce", "scramble", "scroll", "blink", "pulse", "typewriter", "sweep"}
-ONLY_ON = {"scramble": {"text"}, "typewriter": {"text"}, "scroll": {"text"}, "sweep": {"sparkline"}}
+MOTIONS = {"hue", "bounce", "scramble", "scroll", "blink", "pulse", "typewriter", "sweep", "glide"}
+ONLY_ON = {"scramble": {"text"}, "typewriter": {"text"}, "scroll": {"text"}, "sweep": {"sparkline"}, "glide": {"bar"}}
 REQUIRED = {"text": {"text"}, "line": {"to"}, "icon": {"icon"}, "sprite": {"sprite"}, "tile": {"value_text"}}
 
 def colour_ok(v):

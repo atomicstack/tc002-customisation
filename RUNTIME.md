@@ -439,7 +439,7 @@ the visible output is one **base** scene plus at most one temporary
 
 | overlay | bounds | behaviour |
 |---------|--------|-----------|
-| notification | 1–128 bytes of utf-8 text without control characters but `\n`, and a colour, **or a canvas document** (`elements`: the schema and limits of `PUT /canvas`); 1–300 s or held | text: centred if it fits, otherwise scrolls in from the right one pixel per 33 ms and wraps. a `\n` starts a new line: lines that fit the 16 rows stack, centred, a wide one scrolling in place; lines too tall for the panel take turns, each up for 2 s or until it has scrolled by once, round and round until the notification ends. a document: drawn by the canvas renderer, its animations starting when it is shown |
+| notification | 1–128 bytes of utf-8 text without control characters but `\n`, and a colour, **or a canvas document** (`elements`: the schema and limits of `PUT /canvas`); 1–300 s or held | text: centred if it fits, otherwise scrolls in from the right one pixel per 33 ms and wraps. a `\n` starts a new line: lines that fit the 16 rows stack, centred, a wide one scrolling in place; lines too tall for the panel take turns, each up for 2 s or until it has scrolled by once, round and round until the notification ends. a document: drawn by the canvas renderer, its animations starting when it is shown; a document posted (without `stack`) under the name of the document showing updates it in place, with no transition and its animations carried on |
 | raw frame | exactly 2,496 rgb888 bytes (52×16×3), 1–300 s | shown as-is; switches at once unless the request names a [transition](#transitions) |
 | stream arming | 2 s | a placeholder for the streaming feature; falls back to the base when nothing arrives |
 
@@ -590,13 +590,14 @@ it, so an integration pushes once and walks away:
 | `pulse` | rides the brightness up and down, never to nothing | the period (1,000) | |
 | `typewriter` | reveals a character at a time | the whole string (1,000) | |
 | `sweep` | draws a sparkline left to right | the whole width (1,000) | |
+| `glide` | eases a bar to a new value from wherever it was drawn, quick at first; re-aimed mid-way it sets off from where it is | the whole move (1,000) | |
 
 `phase` (0–100) offsets an element within its period, so a row of tiles does not move in lockstep.
-`scramble`, `typewriter` and `sweep` are **arrivals**: they run once, hold, and start again when the
+`scramble`, `typewriter`, `sweep` and `glide` are **arrivals**: they run once, hold, and start again when the
 value they are showing changes — which the renderer works out by comparing the document that
 arrives with the one it holds, so a patch that moves a bar does not make the text beside it scramble
 all over again. a motion that cannot mean anything for the type given (`sweep` on a text, `scramble`
-on a rectangle) is refused rather than ignored.
+on a rectangle, `glide` on anything but a bar) is refused rather than ignored.
 
 **what it costs.** the scene asks for frames only while something is moving, per element: a document
 with no animation is drawn when it changes and not again, and one that only scrambles on update goes

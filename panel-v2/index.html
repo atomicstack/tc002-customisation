@@ -1502,12 +1502,12 @@ const CV_FIELDS = {
   tile: ['icon', 'sprite', 'label', 'value_text', 'accent'],
 };
 const CV_KINDS = Object.keys(CV_FIELDS);
-const CV_MOTIONS = ['none', 'hue', 'bounce', 'scramble', 'scroll', 'blink', 'pulse', 'typewriter', 'sweep'];
+const CV_MOTIONS = ['none', 'hue', 'bounce', 'scramble', 'scroll', 'blink', 'pulse', 'typewriter', 'sweep', 'glide'];
 // the period the runtime picks when a document names none (net/api.zig): a hue round in one second
 // is a strobe, and a scroll is paced per pixel rather than per turn
 const CV_MOTION_MS = { hue: 8000, scroll: 33 };
 // these run once and then hold, so they are the ones worth a replay button
-const CV_ARRIVALS = new Set(['scramble', 'typewriter', 'sweep']);
+const CV_ARRIVALS = new Set(['scramble', 'typewriter', 'sweep', 'glide']);
 // what `animate.amount` means, for the two motions that use it, with the runtime's own fallback
 const CV_AMOUNT = {
   bounce: { label: 'travel', key: 'animate.amount \u00b7 leds, 2 if unset' },

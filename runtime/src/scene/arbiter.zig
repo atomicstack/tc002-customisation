@@ -1081,6 +1081,20 @@ pub const Arbiter = struct {
                 const t = spec orelse self.default_transition;
                 var o = Notify{ .text = undefined, .len = @intCast(n.text.len), .colour = n.colour, .name = notification.Name.init(n.name), .duration_s = n.duration_s, .hold = n.hold, .since_ns = now_ns, .until_ns = now_ns + @as(u64, n.duration_s) * s_ns, .transition = t, .doc = if (n.doc) |d| d.* else null, .face = n.face };
                 @memcpy(o.text[0..n.text.len], n.text);
+                // the document showing, posted again under its name: the same notice with new
+                // values, so it changes in place -- no transition, its animations carried on, a
+                // gliding bar easing to the new value. this is how a progress bar is driven
+                if (!n.stack and n.doc != null and n.name.len != 0 and self.overlay == .notify) {
+                    const cur = &self.overlay.notify;
+                    if (cur.doc != null and std.mem.eql(u8, n.name, cur.name.slice())) {
+                        o.since_ns = cur.since_ns;
+                        o.transition = cur.transition;
+                        self.overlay = .{ .notify = o };
+                        self.notify_canvas.update(n.doc.?.*, now_ns);
+                        self.dirty = true;
+                        return .{ .applied = self.bump() };
+                    }
+                }
                 if (n.stack and self.overlay == .notify) {
                     if (!self.notifications.push(o)) return .{ .rejected = .queue_full };
                     self.revision +%= 1;
@@ -2029,4 +2043,35 @@ test "a status push does not undo the menu font being chosen on the menu font it
     a.menu_state.?.item = .brightness; // elsewhere in the menu the setting is the truth again
     a.setDeviceStatus(.{ .menu_font = .light6 });
     try std.testing.expectEqual(canvas.Font.light6, a.menu_state.?.font);
+}
+
+fn progressDoc(value: u8) canvas.Document {
+    var d = canvas.Document{};
+    const span = d.addText("Updating...") catch unreachable;
+    d.add(.{ .id = canvas.Id.init("l1"), .box = .{ .x = 0, .y = 3, .w = 52, .h = 5 }, .colour = .{ 255, 128, 0 }, .anim = .{ .kind = .pulse, .ms = 1600 }, .body = .{ .text = .{ .span = span, .face = .mini, .alignment = .centre } } }) catch unreachable;
+    d.add(.{ .id = canvas.Id.init("bar"), .box = .{ .x = 6, .y = 11, .w = 40, .h = 2 }, .colour = .{ 255, 128, 0 }, .anim = .{ .kind = .glide, .ms = 600 }, .body = .{ .bar = .{ .value = value } } }) catch unreachable;
+    return d;
+}
+
+test "a notification posted under the name of the one showing updates it in place" {
+    var a = fresh();
+    const d0 = progressDoc(0);
+    _ = a.apply(richCommand(&d0, "updating", false, true, 5), 0);
+    _ = a.takeTransition();
+    const t = 2100 * std.time.ns_per_ms; // mid-pulse, so a restarted pulse would show
+    a.tick(t, 0);
+    var before: geometry.Rgb = undefined;
+    a.render(0, &before);
+    const d1 = progressDoc(50);
+    try std.testing.expect(a.apply(richCommand(&d1, "updating", false, true, 5), t) == .applied);
+    try std.testing.expect(a.takeTransition() == null); // no transition: it is the same notice
+    var after: geometry.Rgb = undefined;
+    a.render(0, &after);
+    try std.testing.expectEqualSlices(u8, &before, &after); // the pulse keeps its phase, the bar its place
+    a.tick(t + 300 * std.time.ns_per_ms, 0);
+    a.render(0, &after);
+    try std.testing.expect(litPixels(&after) > litPixels(&before)); // and the bar is on its way
+    // a different name still replaces it the ordinary way
+    _ = a.apply(richCommand(&d1, "other", false, true, 5), t + 400 * std.time.ns_per_ms);
+    try std.testing.expect(a.takeTransition() != null);
 }
