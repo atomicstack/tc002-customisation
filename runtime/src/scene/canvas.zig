@@ -650,9 +650,9 @@ fn drawTile(rgb: *geometry.Rgb, d: *const Document, e: *const Element, sprites: 
             glyph_h = sp.h;
         }
     }
-    const line_h: i32 = @intCast(clockfont.glyphHeight(.mini));
-    const vw: i32 = @intCast(clockfont.textWidth(.mini, value));
-    const lw: i32 = @intCast(clockfont.textWidth(.mini, label));
+    const line_h: i32 = typeface.lineHeight(.mini);
+    const vw: i32 = @intCast(typeface.textWidth(.mini, value));
+    const lw: i32 = @intCast(typeface.textWidth(.mini, label));
 
     const side_by_side = w >= glyph_w + 12 and label.len > 0;
     if (side_by_side) {
@@ -662,10 +662,10 @@ fn drawTile(rgb: *geometry.Rgb, d: *const Document, e: *const Element, sprites: 
         // them. a label cut off mid-letter reads as a fault, and one hung outside an 8 px box
         // lands on the tile above
         if (lw <= w - (glyph_w + 2) and h >= 2 * line_h + 1) {
-            clockfont.blit(rgb, tx, y0 + @divTrunc(h, 2) - line_h - 1, .mini, label, clockfont.Solid{ .colour = t.accent });
-            clockfont.blit(rgb, tx, y0 + @divTrunc(h, 2), .mini, value, clockfont.Solid{ .colour = colour });
+            typeface.blit(rgb, tx, y0 + @divTrunc(h, 2) - line_h - 1, .mini, label, clockfont.Solid{ .colour = t.accent });
+            typeface.blit(rgb, tx, y0 + @divTrunc(h, 2), .mini, value, clockfont.Solid{ .colour = colour });
         } else {
-            clockfont.blit(rgb, tx, y0 + @divTrunc(h - line_h, 2), .mini, value, clockfont.Solid{ .colour = colour });
+            typeface.blit(rgb, tx, y0 + @divTrunc(h - line_h, 2), .mini, value, clockfont.Solid{ .colour = colour });
         }
         return;
     }
@@ -673,9 +673,9 @@ fn drawTile(rgb: *geometry.Rgb, d: *const Document, e: *const Element, sprites: 
     // too short to hold both, the reading is the half worth keeping
     if (h >= glyph_h + 1 + line_h) {
         drawIconOrSprite(rgb, e, sprites, x0 + @divTrunc(w - glyph_w, 2), y0, colour);
-        clockfont.blit(rgb, x0 + @divTrunc(w - vw, 2), y0 + glyph_h + 1, .mini, value, clockfont.Solid{ .colour = colour });
+        typeface.blit(rgb, x0 + @divTrunc(w - vw, 2), y0 + glyph_h + 1, .mini, value, clockfont.Solid{ .colour = colour });
     } else {
-        clockfont.blit(rgb, x0 + @divTrunc(w - vw, 2), y0 + @divTrunc(h - line_h, 2), .mini, value, clockfont.Solid{ .colour = colour });
+        typeface.blit(rgb, x0 + @divTrunc(w - vw, 2), y0 + @divTrunc(h - line_h, 2), .mini, value, clockfont.Solid{ .colour = colour });
     }
 }
 
@@ -2024,6 +2024,28 @@ test "a sprite draws its own colours, is transparent where it is black, and need
     try std.testing.expect(s.sprites.remove("logo"));
     try std.testing.expect(!s.sprites.remove("logo"));
     try s.sprites.put(.{ .id = Id.init("more"), .w = 8, .h = 8 });
+}
+
+test "a tile's utf-8 value and label draw one ? per character, as text in mini does" {
+    const Draw = struct {
+        fn tile(label: []const u8, value: []const u8) !geometry.Rgb {
+            var s = State{};
+            const l = try s.doc.addText(label);
+            const v = try s.doc.addText(value);
+            try s.doc.add(.{ .box = .{ .x = 0, .y = 0, .w = 52, .h = 16 }, .colour = white, .body = .{ .tile = .{
+                .icon = icons.indexOf("thermometer").?,
+                .label = l,
+                .value = v,
+                .accent = .{ 80, 80, 80 },
+            } } });
+            var rgb: geometry.Rgb = undefined;
+            s.render(0, &rgb);
+            return rgb;
+        }
+    };
+    const want = try Draw.tile("t?", "21?C");
+    const got = try Draw.tile("t°", "21°C");
+    try std.testing.expectEqualSlices(u8, &want, &got);
 }
 
 test "a tile lays itself out: side by side when there is room, stacked when there is not" {
