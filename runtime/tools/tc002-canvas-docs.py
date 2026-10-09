@@ -165,14 +165,14 @@ STILLS = [
          "min": 0, "max": 100, "threshold": 50, "over": "ff4000", "data": SPIKY},
     ]),
     ("tile-wide", [{"type": "tile", "at": [0, 0], "size": [52, 16], "icon": "thermometer",
-                    "label": "lounge", "value_text": "21.4C", "colour": "ff8000", "accent": "505050"}]),
+                    "label": "lounge", "value_text": "21.4°C", "colour": "ff8000", "accent": "505050"}]),
     ("tile-thirds", [{"type": "tile", "tile": i, "of": 3, "icon": ic, "label": lb, "value_text": v, "colour": c}
-                     for i, (ic, lb, v, c) in enumerate((("thermometer", "in", "21", "ff8000"),
+                     for i, (ic, lb, v, c) in enumerate((("thermometer", "in", "21°", "ff8000"),
                                                          ("droplet", "hum", "48", "40a0ff"),
                                                          ("cloud-rain", "out", "9", "40ff80")))]),
     ("tile-rows", [{"type": "tile", "row": i, "of": 2, "icon": ic, "label": lb, "value_text": v, "colour": c, "accent": "404040"}
-                   for i, (ic, lb, v, c) in enumerate((("house", "inside", "21.4C", "ff8000"),
-                                                        ("cloud-snow", "outside", "-1.2C", "40c0ff")))]),
+                   for i, (ic, lb, v, c) in enumerate((("house", "inside", "21.4°C", "ff8000"),
+                                                        ("cloud-snow", "outside", "-1.2°C", "40c0ff")))]),
     ("sprites", [
         {"type": "sprite", "at": [1, 4], "sprite": "ring"},
         {"type": "sprite", "at": [11, 4], "sprite": "warm"},

@@ -17,7 +17,8 @@ refuses a version this file does not know. the github releases carry the same no
 - **text is utf-8.** notifications, canvas text and scripts take any utf-8 without control
   characters instead of printable ascii; the byte limits are unchanged. a character a face lacks
   is one `?` (or the face's replacement glyph), not one per byte. control characters in canvas
-  text, which used to be drawn as `?`, are now refused.
+  text, which used to be drawn as `?`, are now refused. the hand-drawn `small` and `mini` gained
+  a degree sign, so tiles and the demos read `21.4°C`.
 - **paired binaries required** for both: the canvas and clock font bytes, the notification
   options, the settings patch, the settings block and the device status each grew.
 - **flash this before saving an imported face.** a clock running this build in place falls back

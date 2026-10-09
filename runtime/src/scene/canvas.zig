@@ -2044,7 +2044,7 @@ test "a tile's utf-8 value and label draw one ? per character, as text in mini d
         }
     };
     const want = try Draw.tile("t?", "21?C");
-    const got = try Draw.tile("t°", "21°C");
+    const got = try Draw.tile("té", "21éC");
     try std.testing.expectEqualSlices(u8, &want, &got);
 }
 

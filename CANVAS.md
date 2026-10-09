@@ -154,7 +154,8 @@ if it does not: cp437 has no cyrillic, so `phoenix` draws `Ж` as `?` where `ibm
 
 ![phoenix drawing Ж as a question mark beside ibm-vga drawing Ж](runtime/screenshots/canvas/face-fallback.png)
 
-the hand-drawn faces never had anything but ascii; there, too, a character they lack is one `?`.
+the hand-drawn faces know ascii and one more character: `small` and `mini` draw a degree sign, so
+`21.4°C` reads as a temperature in a tile. anything else they lack is one `?`.
 
 ### alignment
 
@@ -259,7 +260,7 @@ decision for you. a tile is a glyph, a label and a reading. given room it puts t
 left with the label over the value; where there is not room the label is **dropped** rather than
 squeezed or cut off, and the reading — the half worth keeping — stays.
 
-![a full-width tile: a thermometer on the left, the word lounge above the reading 21.4C](runtime/screenshots/canvas/tile-wide.png)
+![a full-width tile: a thermometer on the left, the word lounge above the reading 21.4°C](runtime/screenshots/canvas/tile-wide.png)
 ![three tiles across the panel, each an icon above a number, with no room for labels](runtime/screenshots/canvas/tile-thirds.png)
 ![two stacked tiles, each a glyph beside a temperature, too short for labels](runtime/screenshots/canvas/tile-rows.png)
 

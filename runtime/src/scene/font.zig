@@ -168,8 +168,12 @@ pub const glyphs: [95][glyph_h]u8 = blk: {
     break :blk g;
 };
 
-/// the glyph for a byte; anything outside printable ascii draws as `?`.
+/// the degree sign, latin-1 0xb0: the one character past ascii, so temperatures read as such
+pub const degree: [glyph_h]u8 = .{ 0b01100, 0b10010, 0b10010, 0b01100, 0, 0, 0 };
+
+/// the glyph for a byte; anything outside printable ascii and 0xb0 draws as `?`.
 pub fn glyph(c: u8) *const [glyph_h]u8 {
+    if (c == 0xb0) return &degree;
     const i: usize = if (c >= 0x20 and c <= 0x7e) c - 0x20 else '?' - 0x20;
     return &glyphs[i];
 }

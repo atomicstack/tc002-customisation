@@ -1,7 +1,7 @@
 //! the one interface to every face: the hand-drawn ones in font.zig and clockfont.zig and the
 //! imported ones in faces.bin. text is utf-8; a codepoint a face lacks draws as u+fffd if the face
-//! has it, else as `?`. the hand-drawn faces only know ascii, so anything else in them is one `?`
-//! per character, not one per byte.
+//! has it, else as `?`. the hand-drawn faces only know ascii and `°`, so anything else in them is one
+//! `?` per character, not one per byte.
 //!
 //! faces.bin, per face (offsets in faces.zig): `count` index entries of 11 bytes sorted by
 //! codepoint -- cp u24 be, x i8 (left bearing), y i8 (top row in the trimmed line box), w u8,
@@ -67,12 +67,24 @@ test "builtin faces render ascii exactly as before" {
 }
 
 test "builtin face draws one ? per character, not per byte" {
-    try testing.expectEqual(textWidth(.small, "20?C"), textWidth(.small, "20°C"));
+    try testing.expectEqual(textWidth(.small, "20?C"), textWidth(.small, "20éC"));
     var a = geometry.black_rgb;
     var b = geometry.black_rgb;
     blit(&a, 0, 0, .small, "20?C", white);
-    blit(&b, 0, 0, .small, "20°C", white);
+    blit(&b, 0, 0, .small, "20éC", white);
     try testing.expectEqualSlices(u8, &a, &b);
+}
+
+test "small and mini draw a degree sign of their own, small at full advance, mini at two pixels" {
+    for ([_]Face{ .small, .mini }) |f| {
+        var q = geometry.black_rgb;
+        var d = geometry.black_rgb;
+        blit(&q, 0, 0, f, "1?C", white);
+        blit(&d, 0, 0, f, "1°C", white);
+        try testing.expect(!std.mem.eql(u8, &q, &d));
+    }
+    try testing.expectEqual(textWidth(.small, "20?C"), textWidth(.small, "20°C"));
+    try testing.expectEqual(textWidth(.mini, "20C") + 2 + 1, textWidth(.mini, "20°C"));
 }
 
 test "every imported face carries ascii and fits the panel" {
@@ -226,8 +238,9 @@ fn importedGlyph(n: faces.Name, cp: u21) ?Glyph {
 }
 
 /// the byte a hand-drawn face draws for a codepoint
+/// the byte a hand-drawn face is asked for: ascii, the degree sign (latin-1 0xb0), else `?`
 fn builtinByte(cp: u21) u8 {
-    return if (cp >= 0x20 and cp <= 0x7e) @intCast(cp) else '?';
+    return if ((cp >= 0x20 and cp <= 0x7e) or cp == 0xb0) @intCast(cp) else '?';
 }
 
 fn clockOf(f: Face) clockfont.Font {

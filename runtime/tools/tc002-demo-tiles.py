@@ -28,14 +28,14 @@ def tile(at, size, icon, label, value, colour, accent="404040", **extra):
 
 REEL = [
     ("full-width", "the whole panel: glyph left, label over value", [
-        tile([0, 0], [52, 16], "thermometer", "lounge", "21.4C", "ff8000"),
+        tile([0, 0], [52, 16], "thermometer", "lounge", "21.4°C", "ff8000"),
     ]),
     ("halves", "two across: still wide enough for the label", [
-        tile([0, 0], [26, 16], "thermometer", "in", "21.4", "ff8000"),
-        tile([26, 0], [26, 16], "cloud-rain", "out", "9.2", "40a0ff"),
+        tile([0, 0], [26, 16], "thermometer", "in", "21.4°", "ff8000"),
+        tile([26, 0], [26, 16], "cloud-rain", "out", "9.2°", "40a0ff"),
     ]),
     ("thirds", "17 px each: too narrow for a label, so it goes and the value sits under the glyph", [
-        {"type": "tile", "tile": 0, "of": 3, "icon": "thermometer", "label": "in", "value_text": "21", "colour": "ff8000"},
+        {"type": "tile", "tile": 0, "of": 3, "icon": "thermometer", "label": "in", "value_text": "21°", "colour": "ff8000"},
         {"type": "tile", "tile": 1, "of": 3, "icon": "droplet", "label": "hum", "value_text": "48", "colour": "40a0ff"},
         {"type": "tile", "tile": 2, "of": 3, "icon": "cloud-rain", "label": "out", "value_text": "9", "colour": "40ff80"},
     ]),
@@ -49,8 +49,8 @@ REEL = [
         ))
     ]),
     ("rows", "stacked, and 8 px is too short for two lines, so each keeps its reading", [
-        {"type": "tile", "row": 0, "of": 2, "icon": "house", "label": "inside", "value_text": "21.4C", "colour": "ff8000", "accent": "404040"},
-        {"type": "tile", "row": 1, "of": 2, "icon": "cloud-snow", "label": "outside", "value_text": "-1.2C", "colour": "40c0ff", "accent": "404040"},
+        {"type": "tile", "row": 0, "of": 2, "icon": "house", "label": "inside", "value_text": "21.4°C", "colour": "ff8000", "accent": "404040"},
+        {"type": "tile", "row": 1, "of": 2, "icon": "cloud-snow", "label": "outside", "value_text": "-1.2°C", "colour": "40c0ff", "accent": "404040"},
     ]),
     ("accent", "the label takes the accent colour, the value the element's; the glyph follows the value", [
         tile([0, 0], [52, 16], "bulb", "kitchen", "on", "ffff40", accent="806000"),
@@ -79,7 +79,7 @@ def step(dev, item, args):
         return detail
     for i in range(5):
         dev.patch([
-            {"id": "a", "text": f"{20 + i}"},
+            {"id": "a", "text": f"{20 + i}°"},
             {"id": "b", "text": f"{45 + i * 2}"},
             {"id": "c", "text": f"{i * 17}"},
         ])

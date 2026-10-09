@@ -129,6 +129,7 @@ const mini_dot = fromArt(1, 5, .{ ".", ".", ".", ".", "#" });
 const mini_percent = fromArt(3, 5, .{ "#.#", "..#", ".#.", "#..", "#.#" });
 const mini_question = fromArt(3, 5, .{ "##.", "..#", ".#.", "...", ".#." });
 const mini_dash = fromArt(3, 5, .{ "...", "...", "###", "...", "..." });
+const mini_degree = fromArt(2, 5, .{ "##", "##", "..", "..", ".." }); // latin-1 0xb0
 
 // 3x5 letters, so the menus can use the same font as the mini clock and the mini ip line. one
 // case only: at three pixels wide there is no room for two, and these read as small capitals.
@@ -273,6 +274,7 @@ pub fn glyph(f: Font, c: u8) Glyph {
             if (c == '%') return mini_percent;
             if (c == '?') return mini_question;
             if (c == '-') return mini_dash;
+            if (c == 0xb0) return mini_degree;
             return mini_space;
         },
         .segment => {

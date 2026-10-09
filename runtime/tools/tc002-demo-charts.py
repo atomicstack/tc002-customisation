@@ -60,15 +60,15 @@ REEL = [
     ]),
     ("mixed", "a reading, a level and a history, which is most of what a dashboard ever needs", [
         {"type": "text", "at": [0, 0], "font": "mini", "colour": "606060", "text": "living room"},
-        {"type": "text", "at": [0, 5], "font": "small", "colour": "ffffff", "text": "20.4C"},
-        {"type": "bar", "at": [34, 6], "size": [18, 3], "value": 62, "colour": "40a0ff", "background": "101820"},
+        {"type": "text", "at": [0, 5], "font": "small", "colour": "ffffff", "text": "20.4°C"},
+        {"type": "bar", "at": [36, 6], "size": [16, 3], "value": 62, "colour": "40a0ff", "background": "101820"},
         {"type": "sparkline", "at": [0, 13], "size": [52, 3], "style": "bars", "colour": "208040",
          "min": 0, "max": 100, "data": WAVE[:26]},
     ]),
     ("live", "the layout goes once and then only numbers move: five patches, no pixels", [
         {"type": "text", "at": [0, 0], "font": "mini", "colour": "606060", "text": "live"},
         {"id": "n", "type": "text", "at": [0, 5], "font": "small", "colour": "ffffff", "text": "--"},
-        {"id": "lvl", "type": "bar", "at": [34, 6], "size": [18, 3], "value": 0, "colour": "40a0ff", "background": "101820"},
+        {"id": "lvl", "type": "bar", "at": [36, 6], "size": [16, 3], "value": 0, "colour": "40a0ff", "background": "101820"},
         {"id": "g", "type": "sparkline", "at": [0, 13], "size": [52, 3], "style": "bars", "colour": "40ff60",
          "min": 0, "max": 100, "data": [0], "animate": {"kind": "sweep", "ms": 600}},
     ]),
@@ -86,7 +86,7 @@ def step(dev, item, args):
         value = int(50 + 40 * math.sin(i / 1.5))
         history = (history + [value])[-26:]
         dev.patch([
-            {"id": "n", "text": f"{value / 4:.1f}C"},
+            {"id": "n", "text": f"{value / 4:.1f}°C"},
             {"id": "lvl", "value": value},
             {"id": "g", "data": history},
         ])
