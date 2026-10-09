@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"slices"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/atomicstack/tc002-customisation/api-client-v2/internal/client"
 	"github.com/spf13/cobra"
@@ -265,11 +266,14 @@ func addControl(root *cobra.Command, o *options) {
 }
 func validText(text string) error {
 	if len(text) < 1 || len(text) > 128 {
-		return errors.New("text must be 1..128 printable ascii characters")
+		return errors.New("text must be 1..128 bytes")
 	}
-	for _, ch := range []byte(text) {
-		if ch < 32 || ch > 126 {
-			return errors.New("text must be printable ascii")
+	if !utf8.ValidString(text) {
+		return errors.New("text must be utf-8")
+	}
+	for _, r := range text {
+		if r < 0x20 || (r >= 0x7f && r <= 0x9f) {
+			return errors.New("text must not contain control characters")
 		}
 	}
 	return nil

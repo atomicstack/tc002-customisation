@@ -16,6 +16,7 @@
 const std = @import("std");
 const vm_mod = @import("vm.zig");
 const canvas = @import("../scene/canvas.zig");
+const face = @import("../scene/face.zig");
 const icons = @import("../scene/icons.zig");
 const messages = @import("../ipc/messages.zig");
 const sound_store = @import("../sound/store.zig");
@@ -131,8 +132,7 @@ fn brightnessFn(vm: ?*Bvm) callconv(.c) c_int {
 fn notifyFn(vm: ?*Bvm) callconv(.c) c_int {
     const v = vm.?;
     const text = argText(v, 1);
-    if (text.len == 0 or text.len > 128) return refuse(v, "notification text must be 1 to 128 printable ascii characters");
-    for (text) |c| if (c < 0x20 or c > 0x7e) return refuse(v, "notification text must be 1 to 128 printable ascii characters");
+    if (text.len == 0 or text.len > 128 or !face.validText(text)) return refuse(v, "notification text must be 1 to 128 bytes of utf-8 without control characters");
     const colour = argColour(v, 2, .{ 255, 255, 255 });
     const seconds = argInt(v, 3, 5);
     if (seconds < arbiter.min_duration_s or seconds > arbiter.max_duration_s) return refuse(v, "a notification lasts 1 to 300 seconds");

@@ -46,6 +46,7 @@ func TestRuntimeRequests(t *testing.T) {
 		{[]string{"input", "rotary", "ccw", "--steps", "3"}, "POST", "/input", `{"control":"rotary","event":"ccw","steps":3}`},
 		{[]string{"notify", "Hello World", "--colour", "00ff80", "--duration", "3", "--transition", "slide", "--direction", "left"}, "POST", "/notify", `{"text":"Hello World","colour":"00ff80","duration_s":3,"transition":"slide","direction":"left"}`},
 		{[]string{"notify", "hi", "--transition", "ripple", "--easing", "ease_out"}, "POST", "/notify", `{"text":"hi","transition":"ripple","easing":"ease_out"}`},
+		{[]string{"notify", "20°C ☺"}, "POST", "/notify", `{"text":"20°C ☺"}`},
 		{[]string{"config", "set", "--discovery-controls=true"}, "PATCH", "/config", `{"discovery_controls":true}`},
 		{[]string{"config", "set", "--discovery-controls=false"}, "PATCH", "/config", `{"discovery_controls":false}`},
 		{[]string{"config", "get"}, "GET", "/config", ""},
@@ -157,7 +158,7 @@ func TestRuntimeRequests(t *testing.T) {
 func TestValidationBeforeNetwork(t *testing.T) {
 	for _, args := range [][]string{
 		{"scene", "ip"}, {"scene", "clock", "--generator", "unknown"}, {"brightness", "0"}, {"brightness", "101"},
-		{"notify", "hello", "--duration", "301"}, {"notify", "héllo"}, {"notify", "hi", "--colour", "zzzzzz"},
+		{"notify", "hello", "--duration", "301"}, {"notify", "a\x01b"}, {"notify", "a\u0085b"}, {"notify", "a\xe2\x82"}, {"notify", "hi", "--colour", "zzzzzz"},
 		{"input", "left", "cw"}, {"input", "left", "long"}, {"input", "middle", "click", "--steps", "2"},
 		{"input", "rotary", "cw", "--steps", "17"}, {"power", "maybe"}, {"reseed", "-1"},
 		{"scene", "art", "--transition-ms", "5001"}, {"scene", "art", "--request-id", "zz"},
@@ -167,7 +168,7 @@ func TestValidationBeforeNetwork(t *testing.T) {
 		// a notification name is letters, digits, _ or -: no dot, unlike a token or script name
 		{"notify", "hi", "--name", "door.bell"}, {"dismiss", "door.bell"}, {"dismiss", strings.Repeat("d", 256)}, {"notify", "hi", "--name", strings.Repeat("n", 256)}, {"reboot", "now"},
 		// a notification needs its text or a document, and data does not mix with field flags
-		{"notify"}, {"notify", "hi", "--data", "{}", "--hold"}, {"notify", "héllo", "--data", "{}"},
+		{"notify"}, {"notify", "hi", "--data", "{}", "--hold"}, {"notify", "a\x01b", "--data", "{}"},
 	} {
 		t.Run(strings.Join(args, " "), func(t *testing.T) {
 			_, err := execute(t, args, "")

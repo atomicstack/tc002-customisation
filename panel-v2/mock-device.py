@@ -46,7 +46,6 @@ DEFAULT_CLOCK = {"font": "classic", "colour_mode": "solid", "colour": "ffffff", 
 
 # raised from 4096 with the canvas, which needs room for a whole document
 JSON_BODY_MAX = 8192
-PRINTABLE = re.compile(r"^[\x20-\x7e]{1,128}$")
 NOTIFICATION_NAME = re.compile(r"^[A-Za-z0-9_-]{1,255}$")
 HEX_ID = re.compile(r"^[0-9a-fA-F]{1,16}$")
 
@@ -85,6 +84,11 @@ SEED_LOG_LINES = [
     "tc002-supervisor 57000 info metrics sample: mem 16040kb cpu 5%",
 ]
 
+
+
+def valid_text(text):
+    """the runtime's rule: 1..128 bytes of utf-8 without control characters (c0, del, c1)"""
+    return isinstance(text, str) and 1 <= len(text.encode()) <= 128 and not any(ord(c) < 0x20 or 0x7f <= ord(c) <= 0x9f for c in text)
 
 class Reject(Exception):
     def __init__(self, status, code, message):
@@ -660,8 +664,8 @@ class Device:
         if elements is not None and (not isinstance(elements, list) or not elements):
             raise Reject(400, "invalid_elements", "a rich notification has at least one element")
         text = body.get("text", "")
-        if not isinstance(text, str) or (elements is None and not PRINTABLE.match(text)) or (text and not PRINTABLE.match(text)):
-            raise Reject(400, "invalid_text", "text must be 1..128 printable ascii characters")
+        if not isinstance(text, str) or (elements is None and not valid_text(text)) or (text and not valid_text(text)):
+            raise Reject(400, "invalid_text", "text must be 1..128 bytes of utf-8 without control characters")
         name = body.get("name")
         if name is not None and (not isinstance(name, str) or not NOTIFICATION_NAME.match(name)):
             raise Reject(400, "invalid_name", "a notification name is 1..255 letters, digits, _ or -")

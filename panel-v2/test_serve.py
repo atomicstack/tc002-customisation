@@ -374,6 +374,14 @@ class EndToEndTests(unittest.TestCase):
         status, doc = self.call("POST", "notify", {"text": "hi", "name": "door.bell", "epoch": st["epoch"]})
         self.assertEqual((status, doc["error"]), (400, "invalid_name"))
 
+    def test_notification_text_is_utf8_without_control_characters(self):
+        _, st = self.call("GET", "status")
+        status, doc = self.call("POST", "notify", {"text": "20°C ☺", "epoch": st["epoch"]})
+        self.assertEqual((status, doc["status"]), (200, "applied"))
+        for bad in ("a\x01b", "a\x85b", "a\x7fb"):
+            status, doc = self.call("POST", "notify", {"text": bad, "epoch": st["epoch"]})
+            self.assertEqual((status, doc["error"]), (400, "invalid_text"), repr(bad))
+
     def test_a_notification_name_may_be_255_characters(self):
         _, st = self.call("GET", "status")
         status, doc = self.call("POST", "notify", {"text": "hi", "name": "n" * 255, "epoch": st["epoch"]})

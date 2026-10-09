@@ -439,7 +439,7 @@ the visible output is one **base** scene plus at most one temporary
 
 | overlay | bounds | behaviour |
 |---------|--------|-----------|
-| notification | 1–128 printable ascii characters and a colour, **or a canvas document** (`elements`: the schema and limits of `PUT /canvas`); 1–300 s or held | text: centred if it fits, otherwise scrolls in from the right one pixel per 33 ms and wraps. a document: drawn by the canvas renderer, its animations starting when it is shown |
+| notification | 1–128 bytes of utf-8 text without control characters and a colour, **or a canvas document** (`elements`: the schema and limits of `PUT /canvas`); 1–300 s or held | text: centred if it fits, otherwise scrolls in from the right one pixel per 33 ms and wraps. a document: drawn by the canvas renderer, its animations starting when it is shown |
 | raw frame | exactly 2,496 rgb888 bytes (52×16×3), 1–300 s | shown as-is; switches at once unless the request names a [transition](#transitions) |
 | stream arming | 2 s | a placeholder for the streaming feature; falls back to the base when nothing arrives |
 
@@ -550,7 +550,7 @@ so something can be animated in from off-panel. `tile: n, of: m` is the column s
 
 | type | fields | notes |
 |---|---|---|
-| `text` | `text`, `font`, `align` | `small` is the 5x7 with every printable character; `mini` the 3x5 of the menus; `block` and `big` are the clock's own faces and carry **digits and a colon only**, for a number read across a room |
+| `text` | `text`, `font`, `align` | `small` is the 5x7 with every printable character; `mini` the 3x5 of the menus; `block` and `big` are the clock's own faces and carry **digits and a colon only**, for a number read across a room. the text (and a patched string, and a tile's label and value) is utf-8 without control characters; a character a face lacks draws as `?` |
 | `rect` | `filled` | a one-pixel outline unless filled |
 | `line` | `to: [x,y]` | bresenham, so a diagonal has no gaps |
 | `circle` | `r`, `filled` | `at` is the centre |

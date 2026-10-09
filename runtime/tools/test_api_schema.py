@@ -74,6 +74,7 @@ class ApiContractTests(unittest.TestCase):
             ('ActionBody', {'action': 'power', 'power': False}, {'action': 'power'}),
             ('InputBody', {'control': 'rotary', 'event': 'cw', 'steps': 3}, {'control': 'left', 'event': 'cw'}),
             ('NotifyBody', {'text': 'hello', 'colour': 'ff0088'}, {'text': 'hello', 'duration_s': 301}),
+            ('NotifyBody', {'text': '20°C ☺'}, {'text': 'a\x01b'}),
             ('ConfigBody', {'discovery_controls': True}, {'brightness': 101}),
             ('ConfigBody', {'mdns': False}, {'mdns': 'off'}),
             ('ConfigBody', {'latitude': 52.1, 'longitude': 4.3}, {'latitude': 52.1}),

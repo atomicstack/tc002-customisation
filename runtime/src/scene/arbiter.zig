@@ -16,6 +16,7 @@ const clock = @import("clock.zig");
 const ip = @import("ip.zig");
 const menu = @import("menu.zig");
 const canvas = @import("canvas.zig");
+const face = @import("face.zig");
 const pages = @import("pages.zig");
 const param = @import("param.zig");
 pub const notification = @import("notification.zig");
@@ -34,7 +35,7 @@ fn expectRejected(res: Result, why: Reject) !void {
     }
 }
 
-test "notification bounds: 128 printable ascii characters, 1..300 seconds" {
+test "notification bounds: 128 bytes of text, 1..300 seconds" {
     var a = fresh();
     const long: [129]u8 = @splat('x');
     try expectRejected(a.apply(.{ .notify = .{ .text = &long, .colour = white, .duration_s = 5 } }, 0), .invalid_text);
@@ -44,6 +45,14 @@ test "notification bounds: 128 printable ascii characters, 1..300 seconds" {
     try std.testing.expectEqual(@as(u32, 0), a.revision);
     const ok: [128]u8 = @splat('y');
     try std.testing.expectEqual(Result{ .applied = 1 }, a.apply(.{ .notify = .{ .text = &ok, .colour = white, .duration_s = 300 } }, 0));
+}
+
+test "notification text may be utf-8, but not a control character or a cut sequence" {
+    var a = fresh();
+    try std.testing.expectEqual(Result{ .applied = 1 }, a.apply(.{ .notify = .{ .text = "20°C ☺", .colour = white, .duration_s = 5 } }, 0));
+    try expectRejected(a.apply(.{ .notify = .{ .text = "a\xc2\x85b", .colour = white, .duration_s = 5 } }, 0), .invalid_text);
+    try expectRejected(a.apply(.{ .notify = .{ .text = "a\x7fb", .colour = white, .duration_s = 5 } }, 0), .invalid_text);
+    try expectRejected(a.apply(.{ .notify = .{ .text = "cut \xe2\x82", .colour = white, .duration_s = 5 } }, 0), .invalid_text);
 }
 
 test "an accepted notification renders centred text, marks dirty, and expires to the base" {
@@ -989,7 +998,7 @@ pub const Arbiter = struct {
                     if (d.empty()) return .{ .rejected = .invalid_elements };
                 } else if (n.text.len == 0) return .{ .rejected = .invalid_text };
                 if (n.text.len > 128) return .{ .rejected = .invalid_text };
-                for (n.text) |c| if (c < 0x20 or c > 0x7e) return .{ .rejected = .invalid_text };
+                if (!face.validText(n.text)) return .{ .rejected = .invalid_text };
                 if (!validDuration(n.duration_s)) return .{ .rejected = .invalid_duration };
                 if (n.name.len != 0 and !notification.validName(n.name)) return .{ .rejected = .invalid_name };
                 const t = spec orelse self.default_transition;

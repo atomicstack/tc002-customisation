@@ -328,7 +328,7 @@ input[type=file]{font:12px var(--body);color:var(--muted);max-width:220px}
       <h2>Notification</h2>
       <div class="lockmsg">the proxy has no control token: start serve.py with --token-file or --adb-pull</div>
       <div class="rows">
-        <div class="field"><label for="ntext">Text<span class="key">1–128 printable ascii</span></label>
+        <div class="field"><label for="ntext">Text<span class="key">1–128 bytes of utf-8</span></label>
           <span class="inline"><input type="text" id="ntext" maxlength="128" placeholder="hello" autocomplete="off"><span class="counter" id="ncount">0/128</span></span></div>
         <div class="field"><label for="ncolour">Colour</label><input type="color" id="ncolour" value="#ffffff"></div>
         <div class="field"><label for="ndur">Duration<span class="key">seconds, 1–300</span></label><input type="number" id="ndur" min="1" max="300" value="5"></div>
@@ -1244,10 +1244,11 @@ $('knobCw').addEventListener('click', () => { const v = readSteps(); if (v !== n
 $('knobPress').addEventListener('click', () => sendInput('knob', $('knobLong').checked ? 'long' : 'click'));
 
 /* ---------- notification ---------- */
-$('ntext').addEventListener('input', () => $('ncount').textContent = `${$('ntext').value.length}/128`);
+const utf8Bytes = text => new TextEncoder().encode(text).length;
+$('ntext').addEventListener('input', () => $('ncount').textContent = `${utf8Bytes($('ntext').value)}/128`);
 $('nsend').addEventListener('click', async () => {
   const text = $('ntext').value, duration = +$('ndur').value, colour = hexColour($('ncolour').value);
-  if (!/^[\x20-\x7e]{1,128}$/.test(text)) return toast('text must be 1 to 128 printable ascii characters', true);
+  if (utf8Bytes(text) < 1 || utf8Bytes(text) > 128 || /[\u0000-\u001f\u007f-\u009f]/.test(text)) return toast('text must be 1 to 128 bytes, without control characters', true);
   if (!(duration >= 1 && duration <= 300)) return toast('duration must be 1 to 300 seconds', true);
   try {
     await command('POST', 'notify', (id, epoch) => ({ text, colour, duration_s: duration, ...transitionFields('ntrans', 'ndir', 'neas', 'nexit'), request_id: id, epoch }));

@@ -15,6 +15,7 @@ const clock = @import("../scene/clock.zig");
 const transition = @import("../panel/transition.zig");
 const ip = @import("../scene/ip.zig");
 const canvas = @import("../scene/canvas.zig");
+const face = @import("../scene/face.zig");
 const sound_store = @import("../sound/store.zig");
 const icons = @import("../scene/icons.zig");
 const param = @import("../scene/param.zig");
@@ -632,6 +633,7 @@ fn parseCanvas(body: []const ElementBody, doc: *canvas.Document) CanvasRoute {
         switch (kind) {
             .text => {
                 const text = b.text orelse return .{ .reject = canvasBad("missing_text", "a text element needs text") };
+                if (!face.validText(text)) return .{ .reject = canvasBad("invalid_text", "text is utf-8 without control characters") };
                 const span = doc.addText(text) catch return .{ .reject = canvasBad("document_full", "the document's text does not fit") };
                 e.body = .{ .text = .{
                     .span = span,
@@ -668,8 +670,12 @@ fn parseCanvas(body: []const ElementBody, doc: *canvas.Document) CanvasRoute {
                     t.sprite_id = canvas.Id.init(id);
                 }
                 if (b.icon == null and b.sprite == null) return .{ .reject = canvasBad("missing_icon", "a tile needs an icon or a sprite") };
-                if (b.label) |l| t.label = doc.addText(l) catch return .{ .reject = canvasBad("document_full", "the document's text does not fit") };
+                if (b.label) |l| {
+                    if (!face.validText(l)) return .{ .reject = canvasBad("invalid_text", "text is utf-8 without control characters") };
+                    t.label = doc.addText(l) catch return .{ .reject = canvasBad("document_full", "the document's text does not fit") };
+                }
                 const value = b.value_text orelse return .{ .reject = canvasBad("missing_value", "a tile needs value_text") };
+                if (!face.validText(value)) return .{ .reject = canvasBad("invalid_text", "text is utf-8 without control characters") };
                 t.value = doc.addText(value) catch return .{ .reject = canvasBad("document_full", "the document's text does not fit") };
                 if (b.accent) |cc| t.accent = parseColour(cc) orelse return .{ .reject = canvasBad("invalid_colour", "accent must be rrggbb hex") };
                 e.body = .{ .tile = t };
@@ -701,6 +707,7 @@ fn parseCanvasPatch(body: []const ValueBody) CanvasPatchRoute {
         var u = canvas.Update{ .id = canvas.Id.init(v.id) };
         if (v.text) |t| {
             if (t.len > canvas.patch_bytes_max) return .{ .reject = canvasBad("text_too_long", "a patched string is at most 64 characters") };
+            if (!face.validText(t)) return .{ .reject = canvasBad("invalid_text", "text is utf-8 without control characters") };
             u.has |= canvas.Field.text;
             u.len = @intCast(t.len);
             @memcpy(u.bytes[0..t.len], t);
@@ -1161,9 +1168,8 @@ pub fn parseBody(kind: BodyKind, body: []const u8, arena: *Arena, generated_id: 
                 }
             }
             const text = b.text orelse "";
-            if (doc == null and text.len == 0) return bad("invalid_text", "text must be 1..128 printable ascii characters");
-            if (text.len > 128) return bad("invalid_text", "text must be 1..128 printable ascii characters");
-            for (text) |c| if (c < 0x20 or c > 0x7e) return bad("invalid_text", "text must be 1..128 printable ascii characters");
+            if (doc == null and text.len == 0) return bad("invalid_text", "text must be 1..128 bytes of utf-8 without control characters");
+            if (text.len > 128 or !face.validText(text)) return bad("invalid_text", "text must be 1..128 bytes of utf-8 without control characters");
             if (b.duration_s < 1 or b.duration_s > 300) return bad("invalid_duration", "duration_s must be 1..300");
             const colour = if (b.colour) |c| (parseColour(c) orelse return bad("invalid_colour", "colour must be rrggbb hex")) else [3]u8{ 255, 255, 255 };
             const rid = if (b.request_id) |t| (parseRequestId(t) orelse return bad("invalid_request_id", "request_id must be 1..16 hex digits")) else generated_id;
@@ -2372,6 +2378,44 @@ test "a notification may be a document, with the text as its summary or absent" 
     try std.testing.expectEqualStrings("invalid_element_type", wrong.reject.code);
     const textless = route(testReq(.POST, "/api/v1/notify", "", control_header, "application/json", null), "{}", &c, &no_clients, &origins, &arena, test_minted);
     try std.testing.expectEqualStrings("invalid_text", textless.reject.code);
+}
+
+test "notify text may be utf-8 but not control characters" {
+    const c = testCreds();
+    var arena: Arena = undefined;
+    var origins = OriginPolicy{};
+    const ok = route(testReq(.POST, "/api/v1/notify", "", control_header, "application/json", null), "{\"text\":\"20°C \\u263a\"}", &c, &no_clients, &origins, &arena, test_minted);
+    try std.testing.expect(ok == .op);
+    try std.testing.expectEqualStrings("20°C ☺", ok.op.notify.text);
+    const c1 = route(testReq(.POST, "/api/v1/notify", "", control_header, "application/json", null), "{\"text\":\"a\\u0085b\"}", &c, &no_clients, &origins, &arena, test_minted);
+    try std.testing.expectEqualStrings("invalid_text", c1.reject.code);
+    const del = route(testReq(.POST, "/api/v1/notify", "", control_header, "application/json", null), "{\"text\":\"a\\u007fb\"}", &c, &no_clients, &origins, &arena, test_minted);
+    try std.testing.expectEqualStrings("invalid_text", del.reject.code);
+}
+
+test "notify text cut mid-sequence is refused" {
+    // a client that truncates bytes can leave half a character; json carries it as invalid utf-8
+    const c = testCreds();
+    var arena: Arena = undefined;
+    var origins = OriginPolicy{};
+    const cut = route(testReq(.POST, "/api/v1/notify", "", control_header, "application/json", null), "{\"text\":\"cut \xe2\x82\"}", &c, &no_clients, &origins, &arena, test_minted);
+    try std.testing.expect(cut == .reject);
+    try std.testing.expectEqual(@as(u16, 400), cut.reject.status);
+}
+
+test "canvas text refuses control characters, in a document and in a patch" {
+    var arena: Arena = undefined;
+    const t = parseBody(.canvas_put, "{\"elements\":[{\"type\":\"text\",\"at\":[0,0],\"text\":\"a\\u0001b\"}]}", &arena, 0);
+    try std.testing.expectEqualStrings("invalid_text", t.reject.code);
+    const ok = parseBody(.canvas_put, "{\"elements\":[{\"type\":\"text\",\"at\":[0,0],\"text\":\"21°C\"}]}", &arena, 0);
+    try std.testing.expect(ok == .op);
+    const tile = parseBody(.canvas_put, "{\"elements\":[{\"type\":\"tile\",\"at\":[0,0],\"size\":[26,16],\"icon\":\"sun\",\"label\":\"x\\u0007\",\"value_text\":\"1\"}]}", &arena, 0);
+    try std.testing.expectEqualStrings("invalid_text", tile.reject.code);
+    const c = testCreds();
+    const origins = OriginPolicy{};
+    const patch = testReq(.PATCH, "/api/v1/canvas", "", control_header, "application/json", null);
+    try expectReject(route(patch, "{\"values\":[{\"id\":\"t\",\"text\":\"\\u001b[0m\"}]}", &c, &no_clients, &origins, &arena, test_minted), 400, "invalid_text");
+    try std.testing.expect(route(patch, "{\"values\":[{\"id\":\"t\",\"text\":\"21°C\"}]}", &c, &no_clients, &origins, &arena, test_minted) == .op);
 }
 
 test "a canvas put may decline to persist" {
