@@ -6,6 +6,20 @@ refuses a version this file does not know. the github releases carry the same no
 
 ## unreleased
 
+- **twenty imported pixel faces.** trip5's matrix fonts (ten faces, 6 and 8 rows), tiny5 with
+  its duo and mono cuts, and seven int10h faces (phoenix bios and its doubled and 8×14 forms, ibm
+  dos iso8, apricot xen-c, robotron a7100, and the extended ibm vga) can be named wherever a font
+  is: canvas text and rich notifications, a plain notification's new `font`, the clock (with
+  `hh:mm` where the whole time does not fit), berry's `panel.text`, and — the faces of seven rows
+  or fewer — the device menus, through a new `menu_font` setting. they are one 212 kb blob
+  generated from the vendored sources; `tc002d` and `tc002-berryd` each grow by it.
+  [`CANVAS.md`](CANVAS.md#imported-faces) shows every one, and the licences are in the readme.
+- **text is utf-8.** notifications, canvas text and scripts take any utf-8 without control
+  characters instead of printable ascii; the byte limits are unchanged. a character a face lacks
+  is one `?` (or the face's replacement glyph), not one per byte. control characters in canvas
+  text, which used to be drawn as `?`, are now refused.
+- **paired binaries required** for both: the canvas and clock font bytes, the notification
+  options, the settings patch, the settings block and the device status each grew.
 - **popsquares cells go off instead of hanging at the driver's floor.** the led driver lights any
   non-zero frame byte at a fifth of full or more, and the generator scaled white by the cell's
   level, so a dying cell sat at that fifth and then snapped off, and `dim floor` at 0 never showed

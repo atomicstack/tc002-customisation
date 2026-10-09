@@ -583,6 +583,24 @@ open "x-apple.systempreferences:com.apple.preference.security?Privacy_LocalNetwo
   it needed, and corrections to several claims made along the way that turned
   out to be wrong.
 
+## pixel fonts: credits and licences
+
+the runtime carries twenty imported pixel faces ([`CANVAS.md`](CANVAS.md#imported-faces)). their
+sources are vendored untouched under [`runtime/fonts/`](runtime/fonts/), each with its licence and
+a `SOURCE.md` naming the exact upstream version, and `runtime/tools/gen-fonts.py` turns them into
+the glyph data the binaries carry (`runtime/src/scene/faces.bin`).
+
+- **matrix fonts** © trip5, [github.com/trip5/Matrix-Fonts](https://github.com/trip5/Matrix-Fonts),
+  mit licence: `chunky6`, `chunky6x`, `light6`, `light6x`, `chunky8`, `chunky8x`, `chunky8x6`,
+  `light8`, `light8x`, `light8x6`.
+- **tiny5** © stefan schmidt, [github.com/Gissio/font_tiny5](https://github.com/Gissio/font_tiny5),
+  sil open font licence 1.1: `tiny5`, `tiny5-duo`, `tiny5-mono`.
+- **the ultimate oldschool pc font pack** © 2016–2020 vileR,
+  [int10h.org/oldschool-pc-fonts](https://int10h.org/oldschool-pc-fonts/), creative commons
+  attribution-sharealike 4.0: `phoenix`, `phoenix-2y`, `phoenix-8x14`, `ibm-iso8`, `apricot-xenc`,
+  `robotron-a7100`, `ibm-vga`. the glyph data derived from these files is an adaptation, and is
+  under cc by-sa 4.0 too.
+
 ## disclaimer
 
 unofficial, reverse-engineered from a device on the local network and from the

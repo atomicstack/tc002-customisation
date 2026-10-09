@@ -91,6 +91,26 @@ def digits(face_name, text, y):
     return [{"type": "text", "at": [1, y], "font": face_name, "colour": "ffffff", "text": text}]
 
 
+# the imported faces with their trimmed heights; matrix faces in green, tiny5 in blue, int10h amber
+IMPORTED_FACES = [(n, h, "60e080") for n, h in [("chunky6", 6), ("chunky6x", 6), ("light6", 6), ("light6x", 6),
+                                                 ("chunky8", 8), ("chunky8x", 8), ("chunky8x6", 8), ("light8", 8),
+                                                 ("light8x", 8), ("light8x6", 8)]] + \
+    [(n, 11, "60a0ff") for n in ("tiny5", "tiny5-duo", "tiny5-mono")] + \
+    [(n, h, "ffb040") for n, h in [("phoenix", 8), ("phoenix-2y", 16), ("phoenix-8x14", 14), ("ibm-iso8", 15),
+                                    ("apricot-xenc", 14), ("robotron-a7100", 11), ("ibm-vga", 15)]]
+
+
+def face_sample(name, height, colour):
+    """a word over a time where two lines fit, one centred line where they do not. six characters at
+    most, because the cp437 faces are eight columns a glyph. the cp437 faces show off a smiley;
+    the others have no ☺ and show an accent instead"""
+    extra = "☺" if colour == "ffb040" else "é"
+    if 2 * height + 1 <= 16:
+        return [{"type": "text", "at": [0, 0], "size": [52, height], "align": "centre", "font": name, "colour": colour, "text": "Hello°"},
+                {"type": "text", "at": [0, height + 1], "size": [52, height], "align": "centre", "font": name, "colour": "ffffff", "text": "12:34"}]
+    return [{"type": "text", "at": [0, (16 - height) // 2], "size": [52, height], "align": "centre", "font": name, "colour": colour, "text": "Ab12°" + extra}]
+
+
 STILLS = [
     ("fonts", [
         {"type": "text", "at": [0, 0], "font": "mini", "colour": "8090a0", "text": "mini 3x5 abc"},
@@ -194,6 +214,16 @@ STILLS = [
         {"type": "text", "at": [16, 6], "font": "mini", "colour": "808080", "text": "deg"},
         {"type": "sparkline", "at": [28, 11], "size": [24, 5], "style": "bars", "colour": "205070",
          "min": 0, "max": 100, "data": [40, 45, 50, 60, 55, 50, 45]},
+    ]),
+] + [
+    # one still per imported face: a short face carries a word over a time, a taller one a single
+    # line. heights are the trimmed line boxes gen-fonts.py prints; the colour names the family
+    (f"face-{name}", face_sample(name, height, colour)) for name, height, colour in IMPORTED_FACES
+] + [
+    # a character a face lacks: cp437 has no cyrillic, so phoenix draws `?` where ibm vga draws Ж
+    ("face-fallback", [
+        {"type": "text", "at": [0, 4], "size": [26, 8], "align": "centre", "font": "phoenix", "colour": "ffb040", "text": "Ж?"},
+        {"type": "text", "at": [26, 0], "size": [26, 16], "align": "centre", "font": "ibm-vga", "colour": "60c0ff", "text": "Ж?"},
     ]),
 ]
 

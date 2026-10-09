@@ -77,6 +77,85 @@ carry `0`–`9` and `:` and nothing else, so a `deg` or a `kW` beside them comes
 ![the block face showing 12:34 in blue](runtime/screenshots/canvas/numerals-block.png)
 ![the big face showing 21 in amber with the word deg beside it in the small face](runtime/screenshots/canvas/numerals-big.png)
 
+### imported faces
+
+twenty more faces, imported from pixel fonts drawn for led matrices and old pcs. they are
+proportional (the int10h ones are monospaced at 8 columns), they carry far more than ascii, and
+text in them is utf-8: `"text":"20°C"` draws a degree sign. name one as `font` anywhere a font is
+taken — a text element, a plain notification, the clock, a berry script, and (the short ones) the
+device menus.
+
+each face's height is trimmed to the rows its letters, digits and latin-1 actually use, so a
+16-row text-mode cell whose ink sits in rows 2–12 is an 11-row face here. a glyph reaching outside
+those rows — the box-drawing set and the full blocks of the cp437 faces — is cut to them.
+
+**matrix fonts** by trip5 ([Matrix-Fonts](https://github.com/trip5/Matrix-Fonts), mit): latin,
+greek and cyrillic, drawn for 8-row led clocks. the `x` variants drop the descender row and use
+the full height for capitals; the `8x6` ones are wider, at most six columns a glyph.
+
+| face | rows | glyphs | a full line of lowercase |
+|---|---|---|---|
+| `chunky6` `chunky6x` `light6` `light6x` | 6 | 441 | 12–13 characters |
+| `chunky8` `chunky8x` `light8` `light8x` | 8 | 731 | 12–13 characters |
+| `chunky8x6` `light8x6` | 8 | 463 | 8 characters |
+
+![the chunky6 face showing Hello° over 12:34](runtime/screenshots/canvas/face-chunky6.png)
+![the chunky6x face showing Hello° over 12:34](runtime/screenshots/canvas/face-chunky6x.png)
+![the light6 face showing Hello° over 12:34](runtime/screenshots/canvas/face-light6.png)
+![the light6x face showing Hello° over 12:34](runtime/screenshots/canvas/face-light6x.png)
+![the chunky8 face showing Ab12°é](runtime/screenshots/canvas/face-chunky8.png)
+![the chunky8x face showing Ab12°é](runtime/screenshots/canvas/face-chunky8x.png)
+![the chunky8x6 face showing Hello° over 12:34](runtime/screenshots/canvas/face-chunky8x6.png)
+![the light8 face showing Ab12°é](runtime/screenshots/canvas/face-light8.png)
+![the light8x face showing Ab12°é](runtime/screenshots/canvas/face-light8x.png)
+![the light8x6 face showing Hello° over 12:34](runtime/screenshots/canvas/face-light8x6.png)
+
+**tiny5** by stefan schmidt ([font_tiny5](https://github.com/Gissio/font_tiny5), ofl-1.1;
+[on google fonts](https://fonts.google.com/specimen/Tiny5)): capitals five rows tall, with latin,
+greek, cyrillic and armenian. `tiny5-duo` doubles the vertical strokes and `tiny5-mono` is
+monospaced. its accented capitals and descenders make the trimmed face 11 rows.
+
+| face | rows | glyphs | a full line of lowercase |
+|---|---|---|---|
+| `tiny5` | 11 | 1,941 | 13 characters |
+| `tiny5-duo` | 11 | 1,941 | 9 characters |
+| `tiny5-mono` | 11 | 2,286 | 8 characters |
+
+![the tiny5 face showing Ab12°é](runtime/screenshots/canvas/face-tiny5.png)
+![the tiny5-duo face showing Ab12°é](runtime/screenshots/canvas/face-tiny5-duo.png)
+![the tiny5-mono face showing Ab12°é](runtime/screenshots/canvas/face-tiny5-mono.png)
+
+**int10h** — vileR's [ultimate oldschool pc font pack](https://int10h.org/oldschool-pc-fonts/)
+(cc by-sa 4.0): bios and text-mode fonts of real machines, the full cp437 set with its smileys,
+card suits, arrows, box drawing and greek; `ibm-vga` is the extended (pxplus) version, with latin,
+greek and cyrillic beyond cp437. eight columns a glyph, so six characters across, and too wide for
+seconds on the clock.
+
+| face | from | rows | glyphs |
+|---|---|---|---|
+| `phoenix` | the phoenix bios 8×8 | 8 | 255 |
+| `phoenix-2y` | the same, doubled in height | 16 | 255 |
+| `phoenix-8x14` | phoenix's vga 8×14 | 14 | 255 |
+| `ibm-iso8` | ibm pc dos's iso 8×16, one-pixel strokes | 15 | 255 |
+| `apricot-xenc` | the apricot xen-c | 14 | 255 |
+| `robotron-a7100` | the robotron a7100 | 11 | 255 |
+| `ibm-vga` | the ibm vga 8×16, pxplus | 15 | 787 |
+
+![the phoenix face showing Ab12° and a smiley](runtime/screenshots/canvas/face-phoenix.png)
+![the phoenix-2y face showing Ab12° and a smiley](runtime/screenshots/canvas/face-phoenix-2y.png)
+![the phoenix-8x14 face showing Ab12° and a smiley](runtime/screenshots/canvas/face-phoenix-8x14.png)
+![the ibm-iso8 face showing Ab12° and a smiley](runtime/screenshots/canvas/face-ibm-iso8.png)
+![the apricot-xenc face showing Ab12° and a smiley](runtime/screenshots/canvas/face-apricot-xenc.png)
+![the robotron-a7100 face showing Ab12° and a smiley](runtime/screenshots/canvas/face-robotron-a7100.png)
+![the ibm-vga face showing Ab12° and a smiley](runtime/screenshots/canvas/face-ibm-vga.png)
+
+a character a face does not have draws as the face's replacement glyph if it has one, and as `?`
+if it does not: cp437 has no cyrillic, so `phoenix` draws `Ж` as `?` where `ibm-vga` has it.
+
+![phoenix drawing Ж as a question mark beside ibm-vga drawing Ж](runtime/screenshots/canvas/face-fallback.png)
+
+the hand-drawn faces never had anything but ascii; there, too, a character they lack is one `?`.
+
 ### alignment
 
 give a text element a `size` and it becomes a box: `align` places the string inside it, and
