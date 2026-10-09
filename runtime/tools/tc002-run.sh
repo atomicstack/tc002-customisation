@@ -82,6 +82,8 @@ case "${1:-status}" in
     # loop in a binary that is fine. the supervisor creates it 0711 too, but a
     # directory left by an older flashed runtime is 0700, and mkdir -p keeps it.
     # not 0755: the credentials fallback lives under here, so it stays unlistable.
+    # a staging directory starts empty: the update notice's bar is filled from what is in it
+    [ "$TARGET" = "$DEV.new" ] && adb shell "rm -rf $TARGET" >/dev/null
     adb shell "mkdir -p $TARGET && chmod 711 $TARGET" >/dev/null
     for f in bin/tc002d bin/tc002-supervisor bin/tc002-netd bin/tc002-ntfy bin/tc002-berryd bin/tc002-audiod lib/libtc002-bootstrap.so; do
         adb push "$RUNTIME/zig-out/$f" "$TARGET/$(basename "$f")" >/dev/null || { "$LOCK" release "push of $f failed"; die "push of $f failed"; }

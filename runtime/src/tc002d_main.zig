@@ -15,6 +15,7 @@ const tz = @import("scene/tz.zig");
 const arbiter = @import("scene/arbiter.zig");
 const menu = @import("scene/menu.zig");
 const canvas = @import("scene/canvas.zig");
+const transfer = @import("sys/transfer.zig");
 const ip = @import("scene/ip.zig");
 const evdev = @import("input/evdev.zig");
 const actions = @import("input/actions.zig");
@@ -81,6 +82,8 @@ const Renderer = struct {
     unrevealed: bool = false,
     next_heartbeat: u64 = 0,
     next_stats: u64 = 0,
+    /// when a transfer a showing bar watches is next measured
+    next_watch: u64 = 0,
     stopping: bool = false,
     stop_deadline: u64 = 0,
     ready_sent: bool = false,
@@ -680,6 +683,13 @@ fn run(cfg: cli.Config) !u8 {
             r.heartbeat(now);
             r.next_heartbeat = now + heartbeat_period_ns;
         }
+        // a bar watching a transfer: measure it, so the panel shows what has actually arrived
+        const watched = arb.watching(.staging) or arb.watching(.image);
+        if (watched and now >= r.next_watch) {
+            if (arb.watching(.staging)) arb.setWatched(.staging, sys.dirBytes(transfer.staging_dir) orelse 0, now);
+            if (arb.watching(.image)) arb.setWatched(.image, sys.fileSize(transfer.image_path) orelse 0, now);
+            r.next_watch = now + transfer.poll_ns;
+        }
         if (cfg.stats and now >= r.next_stats) {
             r.stats(now);
             r.next_stats = now + stats_period_ns;
@@ -688,7 +698,7 @@ fn run(cfg: cli.Config) !u8 {
         if (r.stopping and (!pres.needsTransfer() or now >= r.stop_deadline)) break;
 
         const wake = sched.earliest(r.render_deadline, pres.dueAt(), r.next_heartbeat, arb.nextExpiryNs());
-        const wake_at = if (cfg.stats) sched.earliest(wake, r.next_stats, null, null) else wake;
+        const wake_at = sched.earliest(wake, if (cfg.stats) r.next_stats else null, if (watched) r.next_watch else null, null);
         const armed = @max(wake_at orelse (now + ns_per_s), now + 1);
         r.wake_target = armed;
         try sys.timerfdArmAt(r.timer, armed);

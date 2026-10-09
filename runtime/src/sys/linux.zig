@@ -57,6 +57,43 @@ pub fn close(fd: Fd) void {
     _ = linux.close(fd);
 }
 
+/// how many bytes an open file holds, by seeking to its end: no struct stat, whose 32-bit arm
+/// layout is easy to get wrong, and statx is newer than this kernel
+fn sizeOf(fd: Fd) ?u64 {
+    var end: i64 = 0;
+    if (errno(linux.llseek(fd, 0, &end, linux.SEEK.END)) != .SUCCESS) return null;
+    return @intCast(end);
+}
+
+/// the size of a file, or null while it is not there
+pub fn fileSize(path: [*:0]const u8) ?u64 {
+    const fd = open(path, .{ .ACCMODE = .RDONLY, .CLOEXEC = true }, 0) catch return null;
+    defer close(fd);
+    return sizeOf(fd);
+}
+
+/// the regular files directly in a directory, their sizes summed; null while it is not there
+pub fn dirBytes(path: [*:0]const u8) ?u64 {
+    const transfer = @import("transfer.zig");
+    const dir = open(path, .{ .ACCMODE = .RDONLY, .DIRECTORY = true, .CLOEXEC = true }, 0) catch return null;
+    defer close(dir);
+    var buf: [1024]u8 align(8) = undefined;
+    var total: u64 = 0;
+    while (true) {
+        const rc = linux.getdents64(dir, &buf, buf.len);
+        if (errno(rc) != .SUCCESS) return null;
+        if (rc == 0) return total;
+        var it = transfer.Entries{ .buf = buf[0..rc] };
+        while (it.next()) |name| {
+            const rc_open = linux.openat(dir, name.ptr, .{ .ACCMODE = .RDONLY, .CLOEXEC = true }, 0);
+            if (errno(rc_open) != .SUCCESS) continue; // gone between the listing and the open
+            const fd: Fd = @intCast(rc_open);
+            defer close(fd);
+            total += sizeOf(fd) orelse 0;
+        }
+    }
+}
+
 pub fn read(fd: Fd, buf: []u8) Error!usize {
     return check(linux.read(fd, buf.ptr, buf.len));
 }

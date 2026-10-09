@@ -23,7 +23,7 @@ COMMON = {"type", "id", "at", "size", "tile", "row", "of", "colour", "animate"}
 PER_TYPE = {
     "text": {"text", "font", "align"}, "rect": {"filled"}, "line": {"to"},
     "circle": {"r", "filled"}, "pixel": set(),
-    "bar": {"value", "background", "vertical"},
+    "bar": {"value", "background", "vertical", "watch", "bytes"},
     "sparkline": {"data", "data_hex", "style", "min", "max", "threshold", "over"},
     "icon": {"icon"}, "sprite": {"sprite"},
     "tile": {"icon", "sprite", "label", "value_text", "accent"},

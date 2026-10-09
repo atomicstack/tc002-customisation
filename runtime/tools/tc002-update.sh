@@ -130,13 +130,25 @@ payload_kind() {
 # notification lives in the old renderer's memory and nowhere else. a clock with no token yet (a
 # first run) is told about in the log.
 noticed=0
+# what an in-place update stages, in bytes: the clock fills the notice's bar from its own staging
+# directory against this, so it shows what has actually arrived
+staged_bytes() {
+    local f total=0
+    for f in bin/tc002d bin/tc002-supervisor bin/tc002-netd bin/tc002-ntfy bin/tc002-berryd bin/tc002-audiod lib/libtc002-bootstrap.so; do
+        [[ -f $RUNTIME/zig-out/$f ]] && (( total += $(wc -c < "$RUNTIME/zig-out/$f") ))
+    done
+    echo "$total"
+}
 notice() {
-    local tf
+    local tf bytes
     if ! tf=$(token_file); then
         warn "no token file for $ip yet, so no \"Updating...\" notice on the panel this time"
         return 0
     fi
-    if "$HERE/tc002-notice.sh" "$ip" "$tf" show 2>/dev/null; then
+    local args=(Updating...)
+    bytes=$(staged_bytes)
+    (( bytes > 0 )) && args+=(staging "$bytes")
+    if "$HERE/tc002-notice.sh" "$ip" "$tf" show "${args[@]}" 2>/dev/null; then
         noticed=1
         say "panel reads Updating..."
     else

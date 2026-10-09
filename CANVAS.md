@@ -201,6 +201,14 @@ one lit point. the primitive everything else is made of, and occasionally the on
 a value from 0 to 100 in its box, with an optional `background` for the empty part. `vertical`
 fills from the bottom, which is where a level belongs.
 
+a bar can instead **watch a transfer the device measures for itself**: `"watch":"staging"` (the
+staging directory an in-place update copies the next build into, every file in it summed) or
+`"watch":"image"` (the image a flash copies to `/data`), with `"bytes"` the size it will reach.
+the renderer measures it every 100 ms while the bar is on the panel and eases to each reading
+over 400 ms, so the bar moves as one continuous motion with what has actually arrived. the watch
+is one of those two names, never a path. a renderer that cannot measure (the console's preview)
+draws `value`. this is the bar under the update tools' `Updating...` and `Flashing...`.
+
 ![three horizontal bars labelled cpu, mem and disk at 25, 60 and 93 percent in green, amber and red](runtime/screenshots/canvas/bar-horizontal.png)
 ![seven vertical bars rising in steps from ten to a hundred percent](runtime/screenshots/canvas/bar-vertical.png)
 

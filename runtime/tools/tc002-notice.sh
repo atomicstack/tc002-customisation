@@ -2,7 +2,7 @@
 # tc002-notice.sh: the notice the panel shows for every kind of update: "Updating..." for an
 # in-place update, "Flashing..." for a flash (the flasher passes the word).
 #
-#   runtime/tools/tc002-notice.sh <host[:port]> <token-file> show [text]
+#   runtime/tools/tc002-notice.sh <host[:port]> <token-file> show [text [staging|image BYTES]]
 #   runtime/tools/tc002-notice.sh <host[:port]> <token-file> restore [--once]
 #
 # `show` posts the notice as a **held notification named `updating`**: a canvas document (the
@@ -49,10 +49,27 @@ case "$verb" in
     # 13 characters fit the mini face; the word goes into json as is, so no quotes or backslashes
     text=${1:-Updating...}
     [[ ${#text} -le 13 && $text != *[\"\\]* ]] || { echo "tc002-notice.sh: the notice must be 13 plain characters at most" >&2; exit 2; }
-    api POST /notify '{"name":"updating","hold":true,"elements":[
-        {"id":"l1","type":"text","at":[0,5],"size":[52,5],"font":"mini","align":"centre","colour":"ff8000",
-         "text":"'"$text"'","animate":{"kind":"pulse","ms":1600}}]}' | grep -q applied \
-        || { echo "tc002-notice.sh: the runtime did not take the notice" >&2; exit 1; }
+    # a bar under the word, filled by the clock itself from what has arrived of a transfer: it
+    # measures the staging directory or the staged image every 100 ms and eases to each reading.
+    # the watch is a name, never a path; the bytes are what the transfer will total
+    watch=${2:-}; bytes=${3:-}
+    if [[ -n $watch ]]; then
+        [[ ($watch == staging || $watch == image) && $bytes =~ ^[1-9][0-9]*$ ]] \
+            || { echo "tc002-notice.sh: watch is staging or image, followed by the bytes it will total" >&2; exit 2; }
+    fi
+    word='{"id":"l1","type":"text","at":[0,3],"size":[52,5],"font":"mini","align":"centre","colour":"ff8000",
+           "text":"'"$text"'","animate":{"kind":"pulse","ms":1600}}'
+    bar='{"id":"bar","type":"bar","at":[6,10],"size":[40,2],"colour":"ff8000","background":"241200",
+          "watch":"'"$watch"'","bytes":'"${bytes:-0}"'}'
+    alone='{"id":"l1","type":"text","at":[0,5],"size":[52,5],"font":"mini","align":"centre","colour":"ff8000",
+           "text":"'"$text"'","animate":{"kind":"pulse","ms":1600}}'
+    # a runtime older than the watching bar refuses the field; it still gets the word on its own
+    if [[ -n $watch ]] && api POST /notify '{"name":"updating","hold":true,"elements":['"$word"','"$bar"']}' | grep -q applied; then
+        :
+    else
+        api POST /notify '{"name":"updating","hold":true,"elements":['"$alone"']}' | grep -q applied \
+            || { echo "tc002-notice.sh: the runtime did not take the notice" >&2; exit 1; }
+    fi
     sleep 1   # let it be drawn and latched before anything kills the renderer
     ;;
   restore)

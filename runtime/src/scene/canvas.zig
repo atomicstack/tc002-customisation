@@ -94,6 +94,14 @@ pub const Sprites = struct {
 /// value eases in from wherever the bar was drawn, so a run of patches moves it smoothly.
 pub const Motion = enum(u8) { none, hue, bounce, scramble, scroll, blink, pulse, typewriter, sweep, glide };
 
+/// what a bar can watch arrive, at paths fixed here rather than named by a caller: the staging
+/// directory of an in-place update (every file in it, summed) and the image a flash stages
+pub const Watch = enum(u8) { none, staging, image };
+
+/// how long a watching bar takes to reach each new reading; a reading comes every 100 ms or so,
+/// so it is always on its way somewhere and never seen to step
+pub const watch_glide_ms: u64 = 400;
+
 pub fn arrival(m: Motion) bool {
     return m == .scramble or m == .typewriter or m == .sweep or m == .glide;
 }
@@ -198,7 +206,9 @@ pub const Body = union(Kind) {
     line: struct { x2: i16 = 0, y2: i16 = 0 },
     circle: struct { r: u8 = 1, filled: bool = false },
     pixel: void,
-    bar: struct { value: u8 = 0, background: [3]u8 = .{ 0, 0, 0 }, vertical: bool = false },
+    /// `watch` other than none fills the bar from a transfer the renderer measures for itself:
+    /// what has arrived of `bytes`. `value` is then only what a renderer that cannot measure draws
+    bar: struct { value: u8 = 0, background: [3]u8 = .{ 0, 0, 0 }, vertical: bool = false, watch: Watch = .none, bytes: u32 = 0 },
     sparkline: struct {
         span: Span = .{},
         style: Style = .line,
@@ -594,14 +604,26 @@ fn drawCircle(rgb: *geometry.Rgb, e: *const Element, offset: [2]i32, colour: [3]
 
 /// how full a bar is drawn at `now_ns`, in thousandths: its value, or for a glide a point on the
 /// way there from `from`, easing out (quick at first, settling gently)
-fn barPermille(e: *const Element, from: u16, started_ns: u64, now_ns: u64) u16 {
-    const to: i32 = @as(i32, @min(e.body.bar.value, 100)) * 10;
-    if (e.anim.kind != .glide or from == Clocks.no_glide) return @intCast(to);
-    const p: i32 = @intCast(progress(e.anim, (now_ns -| started_ns) / std.time.ns_per_ms));
+fn barPermille(e: *const Element, clocks: *const Clocks, i: usize, now_ns: u64) u16 {
+    const b = e.body.bar;
+    const to: i32 = if (b.watch == .none)
+        @as(i32, @min(b.value, 100)) * 10
+    else if (b.bytes == 0) 0 else @intCast(@min(1000, clocks.watched[@backingInt(b.watch)] * 1000 / b.bytes));
+    const from = clocks.glide_from[i];
+    const ms = glideMs(e) orelse return @intCast(to);
+    if (from == Clocks.no_glide) return @intCast(to);
+    const p: i32 = @intCast(progress(.{ .ms = ms }, (now_ns -| clocks.started_ns[i]) / std.time.ns_per_ms));
     const left = 256 - p;
     const eased = 256 * 256 - left * left; // out of 65536
     const start: i32 = from;
     return @intCast(start + @divTrunc((to - start) * eased, 256 * 256));
+}
+
+/// how long a bar takes to ease to a new value, if it eases at all
+fn glideMs(e: *const Element) ?u16 {
+    if (e.anim.kind == .glide) return e.anim.ms;
+    if (e.body == .bar and e.body.bar.watch != .none) return watch_glide_ms;
+    return null;
 }
 
 fn drawBar(rgb: *geometry.Rgb, e: *const Element, permille: u16, offset: [2]i32, colour: [3]u8) void {
@@ -781,6 +803,8 @@ pub const Clocks = struct {
     /// a gliding bar's starting point, in thousandths: where it was drawn when its value changed.
     /// `no_glide` draws the value as it is, for a clock set from published ages alone
     glide_from: [max_elements]u16 = @splat(0),
+    /// the bytes measured so far for each `Watch`, set by the renderer's own polling
+    watched: [3]u64 = @splat(0),
 
     pub const no_glide: u16 = 0xffff;
 
@@ -808,7 +832,7 @@ pub const Clocks = struct {
                     self.started_ns[i] = before.started_ns[j];
                     self.glide_from[i] = before.glide_from[j];
                 } else if (e.body == .bar and old_e.body == .bar) {
-                    self.glide_from[i] = barPermille(old_e, before.glide_from[j], before.started_ns[j], now_ns);
+                    self.glide_from[i] = barPermille(old_e, &before, j, now_ns);
                 }
                 break;
             }
@@ -872,6 +896,26 @@ pub const State = struct {
 
     /// the same document carried on with new values: like `install`, but the continuous motions
     /// keep their phase, so a pulse does not jump back to its start on every update
+    /// whether any bar in the document watches this transfer, so the renderer knows to measure it
+    pub fn watching(self: *const State, w: Watch) bool {
+        for (self.doc.elements[0..self.doc.count]) |*e| {
+            if (e.body == .bar and e.body.bar.watch == w) return true;
+        }
+        return false;
+    }
+
+    /// a new measurement: every bar watching it sets off from where it is drawn towards it
+    pub fn setWatched(self: *State, w: Watch, bytes: u64, now_ns: u64) void {
+        const k = @backingInt(w);
+        if (self.clocks.watched[k] == bytes) return;
+        for (self.doc.elements[0..self.doc.count], 0..) |*e, i| {
+            if (e.body != .bar or e.body.bar.watch != w) continue;
+            self.clocks.glide_from[i] = barPermille(e, &self.clocks, i, now_ns);
+            self.clocks.started_ns[i] = now_ns;
+        }
+        self.clocks.watched[k] = bytes;
+    }
+
     pub fn update(self: *State, doc: Document, now_ns: u64) void {
         const epoch = self.clocks.epoch_ns;
         self.install(doc, now_ns);
@@ -918,7 +962,7 @@ pub const State = struct {
                     const o = animatedOffset(e, ms, 0, 0);
                     setPx(rgb, @as(i32, e.box.x) + o[0], @as(i32, e.box.y) + o[1], colour);
                 },
-                .bar => drawBar(rgb, e, barPermille(e, self.clocks.glide_from[i], self.clocks.started_ns[i], now_ns), animatedOffset(e, ms, 0, 0), colour),
+                .bar => drawBar(rgb, e, barPermille(e, &self.clocks, i, now_ns), animatedOffset(e, ms, 0, 0), colour),
                 .sparkline => drawSparkline(rgb, &self.doc, e, animatedOffset(e, ms, 0, 0), colour, reveal),
                 .icon => {
                     const o = animatedOffset(e, ms, 0, 0);
@@ -983,6 +1027,8 @@ pub const State = struct {
     /// scramble has finished.
     pub fn cadence(self: *const State, now_ns: u64) scene.Cadence {
         for (self.doc.elements[0..self.doc.count], 0..) |*e, i| {
+            // a watching bar easing towards its latest reading
+            if (e.body == .bar and e.body.bar.watch != .none and now_ns -| self.clocks.started_ns[i] < watch_glide_ms * std.time.ns_per_ms) return .{ .continuous = scene.frame_period_ns };
             switch (e.anim.kind) {
                 .none => {},
                 .scramble, .typewriter, .sweep, .glide => {
@@ -1491,6 +1537,8 @@ fn putElement(e: *const Element, out: []u8) void {
             v[0] = b.value;
             @memcpy(v[1..4], &b.background);
             v[4] = @intFromBool(b.vertical);
+            v[5] = @backingInt(b.watch);
+            std.mem.writeInt(u32, v[6..10], b.bytes, .little);
         },
         .sparkline => |s| {
             putSpan(v, s.span);
@@ -1544,7 +1592,7 @@ fn getElement(in: []const u8) error{BadPayload}!Element {
         .line => .{ .line = .{ .x2 = std.mem.readInt(i16, v[0..2], .little), .y2 = std.mem.readInt(i16, v[2..4], .little) } },
         .circle => .{ .circle = .{ .r = v[0], .filled = v[1] != 0 } },
         .pixel => .pixel,
-        .bar => .{ .bar = .{ .value = v[0], .background = v[1..4].*, .vertical = v[4] != 0 } },
+        .bar => .{ .bar = .{ .value = v[0], .background = v[1..4].*, .vertical = v[4] != 0, .watch = enumFromInt(Watch, v[5]) orelse return error.BadPayload, .bytes = std.mem.readInt(u32, v[6..10], .little) } },
         .sparkline => .{ .sparkline = .{
             .span = getSpan(v),
             .style = enumFromInt(Style, v[4]) orelse return error.BadPayload,
@@ -2468,4 +2516,42 @@ test "a bar that appears gliding grows from empty, and one whose value stays put
     s.install(try gliding(60), 1200 * std.time.ns_per_ms); // the same value again
     s.render(1200 * std.time.ns_per_ms, &rgb);
     try std.testing.expectEqual(full, lit(&rgb));
+}
+
+fn watching(w: Watch, bytes: u32) !Document {
+    var d = Document{};
+    try d.add(.{ .id = Id.init("p"), .box = .{ .x = 0, .y = 0, .w = 50, .h = 2 }, .colour = white, .body = .{ .bar = .{ .watch = w, .bytes = bytes } } });
+    return d;
+}
+
+test "a bar watching a transfer shows what has arrived, easing to each new reading" {
+    var s = State{};
+    s.install(try watching(.staging, 1000), 0);
+    try std.testing.expect(s.watching(.staging) and !s.watching(.image));
+    var rgb: geometry.Rgb = undefined;
+    s.render(0, &rgb);
+    try std.testing.expectEqual(@as(usize, 0), lit(&rgb)); // nothing has arrived yet
+    const t = 100 * std.time.ns_per_ms;
+    s.setWatched(.staging, 500, t);
+    s.render(t, &rgb);
+    try std.testing.expectEqual(@as(usize, 0), lit(&rgb)); // it sets off from where it was drawn
+    try std.testing.expect(s.cadence(t) != .idle); // and wants frames while it moves
+    s.render(t + watch_glide_ms / 2 * std.time.ns_per_ms, &rgb);
+    const part = lit(&rgb);
+    try std.testing.expect(part > 0 and part < 50);
+    s.render(t + watch_glide_ms * std.time.ns_per_ms, &rgb);
+    try std.testing.expectEqual(@as(usize, 50), lit(&rgb)); // half of 50 columns, two rows high
+    s.setWatched(.staging, 4000, t + 2000 * std.time.ns_per_ms); // more than announced is full
+    s.render(t + 4000 * std.time.ns_per_ms, &rgb);
+    try std.testing.expectEqual(@as(usize, 100), lit(&rgb));
+    try std.testing.expect(s.cadence(t + 4000 * std.time.ns_per_ms) == .idle);
+}
+
+test "a watching bar round-trips the wire" {
+    const d = try watching(.image, 123456789);
+    var buf: [4096]u8 = undefined;
+    const n = try encode(&d, &buf);
+    const back = try decode(buf[0..n]);
+    try std.testing.expectEqual(Watch.image, back.elements[0].body.bar.watch);
+    try std.testing.expectEqual(@as(u32, 123456789), back.elements[0].body.bar.bytes);
 }

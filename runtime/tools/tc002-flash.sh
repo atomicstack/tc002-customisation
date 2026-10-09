@@ -261,7 +261,8 @@ show_notice() {
     api_ready=1
     # the notice itself lives in tc002-notice.sh, shared with the in-place update, so the two
     # kinds of update show the same thing: a held notification the reboot drops by itself
-    "$HERE/tc002-notice.sh" "127.0.0.1:$API_PORT" "$TOKENS" show "Flashing..." 2>/dev/null \
+    # with a bar the clock fills itself from /data/update.img as the image arrives
+    "$HERE/tc002-notice.sh" "127.0.0.1:$API_PORT" "$TOKENS" show "Flashing..." image "$(wc -c < "$IMG" | tr -d ' ')" 2>/dev/null \
         || { warn "the runtime did not take the notice; skipping it"; return 0; }
     noticed=1
     say "panel now reads Flashing..."
@@ -288,13 +289,13 @@ trap restore_scene EXIT
 # ------------------------------------------------------------------- flash
 say "stage the image on /data (it has to survive the reboot the flasher causes)"
 adb -s "$DEV" shell "rm -f /data/update.img" >/dev/null 2>&1
+# the notice goes up before the copy, so its bar fills as the image arrives
+show_notice
 adb -s "$DEV" push "$IMG" /data/update.img
 WANT=$(( $(wc -c < "$IMG" | tr -d ' ') ))
 GOT=$(sh_ "ls -l /data/update.img" | awk '{print $5}')
 [ "$WANT" = "$GOT" ] || die "the staged image is $GOT bytes, expected $WANT"
 say "staged $GOT bytes"
-
-show_notice
 
 say "arm the flasher (dir before flag: the flag is the trigger and the dir must already be set)"
 adb -s "$DEV" shell "setprop persist.zkupgrade.dir /data" >/dev/null 2>&1

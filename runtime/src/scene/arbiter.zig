@@ -1537,6 +1537,21 @@ pub const Arbiter = struct {
         if (e.doc) |d| self.notify_canvas.install(d, now_ns);
     }
 
+    /// whether a bar showing on the panel -- in a document notification, or on the canvas base
+    /// with nothing over it -- watches this transfer, so the renderer knows to measure it
+    pub fn watching(self: *const Arbiter, w: canvas.Watch) bool {
+        if (self.overlay == .notify) return self.overlay.notify.doc != null and self.notify_canvas.watching(w);
+        return self.overlay == .none and self.base == .canvas and self.canvas.watching(w);
+    }
+
+    /// a measurement of a watched transfer; both documents take it, whichever is showing
+    pub fn setWatched(self: *Arbiter, w: canvas.Watch, bytes: u64, now_ns: u64) void {
+        if (!self.watching(w)) return;
+        self.notify_canvas.setWatched(w, bytes, now_ns);
+        self.canvas.setWatched(w, bytes, now_ns);
+        self.dirty = true;
+    }
+
     /// the brightness the panel shows: the target, or a point on the way to it while a ramp runs
     pub fn shownBrightness(self: *const Arbiter) u8 {
         return self.shownAt(self.last_tick_ns);
@@ -2074,4 +2089,22 @@ test "a notification posted under the name of the one showing updates it in plac
     // a different name still replaces it the ordinary way
     _ = a.apply(richCommand(&d1, "other", false, true, 5), t + 400 * std.time.ns_per_ms);
     try std.testing.expect(a.takeTransition() != null);
+}
+
+test "the arbiter asks for a transfer only while a showing bar watches it, and hands readings on" {
+    var a = fresh();
+    try std.testing.expect(!a.watching(.staging) and !a.watching(.image));
+    var d = canvas.Document{};
+    try d.add(.{ .id = canvas.Id.init("bar"), .box = .{ .x = 0, .y = 0, .w = 50, .h = 2 }, .colour = white, .body = .{ .bar = .{ .watch = .image, .bytes = 1000 } } });
+    _ = a.apply(richCommand(&d, "updating", false, true, 5), 0);
+    try std.testing.expect(a.watching(.image) and !a.watching(.staging));
+    _ = a.takeDirty();
+    a.setWatched(.image, 1000, 10 * std.time.ns_per_ms);
+    try std.testing.expect(a.takeDirty());
+    a.tick(10 * std.time.ns_per_ms + canvas.watch_glide_ms * std.time.ns_per_ms, 0);
+    var rgb: geometry.Rgb = undefined;
+    a.render(0, &rgb);
+    try std.testing.expectEqual(@as(usize, 300), litPixels(&rgb)); // 100 leds, three channels each
+    _ = a.apply(.{ .dismiss_notify = "updating" }, 2 * s_ns);
+    try std.testing.expect(!a.watching(.image));
 }

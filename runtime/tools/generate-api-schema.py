@@ -158,7 +158,7 @@ def request_schemas():
     update('InputBody', control=enum('left', 'middle', 'right', 'knob', 'rotary'), event=enum('press', 'release', 'click', 'long', 'cw', 'ccw'), steps=integer(1, 16, default=1))
     schemas['InputBody']['allOf'] = [{'if': {'properties': {'control': {'const': 'rotary'}}}, 'then': {'properties': {'event': enum('cw', 'ccw')}}, 'else': {'properties': {'event': enum('press', 'release', 'click', 'long'), 'steps': {'const': 1}}}}]
     update('DismissNotifyBody', name=NOTIFICATION_NAME)
-    update('NotifyBody', font=enum_source('scene/canvas.zig', 'Font'), name=NOTIFICATION_NAME, text=string(minLength=1, maxLength=128, pattern='^[^\u0000-\u001f\u007f-\u009f]+$', description='1..128 bytes of utf-8 without control characters'), elements=array(ref('ElementBody'), minItems=1, maxItems=24), colour=COLOUR, duration_s=integer(1, 300, default=5))
+    update('NotifyBody', font=enum_source('scene/canvas.zig', 'Font'), name=NOTIFICATION_NAME, text=string(minLength=1, maxLength=128, pattern='^[^\u0000-\u0009\u000b-\u001f\u007f-\u009f]+$', description='1..128 bytes of utf-8 without control characters but a newline'), elements=array(ref('ElementBody'), minItems=1, maxItems=24), colour=COLOUR, duration_s=integer(1, 300, default=5))
     update('ConfigBody', brightness=integer(1, 100), base=BASE, generator=GENERATOR, timezone=string(minLength=1, maxLength=64, description='timezone name supported by the runtime timezone table'), ntp_server=IPV4, ntp_interval_s={'type': 'integer', 'enum': [300, 600]}, frame_timeout_ms=integer(100, 2000), metrics_interval_s={'anyOf': [{'const': 0}, integer(10, 3600)]}, discovery_prefix=string(minLength=1, maxLength=64), ip_mode=enum('lines', 'mini', 'scroll', 'big'), menu_font=menu_fonts(), night_brightness=integer(1, 100), night_lead_min=integer(0, 120), latitude={'type': 'number', 'minimum': -90, 'maximum': 90}, longitude={'type': 'number', 'minimum': -180, 'maximum': 180}, berry_heap_kb=integer(16, 256), berry_handler_ms=integer(10, 1000), battery_shutdown_mv=integer(3000, 4000), battery_grace_s=integer(0, 300), generator_params=array(ref('GenParamBody'), maxItems=8))
     update('ConfigBody', sound_volume=integer(1, 100))
     if 'discovery_controls' in schemas['ConfigBody']['properties']:
@@ -179,7 +179,7 @@ def request_schemas():
     update('SoundBody', name=NAME)
     schemas['SoundBody']['anyOf'] = [{'properties': {'stop': {'const': True}}, 'required': ['stop']}, {**nonnull('name'), 'properties': {'name': NAME, 'volume': nullable(integer(1, 100))}}]
     update('AnimateBody', kind=enum('hue', 'bounce', 'scramble', 'scroll', 'blink', 'pulse', 'typewriter', 'sweep', 'glide'), ms=integer(1, 65535), phase=integer(0, 100), axis=enum('x', 'y'))
-    update('ElementBody', type=enum_source('scene/canvas.zig', 'Kind'), id=ID, colour=COLOUR, background=COLOUR, over=COLOUR, accent=COLOUR, sprite=ID, font=enum_source('scene/canvas.zig', 'Font'), align=enum('left', 'centre', 'right'), style=enum('line', 'bars', 'area'), data=SAMPLES, data_hex=HEX_SAMPLES, text=string(maxLength=256), label=string(maxLength=256), value_text=string(maxLength=256), size=array(integer(0, 32767), minItems=2, maxItems=2))
+    update('ElementBody', type=enum_source('scene/canvas.zig', 'Kind'), id=ID, colour=COLOUR, background=COLOUR, over=COLOUR, accent=COLOUR, sprite=ID, font=enum_source('scene/canvas.zig', 'Font'), align=enum('left', 'centre', 'right'), style=enum('line', 'bars', 'area'), data=SAMPLES, data_hex=HEX_SAMPLES, text=string(maxLength=256), label=string(maxLength=256), value_text=string(maxLength=256), size=array(integer(0, 32767), minItems=2, maxItems=2), watch={**enum('staging', 'image'), 'description': 'a bar fills from a transfer the device measures itself: an in-place update staging directory or a flash image'}, bytes=integer(1, 4294967295, description='the size the watched transfer will reach'))
     update('ValueBody', id=ID, text=string(maxLength=64), colour=COLOUR, data=SAMPLES, data_hex=HEX_SAMPLES)
     update('CanvasBody', elements=array(ref('ElementBody'), maxItems=24), persist={**BOOL, 'default': True, 'description': 'false shows the document without writing it to flash; a restart brings the last persisted one back'})
     update('PatchBody', values=array(ref('ValueBody'), maxItems=24))
@@ -188,7 +188,7 @@ def request_schemas():
         for key in fields:
             schemas[name]['properties'][key] = nullable(schemas[name]['properties'][key])
     common = set('type id age_ms at size tile row of colour animate'.split())
-    specific = dict(text='text font align', rect='filled', line='to', circle='r filled', pixel='', bar='value background vertical', sparkline='data data_hex style min max threshold over', icon='icon', sprite='sprite', tile='icon sprite label value_text accent')
+    specific = dict(text='text font align', rect='filled', line='to', circle='r filled', pixel='', bar='value background vertical watch bytes', sparkline='data data_hex style min max threshold over', icon='icon', sprite='sprite', tile='icon sprite label value_text accent')
     rules = []
     for kind, fields in specific.items():
         forbidden = set(schemas['ElementBody']['properties']) - common - set(fields.split())

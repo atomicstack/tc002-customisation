@@ -4,6 +4,7 @@ test {
     _ = @import("sys/civil.zig");
     _ = @import("sys/log.zig");
     _ = @import("sys/solar.zig");
+    _ = @import("sys/transfer.zig");
     _ = @import("panel/geometry.zig");
     _ = @import("panel/pack.zig");
     _ = @import("panel/presenter.zig");

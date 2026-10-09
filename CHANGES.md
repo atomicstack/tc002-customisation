@@ -30,6 +30,13 @@ refuses a version this file does not know. the github releases carry the same no
   saved settings and the persisted canvas until the flashed image carries this build. this build
   itself loads an unknown `clock_font` as `classic` and an unknown or too-tall `menu_font` as
   `mini`, so the next face added will not repeat the trap.
+- **the update notice shows how far the copy has got.** under `Updating...` and `Flashing...` sits
+  a bar the clock fills itself: a bar may now `watch` the staging directory of an in-place update
+  or the image a flash stages, with the `bytes` it will reach, and tc002d measures it every 100 ms
+  and eases to each reading, so the bar moves smoothly with what has actually arrived. the flash
+  notice now goes up before the image is copied rather than after. it shows on a clock already
+  running this build; an older one is sent the word on its own. the bar stops where it is when the
+  old runtime stops — about 3 s for an in-place swap, the whole 10–15 s write for a flash.
 - **a progress bar can move smoothly.** a bar with `"animate":{"kind":"glide"}` eases to each
   new value from wherever it was drawn, and a document notification posted again under the name of
   the one showing updates it in place — no transition, its pulse keeping its phase. together they

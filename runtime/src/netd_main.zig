@@ -1227,7 +1227,10 @@ const Netd = struct {
                 .line => |l| o.fmt(",\"to\":[{d},{d}]", .{ l.x2, l.y2 }),
                 .circle => |cc| o.fmt(",\"r\":{d},\"filled\":{}", .{ cc.r, cc.filled }),
                 .pixel => {},
-                .bar => |b| o.fmt(",\"value\":{d},\"background\":\"{x:0>2}{x:0>2}{x:0>2}\",\"vertical\":{}", .{ b.value, b.background[0], b.background[1], b.background[2], b.vertical }),
+                .bar => |b| {
+                    o.fmt(",\"value\":{d},\"background\":\"{x:0>2}{x:0>2}{x:0>2}\",\"vertical\":{}", .{ b.value, b.background[0], b.background[1], b.background[2], b.vertical });
+                    if (b.watch != .none) o.fmt(",\"watch\":\"{s}\",\"bytes\":{d}", .{ @tagName(b.watch), b.bytes });
+                },
                 .icon => |ic| o.fmt(",\"icon\":\"{s}\"", .{icons.nameOf(ic.index)}),
                 .sprite => |sp| {
                     o.add(",\"sprite\":");

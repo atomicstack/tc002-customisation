@@ -395,6 +395,8 @@ const ElementBody = struct {
     value: ?u8 = null,
     background: ?[]const u8 = null,
     vertical: ?bool = null,
+    watch: ?[]const u8 = null,
+    bytes: ?u32 = null,
     data: ?SampleData = null,
     data_hex: ?[]const u8 = null,
     style: ?[]const u8 = null,
@@ -519,7 +521,7 @@ fn allowedField(kind: canvas.Kind, comptime name: []const u8) bool {
         .line => eq(name, "to"),
         .circle => eq(name, "r") or eq(name, "filled"),
         .pixel => false,
-        .bar => eq(name, "value") or eq(name, "background") or eq(name, "vertical"),
+        .bar => eq(name, "value") or eq(name, "background") or eq(name, "vertical") or eq(name, "watch") or eq(name, "bytes"),
         .sparkline => eq(name, "data") or eq(name, "data_hex") or eq(name, "style") or
             eq(name, "min") or eq(name, "max") or eq(name, "threshold") or eq(name, "over"),
         .icon => eq(name, "icon"),
@@ -663,11 +665,19 @@ fn parseCanvas(body: []const ElementBody, doc: *canvas.Document) CanvasRoute {
             },
             .circle => e.body = .{ .circle = .{ .r = b.r orelse 1, .filled = b.filled orelse false } },
             .pixel => e.body = .pixel,
-            .bar => e.body = .{ .bar = .{
-                .value = b.value orelse 0,
-                .background = if (b.background) |c| (parseColour(c) orelse return .{ .reject = canvasBad("invalid_colour", "background must be rrggbb hex") }) else .{ 0, 0, 0 },
-                .vertical = b.vertical orelse false,
-            } },
+            .bar => {
+                // a transfer the renderer measures itself, by name: the paths are its own
+                const watch: canvas.Watch = if (b.watch) |w| (enumByName(canvas.Watch, w) orelse .none) else .none;
+                if (b.watch != null and (watch == .none or (b.bytes orelse 0) == 0))
+                    return .{ .reject = canvasBad("invalid_watch", "watch is staging or image, with bytes of at least 1") };
+                e.body = .{ .bar = .{
+                    .value = b.value orelse 0,
+                    .background = if (b.background) |c| (parseColour(c) orelse return .{ .reject = canvasBad("invalid_colour", "background must be rrggbb hex") }) else .{ 0, 0, 0 },
+                    .vertical = b.vertical orelse false,
+                    .watch = watch,
+                    .bytes = if (watch == .none) 0 else b.bytes.?,
+                } };
+            },
             .icon => {
                 const name = b.icon orelse return .{ .reject = canvasBad("missing_icon", "an icon element needs icon") };
                 e.body = .{ .icon = .{ .index = icons.indexOf(name) orelse return .{ .reject = canvasBad("unknown_icon", "no icon by that name; GET /icons lists them") } } };
@@ -2482,4 +2492,16 @@ test "a canvas put may decline to persist" {
     try std.testing.expectEqual(@as(u8, 1), t.op.canvas_put.doc.count);
     const d = parseBody(.canvas_put, "{\"elements\":[{\"type\":\"rect\",\"at\":[0,0],\"size\":[4,4]}]}", &arena, 0);
     try std.testing.expect(d.op.canvas_put.persist);
+}
+
+test "a bar may watch a transfer by name, with the bytes it expects, and nothing else may" {
+    var arena: Arena = undefined;
+    const ok = parseBody(.canvas_put, "{\"elements\":[{\"type\":\"bar\",\"at\":[6,11],\"size\":[40,2],\"watch\":\"staging\",\"bytes\":4242000}]}", &arena, 0);
+    try std.testing.expectEqual(canvas.Watch.staging, ok.op.canvas_put.doc.elements[0].body.bar.watch);
+    try std.testing.expectEqual(@as(u32, 4242000), ok.op.canvas_put.doc.elements[0].body.bar.bytes);
+    // only the two transfers the renderer knows; never a path
+    try std.testing.expectEqualStrings("invalid_watch", parseBody(.canvas_put, "{\"elements\":[{\"type\":\"bar\",\"watch\":\"/etc/passwd\",\"bytes\":1}]}", &arena, 0).reject.code);
+    try std.testing.expectEqualStrings("invalid_watch", parseBody(.canvas_put, "{\"elements\":[{\"type\":\"bar\",\"watch\":\"image\"}]}", &arena, 0).reject.code);
+    try std.testing.expectEqualStrings("invalid_watch", parseBody(.canvas_put, "{\"elements\":[{\"type\":\"bar\",\"watch\":\"image\",\"bytes\":0}]}", &arena, 0).reject.code);
+    try std.testing.expectEqualStrings("invalid_element_field", parseBody(.canvas_put, "{\"elements\":[{\"type\":\"rect\",\"watch\":\"image\",\"bytes\":5}]}", &arena, 0).reject.code);
 }

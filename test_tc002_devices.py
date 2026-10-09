@@ -447,6 +447,9 @@ class UpdateScriptTests(unittest.TestCase):
                            and '"font":"mini"' in " ".join(c["args"]) and '"kind":"pulse"' in " ".join(c["args"])
                            and '"hold":true' in " ".join(c["args"]) and '"name":"updating"' in " ".join(c["args"])]
                 self.assertTrue(notices, "no held mini-font pulsing notification was posted")
+                # with a bar the clock fills from the staging directory, out of what is being sent
+                staged = (root / "runtime/zig-out/bin/tc002-supervisor").stat().st_size
+                self.assertIn(f'"watch":"staging","bytes":{staged}', " ".join(calls[notices[0]]["args"]).replace(" ", ""))
                 self.assertFalse([c for c in calls if c["command"] == "curl" and "/canvas" in " ".join(c["args"])], "the notice must not touch the canvas")
                 pushes = [i for i, c in enumerate(calls) if c["command"] == "tc002-run.sh" and c["args"][:2] == ["push", "--staged"]]
                 halts = [i for i, c in enumerate(calls) if c["command"] == "tc002-run.sh" and c["args"][:1] == ["halt"]]
@@ -544,6 +547,41 @@ class NoticeScriptTests(unittest.TestCase):
         sent = self.show()
         self.assertIn('"text":"Updating..."', sent)
         self.assertIn('"name":"updating"', sent)
+
+    def test_a_notice_can_carry_a_bar_the_clock_fills_from_what_has_arrived(self):
+        sent = self.show("Flashing...", "image", "8388608")
+        body = json.loads(sent.split(" -d ", 1)[1].rsplit("\n", 1)[0]) if " -d " in sent else None
+        self.assertIsNotNone(body, sent)
+        bars = [e for e in body["elements"] if e["type"] == "bar"]
+        self.assertEqual(len(bars), 1, body)
+        self.assertEqual((bars[0]["watch"], bars[0]["bytes"]), ("image", 8388608))
+        self.assertTrue(any(e.get("text") == "Flashing..." for e in body["elements"]))
+
+    def test_an_older_runtime_that_refuses_the_bar_still_gets_the_word(self):
+        with tempfile.TemporaryDirectory() as d:
+            log = Path(d) / "curl.log"
+            curl = Path(d) / "curl"
+            # refuses any document with a watch in it, as a build without watching bars does
+            curl.write_text(f'#!/usr/bin/env bash\nprintf "%s\\n" "$*" >> {log}\n'
+                            'case "$*" in *watch*) echo \'{"error":"invalid_element_field"}\' ;; *) echo \'{"applied":1}\' ;; esac\n')
+            curl.chmod(0o755)
+            tokens = Path(d) / "tokens"
+            tokens.write_text("admin=" + "a" * 64 + "\n")
+            r = subprocess.run([str(ROOT / "runtime/tools/tc002-notice.sh"), "10.0.0.9", str(tokens), "show", "Updating...", "staging", "4096"],
+                               env={**os.environ, "CURL": str(curl)}, capture_output=True, text=True, timeout=30)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            sent = log.read_text().splitlines()
+            self.assertEqual(len([l for l in sent if "/notify" in l]), 2, sent)
+            self.assertNotIn("watch", [l for l in sent if "/notify" in l][-1])
+
+    def test_a_watch_is_one_of_two_names_and_a_whole_number(self):
+        for extra in (("/etc/passwd", "5"), ("image", "lots"), ("image",)):
+            with self.subTest(extra=extra), tempfile.TemporaryDirectory() as d:
+                tokens = Path(d) / "tokens"
+                tokens.write_text("admin=" + "a" * 64 + "\n")
+                r = subprocess.run([str(ROOT / "runtime/tools/tc002-notice.sh"), "10.0.0.9", str(tokens), "show", "Updating...", *extra],
+                                   env={**os.environ, "CURL": "/usr/bin/false"}, capture_output=True, text=True, timeout=30)
+                self.assertEqual(r.returncode, 2, r.stderr)
 
     def test_a_flash_reads_flashing(self):
         sent = self.show("Flashing...")
