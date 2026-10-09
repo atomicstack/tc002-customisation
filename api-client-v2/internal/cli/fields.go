@@ -270,6 +270,12 @@ func jsonData(c *cobra.Command, fields []field) (map[string]any, error) {
 	return object, nil
 }
 
+// the imported pixel faces, in the runtime's wire order; CANVAS.md shows every one
+const importedFaces = "chunky6 chunky6x light6 light6x chunky8 chunky8x chunky8x6 light8 light8x light8x6 tiny5 tiny5-duo tiny5-mono phoenix phoenix-2y phoenix-8x14 ibm-iso8 apricot-xenc robotron-a7100 ibm-vga"
+
+// the faces canvas text and a plain notification can be set in
+const canvasFaces = "small mini block big " + importedFaces
+
 var identityFields = []field{textField("request_id"), numberField("epoch", 0, 4294967295)}
 var transitionFields = []field{
 	enumField("transition", "fade cut slide swipe_out swipe_in collapse expand wipe dissolve split_out split_in blinds flip rain rain_random dim blink flash zoom ripple diamond blocks wave interlace shrink random"),

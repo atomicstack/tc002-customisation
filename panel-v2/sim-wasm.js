@@ -463,8 +463,9 @@
       const input = bytes(e.scratchPtr(), text.length + name.length);
       input.set(text);
       input.set(name, text.length);
+      // an event names its face only when it is not the default
       return e.notifyNamed(text.length, hexInt(ev.colour, 0xffffff), ev.duration_s | 0,
-                           name.length, ev.stack ? 1 : 0, ev.hold ? 1 : 0, ev.at);
+                           name.length, ev.stack ? 1 : 0, ev.hold ? 1 : 0, indexOf(FACES, ev.font, 0), ev.at);
     },
     dismiss_notify: (e, ev) => e.dismissNotify(writeScratch(String(ev.name == null ? '' : ev.name)), ev.at),
     // events are drained before composing a frame. replay an unapplied expiry at the device's

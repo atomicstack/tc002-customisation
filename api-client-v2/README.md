@@ -125,7 +125,8 @@ tc002 --admin request PATCH /config --data '{"brightness":30}'
 `notify` replaces the current notification unless `--stack` queues it behind; `--hold`
 keeps it up until a `dismiss`. `--name` (1..255 letters, digits, `-` or `_`) is what a
 dismissal finds it by; `dismiss` alone drops the current one. there are eight slots
-including the active one, and the runtime refuses a stack into a full queue.
+including the active one, and the runtime refuses a stack into a full queue. `--font` sets the
+text in any canvas face (`tc002 notify '20°C' --font phoenix`); text is utf-8.
 
 ```sh
 tc002 notify doorbell --name door --stack --hold

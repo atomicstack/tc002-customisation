@@ -137,7 +137,7 @@ pub const Op = union(enum) {
     input: struct { control: actions.Control, event: actions.InputRequest, steps: u8, request_id: u64, epoch: ?u32 },
     dismiss_notify: struct { name: []const u8, request_id: u64, epoch: ?u32 },
     /// `doc` set makes it a rich notification: the document is drawn and `text` is its summary
-    notify: struct { text: []const u8, colour: [3]u8, duration_s: u16, name: []const u8, stack: bool, hold: bool, transition: ?transition.Spec, request_id: u64, epoch: ?u32, doc: ?canvas.Document = null },
+    notify: struct { text: []const u8, colour: [3]u8, duration_s: u16, name: []const u8, stack: bool, hold: bool, transition: ?transition.Spec, request_id: u64, epoch: ?u32, doc: ?canvas.Document = null, font: canvas.Font = .small },
     frame: struct { rgb: *const geometry.Rgb, duration_s: u16, transition: ?transition.Spec, request_id: u64, epoch: ?u32 },
     config_get,
     config_patch: ConfigPatch,
@@ -311,7 +311,7 @@ const SceneBody = struct { base: []const u8, generator: ?[]const u8 = null, seed
 const ActionBody = struct { action: []const u8, brightness: ?u8 = null, seed: ?u32 = null, power: ?bool = null, request_id: ?[]const u8 = null, epoch: ?u32 = null };
 const InputBody = struct { control: []const u8, event: []const u8, steps: u8 = 1, request_id: ?[]const u8 = null, epoch: ?u32 = null };
 const DismissNotifyBody = struct { name: ?[]const u8 = null, request_id: ?[]const u8 = null, epoch: ?u32 = null };
-const NotifyBody = struct { name: ?[]const u8 = null, stack: bool = false, hold: bool = false, text: ?[]const u8 = null, elements: ?[]const ElementBody = null, colour: ?[]const u8 = null, duration_s: u16 = 5, transition: ?[]const u8 = null, direction: ?[]const u8 = null, transition_ms: ?u32 = null, exit: ?[]const u8 = null, easing: ?[]const u8 = null, request_id: ?[]const u8 = null, epoch: ?u32 = null };
+const NotifyBody = struct { name: ?[]const u8 = null, stack: bool = false, hold: bool = false, text: ?[]const u8 = null, font: ?[]const u8 = null, elements: ?[]const ElementBody = null, colour: ?[]const u8 = null, duration_s: u16 = 5, transition: ?[]const u8 = null, direction: ?[]const u8 = null, transition_ms: ?u32 = null, exit: ?[]const u8 = null, easing: ?[]const u8 = null, request_id: ?[]const u8 = null, epoch: ?u32 = null };
 /// `{"name":"chime"}` to play, `{"stop":true}` to stop. volume is optional and means "louder or
 /// quieter than the setting, just for this one".
 const SoundBody = struct { name: ?[]const u8 = null, volume: ?u8 = null, loop: ?bool = null, stop: ?bool = null };
@@ -1171,13 +1171,14 @@ pub fn parseBody(kind: BodyKind, body: []const u8, arena: *Arena, generated_id: 
             if (doc == null and text.len == 0) return bad("invalid_text", "text must be 1..128 bytes of utf-8 without control characters");
             if (text.len > 128 or !face.validText(text)) return bad("invalid_text", "text must be 1..128 bytes of utf-8 without control characters");
             if (b.duration_s < 1 or b.duration_s > 300) return bad("invalid_duration", "duration_s must be 1..300");
+            const font = if (b.font) |f| (enumByName(canvas.Font, f) orelse return bad("invalid_font", "no font by that name; CANVAS.md lists every face")) else canvas.Font.small;
             const colour = if (b.colour) |c| (parseColour(c) orelse return bad("invalid_colour", "colour must be rrggbb hex")) else [3]u8{ 255, 255, 255 };
             const rid = if (b.request_id) |t| (parseRequestId(t) orelse return bad("invalid_request_id", "request_id must be 1..16 hex digits")) else generated_id;
             const spec = switch (parseTransition(b.transition, b.direction, b.transition_ms, b.exit, b.easing, .fade)) {
                 .reject => |j| return .{ .reject = j },
                 .op => |t| t,
             };
-            return .{ .op = .{ .notify = .{ .text = text, .colour = colour, .duration_s = b.duration_s, .name = b.name orelse "", .stack = b.stack, .hold = b.hold, .transition = spec, .request_id = rid, .epoch = b.epoch, .doc = doc } } };
+            return .{ .op = .{ .notify = .{ .text = text, .colour = colour, .duration_s = b.duration_s, .name = b.name orelse "", .stack = b.stack, .hold = b.hold, .transition = spec, .request_id = rid, .epoch = b.epoch, .doc = doc, .font = font } } };
         },
         .config_patch => {
             const b = json.parse(ConfigBody, body, arena, &where) catch |e| return jsonError(e, where, arena);
@@ -2391,6 +2392,16 @@ test "notify text may be utf-8 but not control characters" {
     try std.testing.expectEqualStrings("invalid_text", c1.reject.code);
     const del = route(testReq(.POST, "/api/v1/notify", "", control_header, "application/json", null), "{\"text\":\"a\\u007fb\"}", &c, &no_clients, &origins, &arena, test_minted);
     try std.testing.expectEqualStrings("invalid_text", del.reject.code);
+}
+
+test "a plain notification may name a face, and an unknown one is refused" {
+    var arena: Arena = undefined;
+    const set = parseBody(.notify, "{\"text\":\"hi\",\"font\":\"light6\"}", &arena, test_minted);
+    try std.testing.expectEqual(canvas.Font.light6, set.op.notify.font);
+    const default = parseBody(.notify, "{\"text\":\"hi\"}", &arena, test_minted);
+    try std.testing.expectEqual(canvas.Font.small, default.op.notify.font);
+    const unknown = parseBody(.notify, "{\"text\":\"hi\",\"font\":\"nope\"}", &arena, test_minted);
+    try std.testing.expectEqualStrings("invalid_font", unknown.reject.code);
 }
 
 test "notify text cut mid-sequence is refused" {

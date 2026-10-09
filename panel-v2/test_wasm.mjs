@@ -573,13 +573,30 @@ test('named notification exports reject oversized scratch inputs without changin
   assert.equal(typeof e.notifyNamed, 'function');
   assert.equal(typeof e.dismissNotify, 'function');
   new Uint8Array(e.memory.buffer, e.scratchPtr(), 300).fill(97);
-  assert.equal(e.notifyNamed(2, 0xff0000, 1, 256, 0, 0, 1000), 0);
-  assert.equal(e.notifyNamed(e.scratchLen() + 1, 0xff0000, 1, 0, 0, 0, 1000), 0);
-  assert.equal(e.notifyNamed(0xffffffff, 0xff0000, 1, 32, 0, 0, 1000), 0);
+  assert.equal(e.notifyNamed(2, 0xff0000, 1, 256, 0, 0, 0, 1000), 0);
+  assert.equal(e.notifyNamed(e.scratchLen() + 1, 0xff0000, 1, 0, 0, 0, 0, 1000), 0);
+  assert.equal(e.notifyNamed(0xffffffff, 0xff0000, 1, 32, 0, 0, 0, 1000), 0);
   assert.equal(e.dismissNotify(256, 1000), 0);
   assert.equal(e.dismissNotify(0xffffffff, 1000), 0);
   assert.equal(W.revision(), 0);
   assert.equal(e.notify(2, 0xff0000, 1, 1000), 1, 'the legacy notification export remains usable');
+});
+
+test('a plain notification is drawn in the face it names, and a face past the end is refused', () => {
+  const e = W.exports;
+  const draw = face => {
+    W.reset('clock', 'popsquares', 1);
+    W.setRevision(0);
+    new Uint8Array(e.memory.buffer, e.scratchPtr(), 2).set([104, 105]); // "hi"
+    const ok = e.notifyNamed(2, 0xffffff, 5, 0, 0, 0, face, 1000);
+    e.frame(1001, 1001);
+    return { ok, frame: W.frame().slice() };
+  };
+  const small = draw(0), phoenix = draw(W.FACES.indexOf('phoenix'));
+  assert.equal(small.ok, 1);
+  assert.equal(phoenix.ok, 1);
+  assert.notDeepEqual(phoenix.frame, small.frame);
+  assert.equal(draw(W.FACES.length).ok, 0);
 });
 
 test('an event is placed at the instant it happened, not the instant it arrived', () => {

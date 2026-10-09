@@ -253,12 +253,14 @@ fn rgbOf(v: i32) [3]u8 {
 /// the notification text is the first `len` bytes of scratch. returns 0 when the arbiter
 /// rejected it (bad text or duration), 1 when it took.
 export fn notify(len: u32, colour: i32, duration_s: u32, now_ms: f64) u32 {
-    return notifyNamed(len, colour, duration_s, 0, 0, 0, now_ms);
+    return notifyNamed(len, colour, duration_s, 0, 0, 0, 0, now_ms);
 }
 
-/// text then name occupy consecutive scratch bytes. reject lengths before forming slices.
-export fn notifyNamed(len: u32, colour: i32, duration_s: u32, name_len: u32, stack: u32, hold: u32, now_ms: f64) u32 {
+/// text then name occupy consecutive scratch bytes. reject lengths before forming slices. `face`
+/// indexes `faceNames`; one past the end is refused rather than drawn in a neighbour.
+export fn notifyNamed(len: u32, colour: i32, duration_s: u32, name_len: u32, stack: u32, hold: u32, face: u32, now_ms: f64) u32 {
     if (len > scratch.len or name_len > notification.name_max or name_len > scratch.len - len) return 0;
+    const font = enumOf(canvas.Font, face) orelse return 0;
     return switch (arb.apply(.{ .notify = .{
         .text = scratch[0..len],
         .colour = rgbOf(colour),
@@ -266,6 +268,7 @@ export fn notifyNamed(len: u32, colour: i32, duration_s: u32, name_len: u32, sta
         .name = scratch[len .. len + name_len],
         .stack = stack != 0,
         .hold = hold != 0,
+        .face = font,
     } }, toNs(now_ms))) {
         .applied => 1,
         .rejected => 0,
@@ -282,7 +285,7 @@ export fn notifyBody(len: u32, now_ms: f64) u32 {
         .op => |op| switch (op) {
             .notify => |n| {
                 const doc = n.doc;
-                return switch (arb.applyWith(.{ .notify = .{ .text = n.text, .colour = n.colour, .duration_s = n.duration_s, .name = n.name, .stack = n.stack, .hold = n.hold, .doc = if (doc) |*d| d else null } }, n.transition, toNs(now_ms))) {
+                return switch (arb.applyWith(.{ .notify = .{ .text = n.text, .colour = n.colour, .duration_s = n.duration_s, .name = n.name, .stack = n.stack, .hold = n.hold, .doc = if (doc) |*d| d else null, .face = n.font } }, n.transition, toNs(now_ms))) {
                     .applied => 1,
                     .rejected => 0,
                 };

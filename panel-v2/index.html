@@ -331,6 +331,7 @@ input[type=file]{font:12px var(--body);color:var(--muted);max-width:220px}
         <div class="field"><label for="ntext">Text<span class="key">1–128 bytes of utf-8</span></label>
           <span class="inline"><input type="text" id="ntext" maxlength="128" placeholder="hello" autocomplete="off"><span class="counter" id="ncount">0/128</span></span></div>
         <div class="field"><label for="ncolour">Colour</label><input type="color" id="ncolour" value="#ffffff"></div>
+        <div class="field"><label for="nfont">Font<span class="key">face · default: small</span></label><select id="nfont"></select></div>
         <div class="field"><label for="ndur">Duration<span class="key">seconds, 1–300</span></label><input type="number" id="ndur" min="1" max="300" value="5"></div>
         <div class="field"><label for="ntrans">Transition<span class="key">transition · default: fade</span></label><select id="ntrans"></select></div>
         <div class="field"><label for="ndir">Direction<span class="key">direction · auto: the effect's own</span></label><select id="ndir"></select></div>
@@ -998,6 +999,8 @@ function transitionFields(effectId, dirId, easingId, exitId) {
   return out;
 }
 fillTransitionSelects();
+function fillNotifyFonts() { const k = $('nfont').value; fillSelect($('nfont'), cvFonts(), cvFonts().includes(k) ? k : 'small'); }
+fillNotifyFonts();
 
 /* ---------- tabs ---------- */
 // the hero stays put; everything else is one panel at a time, so no area scrolls off
@@ -1251,7 +1254,8 @@ $('nsend').addEventListener('click', async () => {
   if (utf8Bytes(text) < 1 || utf8Bytes(text) > 128 || /[\u0000-\u001f\u007f-\u009f]/.test(text)) return toast('text must be 1 to 128 bytes, without control characters', true);
   if (!(duration >= 1 && duration <= 300)) return toast('duration must be 1 to 300 seconds', true);
   try {
-    await command('POST', 'notify', (id, epoch) => ({ text, colour, duration_s: duration, ...transitionFields('ntrans', 'ndir', 'neas', 'nexit'), request_id: id, epoch }));
+    const font = $('nfont').value !== 'small' ? { font: $('nfont').value } : {};
+    await command('POST', 'notify', (id, epoch) => ({ text, colour, ...font, duration_s: duration, ...transitionFields('ntrans', 'ndir', 'neas', 'nexit'), request_id: id, epoch }));
     local.notify = { text, colour: colourBytes(colour), sinceMs: Date.now() };
     toast('notification sent');
   } catch (e) { toast(e.message, true); }
@@ -1499,8 +1503,9 @@ const CV_AMOUNT = {
   bounce: { label: 'travel', key: 'animate.amount \u00b7 leds, 2 if unset' },
   blink: { label: 'duty', key: 'animate.amount \u00b7 % of the period lit, 50 if unset' },
 };
-// the faces come from the wasm's own enum once it has loaded; the four hand-drawn ones until then
-const cvFonts = () => (S.FACES && S.FACES.length ? S.FACES : ['small', 'mini', 'block', 'big']);
+// the faces come from the wasm's own enum once it has loaded; the four hand-drawn ones until then.
+// a declaration, not a const: the notification card fills its select before this point is reached
+function cvFonts() { return S.FACES && S.FACES.length ? S.FACES : ['small', 'mini', 'block', 'big']; }
 const CV_ALIGN = ['left', 'centre', 'right'];
 const CV_STYLE = ['line', 'bars', 'area'];
 let CV_ICONS = [];
@@ -2311,6 +2316,7 @@ $('host').addEventListener('keydown', e => { if (e.key === 'Enter') loadAll(); }
 S.ready().then(() => {
   // the preview runs transitions as the panel does; a snapshot still lands at once
   S.runTransitions(true);
+  fillNotifyFonts();
   requestAnimationFrame(draw);
   try { const t = localStorage.getItem('tc002tab-v2'); if (t && document.querySelector(`.tabbar button[data-tab="${t}"]`)) showTab(t); } catch {}
   // not awaited: a lan probe takes a second or so and the console must not wait on it

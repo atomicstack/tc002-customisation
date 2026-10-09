@@ -42,6 +42,8 @@ pub const Entry = struct {
     transition: transition.Spec,
     /// a document to draw instead of the text; the text is then only the summary
     doc: ?canvas.Document = null,
+    /// the face plain text is set in; a document carries its own
+    face: canvas.Font = .small,
 };
 
 /// the active entry is the arbiter's overlay, leaving seven slots for waiting entries.

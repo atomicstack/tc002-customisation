@@ -16,6 +16,7 @@ const arbiter = @import("../scene/arbiter.zig");
 const scene = @import("../scene/scene.zig");
 const clock = @import("../scene/clock.zig");
 const ip = @import("../scene/ip.zig");
+const canvas = @import("../scene/canvas.zig");
 
 /// what a quiet stream sends so the connection is exercised. a comment, ignored by every client.
 ///
@@ -94,7 +95,9 @@ pub fn event(out: []u8, a: messages.Applied, extra_age_ms: u32) []u8 {
             if (!w.str(out, &n, a.textSlice())) break :blk false;
             if (!w.add(out, &n, ",\"name\":")) break :blk false;
             if (!w.str(out, &n, a.name.slice())) break :blk false;
-            break :blk w.fmt(out, &n, ",\"colour\":\"{x:0>2}{x:0>2}{x:0>2}\",\"duration_s\":{d},\"stack\":{},\"hold\":{},\"rich\":{}", .{ a.colour[0], a.colour[1], a.colour[2], a.duration_s, a.stack, a.hold, a.rich });
+            if (!w.fmt(out, &n, ",\"colour\":\"{x:0>2}{x:0>2}{x:0>2}\",\"duration_s\":{d},\"stack\":{},\"hold\":{},\"rich\":{}", .{ a.colour[0], a.colour[1], a.colour[2], a.duration_s, a.stack, a.hold, a.rich })) break :blk false;
+            // the face only when it is not the default, so a mirror that predates faces sees nothing new
+            break :blk a.face == 0 or w.fmt(out, &n, ",\"font\":\"{s}\"", .{enumName(canvas.Font, a.face)});
         },
         .raw => w.fmt(out, &n, ",\"duration_s\":{d}", .{a.duration_s}),
         .brightness => if (a.ramp_ms != 0) w.fmt(out, &n, ",\"brightness\":{d},\"ramp_ms\":{d}", .{ a.brightness, a.ramp_ms }) else w.fmt(out, &n, ",\"brightness\":{d}", .{a.brightness}),

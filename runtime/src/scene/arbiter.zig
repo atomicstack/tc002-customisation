@@ -17,6 +17,7 @@ const ip = @import("ip.zig");
 const menu = @import("menu.zig");
 const canvas = @import("canvas.zig");
 const face = @import("face.zig");
+const clockfont = @import("clockfont.zig");
 const pages = @import("pages.zig");
 const param = @import("param.zig");
 pub const notification = @import("notification.zig");
@@ -53,6 +54,28 @@ test "notification text may be utf-8, but not a control character or a cut seque
     try expectRejected(a.apply(.{ .notify = .{ .text = "a\xc2\x85b", .colour = white, .duration_s = 5 } }, 0), .invalid_text);
     try expectRejected(a.apply(.{ .notify = .{ .text = "a\x7fb", .colour = white, .duration_s = 5 } }, 0), .invalid_text);
     try expectRejected(a.apply(.{ .notify = .{ .text = "cut \xe2\x82", .colour = white, .duration_s = 5 } }, 0), .invalid_text);
+}
+
+test "a plain notification in an imported face is centred both ways in that face" {
+    var a = fresh();
+    try std.testing.expectEqual(Result{ .applied = 1 }, a.apply(.{ .notify = .{ .text = "hi°", .colour = white, .duration_s = 5, .face = .chunky8 } }, 0));
+    var got: geometry.Rgb = undefined;
+    a.render(0, &got);
+    var expected = geometry.black_rgb;
+    const f = canvas.faceOf(.chunky8);
+    const w: i32 = @intCast(face.textWidth(f, "hi°"));
+    face.blit(&expected, @divFloor(geometry.width - w, 2), @divFloor(geometry.height - @as(i32, face.lineHeight(f)), 2), f, "hi°", clockfont.Solid{ .colour = white });
+    try std.testing.expectEqualSlices(u8, &expected, &got);
+    try std.testing.expectEqual(canvas.Font.chunky8, a.takeApplied().?.face);
+}
+
+test "a plain notification too wide for its face scrolls, measured in that face" {
+    var a = fresh();
+    _ = a.apply(.{ .notify = .{ .text = "12345678", .colour = white, .duration_s = 5 } }, 0);
+    try std.testing.expect(a.cadence(0) == .idle); // eight characters of small fit exactly
+    var b = fresh();
+    _ = b.apply(.{ .notify = .{ .text = "12345678", .colour = white, .duration_s = 5, .face = .phoenix } }, 0);
+    try std.testing.expect(b.cadence(0) != .idle); // phoenix is eight pixels a character
 }
 
 test "an accepted notification renders centred text, marks dirty, and expires to the base" {
@@ -684,7 +707,7 @@ pub const Outgoing = struct { base: Base, generator: scene.Generator, overlay: O
 pub const Command = union(enum) {
     set_base: Base,
     select_generator: scene.Generator,
-    notify: struct { text: []const u8, colour: [3]u8, duration_s: u16, name: []const u8 = "", stack: bool = false, hold: bool = false, doc: ?*const canvas.Document = null },
+    notify: struct { text: []const u8, colour: [3]u8, duration_s: u16, name: []const u8 = "", stack: bool = false, hold: bool = false, doc: ?*const canvas.Document = null, face: canvas.Font = .small },
     dismiss_notify: []const u8,
     raw: struct { rgb: *const geometry.Rgb, duration_s: u16 },
     /// one frame of a stream: the same overlay slot as `raw`, a deadline in milliseconds rather
@@ -760,6 +783,8 @@ pub const Statement = struct {
     rich: bool = false,
     /// a brightness that eases over this many milliseconds; 0 lands at once
     ramp_ms: u16 = 0,
+    /// the face a plain notification is set in
+    face: canvas.Font = .small,
 
     pub fn textSlice(self: *const Statement) []const u8 {
         return self.text[0..self.text_len];
@@ -920,6 +945,7 @@ pub const Arbiter = struct {
                 st.stack = n.stack;
                 st.hold = n.hold;
                 st.rich = n.doc != null;
+                st.face = n.face;
                 st.text_len = @intCast(@min(n.text.len, Statement.text_max));
                 @memcpy(st.text[0..st.text_len], n.text[0..st.text_len]);
             },
@@ -1002,7 +1028,7 @@ pub const Arbiter = struct {
                 if (!validDuration(n.duration_s)) return .{ .rejected = .invalid_duration };
                 if (n.name.len != 0 and !notification.validName(n.name)) return .{ .rejected = .invalid_name };
                 const t = spec orelse self.default_transition;
-                var o = Notify{ .text = undefined, .len = @intCast(n.text.len), .colour = n.colour, .name = notification.Name.init(n.name), .duration_s = n.duration_s, .hold = n.hold, .since_ns = now_ns, .until_ns = now_ns + @as(u64, n.duration_s) * s_ns, .transition = t, .doc = if (n.doc) |d| d.* else null };
+                var o = Notify{ .text = undefined, .len = @intCast(n.text.len), .colour = n.colour, .name = notification.Name.init(n.name), .duration_s = n.duration_s, .hold = n.hold, .since_ns = now_ns, .until_ns = now_ns + @as(u64, n.duration_s) * s_ns, .transition = t, .doc = if (n.doc) |d| d.* else null, .face = n.face };
                 @memcpy(o.text[0..n.text.len], n.text);
                 if (n.stack and self.overlay == .notify) {
                     if (!self.notifications.push(o)) return .{ .rejected = .queue_full };
@@ -1481,15 +1507,19 @@ pub const Arbiter = struct {
         }
         rgb.* = geometry.black_rgb;
         const text = n.text[0..n.len];
-        const w: i32 = @intCast(font.textWidth(text));
+        // centred both ways in its face: small sits at row 4, as it always has
+        const f = canvas.faceOf(n.face);
+        const y = @divFloor(geometry.height - @as(i32, face.lineHeight(f)), 2);
+        const painter = clockfont.Solid{ .colour = n.colour };
+        const w: i32 = @intCast(face.textWidth(f, text));
         if (w <= geometry.width) {
-            font.blit(rgb, @divFloor(geometry.width - w, 2), 4, text, n.colour);
+            face.blit(rgb, @divFloor(geometry.width - w, 2), y, f, text, painter);
         } else {
             // scroll in from the right edge, one pixel per period, wrapping after the text has left
             const span: u64 = @intCast(w + geometry.width);
             const steps = (self.last_tick_ns -| n.since_ns) / scroll_period_ns;
             const x: i32 = geometry.width - @as(i32, @intCast(steps % span));
-            font.blit(rgb, x, 4, text, n.colour);
+            face.blit(rgb, x, y, f, text, painter);
         }
     }
 
@@ -1503,7 +1533,7 @@ pub const Arbiter = struct {
         // so does a separator pulse, which the clock's own once-a-second cadence would miss entirely
         if (self.base == .clock and self.separatorPulsing(self.last_tick_ns)) return .{ .continuous = scene.frame_period_ns };
         return switch (self.overlay) {
-            .notify => |n| if (n.doc != null) self.notify_canvas.cadence(self.last_tick_ns) else if (font.textWidth(n.text[0..n.len]) > geometry.width) .{ .continuous = scroll_period_ns } else .idle,
+            .notify => |n| if (n.doc != null) self.notify_canvas.cadence(self.last_tick_ns) else if (face.textWidth(canvas.faceOf(n.face), n.text[0..n.len]) > geometry.width) .{ .continuous = scroll_period_ns } else .idle,
             .raw => .idle,
             .stream_arming, .none => switch (self.base) {
                 .art => self.art.cadence(),

@@ -86,6 +86,13 @@ SEED_LOG_LINES = [
 
 
 
+# the faces canvas text and a plain notification can be set in, in the runtime's wire order
+# (runtime/src/scene/canvas.zig's Font). typed out here, like the mock's other small lists
+FACES = ["small", "mini", "block", "big", "chunky6", "chunky6x", "light6", "light6x", "chunky8", "chunky8x",
+         "chunky8x6", "light8", "light8x", "light8x6", "tiny5", "tiny5-duo", "tiny5-mono", "phoenix",
+         "phoenix-2y", "phoenix-8x14", "ibm-iso8", "apricot-xenc", "robotron-a7100", "ibm-vga"]
+
+
 def valid_text(text):
     """the runtime's rule: 1..128 bytes of utf-8 without control characters (c0, del, c1)"""
     return isinstance(text, str) and 1 <= len(text.encode()) <= 128 and not any(ord(c) < 0x20 or 0x7f <= ord(c) <= 0x9f for c in text)
@@ -677,6 +684,8 @@ class Device:
             raise Reject(400, "invalid_duration", "duration_s must be 1..300")
         if body.get("colour") is not None and parse_colour(body["colour"]) is None:
             raise Reject(400, "invalid_colour", "colour must be rrggbb hex")
+        if body.get("font") is not None and body["font"] not in FACES:
+            raise Reject(400, "invalid_font", "no font by that name; CANVAS.md lists every face")
         self.check_epoch(body.get("epoch"), True)
         self.log("notification")
         return self.set_overlay("notify", d)
@@ -896,7 +905,7 @@ SCHEMAS = {
     "scene": ({"base", "generator", "seed", "clock", "ip", "transition", "direction", "transition_ms", "exit", "easing", "request_id", "epoch"}, {"base"}),
     "action": ({"action", "brightness", "seed", "power", "request_id", "epoch"}, {"action"}),
     "input": ({"control", "event", "steps", "request_id", "epoch"}, {"control", "event"}),
-    "notify": ({"text", "elements", "colour", "duration_s", "name", "stack", "hold", "transition", "direction", "transition_ms", "exit", "easing", "request_id", "epoch"}, set()),
+    "notify": ({"text", "font", "elements", "colour", "duration_s", "name", "stack", "hold", "transition", "direction", "transition_ms", "exit", "easing", "request_id", "epoch"}, set()),
     "config": ({"brightness", "base", "generator", "timezone", "ntp_server", "ntp_interval_s", "frame_timeout_ms",
                 "metrics_interval_s", "discovery", "discovery_controls", "discovery_prefix", "mdns", "expected_revision",
                 "clock_font", "clock_colour_mode", "clock_colour", "clock_colour2", "clock_gradient", "clock_spread",

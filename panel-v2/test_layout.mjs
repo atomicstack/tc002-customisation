@@ -209,6 +209,21 @@ test('the clock hours select offers what the runtime declares and reaches the de
   await waitFor(async () => { if (await cdp.eval(`CONFIG.clock.hours`) !== '24h') throw new Error('waiting to put it back'); return true; });
 });
 
+test('the notification card offers every face the runtime has, and sends the one picked',
+  { skip: chromeAvailable ? false : 'google chrome is not installed' }, async () => {
+  await waitFor(async () => {
+    if ((await cdp.eval(`document.getElementById('nfont').options.length`)) !== 24) throw new Error('waiting for the wasm');
+    return true;
+  });
+  assert.equal(await cdp.eval(`document.getElementById('nfont').value`), 'small');
+  assert.equal(await cdp.eval(`[...document.getElementById('nfont').options].map(o => o.value).join() === S.FACES.join()`), true);
+  await cdp.eval(`document.querySelector('[data-tab="send"]').click(); document.getElementById('ntext').value = '20°C'; document.getElementById('nfont').value = 'phoenix'; document.getElementById('nsend').click()`);
+  await waitFor(async () => {
+    if (await cdp.eval(`call('GET', 'status').then(s => s.overlay)`) !== 'notify') throw new Error('waiting for the notification');
+    return true;
+  });
+});
+
 // each control must be named by its own row: a select sitting beside two others under one shared
 // label reads as an anonymous box (the transition rows once put effect, direction and exit under a
 // single "Transition" label)

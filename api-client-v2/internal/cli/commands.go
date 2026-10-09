@@ -165,7 +165,7 @@ func addControl(root *cobra.Command, o *options) {
 		addFields(c, identityFields)
 		root.AddCommand(c)
 	}
-	notifyFields := slices.Concat(identityFields, transitionFields, []field{colourField("colour"), numberField("duration_s", 1, 300), textField("name"), boolField("stack"), boolField("hold")})
+	notifyFields := slices.Concat(identityFields, transitionFields, []field{colourField("colour"), numberField("duration_s", 1, 300), textField("name"), boolField("stack"), boolField("hold"), enumField("font", canvasFaces)})
 	notify := o.command("notify [text]", "show a temporary notification: text, or a canvas document with --data", 0, func(c *cobra.Command, args []string) (operation, error) {
 		// --data carries a document (and any other notify field) and, like everywhere else, does
 		// not mix with the field flags; the text argument is then the summary the events carry

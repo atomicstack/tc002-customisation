@@ -606,7 +606,7 @@ const Netd = struct {
             .input => |i| self.relay(c, .{ .inject_input = .{ .control = @backingInt(i.control), .event = @backingInt(i.event), .steps = i.steps } }, i.request_id, i.epoch orelse 0, now),
             .dismiss_notify => |n| self.relay(c, .{ .dismiss_notify = notification.Name.init(n.name) }, n.request_id, n.epoch orelse 0, now),
             .notify => |n| {
-                const base = messages.Notify.init(n.text, n.colour, n.duration_s, messages.Transition.fromSpec(n.transition)).withOptions(n.name, n.stack, n.hold);
+                const base = messages.Notify.init(n.text, n.colour, n.duration_s, messages.Transition.fromSpec(n.transition)).withOptions(n.name, n.stack, n.hold).withFont(n.font);
                 if (n.doc) |d| self.relay(c, .{ .notify_rich = .{ .notify = base, .doc = d } }, n.request_id, n.epoch orelse 0, now) else self.relay(c, .{ .notify = base }, n.request_id, n.epoch orelse 0, now);
             },
             .frame => |f| {
@@ -1911,7 +1911,7 @@ const Netd = struct {
                 .sound_stop => self.mqttRelay(.{ .sound_cmd = messages.SoundCmd.init(.stop, "", 0, false) }, self.newId(), 0, now),
                 .dismiss_notify => |n| self.mqttRelay(.{ .dismiss_notify = notification.Name.init(n.name) }, n.request_id, n.epoch orelse 0, now),
                 .notify => |n| {
-                    const base = messages.Notify.init(n.text, n.colour, n.duration_s, messages.Transition.fromSpec(n.transition)).withOptions(n.name, n.stack, n.hold);
+                    const base = messages.Notify.init(n.text, n.colour, n.duration_s, messages.Transition.fromSpec(n.transition)).withOptions(n.name, n.stack, n.hold).withFont(n.font);
                     if (n.doc) |d| self.mqttRelay(.{ .notify_rich = .{ .notify = base, .doc = d } }, n.request_id, n.epoch orelse 0, now) else self.mqttRelay(.{ .notify = base }, n.request_id, n.epoch orelse 0, now);
                 },
                 .config_patch => |cp| {

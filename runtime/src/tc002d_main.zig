@@ -421,7 +421,7 @@ const Renderer = struct {
                 break :blk arb.apply(.{ .set_ip_mode = mode }, now);
             },
             .dismiss_notify => |name| arb.apply(.{ .dismiss_notify = name.slice() }, now),
-            .notify => |n| arb.applyWith(.{ .notify = .{ .text = n.slice(), .colour = n.colour, .duration_s = n.duration_s, .name = n.name.slice(), .stack = n.stack, .hold = n.hold } }, n.transition.toSpec(), now),
+            .notify => |n| arb.applyWith(.{ .notify = .{ .text = n.slice(), .colour = n.colour, .duration_s = n.duration_s, .name = n.name.slice(), .stack = n.stack, .hold = n.hold, .face = n.font } }, n.transition.toSpec(), now),
             .notify_rich => |*r| arb.applyWith(.{ .notify = .{ .text = r.notify.slice(), .colour = r.notify.colour, .duration_s = r.notify.duration_s, .name = r.notify.name.slice(), .stack = r.notify.stack, .hold = r.notify.hold, .doc = &r.doc } }, r.notify.transition.toSpec(), now),
             .frame => |f| arb.applyWith(.{ .raw = .{ .rgb = &f.rgb, .duration_s = f.duration_s } }, f.transition.toSpec(), now),
             .brightness => |b| if (b.ramp_ms > 0) arb.apply(.{ .brightness_ramp = .{ .value = b.value, .ms = b.ramp_ms } }, now) else arb.apply(.{ .brightness = b.value }, now),

@@ -906,6 +906,8 @@ pub const Applied = struct {
     rich: bool = false,
     /// a brightness eased over this many milliseconds; 0 lands at once
     ramp_ms: u16 = 0,
+    /// a plain notification's face, as canvas.Font's number
+    face: u8 = 0,
     text_len: u8 = 0,
     text: [arbiter.Statement.text_max]u8 = @splat(0),
 
@@ -933,6 +935,7 @@ pub const Applied = struct {
             .name = st.name,
             .stack = st.stack,
             .hold = st.hold,
+            .face = @backingInt(st.face),
             .rich = st.rich,
             .ramp_ms = st.ramp_ms,
         };
@@ -962,7 +965,7 @@ pub const Applied = struct {
         out[o] = self.text_len;
         o += 1;
         @memcpy(out[o..][0..arbiter.Statement.text_max], &self.text);
-        putNotificationOptions(out[o + arbiter.Statement.text_max ..], self.name, self.stack, self.hold);
+        putNotificationOptions(out[o + arbiter.Statement.text_max ..], self.name, self.stack, self.hold, enumFromInt(canvas.Font, self.face) orelse .small);
         out[o + arbiter.Statement.text_max + notification_options_len] = @intFromBool(self.rich);
         std.mem.writeInt(u16, out[o + arbiter.Statement.text_max + notification_options_len + rich_len ..][0..2], self.ramp_ms, .big);
     }
@@ -991,8 +994,9 @@ pub const Applied = struct {
         @memcpy(&a.text, b[o..][0..arbiter.Statement.text_max]);
         const options = b[o + arbiter.Statement.text_max ..];
         a.name = arbiter.notification.Name.init(options[1..][0..options[0]]);
-        a.stack = options[notification_options_len - 1] & 1 != 0;
-        a.hold = options[notification_options_len - 1] & 2 != 0;
+        a.stack = options[options_flags_at] & 1 != 0;
+        a.hold = options[options_flags_at] & 2 != 0;
+        a.face = options[options_face_at];
         a.rich = options[notification_options_len] != 0;
         a.ramp_ms = std.mem.readInt(u16, options[notification_options_len + rich_len ..][0..2], .big);
         return a;
@@ -1328,12 +1332,17 @@ pub const Brightness = struct {
 pub const Reseed = struct { seed: u32 };
 pub const IpChanged = struct { present: u8, addr: [4]u8 };
 
-const notification_options_len = arbiter.notification.name_max + 2;
+// the notification options, in this order: the name's length, the name padded to `name_max`, the
+// stack and hold flags, and the face plain text is set in
+const options_flags_at = 1 + arbiter.notification.name_max;
+const options_face_at = options_flags_at + 1;
+const notification_options_len = options_face_at + 1;
 
-fn putNotificationOptions(out: []u8, name: arbiter.notification.Name, stack: bool, hold: bool) void {
+fn putNotificationOptions(out: []u8, name: arbiter.notification.Name, stack: bool, hold: bool, font: canvas.Font) void {
     out[0] = name.len;
     @memcpy(out[1..][0..arbiter.notification.name_max], &name.bytes);
-    out[notification_options_len - 1] = @as(u8, @intFromBool(stack)) | (@as(u8, @intFromBool(hold)) << 1);
+    out[options_flags_at] = @as(u8, @intFromBool(stack)) | (@as(u8, @intFromBool(hold)) << 1);
+    out[options_face_at] = @backingInt(font);
 }
 
 /// the notify payload: colour, duration, transition, the text, then the queue options -- which a
@@ -1346,13 +1355,14 @@ fn putNotify(out: []u8, n: Notify, always_options: bool) usize {
     out[Notify.len_at] = n.len;
     @memcpy(out[Notify.text_at .. Notify.text_at + @as(usize, n.len)], n.text[0..n.len]);
     const end = Notify.text_at + @as(usize, n.len);
-    if (!always_options and n.name.len == 0 and !n.stack and !n.hold) return end;
-    putNotificationOptions(out[end..], n.name, n.stack, n.hold);
+    if (!always_options and n.name.len == 0 and !n.stack and !n.hold and n.font == .small) return end;
+    putNotificationOptions(out[end..], n.name, n.stack, n.hold, n.font);
     return end + notification_options_len;
 }
 
 fn validNotificationOptions(b: []const u8) bool {
-    if (b.len != notification_options_len or b[0] > arbiter.notification.name_max or b[notification_options_len - 1] > 3) return false;
+    if (b.len != notification_options_len or b[0] > arbiter.notification.name_max or b[options_flags_at] > 3) return false;
+    if (enumFromInt(canvas.Font, b[options_face_at]) == null) return false;
     return b[0] == 0 or arbiter.notification.validName(b[1..][0..b[0]]);
 }
 
@@ -1365,9 +1375,11 @@ pub const Notify = struct {
     len: u8,
     text: [128]u8,
     transition: Transition = .{},
+    /// the face the text is set in; a rich notification's document carries its own
+    font: canvas.Font = .small,
 
     // on the wire in this order: colour, duration_s, the transition, len, the text, then the
-    // optional name and flags
+    // optional name, flags and face
     const transition_at = 3 + 2;
     const len_at = transition_at + Transition.wire_len;
     const text_at = len_at + 1;
@@ -1375,6 +1387,12 @@ pub const Notify = struct {
     pub fn init(text: []const u8, colour: [3]u8, duration_s: u16, t: Transition) Notify {
         var n = Notify{ .colour = colour, .duration_s = duration_s, .len = @intCast(text.len), .text = @splat(0), .transition = t };
         @memcpy(n.text[0..text.len], text);
+        return n;
+    }
+
+    pub fn withFont(self: Notify, font: canvas.Font) Notify {
+        var n = self;
+        n.font = font;
         return n;
     }
 
@@ -2798,7 +2816,7 @@ fn encodePayload(msg: Message, out: []u8) usize {
             return o + d;
         },
         .dismiss_notify => |name| {
-            putNotificationOptions(out, name, false, false);
+            putNotificationOptions(out, name, false, false, .small);
             return notification_options_len;
         },
         .frame => |f| {
@@ -3382,8 +3400,8 @@ pub fn decodePacket(bytes: []const u8) Error!Packet {
             if (p.len > end) {
                 const options = p[end..];
                 if (!validNotificationOptions(options)) return error.BadPayload;
-                const flags = options[notification_options_len - 1];
-                n = n.withOptions(options[1..][0..options[0]], flags & 1 != 0, flags & 2 != 0);
+                const flags = options[options_flags_at];
+                n = n.withOptions(options[1..][0..options[0]], flags & 1 != 0, flags & 2 != 0).withFont(enumFromInt(canvas.Font, options[options_face_at]).?);
             }
             break :blk .{ .notify = n };
         },
@@ -3394,8 +3412,8 @@ pub fn decodePacket(bytes: []const u8) Error!Packet {
             if (len > 128 or p.len < end + notification_options_len) return error.BadPayload;
             const options = p[end .. end + notification_options_len];
             if (!validNotificationOptions(options)) return error.BadPayload;
-            const flags = options[notification_options_len - 1];
-            const n = Notify.init(p[Notify.text_at..end], p[0..3].*, std.mem.readInt(u16, p[3..5], .big), Transition.get(p[Notify.transition_at..Notify.len_at])).withOptions(options[1..][0..options[0]], flags & 1 != 0, flags & 2 != 0);
+            const flags = options[options_flags_at];
+            const n = Notify.init(p[Notify.text_at..end], p[0..3].*, std.mem.readInt(u16, p[3..5], .big), Transition.get(p[Notify.transition_at..Notify.len_at])).withOptions(options[1..][0..options[0]], flags & 1 != 0, flags & 2 != 0).withFont(enumFromInt(canvas.Font, options[options_face_at]).?);
             const rest = p[end + notification_options_len ..];
             const dlen = canvas.encodedLen(rest) orelse return error.BadPayload;
             if (rest.len != dlen) return error.BadPayload;
@@ -3404,7 +3422,7 @@ pub fn decodePacket(bytes: []const u8) Error!Packet {
             break :blk .{ .notify_rich = .{ .notify = n, .doc = doc } };
         },
         .dismiss_notify => blk: {
-            if (!validNotificationOptions(p) or p[notification_options_len - 1] != 0) return error.BadPayload;
+            if (!validNotificationOptions(p) or p[options_flags_at] != 0 or p[options_face_at] != 0) return error.BadPayload;
             break :blk .{ .dismiss_notify = arbiter.notification.Name.init(p[1..][0..p[0]]) };
         },
         .frame => blk: {
@@ -3527,6 +3545,35 @@ test "notification queue options survive ipc" {
     try std.testing.expectEqualDeep(n, p.message.notify);
 }
 
+test "a notification's face survives ipc, and forces the options a default face leaves off" {
+    var buf: [codec.max_message]u8 = undefined;
+    const n = Notify.init("20°C", .{ 1, 2, 3 }, 7, .{}).withFont(.phoenix);
+    const bytes = try encodePacket(.{ .notify = n }, 42, 7, &buf);
+    try std.testing.expectEqual(@as(usize, codec.header_len + Notify.text_at + "20°C".len + notification_options_len), bytes.len);
+    try std.testing.expectEqualDeep(n, (try decodePacket(bytes)).message.notify);
+    const both = Notify.init("door", .{ 1, 2, 3 }, 7, .{}).withOptions("door", true, false).withFont(.@"ibm-vga");
+    try std.testing.expectEqualDeep(both, (try decodePacket(try encodePacket(.{ .notify = both }, 1, 1, &buf))).message.notify);
+}
+
+test "a face byte this build does not know is refused" {
+    var payload: [512]u8 = undefined;
+    var packet: [codec.max_message]u8 = undefined;
+    const len = encodePayload(.{ .notify = Notify.init("hi", .{ 1, 2, 3 }, 5, .{}).withFont(.tiny5) }, &payload);
+    payload[len - 1] = @typeInfo(canvas.Font).@"enum".field_names.len;
+    const bytes = try codec.encode(.{ .kind = @backingInt(Kind.notify), .request_id = 0, .epoch = 0, .payload_len = @intCast(len) }, payload[0..len], &packet);
+    try std.testing.expectError(error.BadPayload, decodePacket(bytes));
+}
+
+test "an applied notification carries its face, and says so only when it is not the default" {
+    var buf: [codec.max_message]u8 = undefined;
+    const applied = Applied.init(.{ .kind = .notify, .face = .chunky8 }, .api, 0);
+    try std.testing.expectEqualDeep(applied, (try decodePacket(try encodePacket(.{ .applied = applied }, 4, 9, &buf))).message.applied);
+    var ev: [1024]u8 = undefined;
+    const sse = @import("../net/sse.zig");
+    try std.testing.expect(std.mem.indexOf(u8, sse.event(&ev, applied, 0), "\"font\":\"chunky8\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, sse.event(&ev, Applied.init(.{ .kind = .notify }, .api, 0), 0), "\"font\"") == null);
+}
+
 test "notification queue options survive applied events" {
     const st = arbiter.Statement{ .kind = .notify, .name = arbiter.notification.Name.init("door"), .stack = true, .hold = true };
     var buf: [1024]u8 = undefined;
@@ -3575,7 +3622,7 @@ test "notification ipc rejects malformed lengths names and flags" {
     payload[end + 1] = '/';
     try Cases.rejected(payload[0..len], &packet);
     payload[end + 1] = 'd';
-    payload[len - 1] = 4;
+    payload[end + options_flags_at] = 4;
     try Cases.rejected(payload[0..len], &packet);
 }
 

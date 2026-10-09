@@ -1553,7 +1553,7 @@ read-only storage; connection buffers stay the same size.
 | `GET` | `/scenes` | `status` | | the static catalogue: bases, generators, notification and frame bounds |
 | `PUT` | `/scene` | `display` | `{"base":"clock\|art\|canvas","generator":"popsquares\|plasma\|cube\|terrain"?,"seed":u32?,"clock":{"font","colour_mode","colour","colour2","gradient","spread","digits","fade","hours"}?,"request_id":hex?,"epoch":u32?}` | `{"status":"applied","revision":n,"epoch":n,"request_id":…}` |
 | `POST` | `/action` | `display` | `{"action":"brightness\|reseed\|arm_stream","brightness":1..100?,"seed":u32?,"request_id":hex?,"epoch":u32?}` | as above |
-| `POST` | `/notify` | `notify` | `{"text":"…"?,"elements":[…]?,"colour":"rrggbb"?,"duration_s":1..300?,"name":"door"?,"stack":bool?,"hold":bool?,"request_id":hex?,"epoch":u32?}` (`duration_s` defaults to 5; `stack` and `hold` default false; `elements` is a [canvas document](#the-canvas), and then `text` is optional) | as above; `409 queue_full` if appending would exceed eight notifications; the canvas's own codes for a bad element |
+| `POST` | `/notify` | `notify` | `{"text":"…"?,"font":"…"?,"elements":[…]?,"colour":"rrggbb"?,"duration_s":1..300?,"name":"door"?,"stack":bool?,"hold":bool?,"request_id":hex?,"epoch":u32?}` (`duration_s` defaults to 5; `stack` and `hold` default false; `font` is any canvas face and defaults to `small`; `elements` is a [canvas document](#the-canvas), and then `text` is optional) | as above; `409 queue_full` if appending would exceed eight notifications; the canvas's own codes for a bad element |
 | `POST` | `/notify/dismiss` | `notify` | `{"name":"door"?,"request_id":hex?,"epoch":u32?}` (omit `name` for current; empty name is invalid) | as above; missing matches are successful no-ops |
 | `POST` | `/frame?duration_s=` (`request_id`, `epoch` optional) | `display` | `application/octet-stream`, exactly 2,496 bytes | as above |
 | `POST` | `/action` (`"action":"power"`) | `display` | `{"action":"power","power":true\|false,"request_id":hex?,"epoch":u32?}` | as above; fades over 600 ms |
@@ -1771,7 +1771,8 @@ with no special cases of its own.
 holds, never which pixels: 2,496 bytes per statement would not fit the ipc, and a
 mirror that wants them can read `/screen`. a document notification is published
 the same way: `rich: true`, its name, its timing and its summary text, never its
-elements, and there is no route that reads the active notification back, so a
+elements. a plain notification set in a face other than `small` says which (`font`); one in
+`small` says nothing, so a mirror older than the faces sees no new field. there is no route that reads the active notification back, so a
 mirror draws what it sent itself and a summary for what it did not. a stream frame does not appear at all,
 because it deliberately does not move the revision — which is also what stops
 sixty frames a second from flooding the stream. `api` does not distinguish http
