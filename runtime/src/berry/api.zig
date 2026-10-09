@@ -192,13 +192,29 @@ fn textFn(vm: ?*Bvm) callconv(.c) c_int {
     const y: i16 = @intCast(argInt(v, 2, 0));
     const text = argText(v, 3);
     if (text.len == 0) return refuse(v, "text needs something to say");
+    if (!face.validText(text)) return refuse(v, "text must be utf-8 without control characters");
     const colour = argColour(v, 4, .{ 255, 255, 255 });
+    const f = argFace(v, 5) orelse return refuse(v, "no face by that name; CANVAS.md lists them");
     const span = doc.addText(text) catch return refuse(v, "the document's text pool is full");
     return addElement(v, .{
         .box = .{ .x = x, .y = y, .w = 0, .h = 0 },
         .colour = colour,
-        .body = .{ .text = .{ .span = span, .face = .small, .alignment = .left } },
+        .body = .{ .text = .{ .span = span, .face = f, .alignment = .left } },
     });
+}
+
+/// a face by name, `small` when the argument is left off; null for a name no face has
+fn argFace(vm: *Bvm, index: c_int) ?canvas.Font {
+    if (index > be_top(vm) or be_isnil(vm, index)) return .small;
+    return std.meta.stringToEnum(canvas.Font, argText(vm, index));
+}
+
+/// how many columns `text` takes in a face, so a script can centre or right-align it
+fn textWidthFn(vm: ?*Bvm) callconv(.c) c_int {
+    const v = vm.?;
+    const f = argFace(v, 2) orelse return refuse(v, "no face by that name; CANVAS.md lists them");
+    be_pushint(v, face.textWidth(canvas.faceOf(f), argText(v, 1)));
+    return be_returnvalue(v);
 }
 
 fn iconFn(vm: ?*Bvm) callconv(.c) c_int {
@@ -324,6 +340,7 @@ const bindings = [_]Binding{
     .{ .name = "_panel_pixel", .f = pixelFn },
     .{ .name = "_panel_rect", .f = rectFn },
     .{ .name = "_panel_text", .f = textFn },
+    .{ .name = "_panel_text_width", .f = textWidthFn },
     .{ .name = "_panel_icon", .f = iconFn },
     .{ .name = "_panel_show", .f = showFn },
     .{ .name = "_panel_stream", .f = streamFn },
@@ -363,6 +380,7 @@ pub const prelude =
     \\panel.pixel = _panel_pixel
     \\panel.rect = _panel_rect
     \\panel.text = _panel_text
+    \\panel.text_width = _panel_text_width
     \\panel.icon = _panel_icon
     \\panel.show = _panel_show
     \\panel.stream = _panel_stream

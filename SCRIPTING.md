@@ -121,16 +121,17 @@ or queue-listing api. sound playback is unchanged and remains separate:
 | `panel.clear()` | | empties the document being built |
 | `panel.pixel(x, y, colour)` | colour defaults white | |
 | `panel.rect(x, y, w, h, colour, filled)` | `w`,`h` default 1; colour white; `filled` 0 | `filled` non-zero fills, otherwise it outlines |
-| `panel.text(x, y, text, colour)` | colour defaults white | always the 5×7 `small` face: eight characters is a full line |
+| `panel.text(x, y, text, colour, font)` | colour defaults white; `font` defaults `small` | `font` names any face in [`CANVAS.md`](CANVAS.md) (`'mini'`, `'phoenix'`, `'tiny5-duo'` …); an unknown name raises. text is utf-8 |
+| `panel.text_width(text, font)` | `font` defaults `small` | the columns `text` takes in that face, so a script can centre (`(52 - w) / 2`) or right-align it |
 | `panel.icon(x, y, name, colour)` | colour defaults white | `name` from `GET /icons` |
 | `panel.show()` | | install what you drew as the canvas document |
 | `panel.stream()` | | ask for the frame stream |
 | `panel.push()` | | send one frame, up to sixty a second |
 
-a document holds **twenty-four elements and 256 bytes of text**, whichever runs out first, and a
-script draws in one font: the four faces in [`CANVAS.md`](CANVAS.md) belong to documents sent over
-http, and `panel.text` is always the small one. so a chart drawn from a script is a dozen columns
-rather than fifty-two, and a label is eight characters rather than a sentence.
+a document holds **twenty-four elements and 256 bytes of text**, whichever runs out first. a
+script sets its text in any face a document sent over http can use: `small` gets eight characters
+across, `mini` thirteen, the matrix faces and `tiny5` twelve or thirteen of lowercase, and the
+cp437 faces six.
 
 the panel is 52×16. `panel.show()` and `panel.push()` are two different things
 and the difference matters — see [drawing](#drawing-two-ways).
