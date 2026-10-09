@@ -907,7 +907,7 @@ pub const State = struct {
                     const start = pos;
                     const cp = typeface.nextCodepoint(text, &pos);
                     const lands_at: u32 = @intCast((n + 1) * 256 / count);
-                    if (p >= lands_at or cp == ' ') { // a space is not a character to guess pos
+                    if (p >= lands_at or cp == ' ') { // a space is not a character to guess at
                         @memcpy(buf[out..][0 .. pos - start], text[start..pos]);
                         out += pos - start;
                     } else {
@@ -918,12 +918,12 @@ pub const State = struct {
                 return buf[0..out];
             },
             .typewriter => {
-                // a whole character pos a time: half a utf-8 sequence would draw as a replacement
+                // a whole character at a time: half a utf-8 sequence would draw as a replacement
                 const p = progress(e.anim, elapsed_ms);
                 const want = (characters(text) * p) / 256;
                 var pos: usize = 0;
                 var n: usize = 0;
-                while (i < text.len and n < want) : (n += 1) _ = typeface.nextCodepoint(text, &pos);
+                while (pos < text.len and n < want) : (n += 1) _ = typeface.nextCodepoint(text, &pos);
                 @memcpy(buf[0..pos], text[0..pos]);
                 return buf[0..pos];
             },
@@ -1184,6 +1184,17 @@ test "text in an imported face draws what face.zig draws, aligned and clipped li
     expected = geometry.black_rgb;
     typeface.blit(&expected, geometry.width - w, 0, .{ .imported = .chunky8 }, "Hi°", clockfont.Solid{ .colour = white });
     try std.testing.expectEqualSlices(u8, &expected, &rgb);
+}
+
+test "typewriter text appears wherever its element sits in the document" {
+    // the element index once stood in for the text position: a text shorter than its index never typed
+    var s = State{};
+    for (0..3) |_| try s.doc.add(.{ .colour = white, .body = .{ .rect = .{} } });
+    const span = try s.doc.addText("Hi");
+    try s.doc.add(.{ .colour = white, .body = .{ .text = .{ .span = span } }, .anim = .{ .kind = .typewriter, .ms = 1000 } });
+    var buf: [text_pool]u8 = undefined;
+    try std.testing.expectEqualStrings("H", s.animatedText(3, 500, &buf));
+    try std.testing.expectEqualStrings("Hi", s.animatedText(3, 5000, &buf));
 }
 
 test "typewriter and scramble never split a utf-8 character" {
