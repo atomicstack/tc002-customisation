@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
-# tc002-notice.sh: the one "Updating..." the panel shows for every kind of update.
+# tc002-notice.sh: the notice the panel shows for every kind of update: "Updating..." for an
+# in-place update, "Flashing..." for a flash (the flasher passes the word).
 #
-#   runtime/tools/tc002-notice.sh <host[:port]> <token-file> show
+#   runtime/tools/tc002-notice.sh <host[:port]> <token-file> show [text]
 #   runtime/tools/tc002-notice.sh <host[:port]> <token-file> restore [--once]
 #
 # `show` posts the notice as a **held notification named `updating`**: a canvas document (the
@@ -45,9 +46,12 @@ admin=$(token_of)
 
 case "$verb" in
   show)
+    # 13 characters fit the mini face; the word goes into json as is, so no quotes or backslashes
+    text=${1:-Updating...}
+    [[ ${#text} -le 13 && $text != *[\"\\]* ]] || { echo "tc002-notice.sh: the notice must be 13 plain characters at most" >&2; exit 2; }
     api POST /notify '{"name":"updating","hold":true,"elements":[
         {"id":"l1","type":"text","at":[0,5],"size":[52,5],"font":"mini","align":"centre","colour":"ff8000",
-         "text":"Updating...","animate":{"kind":"pulse","ms":1600}}]}' | grep -q applied \
+         "text":"'"$text"'","animate":{"kind":"pulse","ms":1600}}]}' | grep -q applied \
         || { echo "tc002-notice.sh: the runtime did not take the notice" >&2; exit 1; }
     sleep 1   # let it be drawn and latched before anything kills the renderer
     ;;

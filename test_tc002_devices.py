@@ -524,6 +524,34 @@ class UpdateScriptTests(unittest.TestCase):
             self.assertTrue((root / "tokens-10.0.0.7").exists())
 
 
+class NoticeScriptTests(unittest.TestCase):
+    """the panel says which kind of update it is: in place reads updating, a flash flashing."""
+
+    def show(self, *extra):
+        with tempfile.TemporaryDirectory() as d:
+            log = Path(d) / "curl.log"
+            curl = Path(d) / "curl"
+            curl.write_text(f'#!/usr/bin/env bash\nprintf "%s\\n" "$*" >> {log}\necho \'{{"applied":1}}\'\n')
+            curl.chmod(0o755)
+            tokens = Path(d) / "tokens"
+            tokens.write_text("admin=" + "a" * 64 + "\n")
+            r = subprocess.run([str(ROOT / "runtime/tools/tc002-notice.sh"), "10.0.0.9", str(tokens), "show", *extra],
+                               env={**os.environ, "CURL": str(curl)}, capture_output=True, text=True, timeout=30)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            return log.read_text()
+
+    def test_show_reads_updating_by_default(self):
+        sent = self.show()
+        self.assertIn('"text":"Updating..."', sent)
+        self.assertIn('"name":"updating"', sent)
+
+    def test_a_flash_reads_flashing(self):
+        sent = self.show("Flashing...")
+        self.assertIn('"text":"Flashing..."', sent)
+        self.assertNotIn("Updating", sent)
+        self.assertIn('"name":"updating"', sent, "still dismissed by the one name")
+
+
 class RunScriptTests(unittest.TestCase):
     def test_halt_kills_the_runtime_without_a_black_frame_or_a_hand_back(self):
         # `stop` sends sigterm (a paced black frame) and restarts zkswe; `halt` is for an update:

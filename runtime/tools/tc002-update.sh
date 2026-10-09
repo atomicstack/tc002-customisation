@@ -10,7 +10,8 @@
 #                blank for ten to fifteen seconds of it, and permanent until the next flash.
 #                for keeping a build.
 #
-# every update, of either kind, puts "updating" on the panel before the panel is taken away.
+# every update, of either kind, puts a notice on the panel before the panel is taken away:
+# "Updating..." in place, "Flashing..." for a flash.
 #
 #   runtime/tools/tc002-update.sh --in-place [--device IP[:PORT]] [--no-build]
 #                                            [--keep-settings|--reset-settings] [--tz ZONE]
@@ -346,7 +347,7 @@ flash() {
     "$HERE/tc002-mkimage.sh" "$base_image" "$img" "$work/mkimage" > "$work/mkimage.log" 2>&1 \
         || { tail -20 "$work/mkimage.log"; die "image build failed; the log is $work/mkimage.log"; }
     echo "   $img ($(wc -c < "$img" | tr -d ' ') bytes)"
-    # the flasher puts "Updating..." on the panel itself, and this script never passes --no-notice
+    # the flasher puts "Flashing..." on the panel itself, and this script never passes --no-notice
     local tf
     tf=$(token_file) || warn "no token file for $ip; the flasher cannot put its notice on the panel"
     say "flash"

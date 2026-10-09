@@ -1278,7 +1278,7 @@ It goes out as a stream frame, so it touches no persisted state, and it is held
 for ten seconds, far longer than the wait, so that **if the exec fails the notice
 expires by itself** and the clock returns rather than the device sitting on a
 lie. A battery notice due in the same window stands aside. The updaters'
-`Updating...` is a held notification named `updating` for a related reason: a
+`Updating...` (in place) and `Flashing...` (a flash) are one held notification named `updating` for a related reason: a
 notification lives in the renderer's memory, so the restart or reboot that ends
 the update drops it, and nothing is left on the canvas.
 

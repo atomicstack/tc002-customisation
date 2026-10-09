@@ -81,7 +81,7 @@ authenticated api of its own. around it:
   clocks are never "the device".
 - **`tc002-update.sh`**, which puts a build on a clock either `--in-place` (no
   reboot, gone on the next power cycle) or `--flash` (reboots, permanent), with
-  "updating" on the panel either way.
+  "updating" on the panel in place and "flashing..." for a flash.
 - **`led/`** and **`led-zig/`**, standalone generative-art renderers that talk
   to the panel over spi directly — the experiments the runtime's renderer grew
   out of.
@@ -123,7 +123,7 @@ tools:
 | [`panel/`](panel/) | an english web control panel for the device (the stock ui is chinese-only) |
 | [`mqtt-check.py`](mqtt-check.py) | verify mosquitto broker credentials from the raw mqtt connack code |
 | [`tc002-ntp-patch.py`](tc002-ntp-patch.py) | make the clock sync every n minutes instead of every 2 h, and/or from your own ntp server — patches the app library in tmpfs, nothing in flash |
-| [`runtime/tools/tc002-update.sh`](runtime/tools/tc002-update.sh) | put a build on a clock that already runs the runtime, and say which kind of update: `--in-place` (no reboot; `/tmp`, gone on the next power cycle) or `--flash` (reboots; the `res` partition, permanent). "updating" on the panel first, either way. `tc002-up.sh` is `--in-place` under its old name |
+| [`runtime/tools/tc002-update.sh`](runtime/tools/tc002-update.sh) | put a build on a clock that already runs the runtime, and say which kind of update: `--in-place` (no reboot; `/tmp`, gone on the next power cycle) or `--flash` (reboots; the `res` partition, permanent). "updating" on the panel first in place, "flashing..." for a flash. `tc002-up.sh` is `--in-place` under its old name |
 | [`runtime/tools/tc002-flash.sh`](runtime/tools/tc002-flash.sh) | the flashing step itself, called by `tc002-update.sh --flash` and by the onboarding script: flash an `UPDATE.img` to the `res` partition: backs up `mtd3` first, refuses to continue unless the backup unpacks, prefers usb, and puts a notice on the panel. the only thing here that writes to flash |
 | [`runtime/tools/tc002-mkimage.sh`](runtime/tools/tc002-mkimage.sh) | assemble that image from your device's own `res` plus the runtime, the bootstrap, busybox and the boot scripts |
 | [`runtime/tools/tc002-mkbusybox.sh`](runtime/tools/tc002-mkbusybox.sh) | build the static armv7 busybox the image needs, from a pinned upstream tarball — the vendor's own has no `udhcpc` |

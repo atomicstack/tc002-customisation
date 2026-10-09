@@ -208,7 +208,7 @@ fi
 
 
 # ---------------------------------------------------------------- the notice
-# put a pulsing "Updating..." on the panel before the flash starts.
+# put a pulsing "Flashing..." on the panel before the flash starts.
 #
 # the panel freezes for ten to fifteen seconds and the device is unreachable for about twenty,
 # with nothing on screen to say why. it holds its last latched frame while nothing drives it, so
@@ -220,7 +220,7 @@ fi
 # one is captured first and restored at the end -- otherwise the device comes back from the reboot
 # still showing "DO NOT UNPLUG" and never returns to the clock.
 #
-# the `mini` face is 3x5 and fits 13 characters; "Updating..." is 11. it has one set of
+# the `mini` face is 3x5 and fits 13 characters; "Flashing..." is 11. it has one set of
 # letterforms for both cases, so the capital here is for the reader of this script rather than the
 # panel, and it does carry `.`, so the ellipsis survives.
 #
@@ -261,10 +261,10 @@ show_notice() {
     api_ready=1
     # the notice itself lives in tc002-notice.sh, shared with the in-place update, so the two
     # kinds of update show the same thing: a held notification the reboot drops by itself
-    "$HERE/tc002-notice.sh" "127.0.0.1:$API_PORT" "$TOKENS" show 2>/dev/null \
+    "$HERE/tc002-notice.sh" "127.0.0.1:$API_PORT" "$TOKENS" show "Flashing..." 2>/dev/null \
         || { warn "the runtime did not take the notice; skipping it"; return 0; }
     noticed=1
-    say "panel now reads Updating..."
+    say "panel now reads Flashing..."
 }
 
 restore_scene() {
@@ -278,7 +278,7 @@ restore_scene() {
         fi
         sleep 3
     done
-    warn "the panel may still read Updating... if the flash did not reboot the clock"
+    warn "the panel may still read Flashing... if the flash did not reboot the clock"
     warn "take it down with: api-client-v2/bin/tc002 -s <ip> --token-file $TOKENS dismiss updating"
 }
 # the restore has to happen even if the wait loop gives up or the script is interrupted, or the

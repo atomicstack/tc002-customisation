@@ -320,7 +320,8 @@ does not reboot: the binaries go to `/tmp/tc002` and the runtime restarts in pla
 with the panel dark for three, and the previous build is back on the next power cycle because `/tmp`
 is a ramdisk. **`--flash`** reboots: an image built for the `res` partition is written by the
 vendor's flasher, a minute with the panel blank for ten to fifteen seconds, and permanent. every
-update of either kind puts "updating" on the panel before the panel goes. `tc002-up.sh` is the
+update of either kind puts a notice on the panel before the panel goes: "updating" in place,
+"flashing..." for a flash. `tc002-up.sh` is the
 in-place mode under its old name.
 
 ```bash
@@ -357,7 +358,7 @@ tools/tc002-run.sh status
 tools/tc002-run.sh stop                     # sigterm the supervisor (paced black frame), restart the stock app
 tools/tc002-run.sh push --staged            # into /tmp/tc002.new beside a running runtime; `halt` swaps it in
 tools/tc002-run.sh halt                     # for an update: kill it without the black frame, swap a staged push in, leave the panel as it is
-tools/tc002-notice.sh <ip> <tokens> show    # the one "Updating..." (mini face, pulsing, a held notification) both kinds of update show
+tools/tc002-notice.sh <ip> <tokens> show [text]   # "Updating..." (mini face, pulsing, a held notification); the flasher passes "Flashing..."
 tools/tc002-boot-experiment.sh start        # let the vendor loader dlopen the bootstrap via /tmp/EasyUI.cfg
 tools/tc002-boot-experiment.sh restore
 ```

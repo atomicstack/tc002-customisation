@@ -30,6 +30,8 @@ refuses a version this file does not know. the github releases carry the same no
   saved settings and the persisted canvas until the flashed image carries this build. this build
   itself loads an unknown `clock_font` as `classic` and an unknown or too-tall `menu_font` as
   `mini`, so the next face added will not repeat the trap.
+- **a flash says so.** the panel reads "flashing..." while `tc002-update.sh --flash` writes an
+  image, and "updating" only for an in-place update, which leaves flash alone.
 - **popsquares cells go off instead of hanging at the driver's floor.** the led driver lights any
   non-zero frame byte at a fifth of full or more, and the generator scaled white by the cell's
   level, so a dying cell sat at that fifth and then snapped off, and `dim floor` at 0 never showed
