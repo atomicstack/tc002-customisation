@@ -54,7 +54,8 @@ test('catalogues come from the zig enums, not from a list in this file', () => {
   assert.ok(W.BASES.includes('art') && W.BASES.includes('clock'), `bases: ${W.BASES.join(',')}`);
   assert.ok(W.BASES.length >= 2);
   assert.deepEqual(W.GENERATORS, ['popsquares', 'plasma', 'cube', 'terrain']);
-  assert.deepEqual(W.CLOCK_FONTS, ['classic', 'mini', 'segment', 'big', 'block', 'hires']);
+  assert.deepEqual(W.CLOCK_FONTS.slice(0, 6), ['classic', 'mini', 'segment', 'big', 'block', 'hires']);
+  assert.deepEqual(W.CLOCK_FONTS.slice(6), W.FACES.slice(4), 'the clock offers every imported face, in the same order');
   assert.deepEqual(W.CLOCK_MODES, ['solid', 'gradient']);
   assert.deepEqual(W.GRADIENTS, ['horizontal', 'vertical', 'diagonal']);
   assert.deepEqual(W.DIGIT_STYLES, ['solid', 'outline', 'shadow']);

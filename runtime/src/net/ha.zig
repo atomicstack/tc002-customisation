@@ -2,6 +2,7 @@ const std = @import("std");
 // zig 0.17 removed `**`; `@splat` covers one element, this covers a longer unit
 const repeat = @import("../repeat.zig");
 const api = @import("api.zig");
+const clockfont = @import("../scene/clockfont.zig");
 pub const PatchPolicy = enum { transient, durable, rejected };
 pub fn patchPolicy(p: api.ConfigPatch, controls: bool) PatchPolicy {
     @setEvalBranchQuota(10000);
@@ -49,6 +50,14 @@ test "disabled controls clear retained entities even during a normal reconnect p
 }
 
 pub const Component = enum { sensor, binary_sensor, event, @"switch", select, number, text };
+/// an enum's names as a home assistant select's options: `"a","b"`. built from the enum, so a font
+/// added to the runtime is offered without editing this file
+fn quotedNames(comptime E: type) []const u8 {
+    comptime var out: []const u8 = "";
+    inline for (@typeInfo(E).@"enum".field_names, 0..) |n, i| out = out ++ (if (i > 0) "," else "") ++ "\"" ++ n ++ "\"";
+    return out;
+}
+
 pub const Entity = struct {
     key: []const u8,
     name: []const u8,
@@ -77,7 +86,7 @@ pub const entities = [_]Entity{
     .{ .key = "scene_control", .name = "scene", .component = .select, .topic = "state", .template = "{{ value_json.base }}", .diagnostic = false, .command = "cmd/config", .command_template = "{{ {\\\"base\\\": value} | to_json }}", .options = "\"clock\",\"art\",\"canvas\"" },
     .{ .key = "brightness_control", .name = "brightness", .component = .number, .topic = "state", .template = "{{ value_json.brightness }}", .unit = "%", .diagnostic = false, .command = "cmd/config", .command_template = "{{ {\\\"brightness\\\": value | int} | to_json }}", .min = 1, .max = 100 },
     .{ .key = "notify_control", .name = "notification", .component = .text, .diagnostic = false, .command = "cmd/notify", .command_template = "{{ {\\\"text\\\": value} | to_json }}" },
-    .{ .key = "clock_font_control", .name = "clock font", .component = .select, .topic = "config", .template = "{{ value_json.clock.font }}", .diagnostic = false, .command = "cmd/config", .command_template = "{{ {\\\"clock_font\\\": value} | to_json }}", .options = "\"classic\",\"mini\",\"segment\",\"big\",\"block\",\"hires\"" },
+    .{ .key = "clock_font_control", .name = "clock font", .component = .select, .topic = "config", .template = "{{ value_json.clock.font }}", .diagnostic = false, .command = "cmd/config", .command_template = "{{ {\\\"clock_font\\\": value} | to_json }}", .options = quotedNames(clockfont.Font) },
     .{ .key = "clock_colour_mode_control", .name = "clock colour mode", .component = .select, .topic = "config", .template = "{{ value_json.clock.colour_mode }}", .diagnostic = false, .command = "cmd/config", .command_template = "{{ {\\\"clock_colour_mode\\\": value} | to_json }}", .options = "\"solid\",\"gradient\"" },
     .{ .key = "clock_colour_control", .name = "clock colour", .component = .text, .topic = "config", .template = "{{ value_json.clock.colour }}", .diagnostic = false, .command = "cmd/config", .command_template = "{{ {\\\"clock_colour\\\": value} | to_json }}" },
     .{ .key = "clock_colour2_control", .name = "clock second colour", .component = .text, .topic = "config", .template = "{{ value_json.clock.colour2 }}", .diagnostic = false, .command = "cmd/config", .command_template = "{{ {\\\"clock_colour2\\\": value} | to_json }}" },
@@ -235,6 +244,11 @@ test "writable discovery includes valid id-free commands and preserves readonly 
         if (std.mem.eql(u8, e.key, "generator_control")) try std.testing.expect(std.mem.indexOf(u8, e.options, "\"terrain\"") != null);
         if (std.mem.eql(u8, e.key, "scene_control")) try std.testing.expectEqualStrings("\"clock\",\"art\",\"canvas\"", e.options);
         if (std.mem.eql(u8, e.key, "clock_hours_control")) try std.testing.expectEqualStrings("\"24h\",\"12h\"", e.options);
+        if (std.mem.eql(u8, e.key, "clock_font_control")) {
+            // every clock font, the imported faces included, straight from the enum
+            try std.testing.expect(std.mem.startsWith(u8, e.options, "\"classic\",\"mini\",\"segment\",\"big\",\"block\",\"hires\",\"chunky6\""));
+            try std.testing.expect(std.mem.endsWith(u8, e.options, "\"robotron-a7100\",\"ibm-vga\""));
+        }
     }
     try std.testing.expectEqual(@as(usize, 20), controls);
     try std.testing.expectEqual(@as(usize, 4), readonly);

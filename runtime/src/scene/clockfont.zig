@@ -7,10 +7,21 @@ const std = @import("std");
 const geometry = @import("../panel/geometry.zig");
 const pack = @import("../panel/pack.zig");
 const font = @import("font.zig");
+const face = @import("face.zig");
+const faces = @import("faces.zig");
 
 /// `hires` is a layout of the clock scene (classic time, a bar, mini milliseconds) that borrows the
-/// classic glyphs here.
-pub const Font = enum(u8) { classic = 0, mini = 1, segment = 2, big = 3, block = 4, hires = 5 };
+/// classic glyphs here. the twenty imported faces follow, in faces.zig's order; they have no glyphs
+/// in this file and are measured and drawn through face.zig. the numbering is the wire encoding:
+/// append only.
+pub const Font = enum(u8) { classic = 0, mini = 1, segment = 2, big = 3, block = 4, hires = 5, chunky6, chunky6x, light6, light6x, chunky8, chunky8x, chunky8x6, light8, light8x, light8x6, tiny5, @"tiny5-duo", @"tiny5-mono", phoenix, @"phoenix-2y", @"phoenix-8x14", @"ibm-iso8", @"apricot-xenc", @"robotron-a7100", @"ibm-vga" };
+pub const first_imported = 6;
+
+/// the imported face a font is, or null for the ones drawn here
+pub fn importedOf(f: Font) ?faces.Name {
+    const v = @backingInt(f);
+    return if (v < first_imported) null else @fromBackingInt(v - first_imported);
+}
 pub const font_count: u8 = @typeInfo(Font).@"enum".field_names.len;
 
 pub const max_h = 14;
@@ -69,17 +80,20 @@ pub fn blended(a: Glyph, b: Glyph, t: u8) Glyph {
 const blank = Glyph{ .w = 0, .h = 0, .a = @splat(@splat(0)) };
 
 pub fn glyphHeight(f: Font) u8 {
+    if (importedOf(f)) |n| return face.lineHeight(.{ .imported = n });
     return switch (f) {
         .classic, .hires => 7,
         .mini => 5,
         .segment => 9,
         .big => 14,
         .block => 10,
+        else => unreachable,
     };
 }
 
-/// columns between glyphs.
+/// columns between glyphs. an imported face keeps its gap inside each advance.
 pub fn gap(f: Font) u8 {
+    if (importedOf(f) != null) return 0;
     return if (f == .big) 2 else 1;
 }
 
@@ -271,11 +285,14 @@ pub fn glyph(f: Font, c: u8) Glyph {
             if (c == ':') return block_colon;
             return block_space;
         },
+        // imported faces are not fixed-size alpha maps: callers go through face.zig for them
+        else => unreachable,
     }
 }
 
 /// pixel width of a string: glyph widths plus the gaps between them.
 pub fn textWidth(f: Font, text: []const u8) u32 {
+    if (importedOf(f)) |n| return face.textWidth(.{ .imported = n }, text);
     var w: u32 = 0;
     for (text, 0..) |c, i| {
         if (i > 0) w += gap(f);
@@ -375,7 +392,8 @@ const Counting = struct {
 };
 
 test "every digit in every font lights something inside its cell and digits differ" {
-    inline for (std.meta.tags(Font)) |fnt| {
+    // the hand-drawn fonts; the imported faces have no cells here and are tested in face.zig
+    inline for (std.meta.tags(Font)[0..first_imported]) |fnt| {
         var d: u8 = '0';
         while (d <= '9') : (d += 1) {
             const g = glyph(fnt, d);

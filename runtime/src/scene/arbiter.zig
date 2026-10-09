@@ -313,7 +313,7 @@ test "physical actions: buttons select the base, rotary and knob depend on the b
     try std.testing.expect(a.overlay == .none);
     var i: u32 = 0;
     while (i < 40) : (i += 1) a.action(.rotate_ccw, 0);
-    try std.testing.expectEqual(clock.Font.segment, a.clock.style.font); // 40 steps back around six faces
+    try std.testing.expectEqual(clock.Font.chunky8x6, a.clock.style.font); // 40 steps back around 26 faces (six drawn here, twenty imported)
     try std.testing.expectEqual(@as(u8, 100), a.brightness); // the knob leaves brightness alone
 }
 
@@ -563,10 +563,10 @@ test "the knob pages through generators, clock faces and ip layouts" {
     try std.testing.expectEqual(transition.Effect.fade, a.takeTransition().?.effect); // a restyle while the clock shows
     a.action(.rotate_ccw, 0);
     a.action(.rotate_ccw, 0);
-    try std.testing.expectEqual(clock.Font.hires, a.clock.style.font); // wraps around
+    try std.testing.expectEqual(clock.Font.@"ibm-vga", a.clock.style.font); // wraps around, to the last imported face
     _ = a.apply(.{ .set_base = .canvas }, 0);
     a.action(.rotate_ccw, 0); // a canvas has no pages, so the dial leaves everything alone
-    try std.testing.expectEqual(clock.Font.hires, a.clock.style.font);
+    try std.testing.expectEqual(clock.Font.@"ibm-vga", a.clock.style.font);
     try std.testing.expectEqual(@as(u8, 100), a.brightness); // the knob no longer touches brightness
 }
 

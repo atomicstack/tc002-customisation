@@ -276,6 +276,9 @@ const importedFaces = "chunky6 chunky6x light6 light6x chunky8 chunky8x chunky8x
 // the faces canvas text and a plain notification can be set in
 const canvasFaces = "small mini block big " + importedFaces
 
+// the clock's fonts: its six own, then the imported faces
+const clockFonts = "classic mini segment big block hires " + importedFaces
+
 var identityFields = []field{textField("request_id"), numberField("epoch", 0, 4294967295)}
 var transitionFields = []field{
 	enumField("transition", "fade cut slide swipe_out swipe_in collapse expand wipe dissolve split_out split_in blinds flip rain rain_random dim blink flash zoom ripple diamond blocks wave interlace shrink random"),
@@ -283,7 +286,7 @@ var transitionFields = []field{
 	enumField("easing", "linear ease_in ease_out ease_in_out"),
 }
 var clockFields = []field{
-	enumField("font", "classic mini segment big block hires"), enumField("colour_mode", "solid gradient"), colourField("colour"), colourField("colour2"),
+	enumField("font", clockFonts), enumField("colour_mode", "solid gradient"), colourField("colour"), colourField("colour2"),
 	enumField("gradient", "horizontal vertical diagonal"), numberField("spread", 0, 255), enumField("digits", "solid outline shadow"),
 	boolField("fade"), enumField("hours", "24h 12h"),
 }

@@ -219,6 +219,10 @@ class MockDeviceTests(unittest.TestCase):
         self.assertEqual(doc["lines"][0]["seq"], 37)
 
 
+# the imported pixel faces, in the runtime's wire order
+IMPORTED_FACES = ["chunky6", "chunky6x", "light6", "light6x", "chunky8", "chunky8x", "chunky8x6", "light8", "light8x", "light8x6", "tiny5", "tiny5-duo", "tiny5-mono", "phoenix", "phoenix-2y", "phoenix-8x14", "ibm-iso8", "apricot-xenc", "robotron-a7100", "ibm-vga"]
+
+
 class EndToEndTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -866,7 +870,7 @@ class EndToEndTests(unittest.TestCase):
         _, scenes = self.call("GET", "scenes")
         # `digits` belongs here too: the hand-typed catalogue omitted it while validating against
         # a CLOCK_DIGITS list it kept privately, so a client could not discover the digit styles
-        self.assertEqual(scenes["clock"], {"fonts": ["classic", "mini", "segment", "big", "block", "hires"], "colour_modes": ["solid", "gradient"],
+        self.assertEqual(scenes["clock"], {"fonts": ["classic", "mini", "segment", "big", "block", "hires", *IMPORTED_FACES], "colour_modes": ["solid", "gradient"],
                                            "digits": ["solid", "outline", "shadow"],
                                            "gradients": ["horizontal", "vertical", "diagonal"], "hours": ["24h", "12h"], "spread": [0, 255], "max_spread": 255})
         self.device.config["clock"] = dict(self.DEFAULT_CLOCK); self.device.clock = dict(self.DEFAULT_CLOCK)

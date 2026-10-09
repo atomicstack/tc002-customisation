@@ -6,6 +6,8 @@ const param = @import("param.zig");
 const geometry = @import("../panel/geometry.zig");
 const font = @import("font.zig");
 const clockfont = @import("clockfont.zig");
+const face = @import("face.zig");
+const faces = @import("faces.zig");
 const tz = @import("tz.zig");
 const scene = @import("scene.zig");
 
@@ -303,12 +305,24 @@ pub const State = struct {
                 lines[1] = .{ .x = centre(.mini, ms_text), .y = hires_ms_y, .text = ms_text, .font = .mini };
                 return lines[0..2];
             },
+            else => {
+                // an imported face: the whole time when it fits, otherwise hours and minutes;
+                // centred both ways either way
+                const text = if (clockfont.textWidth(f, time_text) <= geometry.width) time_text else time_text[0 .. time_text.len - 3];
+                lines[0] = .{ .x = centre(f, text), .y = @divFloor(geometry.height - @as(i32, clockfont.glyphHeight(f)), 2), .text = text, .font = f };
+                return lines[0..1];
+            },
         }
     }
 
     /// draw the lines and, for hires, the bar of the current second
     fn paint(rgb: *geometry.Rgb, lines: []const Line, bar: ?i32, painter: anytype, digit: clockfont.DigitStyle, t: u8, brightness: u8) void {
         for (lines) |l| {
+            // an imported face has no digit styles and no fade: it is drawn plainly by face.zig
+            if (clockfont.importedOf(l.font)) |n| {
+                face.blit(rgb, l.x, l.y, .{ .imported = n }, l.text, painter);
+                continue;
+            }
             if (l.to) |to| clockfont.blitBlend(rgb, l.x, l.y, l.font, l.text, to, t, painter, digit, brightness) else clockfont.blitStyled(rgb, l.x, l.y, l.font, l.text, painter, digit);
         }
         if (bar) |fill| {
@@ -372,9 +386,16 @@ pub const State = struct {
                 if (ch != ':' and ch != '/') continue;
                 if (n == out.len) return n;
                 const before = clockfont.textWidth(l.font, l.text[0..i]) + if (i > 0) @as(u32, clockfont.gap(l.font)) else 0;
-                const g = clockfont.glyph(l.font, ch);
                 const x0 = l.x + @as(i32, @intCast(before));
-                out[n] = .{ .x0 = x0, .y0 = l.y, .x1 = x0 + @as(i32, g.w) - 1 + shadow, .y1 = l.y + @as(i32, g.h) - 1 + shadow };
+                // an imported face's separator is its whole advance by the line's height: the
+                // blank column in it is dimmed too, which changes nothing
+                const w: i32, const h: i32 = if (clockfont.importedOf(l.font) != null)
+                    .{ @intCast(clockfont.textWidth(l.font, l.text[i .. i + 1])), clockfont.glyphHeight(l.font) }
+                else blk: {
+                    const g = clockfont.glyph(l.font, ch);
+                    break :blk .{ g.w, g.h };
+                };
+                out[n] = .{ .x0 = x0, .y0 = l.y, .x1 = x0 + w - 1 + shadow, .y1 = l.y + h - 1 + shadow };
                 n += 1;
             }
         }
@@ -545,6 +566,69 @@ test "hires shows the time, a bar through the second and the milliseconds, every
     c.style.colour2 = .{ 0, 0, 255 };
     c.render(wall_ns, &rgb);
     try std.testing.expect(rgb[geometry.pixelOffset(0, 8)] != 0); // the bar takes the gradient too
+}
+
+test "the clock font enum is the six built-in fonts then every imported face, in order" {
+    const names = @typeInfo(Font).@"enum".field_names;
+    const imported = @typeInfo(faces.Name).@"enum".field_names;
+    try std.testing.expectEqual(@as(usize, clockfont.first_imported) + imported.len, names.len);
+    for (imported, 0..) |n, i| try std.testing.expectEqualStrings(n, names[clockfont.first_imported + i]);
+    try std.testing.expectEqual(@as(?faces.Name, null), clockfont.importedOf(.hires));
+    try std.testing.expectEqual(@as(?faces.Name, .phoenix), clockfont.importedOf(.phoenix));
+}
+
+test "every imported face fits the panel at every hour, as hh:mm:ss or hh:mm" {
+    for (@as(usize, clockfont.first_imported)..clockfont.font_count) |i| {
+        const f: Font = @fromBackingInt(@intCast(i));
+        const fc = face.Face{ .imported = clockfont.importedOf(f).? };
+        for ([_][]const u8{ "23:59:59", "12:59:59", "1:00:00", "10:00:00" }) |t| {
+            var lines: [2]Line = undefined;
+            const ls = State.layout(.{ .font = f }, t, "", "", &lines);
+            try std.testing.expectEqual(@as(usize, 1), ls.len);
+            const w: i32 = @intCast(face.textWidth(fc, ls[0].text));
+            try std.testing.expect(ls[0].x >= 0 and ls[0].x + w <= geometry.width);
+            try std.testing.expect(ls[0].y >= 0 and ls[0].y + face.lineHeight(fc) <= geometry.height);
+            // the seconds are kept exactly when the whole time fits
+            const full = face.textWidth(fc, t) <= geometry.width;
+            try std.testing.expectEqual(full, ls[0].text.len == t.len);
+        }
+    }
+}
+
+test "an imported clock face draws what face.zig draws, in the style's colour" {
+    var c = State.init(tz.utc);
+    const wall_ns: u64 = test_wall_base + (10 * 3600 + 8 * 60 + 8) * std.time.ns_per_s;
+    c.style.font = .chunky8;
+    c.style.colour = .{ 0, 200, 90 };
+    var rgb = geometry.black_rgb;
+    c.render(wall_ns, &rgb);
+    const fc = face.Face{ .imported = .chunky8 };
+    var expected = geometry.black_rgb;
+    const w: i32 = @intCast(face.textWidth(fc, "10:08:08"));
+    face.blit(&expected, @divFloor(geometry.width - w, 2), @divFloor(geometry.height - @as(i32, face.lineHeight(fc)), 2), fc, "10:08:08", clockfont.Solid{ .colour = c.style.colour });
+    try std.testing.expectEqualSlices(u8, &expected, &rgb);
+}
+
+test "an imported clock face pulses its separators and blanks its digits like the others" {
+    var c = State.init(tz.utc);
+    c.style.font = .phoenix; // eight columns a glyph: hh:mm only
+    const wall_ns: u64 = test_wall_base + (10 * 3600 + 8 * 60 + 8) * std.time.ns_per_s;
+    var plain = geometry.black_rgb;
+    c.render(wall_ns, &plain);
+    var pulsed = geometry.black_rgb;
+    c.renderPulsed(c.style, wall_ns, 40, 100, &pulsed);
+    var dimmed: usize = 0;
+    for (0..geometry.height) |y| for (0..geometry.width) |x| {
+        const o = geometry.pixelOffset(x, y);
+        if (pulsed[o] != plain[o]) {
+            dimmed += 1;
+            try std.testing.expect(c.inSeparator(wall_ns, @intCast(x), @intCast(y)));
+        }
+    };
+    try std.testing.expect(dimmed > 0);
+    var unset = geometry.black_rgb;
+    c.render(5 * std.time.ns_per_s, &unset);
+    try std.testing.expect(!std.mem.eql(u8, &geometry.black_rgb, &unset)); // the colon still breathes
 }
 
 test "a gradient runs from the start colour to the clamped end colour across the text" {
