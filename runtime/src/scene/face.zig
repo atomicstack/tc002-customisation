@@ -34,6 +34,9 @@ test "decoding: ascii, two to four bytes, and every malformed shape becomes u+ff
 test "valid text: utf-8 without control characters" {
     try testing.expect(validText("20°C ☺"));
     try testing.expect(validText("plain ascii, as ever ~"));
+    try testing.expect(validText("two\nlines"));
+    try testing.expect(!validText("a\rb"));
+    try testing.expect(!validText("a\tb"));
     try testing.expect(!validText("a\x01b"));
     try testing.expect(!validText("a\x7fb"));
     try testing.expect(!validText("\xc2\x85")); // c1 next-line
@@ -85,6 +88,27 @@ test "small and mini draw a degree sign of their own, small at full advance, min
     }
     try testing.expectEqual(textWidth(.small, "20?C"), textWidth(.small, "20°C"));
     try testing.expectEqual(textWidth(.mini, "20C") + 2 + 1, textWidth(.mini, "20°C"));
+}
+
+test "a newline starts a line under the last, one row of leading apart, at the same left edge" {
+    for ([_]Face{ .small, .mini, .{ .imported = .chunky6 } }) |f| {
+        var want = geometry.black_rgb;
+        var got = geometry.black_rgb;
+        blit(&want, 2, 0, f, "ab", white);
+        blit(&want, 2, @as(i32, lineHeight(f)) + leading, f, "longer", white);
+        blit(&got, 2, 0, f, "ab\nlonger", white);
+        try testing.expectEqualSlices(u8, &want, &got);
+        // the width is the widest line's, the height every line's and the leading between them
+        try testing.expectEqual(textWidth(f, "longer"), textWidth(f, "ab\nlonger"));
+        try testing.expectEqual(@as(i32, lineHeight(f)), blockHeight(f, "longer"));
+        try testing.expectEqual(3 * @as(i32, lineHeight(f)) + 2 * leading, blockHeight(f, "a\nb\nc"));
+    }
+    try testing.expectEqual(@as(usize, 3), lineCount("a\n\nc"));
+    var it = lines("a\n\nc");
+    try testing.expectEqualStrings("a", it.next().?);
+    try testing.expectEqualStrings("", it.next().?);
+    try testing.expectEqualStrings("c", it.next().?);
+    try testing.expect(it.next() == null);
 }
 
 test "every imported face carries ascii and fits the panel" {
@@ -192,13 +216,13 @@ pub fn nextCodepoint(text: []const u8, i: *usize) u21 {
     return cp;
 }
 
-/// text a person may send: well-formed utf-8 with no control characters (c0, del or c1)
+/// text a person may send: well-formed utf-8 with no control characters (c0, del or c1) but `\n`
 pub fn validText(text: []const u8) bool {
     if (!std.unicode.utf8ValidateSlice(text)) return false;
     var i: usize = 0;
     while (i < text.len) {
         const cp = nextCodepoint(text, &i);
-        if (cp < 0x20 or (cp >= 0x7f and cp <= 0x9f)) return false;
+        if ((cp < 0x20 and cp != '\n') or (cp >= 0x7f and cp <= 0x9f)) return false;
     }
     return true;
 }
@@ -264,7 +288,33 @@ pub fn lineHeight(f: Face) u8 {
 /// pixel width of a line. the hand-drawn faces measure as they always have, without a trailing
 /// gap; an imported face's width is the plain sum of its advances, because each source keeps its
 /// gap inside the advance.
+/// rows between one line of a text and the next
+pub const leading = 1;
+
+/// the lines of a text, split at each `\n`; an empty text is one empty line
+pub fn lines(text: []const u8) std.mem.SplitIterator(u8, .scalar) {
+    return std.mem.splitScalar(u8, text, '\n');
+}
+
+pub fn lineCount(text: []const u8) usize {
+    return std.mem.countScalar(u8, text, '\n') + 1;
+}
+
+/// pixel width of a text: its widest line
 pub fn textWidth(f: Face, text: []const u8) u32 {
+    var w: u32 = 0;
+    var it = lines(text);
+    while (it.next()) |l| w = @max(w, lineWidth(f, l));
+    return w;
+}
+
+/// pixel height of a text: every line, and the leading between them
+pub fn blockHeight(f: Face, text: []const u8) i32 {
+    const n: i32 = @intCast(lineCount(text));
+    return n * @as(i32, lineHeight(f)) + (n - 1) * leading;
+}
+
+pub fn lineWidth(f: Face, text: []const u8) u32 {
     var w: u32 = 0;
     var i: usize = 0;
     var first = true;
@@ -283,9 +333,16 @@ pub fn textWidth(f: Face, text: []const u8) u32 {
     return w;
 }
 
-/// draw a line with its top-left at (x0, y0); every lit pixel takes `painter.at(x, y)`. pixels
-/// off the panel are skipped.
+/// draw a text with its top-left at (x0, y0), each line under the last at the same left edge;
+/// every lit pixel takes `painter.at(x, y)`. pixels off the panel are skipped.
 pub fn blit(rgb: *geometry.Rgb, x0: i32, y0: i32, f: Face, text: []const u8, painter: anytype) void {
+    var y = y0;
+    var it = lines(text);
+    while (it.next()) |l| : (y += @as(i32, lineHeight(f)) + leading) blitLine(rgb, x0, y, f, l, painter);
+}
+
+/// one line, with no newline in it
+pub fn blitLine(rgb: *geometry.Rgb, x0: i32, y0: i32, f: Face, text: []const u8, painter: anytype) void {
     var x = x0;
     var i: usize = 0;
     var first = true;

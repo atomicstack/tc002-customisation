@@ -386,7 +386,9 @@ class EndToEndTests(unittest.TestCase):
         self.assertEqual((status, doc.get("status")), (200, "applied"), doc)
         status, doc = self.call("POST", "notify", {"text": "hi", "font": "comic", "epoch": st["epoch"]})
         self.assertEqual((status, doc["error"]), (400, "invalid_font"))
-        for bad in ("a\x01b", "a\x85b", "a\x7fb"):
+        status, doc = self.call("POST", "notify", {"text": "two\nlines", "epoch": st["epoch"]})
+        self.assertEqual((status, doc.get("status")), (200, "applied"), doc)
+        for bad in ("a\x01b", "a\x85b", "a\x7fb", "a\rb", "a\tb", "lone \ud800"):
             status, doc = self.call("POST", "notify", {"text": bad, "epoch": st["epoch"]})
             self.assertEqual((status, doc["error"]), (400, "invalid_text"), repr(bad))
 

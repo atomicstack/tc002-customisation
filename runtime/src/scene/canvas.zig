@@ -476,8 +476,8 @@ fn textWidthOf(face: Font, text: []const u8) i32 {
     return @intCast(typeface.textWidth(faceOf(face), text));
 }
 
-fn textHeightOf(face: Font) i32 {
-    return typeface.lineHeight(faceOf(face));
+fn textHeightOf(face: Font, text: []const u8) i32 {
+    return typeface.blockHeight(faceOf(face), text);
 }
 
 /// draw text into a scratch buffer and copy it through the clip, so every font goes through one
@@ -485,16 +485,21 @@ fn textHeightOf(face: Font) i32 {
 fn drawText(rgb: *geometry.Rgb, e: *const Element, text: []const u8, colour: [3]u8, offset: [2]i32) void {
     const b = e.body.text;
     const tw = textWidthOf(b.face, text);
-    const th = textHeightOf(b.face);
+    const th = textHeightOf(b.face, text);
     const box_w = e.box.width(tw);
-    const x = offset[0] + switch (b.alignment) {
-        .left => @as(i32, e.box.x),
-        .centre => @as(i32, e.box.x) + @divTrunc(box_w - tw, 2),
-        .right => @as(i32, e.box.x) + box_w - tw,
-    };
-    const y: i32 = @as(i32, e.box.y) + offset[1];
+    // each line aligns on its own; the lines move together, so a scroll carries the whole block
     var scratch = geometry.black_rgb;
-    typeface.blit(&scratch, x, y, faceOf(b.face), text, clockfont.Solid{ .colour = colour });
+    var y: i32 = @as(i32, e.box.y) + offset[1];
+    var it = typeface.lines(text);
+    while (it.next()) |l| : (y += typeface.lineHeight(faceOf(b.face)) + typeface.leading) {
+        const lw = textWidthOf(b.face, l);
+        const x = offset[0] + switch (b.alignment) {
+            .left => @as(i32, e.box.x),
+            .centre => @as(i32, e.box.x) + @divTrunc(box_w - lw, 2),
+            .right => @as(i32, e.box.x) + box_w - lw,
+        };
+        typeface.blitLine(&scratch, x, y, faceOf(b.face), l, clockfont.Solid{ .colour = colour });
+    }
     const clip = Clip.box(rgb, e.box, box_w, th);
     for (0..geometry.height) |sy| {
         for (0..geometry.width) |sx| {
@@ -633,14 +638,22 @@ fn drawSprite(rgb: *geometry.Rgb, sp: *const Sprite, x0: i32, y0: i32) void {
 /// the composite: a glyph, a label and a value. wide enough and they sit side by side with the
 /// label over the value; narrower and the label goes, because two characters of it would say
 /// nothing. the device decides, which is the point of having the composite at all.
+fn oneLine(buf: *[text_pool]u8, text: []const u8) []const u8 {
+    for (text, 0..) |c, i| buf[i] = if (c == '\n') ' ' else c;
+    return buf[0..text.len];
+}
+
 fn drawTile(rgb: *geometry.Rgb, d: *const Document, e: *const Element, sprites: *const Sprites, offset: [2]i32, colour: [3]u8) void {
     const t = e.body.tile;
     const x0: i32 = @as(i32, e.box.x) + offset[0];
     const y0: i32 = @as(i32, e.box.y) + offset[1];
     const w = e.box.width(geometry.width - e.box.x);
     const h = e.box.height(geometry.height - e.box.y);
-    const label = d.textOf(t.label);
-    const value = d.textOf(t.value);
+    // a tile is one line of label and one of value: a newline in either reads as a space
+    var label_buf: [text_pool]u8 = undefined;
+    var value_buf: [text_pool]u8 = undefined;
+    const label = oneLine(&label_buf, d.textOf(t.label));
+    const value = oneLine(&value_buf, d.textOf(t.value));
     // whatever is actually drawn: a built-in icon is 8x8, an uploaded sprite is its own size
     var glyph_w: i32 = icons.size;
     var glyph_h: i32 = icons.size;
@@ -907,7 +920,7 @@ pub const State = struct {
                     const start = pos;
                     const cp = typeface.nextCodepoint(text, &pos);
                     const lands_at: u32 = @intCast((n + 1) * 256 / count);
-                    if (p >= lands_at or cp == ' ') { // a space is not a character to guess at
+                    if (p >= lands_at or cp == ' ' or cp == '\n') { // nor a space or a line break
                         @memcpy(buf[out..][0 .. pos - start], text[start..pos]);
                         out += pos - start;
                     } else {
@@ -2325,4 +2338,51 @@ test "a state renders with sprites it does not own" {
     try std.testing.expectEqual(@as(u8, 200), rgb[0]);
     st.render(0, &rgb); // its own, empty store: nothing to draw
     try std.testing.expectEqual(@as(u8, 0), rgb[0]);
+}
+
+test "a newline stacks text in its box, each line aligned on its own" {
+    var s = State{};
+    const span = try s.doc.addText("ab\nlonger");
+    try s.doc.add(.{ .box = .{ .x = 0, .y = 1, .w = geometry.width, .h = 15 }, .colour = white, .body = .{ .text = .{ .span = span, .face = .mini, .alignment = .centre } } });
+    var got: geometry.Rgb = undefined;
+    s.render(0, &got);
+    var want = geometry.black_rgb;
+    const f = faceOf(.mini);
+    const h: i32 = typeface.lineHeight(f);
+    for ([_][]const u8{ "ab", "longer" }, 0..) |l, i| {
+        const w: i32 = @intCast(typeface.textWidth(f, l));
+        typeface.blit(&want, @divTrunc(geometry.width - w, 2), 1 + @as(i32, @intCast(i)) * (h + typeface.leading), f, l, clockfont.Solid{ .colour = white });
+    }
+    try std.testing.expectEqualSlices(u8, &want, &got);
+}
+
+test "a scramble never turns a newline into a character" {
+    var s = State{};
+    const span = try s.doc.addText("ab\ncd");
+    try s.doc.add(.{ .box = .{ .x = 0, .y = 0 }, .colour = white, .anim = .{ .kind = .scramble, .ms = 1000 }, .body = .{ .text = .{ .span = span } } });
+    var buf: [16]u8 = undefined;
+    const t = s.animatedText(0, 100, &buf);
+    try std.testing.expectEqual(@as(u8, '\n'), t[2]);
+}
+
+test "a newline in a tile's label or value reads as a space" {
+    const Draw = struct {
+        fn tile(label: []const u8, value: []const u8) !geometry.Rgb {
+            var s = State{};
+            const l = try s.doc.addText(label);
+            const v = try s.doc.addText(value);
+            try s.doc.add(.{ .box = .{ .x = 0, .y = 0, .w = 52, .h = 16 }, .colour = white, .body = .{ .tile = .{
+                .icon = icons.indexOf("thermometer").?,
+                .label = l,
+                .value = v,
+                .accent = .{ 80, 80, 80 },
+            } } });
+            var rgb: geometry.Rgb = undefined;
+            s.render(0, &rgb);
+            return rgb;
+        }
+    };
+    const want = try Draw.tile("in side", "21 C");
+    const got = try Draw.tile("in\nside", "21\nC");
+    try std.testing.expectEqualSlices(u8, &want, &got);
 }

@@ -69,6 +69,55 @@ test "a plain notification in an imported face is centred both ways in that face
     try std.testing.expectEqual(canvas.Font.chunky8, a.takeApplied().?.face);
 }
 
+test "a plain notification's lines stack, centred both ways, when they fit the panel" {
+    var a = fresh();
+    _ = a.apply(.{ .notify = .{ .text = "hi\nthere", .colour = white, .duration_s = 5 } }, 0);
+    var got: geometry.Rgb = undefined;
+    a.render(0, &got);
+    var want = geometry.black_rgb;
+    // two lines of small are 7 + 1 + 7 = 15 rows, so the block starts on row 0
+    font.blit(&want, @divFloor(geometry.width - @as(i32, @intCast(font.textWidth("hi"))), 2), 0, "hi", white);
+    font.blit(&want, @divFloor(geometry.width - @as(i32, @intCast(font.textWidth("there"))), 2), 8, "there", white);
+    try std.testing.expectEqualSlices(u8, &want, &got);
+    try std.testing.expect(a.cadence(0) == .idle);
+}
+
+test "lines too tall for the panel take turns, each centred, and come round again" {
+    var a = fresh();
+    _ = a.apply(.{ .notify = .{ .text = "one\ntwo\nthree", .colour = white, .duration_s = 60 } }, 0);
+    try std.testing.expect(a.cadence(0) != .idle);
+    for ([_]struct { at: u64, line: []const u8 }{
+        .{ .at = 0, .line = "one" },
+        .{ .at = notify_page_ns - 1, .line = "one" },
+        .{ .at = notify_page_ns, .line = "two" },
+        .{ .at = 2 * notify_page_ns, .line = "three" },
+        .{ .at = 3 * notify_page_ns, .line = "one" },
+    }) |c| {
+        a.tick(c.at, 0);
+        var got: geometry.Rgb = undefined;
+        a.render(0, &got);
+        var want = geometry.black_rgb;
+        font.blit(&want, @divFloor(geometry.width - @as(i32, @intCast(font.textWidth(c.line))), 2), 4, c.line, white);
+        try std.testing.expectEqualSlices(u8, &want, &got);
+    }
+}
+
+test "a page whose line scrolls stays up until the line has gone by once" {
+    var a = fresh();
+    const long = "a line far too wide for the panel";
+    try std.testing.expectEqual(Result{ .applied = 1 }, a.apply(.{ .notify = .{ .text = "x\n" ++ long ++ "\ny", .colour = white, .duration_s = 60 } }, 0));
+    const span: u64 = font.textWidth(long) + geometry.width;
+    a.tick(notify_page_ns + 2 * notify_page_ns, 0); // a short page would have handed over by now
+    var got: geometry.Rgb = undefined;
+    a.render(0, &got);
+    var y_only = geometry.black_rgb;
+    font.blit(&y_only, @divFloor(geometry.width - @as(i32, @intCast(font.textWidth("y"))), 2), 4, "y", white);
+    try std.testing.expect(!std.mem.eql(u8, &y_only, &got));
+    a.tick(notify_page_ns + span * scroll_period_ns, 0); // and now it has gone by
+    a.render(0, &got);
+    try std.testing.expectEqualSlices(u8, &y_only, &got);
+}
+
 test "a plain notification too wide for its face scrolls, measured in that face" {
     var a = fresh();
     _ = a.apply(.{ .notify = .{ .text = "12345678", .colour = white, .duration_s = 5 } }, 0);
@@ -670,6 +719,8 @@ test "a transition away from the canvas carries the frame it last showed, not th
 }
 
 pub const scroll_period_ns: u64 = 33_333_333;
+/// how long one line of a notification too tall for the panel stays up, if it does not scroll
+pub const notify_page_ns: u64 = 2 * std.time.ns_per_s;
 
 /// the next (or previous) value of an enum, wrapping around
 fn cycle(comptime E: type, v: E, forward: bool) E {
@@ -1518,20 +1569,62 @@ pub const Arbiter = struct {
         }
         rgb.* = geometry.black_rgb;
         const text = n.text[0..n.len];
-        // centred both ways in its face: small sits at row 4, as it always has
         const f = canvas.faceOf(n.face);
-        const y = @divFloor(geometry.height - @as(i32, face.lineHeight(f)), 2);
-        const painter = clockfont.Solid{ .colour = n.colour };
-        const w: i32 = @intCast(face.textWidth(f, text));
-        if (w <= geometry.width) {
-            face.blit(rgb, @divFloor(geometry.width - w, 2), y, f, text, painter);
-        } else {
-            // scroll in from the right edge, one pixel per period, wrapping after the text has left
-            const span: u64 = @intCast(w + geometry.width);
-            const steps = (self.last_tick_ns -| n.since_ns) / scroll_period_ns;
-            const x: i32 = geometry.width - @as(i32, @intCast(steps % span));
-            face.blit(rgb, x, y, f, text, painter);
+        const elapsed = self.last_tick_ns -| n.since_ns;
+        const line_h: i32 = face.lineHeight(f);
+        const block_h = face.blockHeight(f, text);
+        if (block_h <= geometry.height) {
+            // every line at once, the block centred both ways: one line of small sits at row 4,
+            // as it always has
+            var y = @divFloor(geometry.height - block_h, 2);
+            var it = face.lines(text);
+            while (it.next()) |l| : (y += line_h + face.leading) notifyLine(rgb, f, l, y, elapsed, n.colour);
+            return;
         }
+        // too tall: the lines take turns, each centred where a single line would be
+        const page = notifyPage(f, text, elapsed);
+        notifyLine(rgb, f, page.line, @divFloor(geometry.height - line_h, 2), elapsed - page.since, n.colour);
+    }
+
+    /// one line of a notification, centred, or scrolling in from the right edge one pixel per
+    /// period and wrapping once it has left, if it is too wide
+    fn notifyLine(rgb: *geometry.Rgb, f: face.Face, l: []const u8, y: i32, elapsed: u64, colour: [3]u8) void {
+        const painter = clockfont.Solid{ .colour = colour };
+        const w: i32 = @intCast(face.lineWidth(f, l));
+        if (w <= geometry.width) return face.blitLine(rgb, @divFloor(geometry.width - w, 2), y, f, l, painter);
+        const span: u64 = @intCast(w + geometry.width);
+        const x: i32 = geometry.width - @as(i32, @intCast((elapsed / scroll_period_ns) % span));
+        face.blitLine(rgb, x, y, f, l, painter);
+    }
+
+    /// a page lasts long enough to read, or for its line to scroll by once
+    fn pageDwell(f: face.Face, l: []const u8) u64 {
+        const w = face.lineWidth(f, l);
+        if (w <= geometry.width) return notify_page_ns;
+        return @max(notify_page_ns, (@as(u64, w) + geometry.width) * scroll_period_ns);
+    }
+
+    /// which line is up `elapsed` into a paged notification, and since when
+    fn notifyPage(f: face.Face, text: []const u8, elapsed: u64) struct { line: []const u8, since: u64 } {
+        var total: u64 = 0;
+        var it = face.lines(text);
+        while (it.next()) |l| total += pageDwell(f, l);
+        const into = elapsed % total;
+        var start: u64 = 0;
+        it = face.lines(text);
+        while (it.next()) |l| {
+            const d = pageDwell(f, l);
+            if (into < start + d) return .{ .line = l, .since = elapsed - (into - start) };
+            start += d;
+        }
+        unreachable;
+    }
+
+    /// a plain notification moves if a line scrolls or the lines take turns
+    fn notifyMoves(n: *const Notify) bool {
+        const f = canvas.faceOf(n.face);
+        const text = n.text[0..n.len];
+        return face.textWidth(f, text) > geometry.width or face.blockHeight(f, text) > geometry.height;
     }
 
     pub fn cadence(self: *const Arbiter, wall_ns: u64) scene.Cadence {
@@ -1544,7 +1637,7 @@ pub const Arbiter = struct {
         // so does a separator pulse, which the clock's own once-a-second cadence would miss entirely
         if (self.base == .clock and self.separatorPulsing(self.last_tick_ns)) return .{ .continuous = scene.frame_period_ns };
         return switch (self.overlay) {
-            .notify => |n| if (n.doc != null) self.notify_canvas.cadence(self.last_tick_ns) else if (face.textWidth(canvas.faceOf(n.face), n.text[0..n.len]) > geometry.width) .{ .continuous = scroll_period_ns } else .idle,
+            .notify => |n| if (n.doc != null) self.notify_canvas.cadence(self.last_tick_ns) else if (notifyMoves(&n)) .{ .continuous = scroll_period_ns } else .idle,
             .raw => .idle,
             .stream_arming, .none => switch (self.base) {
                 .art => self.art.cadence(),

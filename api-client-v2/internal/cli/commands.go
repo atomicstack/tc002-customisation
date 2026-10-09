@@ -272,8 +272,8 @@ func validText(text string) error {
 		return errors.New("text must be utf-8")
 	}
 	for _, r := range text {
-		if r < 0x20 || (r >= 0x7f && r <= 0x9f) {
-			return errors.New("text must not contain control characters")
+		if (r < 0x20 && r != '\n') || (r >= 0x7f && r <= 0x9f) {
+			return errors.New("text must not contain control characters other than a newline")
 		}
 	}
 	return nil

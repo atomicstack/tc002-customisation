@@ -23,3 +23,8 @@ except ..
   refused = true
 end
 assert(refused, 'measuring in a face that does not exist must be refused too')
+
+# a newline stacks the lines, and the width is the widest line's
+assert(panel.text_width('ab\nlonger') == panel.text_width('longer'), 'measured by its widest line')
+panel.text(0, 0, 'two\nlines', 0xffffff, 'mini')
+tc002.notify('two\nlines')

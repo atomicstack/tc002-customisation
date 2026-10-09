@@ -121,7 +121,7 @@ or queue-listing api. sound playback is unchanged and remains separate:
 | `panel.clear()` | | empties the document being built |
 | `panel.pixel(x, y, colour)` | colour defaults white | |
 | `panel.rect(x, y, w, h, colour, filled)` | `w`,`h` default 1; colour white; `filled` 0 | `filled` non-zero fills, otherwise it outlines |
-| `panel.text(x, y, text, colour, font)` | colour defaults white; `font` defaults `small` | `font` names any face in [`CANVAS.md`](CANVAS.md) (`'mini'`, `'phoenix'`, `'tiny5-duo'` …); an unknown name raises. text is utf-8 |
+| `panel.text(x, y, text, colour, font)` | colour defaults white; `font` defaults `small` | `font` names any face in [`CANVAS.md`](CANVAS.md) (`'mini'`, `'phoenix'`, `'tiny5-duo'` …); an unknown name raises. text is utf-8; a `\n` starts a new line under the last, at the same `x` |
 | `panel.text_width(text, font)` | `font` defaults `small` | the columns `text` takes in that face, so a script can centre (`(52 - w) / 2`) or right-align it |
 | `panel.icon(x, y, name, colour)` | colour defaults white | `name` from `GET /icons` |
 | `panel.show()` | | install what you drew as the canvas document |

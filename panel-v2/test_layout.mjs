@@ -224,6 +224,17 @@ test('the notification card offers every face the runtime has, and sends the one
   });
 });
 
+test('the notification text takes more than one line, and a newline reaches the device',
+  { skip: chromeAvailable ? false : 'google chrome is not installed' }, async () => {
+  assert.equal(await cdp.eval(`document.getElementById('ntext').tagName`), 'TEXTAREA');
+  await cdp.eval(`call('POST', 'notify/dismiss', {}).catch(() => {}); document.querySelector('[data-tab="send"]').click(); document.getElementById('ntext').value = 'two\\nlines'; document.getElementById('nfont').value = 'small'; document.getElementById('nsend').click()`);
+  await waitFor(async () => {
+    if (await cdp.eval(`call('GET', 'status').then(s => s.overlay)`) !== 'notify') throw new Error('waiting for the notification');
+    return true;
+  });
+  assert.equal(await cdp.eval(`local.notify && local.notify.text`), 'two\nlines');
+});
+
 test('device settings offer the menu font, only the short faces, and it round-trips',
   { skip: chromeAvailable ? false : 'google chrome is not installed' }, async () => {
   await cdp.eval(`document.querySelector('[data-tab="device"]').click(); loadConfig()`);

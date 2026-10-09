@@ -30,6 +30,11 @@ refuses a version this file does not know. the github releases carry the same no
   saved settings and the persisted canvas until the flashed image carries this build. this build
   itself loads an unknown `clock_font` as `classic` and an unknown or too-tall `menu_font` as
   `mini`, so the next face added will not repeat the trap.
+- **text can break lines.** a `\n` is the one control character text may carry now. canvas text
+  stacks its lines in the box, each aligned on its own; a plain notification stacks them when they
+  fit the 16 rows and otherwise shows them in turn, two seconds each or as long as a line takes to
+  scroll by; a tile's label and value read it as a space. the console's notification text is a
+  two-row box.
 - **a flash says so.** the panel reads "flashing..." while `tc002-update.sh --flash` writes an
   image, and "updating" only for an in-place update, which leaves flash alone.
 - **popsquares cells go off instead of hanging at the driver's floor.** the led driver lights any

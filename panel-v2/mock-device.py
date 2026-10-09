@@ -98,8 +98,15 @@ MENU_FONTS = ["small", "mini", "chunky6", "chunky6x", "light6", "light6x"]
 
 
 def valid_text(text):
-    """the runtime's rule: 1..128 bytes of utf-8 without control characters (c0, del, c1)"""
-    return isinstance(text, str) and 1 <= len(text.encode()) <= 128 and not any(ord(c) < 0x20 or 0x7f <= ord(c) <= 0x9f for c in text)
+    """the runtime's rule: 1..128 bytes of utf-8 without control characters (c0 but a newline, del,
+    c1). a lone surrogate from a json escape is not utf-8 at all, so it is invalid, not a crash"""
+    if not isinstance(text, str):
+        return False
+    try:
+        size = len(text.encode())
+    except UnicodeEncodeError:
+        return False
+    return 1 <= size <= 128 and not any((ord(c) < 0x20 and c != "\n") or 0x7f <= ord(c) <= 0x9f for c in text)
 
 class Reject(Exception):
     def __init__(self, status, code, message):

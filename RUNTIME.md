@@ -439,7 +439,7 @@ the visible output is one **base** scene plus at most one temporary
 
 | overlay | bounds | behaviour |
 |---------|--------|-----------|
-| notification | 1–128 bytes of utf-8 text without control characters and a colour, **or a canvas document** (`elements`: the schema and limits of `PUT /canvas`); 1–300 s or held | text: centred if it fits, otherwise scrolls in from the right one pixel per 33 ms and wraps. a document: drawn by the canvas renderer, its animations starting when it is shown |
+| notification | 1–128 bytes of utf-8 text without control characters but `\n`, and a colour, **or a canvas document** (`elements`: the schema and limits of `PUT /canvas`); 1–300 s or held | text: centred if it fits, otherwise scrolls in from the right one pixel per 33 ms and wraps. a `\n` starts a new line: lines that fit the 16 rows stack, centred, a wide one scrolling in place; lines too tall for the panel take turns, each up for 2 s or until it has scrolled by once, round and round until the notification ends. a document: drawn by the canvas renderer, its animations starting when it is shown |
 | raw frame | exactly 2,496 rgb888 bytes (52×16×3), 1–300 s | shown as-is; switches at once unless the request names a [transition](#transitions) |
 | stream arming | 2 s | a placeholder for the streaming feature; falls back to the base when nothing arrives |
 
@@ -550,7 +550,7 @@ so something can be animated in from off-panel. `tile: n, of: m` is the column s
 
 | type | fields | notes |
 |---|---|---|
-| `text` | `text`, `font`, `align` | `small` is the 5x7 with every printable character and `°`; `mini` the 3x5 of the menus, also with `°`; `block` and `big` are the clock's own faces and carry **digits and a colon only**, for a number read across a room. twenty imported pixel faces follow them (`chunky6` … `ibm-vga`, all in [`CANVAS.md`](CANVAS.md#imported-faces)), with latin, greek, cyrillic or the cp437 graphics depending on the face. the text (and a patched string, and a tile's label and value) is utf-8 without control characters; a character a face lacks draws as `?` |
+| `text` | `text`, `font`, `align` | `small` is the 5x7 with every printable character and `°`; `mini` the 3x5 of the menus, also with `°`; `block` and `big` are the clock's own faces and carry **digits and a colon only**, for a number read across a room. twenty imported pixel faces follow them (`chunky6` … `ibm-vga`, all in [`CANVAS.md`](CANVAS.md#imported-faces)), with latin, greek, cyrillic or the cp437 graphics depending on the face. the text (and a patched string, and a tile's label and value) is utf-8 without control characters but `\n`; a character a face lacks draws as `?`. a `\n` stacks the next line under the last, one row apart, each aligned on its own and scrolling together; in a tile it reads as a space |
 | `rect` | `filled` | a one-pixel outline unless filled |
 | `line` | `to: [x,y]` | bresenham, so a diagonal has no gaps |
 | `circle` | `r`, `filled` | `at` is the centre |

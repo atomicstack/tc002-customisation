@@ -81,7 +81,9 @@ carry `0`–`9` and `:` and nothing else, so a `deg` or a `kW` beside them comes
 
 twenty more faces, imported from pixel fonts drawn for led matrices and old pcs. they are
 proportional (the int10h ones are monospaced at 8 columns), they carry far more than ascii, and
-text in them is utf-8: `"text":"20°C"` draws a degree sign. name one as `font` anywhere a font is
+text in them is utf-8: `"text":"20°C"` draws a degree sign. a `\n` in any text starts a new line
+under the last, one row apart (a tile's label and value stay one line each, so there it is a
+space). name one as `font` anywhere a font is
 taken — a text element, a plain notification, the clock, a berry script, and (the short ones) the
 device menus.
 

@@ -74,7 +74,7 @@ body{margin:0;background:var(--bg);color:var(--ink);font:14px/1.5 var(--body)}
 .now-meta{font-family:var(--data);font-size:12px;color:var(--muted);font-variant-numeric:tabular-nums}
 .controls{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
 /* inputs */
-input[type=text],input[type=number],input[type=password],select{
+input[type=text],input[type=number],input[type=password],select,#ntext{
   background:var(--surface-2);color:var(--ink);border:1px solid var(--line-2);border-radius:var(--radius-s);
   padding:6px 9px;font:13px var(--data);width:150px}
 input[type=number]{width:84px}
@@ -328,8 +328,8 @@ input[type=file]{font:12px var(--body);color:var(--muted);max-width:220px}
       <h2>Notification</h2>
       <div class="lockmsg">the proxy has no control token: start serve.py with --token-file or --adb-pull</div>
       <div class="rows">
-        <div class="field"><label for="ntext">Text<span class="key">1–128 bytes of utf-8</span></label>
-          <span class="inline"><input type="text" id="ntext" maxlength="128" placeholder="hello" autocomplete="off"><span class="counter" id="ncount">0/128</span></span></div>
+        <div class="field"><label for="ntext">Text<span class="key">1–128 bytes of utf-8; a new line stacks, or takes turns if the lines are too tall</span></label>
+          <span class="inline"><textarea id="ntext" rows="2" maxlength="128" placeholder="hello" autocomplete="off" spellcheck="false"></textarea><span class="counter" id="ncount">0/128</span></span></div>
         <div class="field"><label for="ncolour">Colour</label><input type="color" id="ncolour" value="#ffffff"></div>
         <div class="field"><label for="nfont">Font<span class="key">face · default: small</span></label><select id="nfont"></select></div>
         <div class="field"><label for="ndur">Duration<span class="key">seconds, 1–300</span></label><input type="number" id="ndur" min="1" max="300" value="5"></div>
@@ -1259,7 +1259,7 @@ const utf8Bytes = text => new TextEncoder().encode(text).length;
 $('ntext').addEventListener('input', () => $('ncount').textContent = `${utf8Bytes($('ntext').value)}/128`);
 $('nsend').addEventListener('click', async () => {
   const text = $('ntext').value, duration = +$('ndur').value, colour = hexColour($('ncolour').value);
-  if (utf8Bytes(text) < 1 || utf8Bytes(text) > 128 || /[\u0000-\u001f\u007f-\u009f]/.test(text)) return toast('text must be 1 to 128 bytes, without control characters', true);
+  if (utf8Bytes(text) < 1 || utf8Bytes(text) > 128 || /[\u0000-\u0009\u000b-\u001f\u007f-\u009f]/.test(text)) return toast('text must be 1 to 128 bytes, without control characters other than a new line', true);
   if (!(duration >= 1 && duration <= 300)) return toast('duration must be 1 to 300 seconds', true);
   try {
     const font = $('nfont').value !== 'small' ? { font: $('nfont').value } : {};

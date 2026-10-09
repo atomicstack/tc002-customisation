@@ -647,7 +647,7 @@ fn parseCanvas(body: []const ElementBody, doc: *canvas.Document) CanvasRoute {
         switch (kind) {
             .text => {
                 const text = b.text orelse return .{ .reject = canvasBad("missing_text", "a text element needs text") };
-                if (!face.validText(text)) return .{ .reject = canvasBad("invalid_text", "text is utf-8 without control characters") };
+                if (!face.validText(text)) return .{ .reject = canvasBad("invalid_text", "text is utf-8 without control characters but a newline") };
                 const span = doc.addText(text) catch return .{ .reject = canvasBad("document_full", "the document's text does not fit") };
                 e.body = .{ .text = .{
                     .span = span,
@@ -685,11 +685,11 @@ fn parseCanvas(body: []const ElementBody, doc: *canvas.Document) CanvasRoute {
                 }
                 if (b.icon == null and b.sprite == null) return .{ .reject = canvasBad("missing_icon", "a tile needs an icon or a sprite") };
                 if (b.label) |l| {
-                    if (!face.validText(l)) return .{ .reject = canvasBad("invalid_text", "text is utf-8 without control characters") };
+                    if (!face.validText(l)) return .{ .reject = canvasBad("invalid_text", "text is utf-8 without control characters but a newline") };
                     t.label = doc.addText(l) catch return .{ .reject = canvasBad("document_full", "the document's text does not fit") };
                 }
                 const value = b.value_text orelse return .{ .reject = canvasBad("missing_value", "a tile needs value_text") };
-                if (!face.validText(value)) return .{ .reject = canvasBad("invalid_text", "text is utf-8 without control characters") };
+                if (!face.validText(value)) return .{ .reject = canvasBad("invalid_text", "text is utf-8 without control characters but a newline") };
                 t.value = doc.addText(value) catch return .{ .reject = canvasBad("document_full", "the document's text does not fit") };
                 if (b.accent) |cc| t.accent = parseColour(cc) orelse return .{ .reject = canvasBad("invalid_colour", "accent must be rrggbb hex") };
                 e.body = .{ .tile = t };
@@ -721,7 +721,7 @@ fn parseCanvasPatch(body: []const ValueBody) CanvasPatchRoute {
         var u = canvas.Update{ .id = canvas.Id.init(v.id) };
         if (v.text) |t| {
             if (t.len > canvas.patch_bytes_max) return .{ .reject = canvasBad("text_too_long", "a patched string is at most 64 characters") };
-            if (!face.validText(t)) return .{ .reject = canvasBad("invalid_text", "text is utf-8 without control characters") };
+            if (!face.validText(t)) return .{ .reject = canvasBad("invalid_text", "text is utf-8 without control characters but a newline") };
             u.has |= canvas.Field.text;
             u.len = @intCast(t.len);
             @memcpy(u.bytes[0..t.len], t);
@@ -1182,8 +1182,8 @@ pub fn parseBody(kind: BodyKind, body: []const u8, arena: *Arena, generated_id: 
                 }
             }
             const text = b.text orelse "";
-            if (doc == null and text.len == 0) return bad("invalid_text", "text must be 1..128 bytes of utf-8 without control characters");
-            if (text.len > 128 or !face.validText(text)) return bad("invalid_text", "text must be 1..128 bytes of utf-8 without control characters");
+            if (doc == null and text.len == 0) return bad("invalid_text", "text must be 1..128 bytes of utf-8 without control characters but a newline");
+            if (text.len > 128 or !face.validText(text)) return bad("invalid_text", "text must be 1..128 bytes of utf-8 without control characters but a newline");
             if (b.duration_s < 1 or b.duration_s > 300) return bad("invalid_duration", "duration_s must be 1..300");
             const font = if (b.font) |f| (enumByName(canvas.Font, f) orelse return bad("invalid_font", "no font by that name; CANVAS.md lists every face")) else canvas.Font.small;
             const colour = if (b.colour) |c| (parseColour(c) orelse return bad("invalid_colour", "colour must be rrggbb hex")) else [3]u8{ 255, 255, 255 };
@@ -2405,7 +2405,7 @@ test "a notification may be a document, with the text as its summary or absent" 
     try std.testing.expectEqualStrings("invalid_text", textless.reject.code);
 }
 
-test "notify text may be utf-8 but not control characters" {
+test "notify text may be utf-8 and break lines, but not other control characters" {
     const c = testCreds();
     var arena: Arena = undefined;
     var origins = OriginPolicy{};
@@ -2416,6 +2416,10 @@ test "notify text may be utf-8 but not control characters" {
     try std.testing.expectEqualStrings("invalid_text", c1.reject.code);
     const del = route(testReq(.POST, "/api/v1/notify", "", control_header, "application/json", null), "{\"text\":\"a\\u007fb\"}", &c, &no_clients, &origins, &arena, test_minted);
     try std.testing.expectEqualStrings("invalid_text", del.reject.code);
+    const nl = route(testReq(.POST, "/api/v1/notify", "", control_header, "application/json", null), "{\"text\":\"two\\nlines\"}", &c, &no_clients, &origins, &arena, test_minted);
+    try std.testing.expectEqualStrings("two\nlines", nl.op.notify.text);
+    const tab = route(testReq(.POST, "/api/v1/notify", "", control_header, "application/json", null), "{\"text\":\"a\\tb\"}", &c, &no_clients, &origins, &arena, test_minted);
+    try std.testing.expectEqualStrings("invalid_text", tab.reject.code);
 }
 
 test "a plain notification may name a face, and an unknown one is refused" {

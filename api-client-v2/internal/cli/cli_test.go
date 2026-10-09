@@ -47,6 +47,7 @@ func TestRuntimeRequests(t *testing.T) {
 		{[]string{"notify", "Hello World", "--colour", "00ff80", "--duration", "3", "--transition", "slide", "--direction", "left"}, "POST", "/notify", `{"text":"Hello World","colour":"00ff80","duration_s":3,"transition":"slide","direction":"left"}`},
 		{[]string{"notify", "hi", "--transition", "ripple", "--easing", "ease_out"}, "POST", "/notify", `{"text":"hi","transition":"ripple","easing":"ease_out"}`},
 		{[]string{"notify", "20°C ☺"}, "POST", "/notify", `{"text":"20°C ☺"}`},
+		{[]string{"notify", "two\nlines"}, "POST", "/notify", `{"text":"two\nlines"}`},
 		{[]string{"notify", "hi", "--font", "phoenix"}, "POST", "/notify", `{"text":"hi","font":"phoenix"}`},
 		{[]string{"scene", "clock", "--font", "robotron-a7100"}, "PUT", "/scene", `{"base":"clock","clock":{"font":"robotron-a7100"}}`},
 		{[]string{"config", "set", "--clock-font", "tiny5-duo"}, "PATCH", "/config", `{"clock_font":"tiny5-duo"}`},
