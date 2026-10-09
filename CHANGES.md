@@ -30,6 +30,9 @@ refuses a version this file does not know. the github releases carry the same no
   saved settings and the persisted canvas until the flashed image carries this build. this build
   itself loads an unknown `clock_font` as `classic` and an unknown or too-tall `menu_font` as
   `mini`, so the next face added will not repeat the trap.
+- **the clock's digits keep still.** an imported face sets each digit centred in a slot as wide as
+  its widest digit, so the four proportional `light` faces no longer shift the colons a pixel as
+  a `1` comes and goes. the hand-drawn faces never did: their digits are all one width.
 - **text can break lines.** a `\n` is the one control character text may carry now. canvas text
   stacks its lines in the box, each aligned on its own; a plain notification stacks them when they
   fit the 16 rows and otherwise shows them in turn, two seconds each or as long as a line takes to

@@ -965,7 +965,7 @@ a clock style is `{font, colour_mode, colour, colour2, gradient, spread}`:
 | `big` | the classic digits scaled to 10×14 | `hh:mm` (no seconds) | 52 px, edge to edge |
 | `block` | the stock clock's face: 6×10 digits with two-pixel strokes, a flagged 1 with a base, a 2×2-dot colon | `hh:mm:ss` | 47 px |
 | `hires` | the classic 5×7 time on rows 0–6, a one-pixel bar on row 8 filling left to right through each second, the milliseconds in 3×5 digits on rows 10–14; redrawn every frame (60 fps) instead of once a second | `hh:mm:ss` and `mmm` | 47 px |
-| `chunky6` … `ibm-vga` | any of the twenty [imported faces](CANVAS.md#imported-faces), centred both ways | `hh:mm:ss` when it fits 52 px — every matrix and tiny5 face (28–48 px) — otherwise `hh:mm`: the seven int10h faces, whose 8-px advances make a full time 64 px | as drawn |
+| `chunky6` … `ibm-vga` | any of the twenty [imported faces](CANVAS.md#imported-faces), centred both ways; every digit sits centred in a slot as wide as the face's widest, so the proportional `light` faces' narrow `1` never shifts the colons | `hh:mm:ss` when it fits 52 px — every matrix and tiny5 face (28–48 px) — otherwise `hh:mm`: the seven int10h faces, whose 8-px advances make a full time 64 px | as drawn |
 
 everything is centred. `colour_mode` is `solid` (`colour` only) or `gradient`:
 a linear ramp from `colour` to `colour2` across the text's bounding box,

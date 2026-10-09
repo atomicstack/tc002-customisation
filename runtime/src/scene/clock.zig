@@ -269,6 +269,41 @@ const max_separators = 4;
 const hires_bar_row: i32 = 8;
 const hires_ms_y: i32 = 10;
 
+/// the slot each digit of an imported face takes on the clock: the advance of its widest digit, so
+/// a proportional face's `1` does not pull everything after it left as the time changes
+fn digitSlot(n: faces.Name) u32 {
+    var w: u32 = 0;
+    for ("0123456789") |d| w = @max(w, face.textWidth(.{ .imported = n }, &[1]u8{d}));
+    return w;
+}
+
+/// a line's width as the clock sets it: the hand-drawn faces as they measure, an imported face
+/// with every digit in its slot
+fn setWidth(f: Font, text: []const u8) u32 {
+    const n = clockfont.importedOf(f) orelse return clockfont.textWidth(f, text);
+    var w: u32 = 0;
+    for (text) |ch| w += if (std.ascii.isDigit(ch)) digitSlot(n) else face.textWidth(.{ .imported = n }, &[1]u8{ch});
+    return w;
+}
+
+/// an imported face's line, each digit centred in its slot. the clock's text is ascii
+fn blitSet(rgb: *geometry.Rgb, x0: i32, y: i32, n: faces.Name, text: []const u8, painter: anytype) void {
+    const f = face.Face{ .imported = n };
+    const slot: i32 = @intCast(digitSlot(n));
+    var x = x0;
+    for (text) |ch| {
+        const one = [1]u8{ch};
+        const w: i32 = @intCast(face.textWidth(f, &one));
+        if (std.ascii.isDigit(ch)) {
+            face.blit(rgb, x + @divFloor(slot - w, 2), y, f, &one, painter);
+            x += slot;
+        } else {
+            face.blit(rgb, x, y, f, &one, painter);
+            x += w;
+        }
+    }
+}
+
 pub const State = struct {
     rule: tz.Rule,
     style: Style = .{},
@@ -278,7 +313,7 @@ pub const State = struct {
     }
 
     fn centre(f: Font, text: []const u8) i32 {
-        return @divFloor(geometry.width - @as(i32, @intCast(clockfont.textWidth(f, text))), 2);
+        return @divFloor(geometry.width - @as(i32, @intCast(setWidth(f, text))), 2);
     }
 
     /// where each font puts its text: everything centred, `mini` adds the date underneath,
@@ -308,7 +343,7 @@ pub const State = struct {
             else => {
                 // an imported face: the whole time when it fits, otherwise hours and minutes;
                 // centred both ways either way
-                const text = if (clockfont.textWidth(f, time_text) <= geometry.width) time_text else time_text[0 .. time_text.len - 3];
+                const text = if (setWidth(f, time_text) <= geometry.width) time_text else time_text[0 .. time_text.len - 3];
                 lines[0] = .{ .x = centre(f, text), .y = @divFloor(geometry.height - @as(i32, clockfont.glyphHeight(f)), 2), .text = text, .font = f };
                 return lines[0..1];
             },
@@ -320,7 +355,7 @@ pub const State = struct {
         for (lines) |l| {
             // an imported face has no digit styles and no fade: it is drawn plainly by face.zig
             if (clockfont.importedOf(l.font)) |n| {
-                face.blit(rgb, l.x, l.y, .{ .imported = n }, l.text, painter);
+                blitSet(rgb, l.x, l.y, n, l.text, painter);
                 continue;
             }
             if (l.to) |to| clockfont.blitBlend(rgb, l.x, l.y, l.font, l.text, to, t, painter, digit, brightness) else clockfont.blitStyled(rgb, l.x, l.y, l.font, l.text, painter, digit);
@@ -385,7 +420,7 @@ pub const State = struct {
             for (l.text, 0..) |ch, i| {
                 if (ch != ':' and ch != '/') continue;
                 if (n == out.len) return n;
-                const before = clockfont.textWidth(l.font, l.text[0..i]) + if (i > 0) @as(u32, clockfont.gap(l.font)) else 0;
+                const before = setWidth(l.font, l.text[0..i]) + if (i > 0) @as(u32, clockfont.gap(l.font)) else 0;
                 const x0 = l.x + @as(i32, @intCast(before));
                 // an imported face's separator is its whole advance by the line's height: the
                 // blank column in it is dimmed too, which changes nothing
@@ -452,7 +487,7 @@ pub const State = struct {
                 for (lines) |l| {
                     box.x0 = @min(box.x0, l.x);
                     box.y0 = @min(box.y0, l.y);
-                    box.x1 = @max(box.x1, l.x + @as(i32, @intCast(clockfont.textWidth(l.font, l.text))) - 1);
+                    box.x1 = @max(box.x1, l.x + @as(i32, @intCast(setWidth(l.font, l.text))) - 1);
                     box.y1 = @max(box.y1, l.y + @as(i32, clockfont.glyphHeight(l.font)) - 1);
                 }
                 if (hires) box = .{ .x0 = 0, .y0 = 0, .x1 = geometry.width - 1, .y1 = hires_ms_y + 4 }; // the bar spans the panel
@@ -996,4 +1031,48 @@ test "the fade knows the panel's brightness: at a night level its changing pixel
     c.renderPulsed(c.style, mid, 255, 10, &night);
     for (0..geometry.width * geometry.height) |i| try std.testing.expect(night[i * 3] == 0 or night[i * 3] == 255);
     try std.testing.expect(!std.mem.eql(u8, &bright, &night));
+}
+
+test "no clock face moves its separators as the digits change" {
+    // 11:11:11 is the narrowest time a proportional face can show and 08:08:08 among the widest:
+    // with every digit in a slot of its own the colons sit in the same place for both
+    const narrow = test_wall_base + (11 * 3600 + 11 * 60 + 11) * std.time.ns_per_s;
+    const wide = test_wall_base + (8 * 3600 + 8 * 60 + 8) * std.time.ns_per_s;
+    inline for (std.meta.tags(Font)) |f| {
+        var c = State.init(tz.utc);
+        c.style.font = f;
+        var a: [max_separators]Box = undefined;
+        var b: [max_separators]Box = undefined;
+        const n = c.separatorBoxes(c.style, narrow, &a);
+        try std.testing.expectEqual(n, c.separatorBoxes(c.style, wide, &b));
+        for (a[0..n], b[0..n]) |x, y| std.testing.expectEqual(x, y) catch |e| {
+            std.debug.print("{s} moves its separators\n", .{@tagName(f)});
+            return e;
+        };
+    }
+}
+
+test "a proportional face's narrow digit sits centred in a slot as wide as its widest digit" {
+    var c = State.init(tz.utc);
+    c.style.font = .light6;
+    var rgb = geometry.black_rgb;
+    c.render(test_wall_base + (11 * 3600 + 11 * 60 + 11) * std.time.ns_per_s, &rgb);
+    const fc = face.Face{ .imported = .light6 };
+    const slot: i32 = @intCast(face.textWidth(fc, "0"));
+    const one: i32 = @intCast(face.textWidth(fc, "1"));
+    const colon: i32 = @intCast(face.textWidth(fc, ":"));
+    const total = 6 * slot + 2 * colon;
+    var expected = geometry.black_rgb;
+    const y = @divFloor(geometry.height - @as(i32, face.lineHeight(fc)), 2);
+    var x = @divFloor(geometry.width - total, 2);
+    for ("11:11:11") |ch| {
+        if (ch == ':') {
+            face.blit(&expected, x, y, fc, ":", clockfont.Solid{ .colour = c.style.colour });
+            x += colon;
+        } else {
+            face.blit(&expected, x + @divFloor(slot - one, 2), y, fc, "1", clockfont.Solid{ .colour = c.style.colour });
+            x += slot;
+        }
+    }
+    try std.testing.expectEqualSlices(u8, &expected, &rgb);
 }
