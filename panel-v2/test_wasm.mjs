@@ -59,6 +59,10 @@ test('catalogues come from the zig enums, not from a list in this file', () => {
   assert.deepEqual(W.GRADIENTS, ['horizontal', 'vertical', 'diagonal']);
   assert.deepEqual(W.DIGIT_STYLES, ['solid', 'outline', 'shadow']);
   assert.deepEqual(W.IP_MODES, ['lines', 'mini', 'scroll', 'big']);
+  // the canvas faces: the four hand-drawn ones, then the imported ones in faces.zig's order
+  assert.deepEqual(W.FACES.slice(0, 4), ['small', 'mini', 'block', 'big']);
+  assert.equal(W.FACES.length, 24);
+  assert.ok(W.FACES.includes('tiny5-duo') && W.FACES.at(-1) === 'ibm-vga', `faces: ${W.FACES.join(',')}`);
 });
 
 test('the timezone takes an iana name as well as a posix rule', () => {

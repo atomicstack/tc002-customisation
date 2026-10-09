@@ -43,11 +43,12 @@ carry an `id`, and the ones that never change do not need one.
 
 ## text
 
-### the four faces
+### the four hand-drawn faces
 
 `small` is 5 × 7 and has every printable character. `mini` is 3 × 5 and carries letters and digits —
 it is the face the device's own menus use. `block` (6 × 10) and `big` (10 × 14) carry **digits and a
-colon only**, for a number you read across a room.
+colon only**, for a number you read across a room. twenty more, imported from pixel fonts made for
+led matrices and old pcs, are in [imported faces](#imported-faces) below.
 
 ![the mini face spelling mini 3x5 abc above the small face spelling small, with 5x7 beside it](runtime/screenshots/canvas/fonts.png)
 

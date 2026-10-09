@@ -86,6 +86,7 @@ class ApiContractTests(unittest.TestCase):
             ('CanvasBody', {'elements': [{'type': 'pixel', 'at': [1, 2]}]}, {'elements': [{'type': 'rect', 'text': 'ignored?'}]}),
             ('CanvasBody', {'elements': [{'type': 'sparkline', 'data': [1, 2, 3]}]}, {'elements': [{'type': 'sparkline', 'data': '1,2,3'}]}),
             ('PatchBody', {'values': [{'id': 'temp', 'text': '22c'}]}, {'values': [{'id': 'temp'}]}),
+            ('ElementBody', {'type': 'text', 'font': 'tiny5-duo', 'text': 'hi'}, {'type': 'text', 'font': 'comic', 'text': 'hi'}),
         ]
         for name, valid, invalid in cases:
             self.assertTrue(name in document['$defs'], 'missing model: ' + name)

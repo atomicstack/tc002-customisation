@@ -550,7 +550,7 @@ so something can be animated in from off-panel. `tile: n, of: m` is the column s
 
 | type | fields | notes |
 |---|---|---|
-| `text` | `text`, `font`, `align` | `small` is the 5x7 with every printable character; `mini` the 3x5 of the menus; `block` and `big` are the clock's own faces and carry **digits and a colon only**, for a number read across a room. the text (and a patched string, and a tile's label and value) is utf-8 without control characters; a character a face lacks draws as `?` |
+| `text` | `text`, `font`, `align` | `small` is the 5x7 with every printable character; `mini` the 3x5 of the menus; `block` and `big` are the clock's own faces and carry **digits and a colon only**, for a number read across a room. twenty imported pixel faces follow them (`chunky6` … `ibm-vga`, all in [`CANVAS.md`](CANVAS.md#imported-faces)), with latin, greek, cyrillic or the cp437 graphics depending on the face. the text (and a patched string, and a tile's label and value) is utf-8 without control characters; a character a face lacks draws as `?` |
 | `rect` | `filled` | a one-pixel outline unless filled |
 | `line` | `to: [x,y]` | bresenham, so a diagonal has no gaps |
 | `circle` | `r`, `filled` | `at` is the centre |

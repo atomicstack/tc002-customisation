@@ -573,6 +573,10 @@ export fn generatorNames() u32 {
 export fn clockFontNames() u32 {
     return copyOut(enumNames(clockfont.Font));
 }
+/// the faces canvas text and a plain notification can be set in, in wire order
+export fn faceNames() u32 {
+    return copyOut(enumNames(canvas.Font));
+}
 export fn clockModeNames() u32 {
     return copyOut(enumNames(clock.ColourMode));
 }

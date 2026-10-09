@@ -56,7 +56,9 @@ def enum_source(path, name):
     source = (ROOT / 'src' / path).read_text()
     body = re.search(r'pub const ' + name + r' = enum(?:\([^)]*\))? \{(.*?)\n?\};', source, re.S).group(1)
     body = re.sub(r'//[^\n]*', '', body).split('pub fn')[0].split('fn ')[0]
-    return enum(*re.findall(r'(?:^|,)\s*(\w+)\s*(?:=\s*\d+)?\s*(?=,|$)', body.strip()))
+    # a name that is not an identifier is written @"like-this" in zig
+    names = re.findall(r'(?:^|,)\s*(\w+|@"[^"]+")\s*(?:=\s*\d+)?\s*(?=,|$)', body.strip())
+    return enum(*[n[2:-1] if n.startswith('@"') else n for n in names])
 
 
 BOOL = {'type': 'boolean'}
@@ -168,7 +170,7 @@ def request_schemas():
     update('SoundBody', name=NAME)
     schemas['SoundBody']['anyOf'] = [{'properties': {'stop': {'const': True}}, 'required': ['stop']}, {**nonnull('name'), 'properties': {'name': NAME, 'volume': nullable(integer(1, 100))}}]
     update('AnimateBody', kind=enum('hue', 'bounce', 'scramble', 'scroll', 'blink', 'pulse', 'typewriter', 'sweep'), ms=integer(1, 65535), phase=integer(0, 100), axis=enum('x', 'y'))
-    update('ElementBody', type=enum_source('scene/canvas.zig', 'Kind'), id=ID, colour=COLOUR, background=COLOUR, over=COLOUR, accent=COLOUR, sprite=ID, font=enum('small', 'mini', 'block', 'big'), align=enum('left', 'centre', 'right'), style=enum('line', 'bars', 'area'), data=SAMPLES, data_hex=HEX_SAMPLES, text=string(maxLength=256), label=string(maxLength=256), value_text=string(maxLength=256), size=array(integer(0, 32767), minItems=2, maxItems=2))
+    update('ElementBody', type=enum_source('scene/canvas.zig', 'Kind'), id=ID, colour=COLOUR, background=COLOUR, over=COLOUR, accent=COLOUR, sprite=ID, font=enum_source('scene/canvas.zig', 'Font'), align=enum('left', 'centre', 'right'), style=enum('line', 'bars', 'area'), data=SAMPLES, data_hex=HEX_SAMPLES, text=string(maxLength=256), label=string(maxLength=256), value_text=string(maxLength=256), size=array(integer(0, 32767), minItems=2, maxItems=2))
     update('ValueBody', id=ID, text=string(maxLength=64), colour=COLOUR, data=SAMPLES, data_hex=HEX_SAMPLES)
     update('CanvasBody', elements=array(ref('ElementBody'), maxItems=24), persist={**BOOL, 'default': True, 'description': 'false shows the document without writing it to flash; a restart brings the last persisted one back'})
     update('PatchBody', values=array(ref('ValueBody'), maxItems=24))

@@ -637,7 +637,7 @@ fn parseCanvas(body: []const ElementBody, doc: *canvas.Document) CanvasRoute {
                 const span = doc.addText(text) catch return .{ .reject = canvasBad("document_full", "the document's text does not fit") };
                 e.body = .{ .text = .{
                     .span = span,
-                    .face = if (b.font) |f| (enumByName(canvas.Font, f) orelse return .{ .reject = canvasBad("invalid_font", "font must be small, mini, block or big") }) else .small,
+                    .face = if (b.font) |f| (enumByName(canvas.Font, f) orelse return .{ .reject = canvasBad("invalid_font", "no font by that name; CANVAS.md lists every face") }) else .small,
                     .alignment = if (b.@"align") |a| (enumByName(canvas.Align, a) orelse return .{ .reject = canvasBad("invalid_align", "align must be left, centre or right") }) else .left,
                 } };
             },
@@ -2416,6 +2416,20 @@ test "canvas text refuses control characters, in a document and in a patch" {
     const patch = testReq(.PATCH, "/api/v1/canvas", "", control_header, "application/json", null);
     try expectReject(route(patch, "{\"values\":[{\"id\":\"t\",\"text\":\"\\u001b[0m\"}]}", &c, &no_clients, &origins, &arena, test_minted), 400, "invalid_text");
     try std.testing.expect(route(patch, "{\"values\":[{\"id\":\"t\",\"text\":\"21°C\"}]}", &c, &no_clients, &origins, &arena, test_minted) == .op);
+}
+
+test "canvas text accepts an imported font by name and refuses an unknown one" {
+    var arena: Arena = undefined;
+    const ok = parseBody(.canvas_put, "{\"elements\":[{\"type\":\"text\",\"at\":[0,0],\"font\":\"tiny5-duo\",\"text\":\"hi\"}]}", &arena, 0);
+    try std.testing.expectEqual(canvas.Font.@"tiny5-duo", ok.op.canvas_put.doc.elements[0].body.text.face);
+    const vga = parseBody(.canvas_put, "{\"elements\":[{\"type\":\"text\",\"at\":[0,0],\"font\":\"ibm-vga\",\"text\":\"Жизнь\"}]}", &arena, 0);
+    try std.testing.expectEqual(canvas.Font.@"ibm-vga", vga.op.canvas_put.doc.elements[0].body.text.face);
+    const unknown = parseBody(.canvas_put, "{\"elements\":[{\"type\":\"text\",\"at\":[0,0],\"font\":\"comic\",\"text\":\"hi\"}]}", &arena, 0);
+    try std.testing.expectEqualStrings("invalid_font", unknown.reject.code);
+    try std.testing.expect(std.mem.indexOf(u8, unknown.reject.message, "CANVAS.md") != null);
+    // case matters: the names are the documented ones
+    const shouted = parseBody(.canvas_put, "{\"elements\":[{\"type\":\"text\",\"at\":[0,0],\"font\":\"Tiny5\",\"text\":\"hi\"}]}", &arena, 0);
+    try std.testing.expectEqualStrings("invalid_font", shouted.reject.code);
 }
 
 test "a canvas put may decline to persist" {

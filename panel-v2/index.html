@@ -1499,7 +1499,8 @@ const CV_AMOUNT = {
   bounce: { label: 'travel', key: 'animate.amount \u00b7 leds, 2 if unset' },
   blink: { label: 'duty', key: 'animate.amount \u00b7 % of the period lit, 50 if unset' },
 };
-const CV_FONTS = ['small', 'mini', 'block', 'big'];
+// the faces come from the wasm's own enum once it has loaded; the four hand-drawn ones until then
+const cvFonts = () => (S.FACES && S.FACES.length ? S.FACES : ['small', 'mini', 'block', 'big']);
 const CV_ALIGN = ['left', 'centre', 'right'];
 const CV_STYLE = ['line', 'bars', 'area'];
 let CV_ICONS = [];
@@ -1692,7 +1693,7 @@ function cvForm() {
         if (v === '') { delete e[f]; cvList(); cvRender(); } else if (pair) cvSet(e, f, pair);
       })));
     } else if (f === 'font') {
-      box.append(cvField('font', 'small mini block big', cvSelect(['', ...CV_FONTS], e.font || '', v => cvSet(e, 'font', v || undefined))));
+      box.append(cvField('font', 'small mini block big, or an imported face (CANVAS.md)', cvSelect(['', ...cvFonts()], e.font || '', v => cvSet(e, 'font', v || undefined))));
     } else if (f === 'align') {
       box.append(cvField('align', 'left centre right', cvSelect(['', ...CV_ALIGN], e.align || '', v => cvSet(e, 'align', v || undefined))));
     } else if (f === 'style') {

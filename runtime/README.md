@@ -295,7 +295,9 @@ normal firmware builds embed the checked-in artifacts and do not require python 
 - **twenty imported pixel faces are one 212 kb blob compiled into every binary that draws text**
   (`src/scene/faces.bin`, 217,454 bytes for 13,850 glyphs: an 11-byte index entry per glyph is
   most of it, the bitmaps one bit per pixel the rest). it is `@embedFile`d, read in place with a
-  binary search per character, and never copied or allocated. the index could be halved by storing
+  binary search per character, and never copied or allocated. measured on the arm build: `tc002d`
+  592,684 → 815,324 bytes and `tc002-berryd` 806,004 → 1,028,604 (it links the canvas), so about
+  435 kb more tmpfs ram while both run; `tc002-netd` grew 3.9 kb for the utf-8 rule. the index could be halved by storing
   codepoint ranges, at the price of a more involved lookup; it was not worth it at this size.
   the sources (bdf, windows `.fon`, one opentype bitmap `.otb`) are read by
   `tools/gen-fonts.py`, about 300 lines of stdlib python, instead of a font library: builds never

@@ -17,6 +17,8 @@ const param = @import("param.zig");
 const geometry = @import("../panel/geometry.zig");
 const font = @import("font.zig");
 const clockfont = @import("clockfont.zig");
+const typeface = @import("face.zig");
+const faces = @import("faces.zig");
 const icons = @import("icons.zig");
 const scene = @import("scene.zig");
 
@@ -113,7 +115,21 @@ pub const Animation = struct {
 /// `small` is the 5x7 with every printable character. `mini` is the 3x5 of the menus: letters,
 /// digits and a little punctuation. `block` and `big` are the clock's own faces and carry **digits
 /// and a colon only** — they are for a number a room away, not for words.
-pub const Font = enum(u8) { small, mini, block, big };
+/// the twenty imported faces follow them in faces.zig's order (see CANVAS.md for every one in
+/// pictures). the numbering is the wire encoding: append only.
+pub const Font = enum(u8) { small, mini, block, big, chunky6, chunky6x, light6, light6x, chunky8, chunky8x, chunky8x6, light8, light8x, light8x6, tiny5, @"tiny5-duo", @"tiny5-mono", phoenix, @"phoenix-2y", @"phoenix-8x14", @"ibm-iso8", @"apricot-xenc", @"robotron-a7100", @"ibm-vga" };
+const first_imported = 4;
+
+/// the face a font draws with
+pub fn faceOf(f: Font) typeface.Face {
+    return switch (f) {
+        .small => .small,
+        .mini => .mini,
+        .block => .block,
+        .big => .big,
+        else => .{ .imported = @fromBackingInt(@backingInt(f) - first_imported) },
+    };
+}
 pub const Align = enum(u8) { left, centre, right };
 pub const Style = enum(u8) { line, bars, area };
 
@@ -349,6 +365,14 @@ fn progress(a: Animation, elapsed_ms: u64) u32 {
     return @intCast(@min((elapsed_ms * 256) / period, 256));
 }
 
+/// how many characters (not bytes) a string holds
+fn characters(text: []const u8) usize {
+    var i: usize = 0;
+    var n: usize = 0;
+    while (i < text.len) : (n += 1) _ = typeface.nextCodepoint(text, &i);
+    return n;
+}
+
 /// a value the scramble can draw before a character has landed on its own
 fn scrambleGlyph(seed: u64) u8 {
     var h = seed *% 0x9E3779B97F4A7C15;
@@ -449,21 +473,11 @@ const ClipPainter = struct {
 };
 
 fn textWidthOf(face: Font, text: []const u8) i32 {
-    return switch (face) {
-        .small => @intCast(font.textWidth(text)),
-        .mini => @intCast(clockfont.textWidth(.mini, text)),
-        .block => @intCast(clockfont.textWidth(.block, text)),
-        .big => @intCast(clockfont.textWidth(.big, text)),
-    };
+    return @intCast(typeface.textWidth(faceOf(face), text));
 }
 
 fn textHeightOf(face: Font) i32 {
-    return switch (face) {
-        .small => font.glyph_h,
-        .mini => clockfont.glyphHeight(.mini),
-        .block => clockfont.glyphHeight(.block),
-        .big => clockfont.glyphHeight(.big),
-    };
+    return typeface.lineHeight(faceOf(face));
 }
 
 /// draw text into a scratch buffer and copy it through the clip, so every font goes through one
@@ -480,12 +494,7 @@ fn drawText(rgb: *geometry.Rgb, e: *const Element, text: []const u8, colour: [3]
     };
     const y: i32 = @as(i32, e.box.y) + offset[1];
     var scratch = geometry.black_rgb;
-    switch (b.face) {
-        .small => font.blit(&scratch, x, y, text, colour),
-        .mini => clockfont.blit(&scratch, x, y, .mini, text, clockfont.Solid{ .colour = colour }),
-        .block => clockfont.blit(&scratch, x, y, .block, text, clockfont.Solid{ .colour = colour }),
-        .big => clockfont.blit(&scratch, x, y, .big, text, clockfont.Solid{ .colour = colour }),
-    }
+    typeface.blit(&scratch, x, y, faceOf(b.face), text, clockfont.Solid{ .colour = colour });
     const clip = Clip.box(rgb, e.box, box_w, th);
     for (0..geometry.height) |sy| {
         for (0..geometry.width) |sx| {
@@ -887,21 +896,36 @@ pub const State = struct {
             .scramble => {
                 const p = progress(e.anim, elapsed_ms);
                 if (p >= 256) return text;
-                @memcpy(buf[0..text.len], text);
-                // each character lands in turn, and the ones still to land keep flipping
-                for (buf[0..text.len], 0..) |*c, n| {
-                    const lands_at: u32 = @intCast((n + 1) * 256 / text.len);
-                    if (p >= lands_at) continue;
-                    if (text[n] == ' ') continue; // a space is not a character to guess at
-                    c.* = scrambleGlyph(@as(u64, elapsed_ms / 60) *% 31 +% n);
+                // each character lands in turn, and the ones still to land keep flipping. it works
+                // in characters, not bytes: a flipping one is a single ascii byte, never longer than
+                // what it stands in for, so the result fits wherever the text did
+                const count = characters(text);
+                var out: usize = 0;
+                var pos: usize = 0;
+                var n: usize = 0;
+                while (pos < text.len) : (n += 1) {
+                    const start = pos;
+                    const cp = typeface.nextCodepoint(text, &pos);
+                    const lands_at: u32 = @intCast((n + 1) * 256 / count);
+                    if (p >= lands_at or cp == ' ') { // a space is not a character to guess pos
+                        @memcpy(buf[out..][0 .. pos - start], text[start..pos]);
+                        out += pos - start;
+                    } else {
+                        buf[out] = scrambleGlyph(@as(u64, elapsed_ms / 60) *% 31 +% n);
+                        out += 1;
+                    }
                 }
-                return buf[0..text.len];
+                return buf[0..out];
             },
             .typewriter => {
+                // a whole character pos a time: half a utf-8 sequence would draw as a replacement
                 const p = progress(e.anim, elapsed_ms);
-                const shown = @min(text.len, (text.len * p) / 256);
-                @memcpy(buf[0..shown], text[0..shown]);
-                return buf[0..shown];
+                const want = (characters(text) * p) / 256;
+                var pos: usize = 0;
+                var n: usize = 0;
+                while (i < text.len and n < want) : (n += 1) _ = typeface.nextCodepoint(text, &pos);
+                @memcpy(buf[0..pos], text[0..pos]);
+                return buf[0..pos];
             },
             else => return text,
         }
@@ -1131,6 +1155,56 @@ test "text draws in every font, aligns inside its box and is clipped by it" {
         n.render(0, &rgb);
         try std.testing.expect(lit(&rgb) > 10);
     }
+}
+
+test "the canvas font enum is the four hand-drawn faces then every imported face, in order" {
+    const names = @typeInfo(Font).@"enum".field_names;
+    const imported = @typeInfo(faces.Name).@"enum".field_names;
+    try std.testing.expectEqual(4 + imported.len, names.len);
+    for (imported, 0..) |n, i| try std.testing.expectEqualStrings(n, names[4 + i]);
+    try std.testing.expectEqual(typeface.Face.small, faceOf(.small));
+    try std.testing.expectEqual(typeface.Face{ .imported = .@"ibm-vga" }, faceOf(.@"ibm-vga"));
+}
+
+test "text in an imported face draws what face.zig draws, aligned and clipped like any other" {
+    var s = State{};
+    const span = try s.doc.addText("Hi°");
+    try s.doc.add(.{ .box = .{ .x = 3, .y = 2 }, .colour = white, .body = .{ .text = .{ .span = span, .face = .chunky8 } } });
+    var rgb: geometry.Rgb = undefined;
+    s.render(0, &rgb);
+    var expected = geometry.black_rgb;
+    typeface.blit(&expected, 3, 2, .{ .imported = .chunky8 }, "Hi°", clockfont.Solid{ .colour = white });
+    try std.testing.expectEqualSlices(u8, &expected, &rgb);
+
+    // right-aligned in a whole-panel box, it ends at the right edge
+    s.doc.elements[0].box = .{ .x = 0, .y = 0, .w = geometry.width, .h = geometry.height };
+    s.doc.elements[0].body.text.alignment = .right;
+    s.render(0, &rgb);
+    const w: i32 = @intCast(typeface.textWidth(.{ .imported = .chunky8 }, "Hi°"));
+    expected = geometry.black_rgb;
+    typeface.blit(&expected, geometry.width - w, 0, .{ .imported = .chunky8 }, "Hi°", clockfont.Solid{ .colour = white });
+    try std.testing.expectEqualSlices(u8, &expected, &rgb);
+}
+
+test "typewriter and scramble never split a utf-8 character" {
+    var s = State{};
+    const span = try s.doc.addText("é°☺x");
+    try s.doc.add(.{ .colour = white, .body = .{ .text = .{ .span = span, .face = .@"ibm-vga" } }, .anim = .{ .kind = .typewriter, .ms = 1000 } });
+    var buf: [text_pool]u8 = undefined;
+    var t: u64 = 0;
+    while (t <= 1000) : (t += 50) {
+        const shown = s.animatedText(0, t, &buf);
+        try std.testing.expect(std.unicode.utf8ValidateSlice(shown));
+    }
+    try std.testing.expectEqualStrings("é°", s.animatedText(0, 500, &buf));
+    s.doc.elements[0].anim = .{ .kind = .scramble, .ms = 1000 };
+    t = 0;
+    while (t <= 1000) : (t += 50) {
+        const shown = s.animatedText(0, t, &buf);
+        try std.testing.expect(std.unicode.utf8ValidateSlice(shown));
+        try std.testing.expectEqual(@as(usize, 4), std.unicode.utf8CountCodepoints(shown) catch 0);
+    }
+    try std.testing.expectEqualStrings("é°☺x", s.animatedText(0, 1000, &buf));
 }
 
 test "tiles and rows divide the panel without gaps or overlaps" {
