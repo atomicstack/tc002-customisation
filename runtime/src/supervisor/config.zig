@@ -9,6 +9,8 @@ const clockfont = @import("../scene/clockfont.zig");
 const param = @import("../scene/param.zig");
 const scene = @import("../scene/scene.zig");
 const ip = @import("../scene/ip.zig");
+const canvas = @import("../scene/canvas.zig");
+const menu = @import("../scene/menu.zig");
 const ntfy_url = @import("../ntfy/url.zig");
 const tz = @import("../scene/tz.zig");
 const solar = @import("../sys/solar.zig");
@@ -90,6 +92,8 @@ pub const Config = struct {
     /// the mdns responder: the clock answers for `tc002-<mac>.local` while this is on. on by
     /// default, because one clock finding another by name is the point; off withdraws the name.
     mdns: bool = true,
+    /// the face the device menus are drawn in; always one `menu.fits`
+    menu_font: canvas.Font = .mini,
     origins: [api.max_origins]Text = .{ .{}, .{}, .{}, .{} },
     origin_count: u8 = 0,
     mqtt: Mqtt = .{},
@@ -193,6 +197,7 @@ pub const Config = struct {
         if (p.discovery) |v| next.discovery = v;
         if (p.discovery_controls) |v| next.discovery_controls = v;
         if (p.mdns) |v| next.mdns = v;
+        if (p.menu_font) |v| next.menu_font = v;
         if (p.discovery_prefix) |v| try next.discovery_prefix.set(v);
         if (p.clock_font) |v| next.clock_font = @backingInt(v);
         if (p.clock_colour_mode) |v| next.clock_colour_mode = @backingInt(v);
@@ -299,6 +304,11 @@ pub const Config = struct {
     }
 };
 
+/// a face the menu cannot lay out is mini
+fn menuFontOr(f: canvas.Font) canvas.Font {
+    return if (menu.fits(f)) f else .mini;
+}
+
 fn enumOr(comptime E: type, value: u8, default: E) E {
     inline for (@typeInfo(E).@"enum".field_values) |v| if (v == value) return @fromBackingInt(@intCast(v));
     return default;
@@ -383,6 +393,7 @@ const Wire = struct {
     const battery = 1 + 2 + 2; // shutdown, shutdown mv, grace s
     const sound = 1 + 1; // enabled, volume
     const mdns = 1;
+    const menu_font = 1;
 };
 pub const encoded_len = Wire.schema + Wire.revision + Wire.saved_revision + Wire.brightness_base_generator +
     Wire.timezone + Wire.ntp_server + Wire.ntp_interval_s + Wire.frame_timeout_ms + Wire.metrics_interval_s +
@@ -390,7 +401,7 @@ pub const encoded_len = Wire.schema + Wire.revision + Wire.saved_revision + Wire
     Wire.mqtt_enabled + Wire.mqtt_host + Wire.mqtt_port + Wire.mqtt_texts + Wire.mqtt_tls +
     Wire.clock_style + Wire.night +
     Wire.ntfy_enabled + Wire.ntfy_texts + Wire.ntfy_duration_s + Wire.ntfy_insecure +
-    Wire.generator_params + Wire.berry + Wire.battery + Wire.sound + Wire.mdns;
+    Wire.generator_params + Wire.berry + Wire.battery + Wire.sound + Wire.mdns + Wire.menu_font;
 
 pub fn encode(c: *const Config, out: *[encoded_len]u8) void {
     var o: usize = 0;
@@ -484,6 +495,8 @@ pub fn encode(c: *const Config, out: *[encoded_len]u8) void {
     out[o] = c.sound.volume;
     o += 1;
     out[o] = @intFromBool(c.mdns);
+    o += 1;
+    out[o] = @backingInt(c.menu_font);
     o += 1;
     std.debug.assert(o == encoded_len);
 }
@@ -583,6 +596,8 @@ pub fn decode(in: []const u8) error{BadPayload}!Config {
     o += 1;
     c.mdns = in[o] != 0;
     o += 1;
+    c.menu_font = menuFontOr(enumOr(canvas.Font, in[o], .mini));
+    o += 1;
     return c;
 }
 
@@ -603,6 +618,7 @@ const FileForm = struct {
     discovery_controls: bool = false,
     discovery_prefix: []const u8 = "homeassistant",
     mdns: bool = true,
+    menu_font: []const u8 = "mini",
     origins: []const []const u8 = &.{},
     clock_font: []const u8 = "classic",
     clock_colour_mode: []const u8 = "solid",
@@ -732,6 +748,7 @@ pub fn toJson(c: *const Config, out: []u8) error{Overflow}![]u8 {
         .discovery_controls = c.discovery_controls,
         .discovery_prefix = c.discovery_prefix.slice(),
         .mdns = c.mdns,
+        .menu_font = @tagName(c.menu_font),
         .origins = origins_buf[0..c.origin_count],
         .mqtt = .{
             .enabled = c.mqtt.enabled,
@@ -789,6 +806,9 @@ pub fn fromJson(bytes: []const u8, arena: []u8) error{ Invalid, TooLong }!Config
     c.discovery = f.discovery;
     c.discovery_controls = f.discovery_controls;
     c.mdns = f.mdns;
+    // a face this build does not know, or one too tall for the menu, is mini rather than a reason
+    // to refuse the whole file
+    c.menu_font = menuFontOr(api.enumByName(canvas.Font, f.menu_font) orelse .mini);
     c.night = f.night;
     if (f.night_brightness < 1 or f.night_brightness > 100) return error.Invalid;
     c.night_brightness = f.night_brightness;
@@ -984,7 +1004,7 @@ test "the night schedule's settings, and where the device thinks it is" {
 
 test "ipc encoding round-trips every field" {
     var c = Config{};
-    try c.patch(.{ .brightness = 7, .base = .clock, .generator = .plasma, .timezone = "EST5EDT,M3.2.0,M11.1.0", .ntp_server = .{ 1, 2, 3, 4 }, .ntp_interval_s = 600, .frame_timeout_ms = 250, .metrics_interval_s = 0, .discovery = true, .discovery_prefix = "ha", .clock_font = .segment, .clock_colour_mode = .gradient, .clock_colour = .{ 1, 2, 3 }, .clock_colour2 = .{ 4, 5, 6 }, .clock_gradient = .diagonal, .clock_spread = 12, .clock_fade = true, .clock_hours = .@"12h", .ip_mode = .scroll, .night = true, .night_brightness = 12, .night_lead_min = 35, .location = .{ .lat_c = -3387, .lon_c = 15122 }, .berry_enabled = true, .berry_heap_kb = 64, .berry_handler_ms = 250 });
+    try c.patch(.{ .brightness = 7, .base = .clock, .generator = .plasma, .timezone = "EST5EDT,M3.2.0,M11.1.0", .ntp_server = .{ 1, 2, 3, 4 }, .ntp_interval_s = 600, .frame_timeout_ms = 250, .metrics_interval_s = 0, .discovery = true, .discovery_prefix = "ha", .clock_font = .segment, .clock_colour_mode = .gradient, .clock_colour = .{ 1, 2, 3 }, .clock_colour2 = .{ 4, 5, 6 }, .clock_gradient = .diagonal, .clock_spread = 12, .clock_fade = true, .clock_hours = .@"12h", .ip_mode = .scroll, .menu_font = .small, .night = true, .night_brightness = 12, .night_lead_min = 35, .location = .{ .lat_c = -3387, .lon_c = 15122 }, .berry_enabled = true, .berry_heap_kb = 64, .berry_handler_ms = 250 });
     try c.patchMqtt(.{ .enabled = true, .host = "10.0.0.2", .port = 8883, .username = "u", .password = "p", .client_id = "cid", .prefix = "tc002/x", .tls = true });
     c.origins[0] = Text.init("http://panel.local");
     c.origin_count = 1;
@@ -1002,7 +1022,7 @@ test "ipc encoding round-trips every field" {
 
 test "json persistence round-trips and rejects junk" {
     var c = Config{};
-    try c.patch(.{ .brightness = 33, .base = .canvas, .timezone = "AEST-10AEDT,M10.1.0,M4.1.0/3", .ntp_server = .{ 10, 0, 0, 5 }, .clock_font = .big, .clock_colour = .{ 0xff, 0x80, 0x00 }, .clock_colour_mode = .gradient, .clock_fade = true, .clock_hours = .@"12h", .ip_mode = .big, .night = true, .night_brightness = 8, .night_lead_min = 0, .location = .{ .lat_c = 5151, .lon_c = -13 }, .berry_enabled = true, .berry_heap_kb = 128, .berry_handler_ms = 500 });
+    try c.patch(.{ .brightness = 33, .base = .canvas, .timezone = "AEST-10AEDT,M10.1.0,M4.1.0/3", .ntp_server = .{ 10, 0, 0, 5 }, .clock_font = .big, .clock_colour = .{ 0xff, 0x80, 0x00 }, .clock_colour_mode = .gradient, .clock_fade = true, .clock_hours = .@"12h", .ip_mode = .big, .menu_font = .chunky6x, .night = true, .night_brightness = 8, .night_lead_min = 0, .location = .{ .lat_c = 5151, .lon_c = -13 }, .berry_enabled = true, .berry_heap_kb = 128, .berry_handler_ms = 500 });
     try c.patchMqtt(.{ .enabled = true, .host = "10.0.0.2", .username = "tc002", .password = "Pw1", .prefix = "tc002/dev" });
     c.origins[0] = Text.init("http://panel");
     c.origin_count = 1;
@@ -1319,6 +1339,27 @@ test "mdns is on unless turned off, and the choice round-trips" {
     try std.testing.expect(!(try fromJson(try toJson(&c, &out), &arena)).mdns);
     // a settings file written before the switch existed means on, the default
     try std.testing.expect((try fromJson("{\"schema\":1}", &arena)).mdns);
+}
+
+test "menu_font is mini until set, round-trips, and a face too tall for the menu loads as mini" {
+    var c = Config{};
+    try std.testing.expectEqual(canvas.Font.mini, c.menu_font);
+    try c.patch(.{ .menu_font = .light6 });
+    try std.testing.expectEqual(canvas.Font.light6, c.menu_font);
+    var wire: [encoded_len]u8 = undefined;
+    encode(&c, &wire);
+    try std.testing.expectEqual(canvas.Font.light6, (try decode(&wire)).menu_font);
+    var out: [file_max]u8 = undefined;
+    var arena: [8192]u8 = undefined;
+    const text = try toJson(&c, &out);
+    try std.testing.expect(std.mem.indexOf(u8, text, "\"menu_font\":\"light6\"") != null);
+    try std.testing.expectEqual(canvas.Font.light6, (try fromJson(text, &arena)).menu_font);
+    // a file written before the setting existed means mini
+    try std.testing.expectEqual(canvas.Font.mini, (try fromJson("{\"schema\":1}", &arena)).menu_font);
+    // a hand-edited file naming a tall face, or a face a newer build knows, loads as mini rather
+    // than drawing a menu off the panel or refusing the whole file
+    try std.testing.expectEqual(canvas.Font.mini, (try fromJson("{\"schema\":1,\"menu_font\":\"phoenix\"}", &arena)).menu_font);
+    try std.testing.expectEqual(canvas.Font.mini, (try fromJson("{\"schema\":1,\"menu_font\":\"from-the-future\"}", &arena)).menu_font);
 }
 
 test "a settings file written by a newer build still loads on this one" {

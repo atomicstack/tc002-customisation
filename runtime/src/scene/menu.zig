@@ -11,6 +11,8 @@ const std = @import("std");
 const geometry = @import("../panel/geometry.zig");
 const font = @import("font.zig");
 const clockfont = @import("clockfont.zig");
+const canvas = @import("canvas.zig");
+const face = @import("face.zig");
 const ip = @import("ip.zig");
 const pages = @import("pages.zig");
 const param = @import("param.zig");
@@ -117,6 +119,8 @@ pub const Status = struct {
     night_level: u8 = 10,
     /// the schedule needs a place before it can work out when the sun sets there
     night_placed: bool = false,
+    /// the `menu_font` setting: the face the menus are drawn in
+    menu_font: canvas.Font = .mini,
 };
 
 const ns_per_ms = 1_000_000;
@@ -141,6 +145,8 @@ pub const Menu = struct {
     state: State = .browsing,
     settings: Values = .{},
     status: Status = .{},
+    /// the face the labels and values are set in: the `menu_font` setting, always one that `fits`
+    font: canvas.Font = .mini,
     readout: Readout = .wifi,
     /// the highlighted answer of the reboot dialogue; it starts on no every time
     confirm_yes: bool = false,
@@ -156,7 +162,7 @@ pub const Menu = struct {
     pages_at: u64 = 0,
 
     pub fn open(values: Values, status: Status, now: u64) Menu {
-        return .{ .kind = .device, .settings = values, .status = status, .last_input_ns = now, .scroll_start_ns = now, .pages_at = now };
+        return .{ .kind = .device, .settings = values, .status = status, .font = status.menu_font, .last_input_ns = now, .scroll_start_ns = now, .pages_at = now };
     }
 
     /// the settings of whatever scene is showing, walked straight off its declared table
@@ -393,25 +399,25 @@ pub const Menu = struct {
     pub fn render(self: *const Menu, now: u64, rgb: *geometry.Rgb) void {
         @memset(rgb, 0);
         if (self.state == .confirming) {
-            drawLine(rgb, 1, "reboot?", dim, now, self.scroll_start_ns);
-            clockfont.blit(rgb, 12, 9, .mini, "no", clockfont.Solid{ .colour = if (self.confirm_yes) dim else bright });
-            clockfont.blit(rgb, 30, 9, .mini, "yes", clockfont.Solid{ .colour = if (self.confirm_yes) warn else dim });
+            drawLine(rgb, self.font, titleY(self.font), "reboot?", dim, now, self.scroll_start_ns);
+            drawAnswer(rgb, self.font, no_centre, "no", if (self.confirm_yes) dim else bright);
+            drawAnswer(rgb, self.font, yes_centre, "yes", if (self.confirm_yes) warn else dim);
             return;
         }
         const colour = if (self.state == .adjusting) amber else bright;
         var buf: [24]u8 = undefined;
         if (self.kind == .scene) {
             const name = if (self.onExit()) "exit" else self.table[self.entry].name;
-            drawLine(rgb, 1, name, dim, now, self.scroll_start_ns);
+            drawLine(rgb, self.font, titleY(self.font), name, dim, now, self.scroll_start_ns);
             if (self.current()) |p| {
                 if (p.kind == .colour) {
                     // a swatch, because six hex digits tell you nothing about a colour
                     swatch(rgb, param.valueRgb(self.values[self.entry]), self.state == .adjusting);
                 } else {
-                    drawLine(rgb, 9, p.valueText(self.values[self.entry], &buf), colour, now, self.scroll_start_ns);
+                    drawLine(rgb, self.font, valueY(self.font), p.valueText(self.values[self.entry], &buf), colour, now, self.scroll_start_ns);
                 }
             } else {
-                drawLine(rgb, 9, "click", colour, now, self.scroll_start_ns);
+                drawLine(rgb, self.font, valueY(self.font), "click", colour, now, self.scroll_start_ns);
             }
             pages.draw(rgb, self.entries(), self.entry, pages.alphaAt(now -| self.pages_at));
             return;
@@ -425,9 +431,9 @@ pub const Menu = struct {
             pages.draw(rgb, count, @backingInt(self.item), pages.alphaAt(now -| self.pages_at));
             return;
         }
-        drawLine(rgb, 1, self.item.label(), dim, now, self.scroll_start_ns);
+        drawLine(rgb, self.font, titleY(self.font), self.item.label(), dim, now, self.scroll_start_ns);
         const text = self.valueText(&buf);
-        drawLine(rgb, 9, text, colour, now, self.scroll_start_ns);
+        drawLine(rgb, self.font, valueY(self.font), text, colour, now, self.scroll_start_ns);
         if (self.state == .adjusting and (self.item == .brightness or self.item == .night_level)) {
             const level = if (self.item == .brightness) self.settings.brightness else self.settings.night_level;
             const lit = @as(usize, level) * geometry.width / 100;
@@ -511,20 +517,51 @@ fn swatch(rgb: *geometry.Rgb, c: [3]u8, editing: bool) void {
     }
 }
 
-/// one line in the 3x5 font, centred, scrolling when it is too wide. the menus use the same small
-/// font as the mini clock and the mini ip line: the 5x7 is uncomfortably large read close up.
-fn drawLine(rgb: *geometry.Rgb, y: i32, text: []const u8, colour: [3]u8, now: u64, since: u64) void {
+/// the tallest face the menu can lay out: a title line and a value line of it with a row between,
+/// and the bottom row kept for the level bar and the position dots
+const max_height = 7;
+
+/// can the menus be set in this face
+pub fn fits(f: canvas.Font) bool {
+    return face.lineHeight(canvas.faceOf(f)) <= max_height;
+}
+
+/// where the title line goes: mini sits at row 1 as it always has, and a taller face moves up to
+/// keep the bottom row free
+fn titleY(f: canvas.Font) i32 {
+    return @divFloor(8 - @as(i32, face.lineHeight(canvas.faceOf(f))), 2);
+}
+
+/// where the value line goes: the lower half, placed as the title is in the upper one
+fn valueY(f: canvas.Font) i32 {
+    return 8 + titleY(f);
+}
+
+/// the reboot dialogue's two answers are centred on these columns
+const no_centre: i32 = 16;
+const yes_centre: i32 = 36;
+
+fn drawAnswer(rgb: *geometry.Rgb, f: canvas.Font, centre: i32, text: []const u8, colour: [3]u8) void {
+    const w: i32 = @intCast(face.textWidth(canvas.faceOf(f), text));
+    face.blit(rgb, centre - @divTrunc(w + 1, 2), valueY(f), canvas.faceOf(f), text, clockfont.Solid{ .colour = colour });
+}
+
+/// one line in the menu's face, centred, scrolling when it is too wide. the default is the 3x5
+/// mini, the face of the mini clock and the mini ip line: the 5x7 is uncomfortably large read
+/// close up, but it is there for whoever prefers it.
+fn drawLine(rgb: *geometry.Rgb, f: canvas.Font, y: i32, text: []const u8, colour: [3]u8, now: u64, since: u64) void {
     const painter = clockfont.Solid{ .colour = colour };
-    const w: i32 = @intCast(clockfont.textWidth(.mini, text));
+    const fc = canvas.faceOf(f);
+    const w: i32 = @intCast(face.textWidth(fc, text));
     if (w <= geometry.width) {
-        clockfont.blit(rgb, @divTrunc(geometry.width - w, 2), y, .mini, text, painter);
+        face.blit(rgb, @divTrunc(geometry.width - w, 2), y, fc, text, painter);
         return;
     }
     const span = w + 8;
     const elapsed_ms = (now -| since) / ns_per_ms;
     const shift: i32 = @intCast((elapsed_ms / 40) % @as(u64, @intCast(span)));
-    clockfont.blit(rgb, 1 - shift, y, .mini, text, painter);
-    clockfont.blit(rgb, 1 - shift + span, y, .mini, text, painter);
+    face.blit(rgb, 1 - shift, y, fc, text, painter);
+    face.blit(rgb, 1 - shift + span, y, fc, text, painter);
 }
 
 // tests
@@ -853,4 +890,57 @@ test "a browsing frame shows the label, the value and the position dots" {
         if (adj[i] > 0) lit += 1;
     }
     try std.testing.expectEqual(@as(usize, 26), lit); // 50% of 52
+}
+
+
+test "the menu fits faces up to seven rows and lays its rows out from the face" {
+    try std.testing.expect(fits(.mini) and fits(.small) and fits(.chunky6) and fits(.light6x));
+    try std.testing.expect(!fits(.chunky8) and !fits(.phoenix) and !fits(.big) and !fits(.@"ibm-vga") and !fits(.tiny5));
+    // mini keeps today's rows exactly
+    try std.testing.expectEqual(@as(i32, 1), titleY(.mini));
+    try std.testing.expectEqual(@as(i32, 9), valueY(.mini));
+    // small uses the whole panel: title 0..6, value 8..14, the bar row 15 free
+    try std.testing.expectEqual(@as(i32, 0), titleY(.small));
+    try std.testing.expectEqual(@as(i32, 8), valueY(.small));
+    try std.testing.expectEqual(@as(i32, 1), titleY(.chunky6));
+    try std.testing.expectEqual(@as(i32, 9), valueY(.chunky6));
+}
+
+test "a menu drawn in mini is pixel for pixel what it was before faces" {
+    // the hashes of these four frames were taken from the menu as it was, before it learned faces
+    const H = struct {
+        fn of(m: *const Menu, now: u64) u64 {
+            var rgb: geometry.Rgb = undefined;
+            m.render(now, &rgb);
+            return std.hash.Wyhash.hash(0, &rgb);
+        }
+    };
+    var m = opened();
+    try std.testing.expectEqual(@as(u64, 1915902073185877388), H.of(&m, pages.total_ns));
+    _ = m.input(.click, pages.total_ns);
+    try std.testing.expectEqual(@as(u64, 4534094539998982079), H.of(&m, pages.total_ns));
+    var r = opened();
+    r.item = .reboot;
+    _ = r.input(.click, 0);
+    try std.testing.expectEqual(@as(u64, 9849800432618500608), H.of(&r, pages.total_ns));
+    var s = Menu.openScene(&demo_table, .{ 0, 2, 0xff0000, 0, 0, 0, 0, 0, 0, 0 }, 0);
+    try std.testing.expectEqual(@as(u64, 2096283138774087756), H.of(&s, pages.total_ns));
+}
+
+test "a menu in another face draws its label and value in it, on that face's rows" {
+    var m = opened();
+    m.font = .small;
+    m.item = .mqtt; // "brightness" is wider than the panel in small, and would scroll
+    var rgb: geometry.Rgb = undefined;
+    m.render(pages.total_ns, &rgb);
+    var buf: [24]u8 = undefined;
+    const label = m.item.label();
+    const value = m.valueText(&buf);
+    var expected = geometry.black_rgb;
+    const f = canvas.faceOf(.small);
+    const lw: i32 = @intCast(face.textWidth(f, label));
+    const vw: i32 = @intCast(face.textWidth(f, value));
+    face.blit(&expected, @divTrunc(geometry.width - lw, 2), 0, f, label, clockfont.Solid{ .colour = dim });
+    face.blit(&expected, @divTrunc(geometry.width - vw, 2), 8, f, value, clockfont.Solid{ .colour = bright });
+    try std.testing.expectEqualSlices(u8, &expected, &rgb);
 }

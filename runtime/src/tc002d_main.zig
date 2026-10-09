@@ -14,6 +14,7 @@ const scene = @import("scene/scene.zig");
 const tz = @import("scene/tz.zig");
 const arbiter = @import("scene/arbiter.zig");
 const menu = @import("scene/menu.zig");
+const canvas = @import("scene/canvas.zig");
 const ip = @import("scene/ip.zig");
 const evdev = @import("input/evdev.zig");
 const actions = @import("input/actions.zig");
@@ -335,6 +336,8 @@ const Renderer = struct {
                     .night_on = d.night_on != 0,
                     .night_level = d.night_level,
                     .night_placed = d.night_placed != 0,
+                    // a face this build does not know, or one too tall for the menu, is mini
+                    .menu_font = if (messages.enumFromInt(canvas.Font, d.menu_font)) |f| (if (menu.fits(f)) f else .mini) else .mini,
                 });
                 return;
             },

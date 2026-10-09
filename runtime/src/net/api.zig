@@ -16,6 +16,7 @@ const transition = @import("../panel/transition.zig");
 const ip = @import("../scene/ip.zig");
 const canvas = @import("../scene/canvas.zig");
 const face = @import("../scene/face.zig");
+const menu = @import("../scene/menu.zig");
 const sound_store = @import("../sound/store.zig");
 const icons = @import("../scene/icons.zig");
 const param = @import("../scene/param.zig");
@@ -223,6 +224,8 @@ pub const ConfigPatch = struct {
     /// resolved generator parameters: which generator, which slot in its table, and the value
     generator_params: []const ResolvedParam = &.{},
     ip_mode: ?ip.Mode = null,
+    /// the face the device menus are drawn in; always one `menu.fits`
+    menu_font: ?canvas.Font = null,
     night: ?bool = null,
     night_brightness: ?u8 = null,
     night_lead_min: ?u8 = null,
@@ -273,6 +276,16 @@ pub const Route = union(enum) {
 };
 
 pub const Reject = struct { status: u16, code: []const u8, message: []const u8 };
+
+/// the faces the menus can be set in: seven rows or fewer, so a title and a value fit with the
+/// bottom row to spare. built from the font list, so it names exactly what is accepted
+const menu_font_message = blk: {
+    var list: []const u8 = "menu_font must be a face of seven rows or fewer:";
+    for (std.meta.tags(canvas.Font)) |f| {
+        if (menu.fits(f)) list = list ++ " " ++ @tagName(f);
+    }
+    break :blk list;
+};
 
 pub const Arena = [json.arena_size]u8;
 
@@ -341,6 +354,7 @@ const ConfigBody = struct {
     clock_hours: ?[]const u8 = null,
     generator_params: ?[]const GenParamBody = null,
     ip_mode: ?[]const u8 = null,
+    menu_font: ?[]const u8 = null,
     night: ?bool = null,
     night_brightness: ?u8 = null,
     night_lead_min: ?u8 = null,
@@ -1194,6 +1208,10 @@ pub fn parseBody(kind: BodyKind, body: []const u8, arena: *Arena, generated_id: 
                 .op => |op| op,
             };
             const ip_mode: ?ip.Mode = if (b.ip_mode) |t| (enumByName(ip.Mode, t) orelse return bad("invalid_ip_mode", "ip_mode must be lines, mini, scroll or big")) else null;
+            const menu_font: ?canvas.Font = if (b.menu_font) |t| blk: {
+                const f = enumByName(canvas.Font, t) orelse return bad("invalid_menu_font", menu_font_message);
+                break :blk if (menu.fits(f)) f else return bad("invalid_menu_font", menu_font_message);
+            } else null;
             if (b.night_brightness) |v| if (v < 1 or v > 100) return bad("invalid_night_brightness", "night_brightness must be 1..100");
             if (b.night_lead_min) |v| if (v > max_night_lead_min) return bad("invalid_night_lead", "night_lead_min must be 0..120");
             if (b.berry_heap_kb) |v| if (v < berry_heap_kb_min or v > berry_heap_kb_max) return bad("invalid_berry_heap", "berry_heap_kb must be 16..256");
@@ -1211,6 +1229,7 @@ pub fn parseBody(kind: BodyKind, body: []const u8, arena: *Arena, generated_id: 
             return .{ .op = .{ .config_patch = .{
                 .generator_params = gen_params,
                 .ip_mode = ip_mode,
+                .menu_font = menu_font,
                 .clock_font = style.font,
                 .clock_colour_mode = style.mode,
                 .clock_colour = style.colour,
@@ -1662,6 +1681,11 @@ test "the ip layout is a setting only: there is no ip base to put it on" {
     const cp = route(testReq(.PATCH, "/api/v1/config", "", admin_header, "application/json", null), "{\"ip_mode\":\"mini\"}", &c, &no_clients, &origins, &arena, test_minted);
     try std.testing.expectEqual(ip.Mode.mini, cp.op.config_patch.ip_mode.?);
     try expectReject(route(testReq(.PATCH, "/api/v1/config", "", admin_header, "application/json", null), "{\"ip_mode\":\"huge\"}", &c, &no_clients, &origins, &arena, test_minted), 400, "invalid_ip_mode");
+    const mf = route(testReq(.PATCH, "/api/v1/config", "", admin_header, "application/json", null), "{\"menu_font\":\"small\"}", &c, &no_clients, &origins, &arena, test_minted);
+    try std.testing.expectEqual(canvas.Font.small, mf.op.config_patch.menu_font.?);
+    // a face the menu cannot lay out is refused, not drawn off the panel
+    try expectReject(route(testReq(.PATCH, "/api/v1/config", "", admin_header, "application/json", null), "{\"menu_font\":\"phoenix\"}", &c, &no_clients, &origins, &arena, test_minted), 400, "invalid_menu_font");
+    try expectReject(route(testReq(.PATCH, "/api/v1/config", "", admin_header, "application/json", null), "{\"menu_font\":\"comic\"}", &c, &no_clients, &origins, &arena, test_minted), 400, "invalid_menu_font");
     try std.testing.expect(std.mem.indexOf(u8, scenes_body, "\"ip\":{\"modes\":[\"lines\",\"mini\",\"scroll\",\"big\"]}") != null);
     try std.testing.expect(std.mem.startsWith(u8, scenes_body, "{\"bases\":[\"clock\",\"art\",\"canvas\"],"));
     try std.testing.expect(std.mem.indexOf(u8, scenes_body, "\"canvas\":[]") != null); // the canvas declares nothing yet

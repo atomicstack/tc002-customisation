@@ -13,7 +13,7 @@ var configFields = []field{
 	enumField("clock_font", clockFonts), enumField("clock_colour_mode", "solid gradient"),
 	colourField("clock_colour"), colourField("clock_colour2"), enumField("clock_gradient", "horizontal vertical diagonal"),
 	numberField("clock_spread", 0, 255), enumField("clock_digit", "solid outline shadow"), boolField("clock_fade"), enumField("clock_hours", "24h 12h"),
-	{name: "generator_params", kind: "json"}, enumField("ip_mode", "lines mini scroll big"), boolField("night"),
+	{name: "generator_params", kind: "json"}, enumField("ip_mode", "lines mini scroll big"), enumField("menu_font", menuFonts), boolField("night"),
 	numberField("night_brightness", 1, 100), numberField("night_lead_min", 0, 120),
 	{name: "latitude", kind: "float", min: -90, max: 90}, {name: "longitude", kind: "float", min: -180, max: 180},
 	boolField("location_auto"), boolField("berry_enabled"), numberField("berry_heap_kb", 16, 256), numberField("berry_handler_ms", 10, 1000),

@@ -276,6 +276,9 @@ const importedFaces = "chunky6 chunky6x light6 light6x chunky8 chunky8x chunky8x
 // the faces canvas text and a plain notification can be set in
 const canvasFaces = "small mini block big " + importedFaces
 
+// the faces the device menus can be drawn in: those of seven rows or fewer
+const menuFonts = "small mini chunky6 chunky6x light6 light6x"
+
 // the clock's fonts: its six own, then the imported faces
 const clockFonts = "classic mini segment big block hires " + importedFaces
 

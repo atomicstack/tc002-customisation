@@ -74,6 +74,15 @@ GENERATOR = enum_source('scene/scene.zig', 'Generator')
 SCOPES = enum_source('net/clients.zig', 'Scope')
 SCOPES['enum'].remove('tokens')
 FONT = enum_source('scene/clockfont.zig', 'Font')
+
+
+def menu_fonts():
+    """the faces the menus can be set in: seven rows or fewer (scene/menu.zig's max_height). the
+    hand-drawn small and mini are 7 and 5 rows; the imported faces' heights are in faces.zig"""
+    heights = {'small': 7, 'mini': 5, 'block': 10, 'big': 14}
+    for h, name in re.findall(r'\.height = (\d+),.*// (\S+)', (ROOT / 'src/scene/faces.zig').read_text()):
+        heights[name] = int(h)
+    return enum(*[n for n in enum_source('scene/canvas.zig', 'Font')['enum'] if heights[n] <= 7])
 DIGITS = enum_source('scene/clockfont.zig', 'DigitStyle')
 HOURS = enum('24h', '12h')  # clock.Hours; its @"24h" names are beyond enum_source's pattern
 EFFECT = enum_source('panel/transition.zig', 'Effect')
@@ -150,7 +159,7 @@ def request_schemas():
     schemas['InputBody']['allOf'] = [{'if': {'properties': {'control': {'const': 'rotary'}}}, 'then': {'properties': {'event': enum('cw', 'ccw')}}, 'else': {'properties': {'event': enum('press', 'release', 'click', 'long'), 'steps': {'const': 1}}}}]
     update('DismissNotifyBody', name=NOTIFICATION_NAME)
     update('NotifyBody', font=enum_source('scene/canvas.zig', 'Font'), name=NOTIFICATION_NAME, text=string(minLength=1, maxLength=128, pattern='^[^\u0000-\u001f\u007f-\u009f]+$', description='1..128 bytes of utf-8 without control characters'), elements=array(ref('ElementBody'), minItems=1, maxItems=24), colour=COLOUR, duration_s=integer(1, 300, default=5))
-    update('ConfigBody', brightness=integer(1, 100), base=BASE, generator=GENERATOR, timezone=string(minLength=1, maxLength=64, description='timezone name supported by the runtime timezone table'), ntp_server=IPV4, ntp_interval_s={'type': 'integer', 'enum': [300, 600]}, frame_timeout_ms=integer(100, 2000), metrics_interval_s={'anyOf': [{'const': 0}, integer(10, 3600)]}, discovery_prefix=string(minLength=1, maxLength=64), ip_mode=enum('lines', 'mini', 'scroll', 'big'), night_brightness=integer(1, 100), night_lead_min=integer(0, 120), latitude={'type': 'number', 'minimum': -90, 'maximum': 90}, longitude={'type': 'number', 'minimum': -180, 'maximum': 180}, berry_heap_kb=integer(16, 256), berry_handler_ms=integer(10, 1000), battery_shutdown_mv=integer(3000, 4000), battery_grace_s=integer(0, 300), generator_params=array(ref('GenParamBody'), maxItems=8))
+    update('ConfigBody', brightness=integer(1, 100), base=BASE, generator=GENERATOR, timezone=string(minLength=1, maxLength=64, description='timezone name supported by the runtime timezone table'), ntp_server=IPV4, ntp_interval_s={'type': 'integer', 'enum': [300, 600]}, frame_timeout_ms=integer(100, 2000), metrics_interval_s={'anyOf': [{'const': 0}, integer(10, 3600)]}, discovery_prefix=string(minLength=1, maxLength=64), ip_mode=enum('lines', 'mini', 'scroll', 'big'), menu_font=menu_fonts(), night_brightness=integer(1, 100), night_lead_min=integer(0, 120), latitude={'type': 'number', 'minimum': -90, 'maximum': 90}, longitude={'type': 'number', 'minimum': -180, 'maximum': 180}, berry_heap_kb=integer(16, 256), berry_handler_ms=integer(10, 1000), battery_shutdown_mv=integer(3000, 4000), battery_grace_s=integer(0, 300), generator_params=array(ref('GenParamBody'), maxItems=8))
     update('ConfigBody', sound_volume=integer(1, 100))
     if 'discovery_controls' in schemas['ConfigBody']['properties']:
         update('ConfigBody', discovery_controls=dict(BOOL, default=False, description='opt in to writable home assistant discovery and the restricted mqtt settings command; discovery must also be enabled for entities'))

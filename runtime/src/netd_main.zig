@@ -1411,7 +1411,7 @@ const Netd = struct {
         o.str(c.discovery_prefix.slice());
         o.fmt("}},\"mdns\":{},\"clock\":", .{c.mdns});
         clockJson(o, messages.ClockStyle.full(c.clockStyle()));
-        o.fmt(",\"ip_mode\":\"{s}\"", .{enumName(ip.Mode, c.ip_mode)});
+        o.fmt(",\"ip_mode\":\"{s}\",\"menu_font\":\"{s}\"", .{ enumName(ip.Mode, c.ip_mode), @tagName(c.menu_font) });
         o.fmt(",\"night\":{{\"enabled\":{},\"brightness\":{d},\"lead_min\":{d}}},\"latitude\":", .{ c.night, c.night_brightness, c.night_lead_min });
         if (c.latitude) |v| degreesJson(o, v) else o.add("null");
         o.add(",\"longitude\":");

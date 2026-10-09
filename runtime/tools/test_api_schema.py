@@ -78,6 +78,7 @@ class ApiContractTests(unittest.TestCase):
             ('NotifyBody', {'text': 'hi', 'font': 'phoenix'}, {'text': 'hi', 'font': 'comic'}),
             ('ConfigBody', {'discovery_controls': True}, {'brightness': 101}),
             ('ConfigBody', {'mdns': False}, {'mdns': 'off'}),
+            ('ConfigBody', {'menu_font': 'light6'}, {'menu_font': 'phoenix'}),
             ('ConfigBody', {'latitude': 52.1, 'longitude': 4.3}, {'latitude': 52.1}),
             ('MqttBody', {'host': '192.168.1.2'}, {'port': 0}),
             ('MqttBody', {'host': '192.168.001.002'}, {'host': '999.168.1.2'}),

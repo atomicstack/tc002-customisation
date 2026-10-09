@@ -73,7 +73,7 @@ test "every message kind round-trips through a packet" {
         } },
         .config_get,
         .{ .config_patch = try ConfigPatch.fromApi(.{ .brightness = 3, .timezone = "UTC0", .expected_revision = 5 }) },
-        .{ .config_patch = try ConfigPatch.fromApi(.{ .night = true, .night_brightness = 5, .night_lead_min = 60, .location = .{ .lat_c = -3387, .lon_c = 15122 }, .clock_font = .big, .clock_colour_mode = .gradient, .clock_colour = .{ 1, 2, 3 }, .clock_colour2 = .{ 7, 8, 9 }, .clock_gradient = .vertical, .clock_spread = 128, .clock_digit = .shadow, .clock_fade = true, .clock_hours = .@"12h", .ip_mode = .big }) },
+        .{ .config_patch = try ConfigPatch.fromApi(.{ .night = true, .night_brightness = 5, .night_lead_min = 60, .location = .{ .lat_c = -3387, .lon_c = 15122 }, .clock_font = .big, .clock_colour_mode = .gradient, .clock_colour = .{ 1, 2, 3 }, .clock_colour2 = .{ 7, 8, 9 }, .clock_gradient = .vertical, .clock_spread = 128, .clock_digit = .shadow, .clock_fade = true, .clock_hours = .@"12h", .ip_mode = .big, .menu_font = .light6x }) },
         .{ .ip_mode = .{ .mode = 2 } },
         .{ .set_base = .{ .base = 2, .generator = 0, .seed = 0 } },
         .{ .config_save = .{ .has_revision = 1, .revision = 6 } },
@@ -118,7 +118,7 @@ test "every message kind round-trips through a packet" {
         .{ .menu_request = .{ .kind = @backingInt(MenuRequest.Kind.brightness), .value = 70 } },
         .{ .menu_request = .{ .kind = @backingInt(MenuRequest.Kind.reboot) } },
         .{ .set_param = .{ .base = 1, .index = 3, .value = 0xff8000 } },
-        .{ .device_status = .{ .battery_pct = 80, .usb = 1, .wifi_quality = 49, .wifi_dbm = -61, .time_synced = 1, .mqtt_on = 1, .uptime_s = 90061 } },
+        .{ .device_status = .{ .battery_pct = 80, .usb = 1, .wifi_quality = 49, .wifi_dbm = -61, .time_synced = 1, .mqtt_on = 1, .uptime_s = 90061, .menu_font = @backingInt(canvas.Font.light6) } },
         .status_get,
         .reboot,
         .{ .status = .{ .renderer_state = 2, .epoch = 3, .revision = 4, .presented = 5, .base = 1, .brightness = 77, .uptime_s = 8, .mem_available_kb = 14000, .cpu_pct = 12, .fps_x10 = 599, .ip_present = 1, .ip = .{ 10, 0, 0, 111 }, .config_revision = 2, .saved_revision = 1, .boot_id = 0xabcd, .sample_age_ms = 40, .mac = .{ 1, 2, 3, 4, 5, 6 }, .mac_present = 1, .load_1m_x100 = 123, .mem_free_kb = 4000, .wifi_level_dbm = -61, .wifi_quality = 49, .cpu_renderer_pct_x10 = 87, .tmpfs_used_kb = 1300, .battery_mv = 3987, .battery_pct = 80, .usb_present = 1, .clock = ClockStyle.full(.{ .font = .segment }), .mem_total_kb = 36240, .tmpfs_total_kb = 16504, .flash_total_kb = 8192, .flash_used_kb = 368, .night_phase = 2, .night_override = 1, .seed = 0xc0ffee, .menu = 1, .menu_item = 6, .menu_state = 1, .net_rx_bytes = 525283638, .net_tx_bytes = 48021332, .net_rx_packets = 2277879, .net_tx_packets = 295533, .net_rx_errors = 0, .net_rx_dropped = 1339872, .net_tx_errors = 0, .net_tx_dropped = 0, .net_rx_bps = 2033, .net_tx_bps = 236, .mem_cached_kb = 11772, .mem_dirty_kb = 0, .mem_writeback_kb = 0, .mem_slab_kb = 8528, .saves = 91, .save_failures = 0, .save_bytes = 40131, .save_last_ms = 12, .berry_state = 2, .berry = .{ .heap_bytes = 65536, .heap_used = 8488, .heap_high_water = 9001, .alloc_failures = 0, .stops = 3 } } },
@@ -1307,8 +1307,12 @@ pub const DeviceStatus = struct {
     night_level: u8 = 10,
     /// whether the schedule has a location to work from at all
     night_placed: u8 = 0,
+    /// the face the menus are drawn in, as canvas.Font's number
+    menu_font: u8 = @backingInt(canvas.Font.mini),
 
-    pub const wire_len = 1 + 1 + 1 + 2 + 1 + 1 + 1 + 4 + 3;
+    // battery, usb, wifi quality, wifi dbm, synced, mqtt, ntfy, uptime, the three night bytes, and
+    // the menu face, in that order
+    pub const wire_len = 1 + 1 + 1 + 2 + 1 + 1 + 1 + 4 + 3 + 1;
 };
 pub const Frame = struct {
     duration_s: u16,
@@ -1599,6 +1603,8 @@ pub const ConfigPatch = struct {
     battery_grace_s: u16 = 0,
     /// the mdns responder on or off
     mdns: u8 = 0,
+    /// the face the menus are drawn in, as canvas.Font's number
+    menu_font: u8 = 0,
 
     pub const F = struct {
         pub const brightness: u64 = 1 << 0;
@@ -1613,6 +1619,7 @@ pub const ConfigPatch = struct {
         pub const mdns: u64 = 1 << 33;
         pub const clock_fade: u64 = 1 << 34;
         pub const clock_hours: u64 = 1 << 35;
+        pub const menu_font: u64 = 1 << 36;
         pub const discovery: u64 = 1 << 8;
         pub const discovery_prefix: u64 = 1 << 9;
         pub const expected_revision: u64 = 1 << 10;
@@ -1659,13 +1666,14 @@ pub const ConfigPatch = struct {
         const sound = 1 + 1; // enabled, volume
         const battery = 1 + 2 + 2; // shutdown, shutdown mv, grace s
         const mdns = 1;
+        const menu_font = 1;
         const param_count = 1;
         const generator_param = 1 + 1 + 4; // owner, slot, value
     };
     pub const fixed_len = Wire.has + Wire.brightness_base_generator + Wire.timezone + Wire.ntp_server +
         Wire.ntp_interval_s + Wire.frame_timeout_ms + Wire.metrics_interval_s + Wire.discovery_flags +
         Wire.discovery_prefix + Wire.expected_revision + Wire.clock_style + Wire.night +
-        Wire.berry + Wire.sound + Wire.battery + Wire.mdns + Wire.param_count;
+        Wire.berry + Wire.sound + Wire.battery + Wire.mdns + Wire.menu_font + Wire.param_count;
     pub const wire_len = fixed_len + api.max_params_per_patch * Wire.generator_param;
 
     pub fn fromApi(p: api.ConfigPatch) error{TooLong}!ConfigPatch {
@@ -1709,6 +1717,10 @@ pub const ConfigPatch = struct {
         if (p.mdns) |v| {
             w.has |= F.mdns;
             w.mdns = @intFromBool(v);
+        }
+        if (p.menu_font) |v| {
+            w.has |= F.menu_font;
+            w.menu_font = @backingInt(v);
         }
         if (p.discovery) |v| {
             w.has |= F.discovery;
@@ -1833,6 +1845,7 @@ pub const ConfigPatch = struct {
             .metrics_interval_s = if (h & F.metrics_interval_s != 0) self.metrics_interval_s else null,
             .discovery_controls = if (h & F.discovery_controls != 0) self.discovery_controls != 0 else null,
             .mdns = if (h & F.mdns != 0) self.mdns != 0 else null,
+            .menu_font = if (h & F.menu_font != 0) enumFromInt(canvas.Font, self.menu_font) else null,
             .discovery = if (h & F.discovery != 0) self.discovery != 0 else null,
             .discovery_prefix = if (h & F.discovery_prefix != 0) self.discovery_prefix.slice() else null,
             .expected_revision = if (h & F.expected_revision != 0) self.expected_revision else null,
@@ -2542,6 +2555,7 @@ fn encodePayload(msg: Message, out: []u8) usize {
             out[12] = d.night_on;
             out[13] = d.night_level;
             out[14] = d.night_placed;
+            out[15] = d.menu_font;
             return DeviceStatus.wire_len;
         },
         .ready, .arm_stream, .time_corrected, .stop, .config_get, .status_get, .screen_get, .canvas_get, .canvas_clear, .sprite_list_get, .berry_list_get, .sound_list_get, .reboot => return 0,
@@ -2640,6 +2654,8 @@ fn encodePayload(msg: Message, out: []u8) usize {
             std.mem.writeInt(u16, out[o + 3 ..][0..2], p.battery_grace_s, .little);
             o += 5;
             out[o] = p.mdns;
+            o += 1;
+            out[o] = p.menu_font;
             o += 1;
             out[o] = p.param_count;
             o += 1;
@@ -3094,6 +3110,7 @@ pub fn decodePacket(bytes: []const u8) Error!Packet {
                 .night_on = b[12],
                 .night_level = b[13],
                 .night_placed = b[14],
+                .menu_font = b[15],
             } };
         },
         .screen_get => blk: {
@@ -3216,6 +3233,8 @@ pub fn decodePacket(bytes: []const u8) Error!Packet {
             w.battery_grace_s = std.mem.readInt(u16, b[o + 3 ..][0..2], .little);
             o += 5;
             w.mdns = b[o];
+            o += 1;
+            w.menu_font = b[o];
             o += 1;
             if (b.len < o + 1) return error.BadPayload;
             w.param_count = @min(b[o], w.params.len);
@@ -3535,6 +3554,15 @@ test "the mdns switch survives the config patch wire including explicit false" {
         try std.testing.expectEqual(value, back.message.config_patch.toApi().mdns);
         try std.testing.expectEqual(@as(?u16, 12), back.message.config_patch.toApi().battery_grace_s);
     }
+}
+
+test "menu_font survives the settings patch, the layer that drops what it does not know" {
+    try std.testing.expectEqual(@as(?canvas.Font, .light6), (try ConfigPatch.fromApi(.{ .menu_font = .light6 })).toApi().menu_font);
+    try std.testing.expectEqual(@as(?canvas.Font, null), (try ConfigPatch.fromApi(.{ .clock_fade = true })).toApi().menu_font);
+    var buf: [codec.max_message]u8 = undefined;
+    const back = try decodePacket(try encodePacket(.{ .config_patch = try ConfigPatch.fromApi(.{ .menu_font = .small, .ip_mode = .mini }) }, 0, 0, &buf));
+    try std.testing.expectEqual(@as(?canvas.Font, .small), back.message.config_patch.toApi().menu_font);
+    try std.testing.expectEqual(@as(?ip.Mode, .mini), back.message.config_patch.toApi().ip_mode);
 }
 
 test "notification queue options survive ipc" {

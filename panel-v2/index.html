@@ -400,6 +400,7 @@ input[type=file]{font:12px var(--body);color:var(--muted);max-width:220px}
         <div class="field"><label for="cgen">Generator at start<span class="key">generator</span></label><select id="cgen"></select></div>
         <div class="field"><label for="cfont">Clock font<span class="key">clock_font · applied at once</span></label><select id="cfont"></select></div>
         <div class="field"><label for="cip">IP layout<span class="key">ip_mode · applied at once</span></label><select id="cip"></select></div>
+        <div class="field"><label for="cmenufont">Menu font<span class="key">menu_font · the faces short enough for the on-panel menus</span></label><select id="cmenufont"></select></div>
         <div class="field"><label for="cmode">Clock colour mode<span class="key">clock_colour_mode</span></label><select id="cmode"></select></div>
         <div class="field"><label for="ccolour">Clock colour<span class="key">clock_colour</span></label><input type="color" id="ccolour" value="#ffffff"></div>
         <div class="field"><label for="ccolour2">Gradient end colour<span class="key">clock_colour2 · pulled towards clock_colour by the spread</span></label><input type="color" id="ccolour2" value="#ffffff"></div>
@@ -999,6 +1000,12 @@ function transitionFields(effectId, dirId, easingId, exitId) {
   return out;
 }
 fillTransitionSelects();
+// the wasm knows which faces the menus can take; before it has loaded, only the default is offered
+function fillMenuFonts() {
+  const k = $('cmenufont').value || (CONFIG && CONFIG.menu_font) || 'mini';
+  const list = S.MENU_FONTS && S.MENU_FONTS.length ? S.MENU_FONTS : ['mini'];
+  fillSelect($('cmenufont'), list, list.includes(k) ? k : 'mini');
+}
 function fillNotifyFonts() { const k = $('nfont').value; fillSelect($('nfont'), cvFonts(), cvFonts().includes(k) ? k : 'small'); }
 fillNotifyFonts();
 
@@ -1176,6 +1183,7 @@ function fillClockSelects() {
   // honest "the device has not told us", a stale hard-coded one is a lie
   const ipModes = (SCENES && SCENES.ip && SCENES.ip.modes) || [];
   fillSelect($('kip'), ipModes, $('kip').value); fillSelect($('cip'), ipModes, $('cip').value);
+  fillMenuFonts();
   // the digit styles come from the clock's own parameter table, the only place they are published
   const table = (SCENES && SCENES.parameters && SCENES.parameters.clock) || [];
   const digitParam = table.find(p => p.name === 'digits');
@@ -1338,6 +1346,7 @@ function showConfig(c) {
   if (typeof k.fade === 'boolean') $('cfade').checked = k.fade;
   if (k.hours) $('chours').value = k.hours;
   if (c.ip_mode) $('cip').value = c.ip_mode;
+  if (c.menu_font) { fillMenuFonts(); $('cmenufont').value = c.menu_font; }
   // the device persists every accepted write before replying, so the two revisions match unless
   // that write failed: what is on screen is live but would not survive a restart
   const unwritten = c.revision !== c.saved_revision;
@@ -1407,6 +1416,7 @@ $('capply').addEventListener('click', async () => {
   if (CONFIG.ip_mode) {
     if ($('cip').value !== CONFIG.ip_mode) patch.ip_mode = $('cip').value;
   }
+  if (CONFIG.menu_font && $('cmenufont').value !== CONFIG.menu_font) patch.menu_font = $('cmenufont').value;
   if (Object.keys(patch).length === 1) return toast('nothing changed');
   try {
     const c = await call('PATCH', 'config', patch);
@@ -2317,6 +2327,7 @@ S.ready().then(() => {
   // the preview runs transitions as the panel does; a snapshot still lands at once
   S.runTransitions(true);
   fillNotifyFonts();
+  fillMenuFonts();
   requestAnimationFrame(draw);
   try { const t = localStorage.getItem('tc002tab-v2'); if (t && document.querySelector(`.tabbar button[data-tab="${t}"]`)) showTab(t); } catch {}
   // not awaited: a lan probe takes a second or so and the console must not wait on it

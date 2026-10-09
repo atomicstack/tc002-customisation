@@ -50,6 +50,7 @@ func TestRuntimeRequests(t *testing.T) {
 		{[]string{"notify", "hi", "--font", "phoenix"}, "POST", "/notify", `{"text":"hi","font":"phoenix"}`},
 		{[]string{"scene", "clock", "--font", "robotron-a7100"}, "PUT", "/scene", `{"base":"clock","clock":{"font":"robotron-a7100"}}`},
 		{[]string{"config", "set", "--clock-font", "tiny5-duo"}, "PATCH", "/config", `{"clock_font":"tiny5-duo"}`},
+		{[]string{"config", "set", "--menu-font", "light6"}, "PATCH", "/config", `{"menu_font":"light6"}`},
 		{[]string{"config", "set", "--discovery-controls=true"}, "PATCH", "/config", `{"discovery_controls":true}`},
 		{[]string{"config", "set", "--discovery-controls=false"}, "PATCH", "/config", `{"discovery_controls":false}`},
 		{[]string{"config", "get"}, "GET", "/config", ""},
@@ -161,7 +162,7 @@ func TestRuntimeRequests(t *testing.T) {
 func TestValidationBeforeNetwork(t *testing.T) {
 	for _, args := range [][]string{
 		{"scene", "ip"}, {"scene", "clock", "--generator", "unknown"}, {"brightness", "0"}, {"brightness", "101"},
-		{"notify", "hello", "--duration", "301"}, {"notify", "a\x01b"}, {"notify", "hi", "--font", "comic"}, {"scene", "clock", "--font", "comic"}, {"notify", "a\u0085b"}, {"notify", "a\xe2\x82"}, {"notify", "hi", "--colour", "zzzzzz"},
+		{"notify", "hello", "--duration", "301"}, {"notify", "a\x01b"}, {"notify", "hi", "--font", "comic"}, {"scene", "clock", "--font", "comic"}, {"config", "set", "--menu-font", "phoenix"}, {"notify", "a\u0085b"}, {"notify", "a\xe2\x82"}, {"notify", "hi", "--colour", "zzzzzz"},
 		{"input", "left", "cw"}, {"input", "left", "long"}, {"input", "middle", "click", "--steps", "2"},
 		{"input", "rotary", "cw", "--steps", "17"}, {"power", "maybe"}, {"reseed", "-1"},
 		{"scene", "art", "--transition-ms", "5001"}, {"scene", "art", "--request-id", "zz"},

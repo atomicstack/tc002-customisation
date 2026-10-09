@@ -390,6 +390,16 @@ class EndToEndTests(unittest.TestCase):
             status, doc = self.call("POST", "notify", {"text": bad, "epoch": st["epoch"]})
             self.assertEqual((status, doc["error"]), (400, "invalid_text"), repr(bad))
 
+    def test_menu_font_is_a_setting_limited_to_faces_the_menu_can_lay_out(self):
+        status, doc = self.call("GET", "config")
+        self.assertEqual(doc["menu_font"], "mini")
+        status, doc = self.call("PATCH", "config", {"menu_font": "light6"})
+        self.assertEqual(status, 200, doc)
+        self.assertEqual(self.call("GET", "config")[1]["menu_font"], "light6")
+        status, doc = self.call("PATCH", "config", {"menu_font": "phoenix"})
+        self.assertEqual((status, doc["error"]), (400, "invalid_menu_font"))
+        self.call("PATCH", "config", {"menu_font": "mini"})
+
     def test_a_notification_name_may_be_255_characters(self):
         _, st = self.call("GET", "status")
         status, doc = self.call("POST", "notify", {"text": "hi", "name": "n" * 255, "epoch": st["epoch"]})

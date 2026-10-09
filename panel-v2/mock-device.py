@@ -93,6 +93,10 @@ FACES = ["small", "mini", "block", "big", "chunky6", "chunky6x", "light6", "ligh
          "phoenix-2y", "phoenix-8x14", "ibm-iso8", "apricot-xenc", "robotron-a7100", "ibm-vga"]
 
 
+# the faces the device menus can be drawn in: seven rows or fewer
+MENU_FONTS = ["small", "mini", "chunky6", "chunky6x", "light6", "light6x"]
+
+
 def valid_text(text):
     """the runtime's rule: 1..128 bytes of utf-8 without control characters (c0, del, c1)"""
     return isinstance(text, str) and 1 <= len(text.encode()) <= 128 and not any(ord(c) < 0x20 or 0x7f <= ord(c) <= 0x9f for c in text)
@@ -304,7 +308,7 @@ class Device:
         self.config = {"revision": 0, "saved_revision": 0, "brightness": 100, "base": "art", "generator": "popsquares",
                        "timezone": "UTC0", "ntp_server": None, "ntp_interval_s": 300, "frame_timeout_ms": 500,
                        "metrics_interval_s": 30, "discovery": False, "discovery_controls": False, "discovery_prefix": "homeassistant", "mdns": True, "origins": [],
-                       "clock": dict(DEFAULT_CLOCK), "ip_mode": "lines",
+                       "clock": dict(DEFAULT_CLOCK), "ip_mode": "lines", "menu_font": "mini",
                        "night": False, "night_brightness": 5, "night_lead_min": 30,
                        "latitude": None, "longitude": None,
                        "generators": {g: {p["name"]: param_default(p) for p in table}
@@ -429,7 +433,7 @@ class Device:
                 "latitude": c["latitude"], "longitude": c["longitude"],
                 "location": {"latitude": self.point()[0], "longitude": self.point()[1], "source": self.point()[2]},
                 "generators": {g: dict(v) for g, v in c["generators"].items()},
-                "ip_mode": c["ip_mode"],
+                "ip_mode": c["ip_mode"], "menu_font": c["menu_font"],
                 "allowed_origins": list(c["origins"])}
 
     def mqtt_doc(self):
@@ -771,6 +775,10 @@ class Device:
                 raise Reject(400, "invalid_ip_mode", "ip_mode must be lines, mini, scroll or big")
             nxt["ip_mode"] = body["ip_mode"]
             self.ip_mode = body["ip_mode"]
+        if "menu_font" in body:
+            if body["menu_font"] not in MENU_FONTS:
+                raise Reject(400, "invalid_menu_font", "menu_font must be a face of seven rows or fewer: " + " ".join(MENU_FONTS))
+            nxt["menu_font"] = body["menu_font"]
         if "timezone" in body:
             if not isinstance(body["timezone"], str) or not 1 <= len(body["timezone"]) <= 64:
                 raise Reject(400, "invalid_timezone", "timezone must be 1..64 characters")
@@ -909,7 +917,7 @@ SCHEMAS = {
     "config": ({"brightness", "base", "generator", "timezone", "ntp_server", "ntp_interval_s", "frame_timeout_ms",
                 "metrics_interval_s", "discovery", "discovery_controls", "discovery_prefix", "mdns", "expected_revision",
                 "clock_font", "clock_colour_mode", "clock_colour", "clock_colour2", "clock_gradient", "clock_spread",
-                "clock_digit", "clock_fade", "clock_hours", "ip_mode", "generator_params",
+                "clock_digit", "clock_fade", "clock_hours", "ip_mode", "menu_font", "generator_params",
                 "night", "night_brightness", "night_lead_min", "latitude", "longitude", "location_auto",
                 "battery_shutdown", "battery_shutdown_mv", "battery_grace_s"}, set()),
     "config/save": ({"revision"}, set()),

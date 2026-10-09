@@ -1267,6 +1267,7 @@ pub const Arbiter = struct {
         var values: param.PageValues = @splat(0);
         for (table, 0..) |_, i| values[i] = self.getSceneParam(i);
         self.menu_state = menu.Menu.openScene(table, values, now_ns);
+        self.menu_state.?.font = self.device.menu_font;
         self.dirty = true;
     }
 
@@ -1373,6 +1374,10 @@ pub const Arbiter = struct {
         self.device = st;
         if (self.menu_state) |*m| {
             m.status = st;
+            if (m.font != st.menu_font) {
+                m.font = st.menu_font;
+                self.dirty = true;
+            }
             if (m.item == .info) self.dirty = true;
         }
     }
@@ -1543,6 +1548,18 @@ pub const Arbiter = struct {
         };
     }
 };
+
+test "the menus open in the face the supervisor pushes, and follow a change while open" {
+    var a = fresh();
+    a.setDeviceStatus(.{ .menu_font = .small });
+    a.openMenu(0);
+    try std.testing.expectEqual(canvas.Font.small, a.menu_state.?.font);
+    a.setDeviceStatus(.{ .menu_font = .light6 });
+    try std.testing.expectEqual(canvas.Font.light6, a.menu_state.?.font);
+    a.menu_state = null;
+    a.openSceneMenu(0);
+    try std.testing.expectEqual(canvas.Font.light6, a.menu_state.?.font);
+}
 
 test "a hold opens that base's settings, and the dial's click belongs to the scene" {
     var a = fresh();

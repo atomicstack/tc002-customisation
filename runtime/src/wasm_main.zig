@@ -21,6 +21,7 @@ const ip = @import("scene/ip.zig");
 const tz = @import("scene/tz.zig");
 const param = @import("scene/param.zig");
 const canvas = @import("scene/canvas.zig");
+const menu = @import("scene/menu.zig");
 const api = @import("net/api.zig");
 const panel_fade = @import("panel/fade.zig");
 const transition = @import("panel/transition.zig");
@@ -579,6 +580,17 @@ export fn clockFontNames() u32 {
 /// the faces canvas text and a plain notification can be set in, in wire order
 export fn faceNames() u32 {
     return copyOut(enumNames(canvas.Font));
+}
+/// the faces the device menus can be drawn in: the `menu_font` setting's choices
+export fn menuFontNames() u32 {
+    const names = comptime blk: {
+        var buf: []const u8 = "";
+        for (std.meta.tags(canvas.Font)) |f| {
+            if (menu.fits(f)) buf = buf ++ (if (buf.len == 0) "" else ",") ++ @tagName(f);
+        }
+        break :blk buf;
+    };
+    return copyOut(names);
 }
 export fn clockModeNames() u32 {
     return copyOut(enumNames(clock.ColourMode));

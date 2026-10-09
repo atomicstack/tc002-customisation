@@ -224,6 +224,18 @@ test('the notification card offers every face the runtime has, and sends the one
   });
 });
 
+test('device settings offer the menu font, only the short faces, and it round-trips',
+  { skip: chromeAvailable ? false : 'google chrome is not installed' }, async () => {
+  await cdp.eval(`document.querySelector('[data-tab="device"]').click(); loadConfig()`);
+  await waitFor(async () => { if (!(await cdp.eval(`!!CONFIG && document.getElementById('cmenufont').options.length > 0`))) throw new Error('waiting for config'); return true; });
+  assert.equal(await cdp.eval(`[...document.getElementById('cmenufont').options].map(o => o.value).join()`), 'small,mini,chunky6,chunky6x,light6,light6x');
+  assert.equal(await cdp.eval(`document.getElementById('cmenufont').value`), 'mini');
+  await cdp.eval(`document.getElementById('cmenufont').value = 'light6'; document.getElementById('capply').click()`);
+  await waitFor(async () => { if (await cdp.eval(`CONFIG.menu_font`) !== 'light6') throw new Error('waiting for settings reply'); return true; });
+  await cdp.eval(`document.getElementById('cmenufont').value = 'mini'; document.getElementById('capply').click()`);
+  await waitFor(async () => { if (await cdp.eval(`CONFIG.menu_font`) !== 'mini') throw new Error('waiting to put it back'); return true; });
+});
+
 // each control must be named by its own row: a select sitting beside two others under one shared
 // label reads as an anonymous box (the transition rows once put effect, direction and exit under a
 // single "Transition" label)

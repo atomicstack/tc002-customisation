@@ -3,6 +3,8 @@ const std = @import("std");
 const repeat = @import("../repeat.zig");
 const api = @import("api.zig");
 const clockfont = @import("../scene/clockfont.zig");
+const canvas = @import("../scene/canvas.zig");
+const menu = @import("../scene/menu.zig");
 pub const PatchPolicy = enum { transient, durable, rejected };
 pub fn patchPolicy(p: api.ConfigPatch, controls: bool) PatchPolicy {
     @setEvalBranchQuota(10000);
@@ -16,7 +18,7 @@ pub fn patchPolicy(p: api.ConfigPatch, controls: bool) PatchPolicy {
         } else if (value != null) {
             if (comptime oneOf(name, &.{ "brightness", "base", "generator" })) {
                 // existing transient commands keep working without HA discovery.
-            } else if (comptime oneOf(name, &.{ "clock_font", "clock_colour_mode", "clock_colour", "clock_colour2", "clock_gradient", "clock_spread", "clock_digit", "clock_hours", "ip_mode", "timezone", "ntp_server", "ntp_interval_s", "night", "night_brightness", "night_lead_min", "expected_revision" })) {
+            } else if (comptime oneOf(name, &.{ "clock_font", "clock_colour_mode", "clock_colour", "clock_colour2", "clock_gradient", "clock_spread", "clock_digit", "clock_hours", "ip_mode", "menu_font", "timezone", "ntp_server", "ntp_interval_s", "night", "night_brightness", "night_lead_min", "expected_revision" })) {
                 durable = true;
             } else return .rejected;
         }
@@ -31,6 +33,7 @@ fn oneOf(comptime name: []const u8, comptime names: []const []const u8) bool {
 test "mqtt durable settings require opt in and privileged fields never qualify" {
     try std.testing.expectEqual(PatchPolicy.rejected, patchPolicy(.{ .night = true }, false));
     try std.testing.expectEqual(PatchPolicy.durable, patchPolicy(.{ .clock_font = .mini }, true));
+    try std.testing.expectEqual(PatchPolicy.durable, patchPolicy(.{ .menu_font = .small }, true));
     try std.testing.expectEqual(PatchPolicy.durable, patchPolicy(.{ .clock_hours = .@"12h" }, true));
     try std.testing.expectEqual(PatchPolicy.rejected, patchPolicy(.{ .discovery = true }, true));
     try std.testing.expectEqual(PatchPolicy.rejected, patchPolicy(.{ .berry_enabled = true }, true));
@@ -50,6 +53,15 @@ test "disabled controls clear retained entities even during a normal reconnect p
 }
 
 pub const Component = enum { sensor, binary_sensor, event, @"switch", select, number, text };
+/// the faces the menus can be set in, as a select's options
+fn menuFontNames() []const u8 {
+    comptime var out: []const u8 = "";
+    inline for (std.meta.tags(canvas.Font)) |f| {
+        if (comptime menu.fits(f)) out = out ++ (if (out.len > 0) "," else "") ++ "\"" ++ @tagName(f) ++ "\"";
+    }
+    return out;
+}
+
 /// an enum's names as a home assistant select's options: `"a","b"`. built from the enum, so a font
 /// added to the runtime is offered without editing this file
 fn quotedNames(comptime E: type) []const u8 {
@@ -95,6 +107,7 @@ pub const entities = [_]Entity{
     .{ .key = "clock_hours_control", .name = "clock hours", .component = .select, .topic = "config", .template = "{{ value_json.clock.hours }}", .diagnostic = false, .command = "cmd/config", .command_template = "{{ {\\\"clock_hours\\\": value} | to_json }}", .options = "\"24h\",\"12h\"" },
     .{ .key = "clock_spread_control", .name = "clock gradient spread", .component = .number, .topic = "config", .template = "{{ value_json.clock.spread }}", .diagnostic = false, .command = "cmd/config", .command_template = "{{ {\\\"clock_spread\\\": value | int} | to_json }}", .min = 0, .max = 255 },
     .{ .key = "ip_mode_control", .name = "ip layout", .component = .select, .topic = "config", .template = "{{ value_json.ip_mode }}", .diagnostic = false, .command = "cmd/config", .command_template = "{{ {\\\"ip_mode\\\": value} | to_json }}", .options = "\"lines\",\"mini\",\"scroll\",\"big\"" },
+    .{ .key = "menu_font_control", .name = "menu font", .component = .select, .topic = "config", .template = "{{ value_json.menu_font }}", .diagnostic = false, .command = "cmd/config", .command_template = "{{ {\\\"menu_font\\\": value} | to_json }}", .options = menuFontNames() },
     .{ .key = "generator_control", .name = "art generator", .component = .select, .topic = "state", .template = "{{ value_json.generator }}", .diagnostic = false, .command = "cmd/config", .command_template = "{{ {\\\"base\\\": \\\"art\\\", \\\"generator\\\": value} | to_json }}", .options = "\"popsquares\",\"plasma\",\"cube\",\"terrain\"" },
     .{ .key = "timezone_control", .name = "timezone", .component = .text, .topic = "config", .template = "{{ value_json.timezone }}", .diagnostic = false, .command = "cmd/config", .command_template = "{{ {\\\"timezone\\\": value} | to_json }}" },
     .{ .key = "ntp_server_control", .name = "ntp server", .component = .text, .topic = "config", .template = "{{ value_json.ntp.server if value_json.ntp.server else '' }}", .diagnostic = false, .command = "cmd/config", .command_template = "{{ {\\\"ntp_server\\\": value} | to_json }}" },
@@ -244,13 +257,18 @@ test "writable discovery includes valid id-free commands and preserves readonly 
         if (std.mem.eql(u8, e.key, "generator_control")) try std.testing.expect(std.mem.indexOf(u8, e.options, "\"terrain\"") != null);
         if (std.mem.eql(u8, e.key, "scene_control")) try std.testing.expectEqualStrings("\"clock\",\"art\",\"canvas\"", e.options);
         if (std.mem.eql(u8, e.key, "clock_hours_control")) try std.testing.expectEqualStrings("\"24h\",\"12h\"", e.options);
+        if (std.mem.eql(u8, e.key, "menu_font_control")) {
+            // only the faces the menu can lay out
+            try std.testing.expect(std.mem.startsWith(u8, e.options, "\"small\",\"mini\",\"chunky6\""));
+            try std.testing.expect(std.mem.indexOf(u8, e.options, "\"phoenix\"") == null);
+        }
         if (std.mem.eql(u8, e.key, "clock_font_control")) {
             // every clock font, the imported faces included, straight from the enum
             try std.testing.expect(std.mem.startsWith(u8, e.options, "\"classic\",\"mini\",\"segment\",\"big\",\"block\",\"hires\",\"chunky6\""));
             try std.testing.expect(std.mem.endsWith(u8, e.options, "\"robotron-a7100\",\"ibm-vga\""));
         }
     }
-    try std.testing.expectEqual(@as(usize, 20), controls);
+    try std.testing.expectEqual(@as(usize, 21), controls);
     try std.testing.expectEqual(@as(usize, 4), readonly);
 }
 fn oneOfRuntime(name: []const u8, names: []const []const u8) bool {

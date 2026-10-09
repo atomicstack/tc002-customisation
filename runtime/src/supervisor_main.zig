@@ -987,6 +987,8 @@ const Supervisor = struct {
         if (!std.mem.eql(u8, before.timezone.slice(), c.timezone.slice())) self.send(.{ .set_timezone = config.Text.init(c.tzRule()) });
         if (!std.meta.eql(before.clockStyle(), c.clockStyle())) self.send(.{ .clock_style = messages.ClockStyle.full(c.clockStyle()) });
         if (before.ip_mode != c.ip_mode) self.send(.{ .ip_mode = .{ .mode = c.ip_mode } });
+        // the menus learn their face from the device status push: send the next one now
+        if (before.menu_font != c.menu_font) self.next_device_push = 0;
         // a generator's parameters changed by an api patch have to reach the renderer too; the
         // panel menu applies its own preview, an http client has none
         if (!std.meta.eql(before.generator_params, c.generator_params)) self.sendGeneratorParams();
@@ -2930,6 +2932,7 @@ const Supervisor = struct {
                 .night_on = @intFromBool(self.cfg.night),
                 .night_level = self.cfg.night_brightness,
                 .night_placed = @intFromBool(self.night.point != null),
+                .menu_font = @backingInt(self.cfg.menu_font),
             },
         });
     }

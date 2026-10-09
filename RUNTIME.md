@@ -1200,9 +1200,14 @@ renderer when it starts. `GET /scenes` carries every table with its kinds,
 ranges and choices, which is the contract the console builds its forms from:
 nothing outside the runtime needs to know what a cube is.
 
-the menus draw in the 3x5 `mini` font, the one the mini clock face and the
-mini ip layout use: thirteen characters across, and easier to read close up
-than the 5x7. that font gained a letter set for them.
+the menus draw in the 3x5 `mini` font by default, the one the mini clock face and
+the mini ip layout use: thirteen characters across, and easier to read close up
+than the 5x7. that font gained a letter set for them. the `menu_font` setting
+picks another face, from those short enough for a title line and a value line
+with the bottom row to spare — seven rows or fewer: `small`, `mini`, `chunky6`,
+`chunky6x`, `light6` and `light6x`. a taller face is refused by the api, and one
+in a settings file loads as `mini`. a label wider than the panel scrolls, as it
+always has.
 
 **holding a base's own button** — left for the clock, middle for art, right for
 the canvas — shows that base and opens its parameter table as a menu, one entry
@@ -1800,6 +1805,7 @@ shows up as a revision gap, and the gap is the signal to resync.
 | `brightness` | 1–100 | applied to the renderer at once |
 | `clock_font`, `clock_colour_mode`, `clock_colour`, `clock_colour2`, `clock_gradient`, `clock_spread`, `clock_digit`, `clock_fade`, `clock_hours` | `classic\|mini\|segment\|big\|block\|hires` or an imported face (`chunky6` … `ibm-vga`); `solid\|gradient`; `rrggbb`; `rrggbb`; `horizontal\|vertical\|diagonal`; 0–255; `solid\|outline\|shadow`; bool; `24h\|12h` | applied at once; reported as a `clock` object in `/config` |
 | `ip_mode` | `lines\|mini\|scroll\|big` | the layout of the device menu's ip page, applied at once; see [ip layouts](#ip-layouts) |
+| `menu_font` | `small\|mini\|chunky6\|chunky6x\|light6\|light6x` (default `mini`) | the face the on-panel menus are drawn in, applied with the supervisor's next status push (at once on a change); ;see [the settings menu](#the-settings-menu) |
 | `base` | `clock`, `art`, `canvas` | applied at once |
 | `generator` | `popsquares`, `plasma`, `cube`, `terrain` | applied at once |
 | `timezone` | a posix tz rule (`AEST-10AEDT,M10.1.0,M4.1.0/3`) or an iana zone name (`Europe/Amsterdam`, case-insensitive), ≤ 64 characters; anything else is rejected | applied at once; a zone name follows that zone's current daylight-saving law |
@@ -2340,18 +2346,18 @@ or `PATCH /api/v1/config` with `{"discovery":true,"discovery_controls":true}`.
 the console exposes the same checkbox. turning controls off removes their retained
 discovery records; reconnects retry unacknowledged removals before moving on. old
 prefixes and device identities are cleared before the new set is published. the
-original read-only entity ids stay unchanged; the 20 additional controls use
+original read-only entity ids stay unchanged; the 21 additional controls use
 `*_control` keys:
 
 - display power, brightness, base scene, art generator and notification text;
 - clock font, colour mode, both colours, gradient, digit style, spread and hours (the block
   face's fade is not a control);
-- ip layout, timezone, ntp server and interval;
+- ip layout, menu font, timezone, ntp server and interval;
 - night dimming, night brightness and night lead.
 
 power/scene/brightness/generator/notification commands are transient. the allowed
 durable fields are `clock_font`, `clock_colour_mode`, `clock_colour`, `clock_colour2`,
-`clock_gradient`, `clock_spread`, `clock_digit`, `clock_hours`, `ip_mode`, `timezone`, `ntp_server`,
+`clock_gradient`, `clock_spread`, `clock_digit`, `clock_hours`, `ip_mode`, `menu_font`, `timezone`, `ntp_server`,
 `ntp_interval_s`, `night`, `night_brightness` and `night_lead_min`; `expected_revision`
 may guard a patch. the supervisor validates and saves these exactly as for http.
 with controls enabled, broker write access is the authority for those settings.

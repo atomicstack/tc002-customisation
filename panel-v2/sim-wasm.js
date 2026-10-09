@@ -24,7 +24,7 @@
   let readyPromise = null;
   /* every enum name comes from the wasm, so a new font or generator needs no edit here */
   let TRANSITION_EFFECTS = [], TRANSITION_DIRECTIONS = [], TRANSITION_EASINGS = [], TRANSITION_EXITS = [];
-  let BASES = [], GENERATORS = [], CLOCK_FONTS = [], FACES = [], CLOCK_MODES = [],
+  let BASES = [], GENERATORS = [], CLOCK_FONTS = [], FACES = [], MENU_FONTS = [], CLOCK_MODES = [],
       GRADIENTS = [], DIGIT_STYLES = [], HOURS = [], IP_MODES = [];
   let CLOCK_MAX_SPREAD = 255, NOTIFY_MAX_S = 300;
   const DEFAULT_CLOCK_STYLE = { font: 'classic', colour_mode: 'solid', colour: 'ffffff', colour2: 'ffffff', gradient: 'horizontal' };
@@ -53,6 +53,7 @@
       GENERATORS = names(E.generatorNames);
       CLOCK_FONTS = names(E.clockFontNames);
       FACES = names(E.faceNames);
+      MENU_FONTS = names(E.menuFontNames);
       CLOCK_MODES = names(E.clockModeNames);
       GRADIENTS = names(E.gradientNames);
       DIGIT_STYLES = names(E.digitStyleNames);
@@ -565,6 +566,7 @@
     get GENERATORS() { return GENERATORS; },
     get CLOCK_FONTS() { return CLOCK_FONTS; },
     get FACES() { return FACES; },
+    get MENU_FONTS() { return MENU_FONTS; },
     get CLOCK_MODES() { return CLOCK_MODES; },
     get GRADIENTS() { return GRADIENTS; },
     get DIGIT_STYLES() { return DIGIT_STYLES; },
