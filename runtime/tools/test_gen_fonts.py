@@ -74,5 +74,55 @@ class Readers(unittest.TestCase):
         self.assertEqual(gf.CP437[0x41], 0x41)
 
 
+FACE_NAMES = ['chunky6', 'chunky6x', 'light6', 'light6x', 'chunky8', 'chunky8x', 'chunky8x6',
+              'light8', 'light8x', 'light8x6', 'tiny5', 'tiny5-duo', 'tiny5-mono', 'phoenix',
+              'phoenix-2y', 'phoenix-8x14', 'ibm-iso8', 'apricot-xenc', 'robotron-a7100', 'ibm-vga']
+SRC = os.path.join(HERE, '..', 'src', 'scene')
+
+
+class Output(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.faces = gf.load_all()  # [(name, trimmed height, [Glyph])]
+        cls.blob, cls.zig = gf.render(cls.faces)
+
+    def test_names_in_order(self):
+        self.assertEqual([f[0] for f in self.faces], FACE_NAMES)
+
+    def test_trimmed_heights(self):
+        h = {n: hh for n, hh, _ in self.faces}
+        self.assertEqual(h['chunky6'], 6)
+        self.assertEqual(h['chunky8'], 8)
+        self.assertEqual(h['robotron-a7100'], 11)  # a 16-row cell whose text sits in rows 2..12
+        self.assertEqual(h['ibm-iso8'], 15)  # ascii alone spans rows 0..14: `^` on top, descenders below
+        self.assertEqual(h['tiny5'], 11)  # 7 rows of ascii; `å` reaches two above, the cedilla one below
+        self.assertEqual(h['phoenix'], 8)
+        for n, hh, glyphs in self.faces:
+            for g in glyphs:
+                self.assertTrue(0 <= g.y and g.y + g.h <= hh, (n, hex(g.cp)))
+
+    def test_ascii_present_everywhere(self):
+        for n, _, glyphs in self.faces:
+            cps = {g.cp for g in glyphs}
+            self.assertTrue(all(c in cps for c in range(0x20, 0x7F)), n)
+
+    def test_index_is_sorted_and_unique(self):
+        for n, _, glyphs in self.faces:
+            cps = [g.cp for g in glyphs]
+            self.assertEqual(cps, sorted(set(cps)), n)
+
+    def test_blob_under_ceiling(self):
+        self.assertLessEqual(len(self.blob), 256 * 1024)
+
+    def test_committed_files_are_current(self):
+        with open(os.path.join(SRC, 'faces.bin'), 'rb') as f:
+            self.assertEqual(f.read(), self.blob)
+        with open(os.path.join(SRC, 'faces.zig')) as f:
+            self.assertEqual(f.read(), self.zig)
+
+    def test_deterministic(self):
+        self.assertEqual(gf.render(gf.load_all()), (self.blob, self.zig))
+
+
 if __name__ == '__main__':
     unittest.main()

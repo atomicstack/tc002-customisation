@@ -9,6 +9,8 @@ __pycache__/
 *.img
 *.sqsh
 *.bin
+# ...but the glyph blob gen-fonts.py writes is ours, and builds read it
+!runtime/src/scene/faces.bin
 
 # release tarballs built by tc002-mkrelease.sh
 dist/
