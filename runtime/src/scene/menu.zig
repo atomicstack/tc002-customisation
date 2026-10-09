@@ -27,6 +27,7 @@ pub const Item = enum(u8) {
     new_seed,
     mqtt,
     ntfy,
+    menu_font,
     info,
     reboot,
     exit,
@@ -41,6 +42,7 @@ pub const Item = enum(u8) {
             .new_seed => "new seed",
             .mqtt => "mqtt",
             .ntfy => "ntfy",
+            .menu_font => "menu font",
             .info => "info",
             .reboot => "reboot",
             .exit => "exit",
@@ -50,7 +52,7 @@ pub const Item = enum(u8) {
     /// items whose value the knob or the left/right buttons can change
     fn adjustable(self: Item) bool {
         return switch (self) {
-            .brightness, .ip, .night, .night_level, .mqtt, .ntfy, .info => true,
+            .brightness, .ip, .night, .night_level, .mqtt, .ntfy, .menu_font, .info => true,
             else => false,
         };
     }
@@ -86,6 +88,7 @@ pub const Request = union(enum) {
     ip_mode: ip.Mode,
     mqtt: bool,
     ntfy: bool,
+    menu_font: canvas.Font,
     power_off,
     reseed,
     reboot,
@@ -261,6 +264,14 @@ pub const Menu = struct {
                 self.settings.ntfy = !self.settings.ntfy;
                 self.stage(.{ .ntfy = self.settings.ntfy }, now);
                 return .{ .ntfy = self.settings.ntfy };
+            },
+            .menu_font => {
+                // only the faces that fit; the menu redraws in each as the dial passes it
+                var next = cycle(canvas.Font, self.font, forward);
+                while (!fits(next)) next = cycle(canvas.Font, next, forward);
+                self.font = next;
+                self.stage(.{ .menu_font = next }, now);
+                return .{ .menu_font = next };
             },
             .info => {
                 self.readout = cycle(Readout, self.readout, forward);
@@ -452,6 +463,7 @@ pub const Menu = struct {
             .night_level => std.fmt.bufPrint(buf, "{d}%", .{self.settings.night_level}) catch "?",
             .mqtt => if (self.settings.mqtt) "on" else "off",
             .ntfy => if (self.settings.ntfy) "on" else "off",
+            .menu_font => @tagName(self.font),
             .info => self.readoutText(buf),
             .display_off => "click",
             .new_seed => "click",
@@ -943,4 +955,22 @@ test "a menu in another face draws its label and value in it, on that face's row
     face.blit(&expected, @divTrunc(geometry.width - lw, 2), 0, f, label, clockfont.Solid{ .colour = dim });
     face.blit(&expected, @divTrunc(geometry.width - vw, 2), 8, f, value, clockfont.Solid{ .colour = bright });
     try std.testing.expectEqualSlices(u8, &expected, &rgb);
+}
+
+test "the menu font item walks the faces that fit, redraws the menu in each, and sends one request" {
+    var m = opened();
+    m.item = .menu_font;
+    var buf: [32]u8 = undefined;
+    try std.testing.expectEqualStrings("mini", m.valueText(&buf));
+    const want = [_]canvas.Font{ .chunky6, .chunky6x, .light6, .light6x, .small, .mini };
+    for (want) |f| {
+        const r = m.input(.step_up, 0);
+        try std.testing.expect(r == .menu_font and r.menu_font == f);
+        try std.testing.expectEqual(f, m.font); // the preview is the menu itself
+        try std.testing.expectEqualStrings(@tagName(f), m.valueText(&buf));
+    }
+    try std.testing.expect(m.input(.step_down, 0).menu_font == .small);
+    _ = m.tick(commit_delay_ns);
+    const settled = m.takeReady();
+    try std.testing.expect(settled == .menu_font and settled.menu_font == .small);
 }

@@ -1286,7 +1286,7 @@ pub const MenuRequest = struct {
     kind: u8,
     value: u32 = 0,
 
-    pub const Kind = enum(u8) { brightness = 0, clock_font = 1, generator = 2, ip_mode = 3, mqtt = 4, ntfy = 5, power_off = 6, reboot = 7, night = 8, night_level = 9 };
+    pub const Kind = enum(u8) { brightness = 0, clock_font = 1, generator = 2, ip_mode = 3, mqtt = 4, ntfy = 5, power_off = 6, reboot = 7, night = 8, night_level = 9, menu_font = 10 };
 };
 
 /// a parameter of one of the base scenes, by the scene and its index in that scene's table. the

@@ -11,7 +11,8 @@ refuses a version this file does not know. the github releases carry the same no
   dos iso8, apricot xen-c, robotron a7100, and the extended ibm vga) can be named wherever a font
   is: canvas text and rich notifications, a plain notification's new `font`, the clock (with
   `hh:mm` where the whole time does not fit), berry's `panel.text`, and — the faces of seven rows
-  or fewer — the device menus, through a new `menu_font` setting. they are one 212 kb blob
+  or fewer — the device menus, through a new `menu_font` setting and a `menu font` item in the
+  device menu itself. they are one 212 kb blob
   generated from the vendored sources; `tc002d` and `tc002-berryd` each grow by it.
   [`CANVAS.md`](CANVAS.md#imported-faces) shows every one, and the licences are in the readme.
 - **text is utf-8.** notifications, canvas text and scripts take any utf-8 without control

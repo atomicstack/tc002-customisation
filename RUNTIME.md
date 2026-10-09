@@ -1206,8 +1206,9 @@ than the 5x7. that font gained a letter set for them. the `menu_font` setting
 picks another face, from those short enough for a title line and a value line
 with the bottom row to spare — seven rows or fewer: `small`, `mini`, `chunky6`,
 `chunky6x`, `light6` and `light6x`. a taller face is refused by the api, and one
-in a settings file loads as `mini`. a label wider than the panel scrolls, as it
-always has.
+in a settings file loads as `mini`. the menu's own `menu font` item walks the same
+six, and the menu redraws in each as the dial passes it. a label wider than the
+panel scrolls, as it always has.
 
 **holding a base's own button** — left for the clock, middle for art, right for
 the canvas — shows that base and opens its parameter table as a menu, one entry
@@ -1224,7 +1225,7 @@ settings patch, so it persists and reaches netd like any other.
 ### the settings menu
 
 the knob's **hold** opens the device's own menu, so brightness, the
-night schedule and the two message services can be changed with nothing else
+night schedule, the two message services and the menu's own face can be changed with nothing else
 to hand.
 one item shows at a time, which is the only honest layout on 52x16: the item's
 name on the top rows, its value below, and a row of dots along the bottom with
@@ -1240,6 +1241,7 @@ the current item lit.
 | `new seed` | reseeds the art at once | no, a seed is not a setting |
 | `mqtt` | the broker connection on or off | yes |
 | `ntfy` | the subscriber on or off | yes |
+| `menu font` | the face the menus are drawn in, from the six that fit; the menu redraws in each as the dial turns | yes, as `menu_font` |
 | `info` | wifi, battery, time sync and uptime | read only |
 | `reboot` | asks first, defaulting to no; the panel then reads [`rebooting...`](#the-reboot-notice) | n/a |
 | `exit` | closes the menu | n/a |
@@ -1805,7 +1807,7 @@ shows up as a revision gap, and the gap is the signal to resync.
 | `brightness` | 1–100 | applied to the renderer at once |
 | `clock_font`, `clock_colour_mode`, `clock_colour`, `clock_colour2`, `clock_gradient`, `clock_spread`, `clock_digit`, `clock_fade`, `clock_hours` | `classic\|mini\|segment\|big\|block\|hires` or an imported face (`chunky6` … `ibm-vga`); `solid\|gradient`; `rrggbb`; `rrggbb`; `horizontal\|vertical\|diagonal`; 0–255; `solid\|outline\|shadow`; bool; `24h\|12h` | applied at once; reported as a `clock` object in `/config` |
 | `ip_mode` | `lines\|mini\|scroll\|big` | the layout of the device menu's ip page, applied at once; see [ip layouts](#ip-layouts) |
-| `menu_font` | `small\|mini\|chunky6\|chunky6x\|light6\|light6x` (default `mini`) | the face the on-panel menus are drawn in, applied with the supervisor's next status push (at once on a change); ;see [the settings menu](#the-settings-menu) |
+| `menu_font` | `small\|mini\|chunky6\|chunky6x\|light6\|light6x` (default `mini`) | the face the on-panel menus are drawn in, applied with the supervisor's next status push (at once on a change); the menu's `menu font` item sets it too. see [the settings menu](#the-settings-menu) |
 | `base` | `clock`, `art`, `canvas` | applied at once |
 | `generator` | `popsquares`, `plasma`, `cube`, `terrain` | applied at once |
 | `timezone` | a posix tz rule (`AEST-10AEDT,M10.1.0,M4.1.0/3`) or an iana zone name (`Europe/Amsterdam`, case-insensitive), ≤ 64 characters; anything else is rejected | applied at once; a zone name follows that zone's current daylight-saving law |

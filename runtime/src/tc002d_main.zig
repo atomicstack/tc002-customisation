@@ -227,6 +227,7 @@ const Renderer = struct {
             .ntfy => |on| .{ .kind = @backingInt(K.ntfy), .value = @intFromBool(on) },
             .night => |on| .{ .kind = @backingInt(K.night), .value = @intFromBool(on) },
             .night_level => |v| .{ .kind = @backingInt(K.night_level), .value = v },
+            .menu_font => |f| .{ .kind = @backingInt(K.menu_font), .value = @backingInt(f) },
             .power_off => .{ .kind = @backingInt(K.power_off) },
             .reboot => .{ .kind = @backingInt(K.reboot) },
             // a reseed is not a setting and a close is nobody else's business

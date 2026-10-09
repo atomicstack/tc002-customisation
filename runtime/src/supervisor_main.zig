@@ -929,7 +929,7 @@ const Supervisor = struct {
                 self.rebootNow();
                 return;
             },
-            .brightness, .clock_font, .generator, .ip_mode, .mqtt, .ntfy, .night, .night_level => {},
+            .brightness, .clock_font, .generator, .ip_mode, .mqtt, .ntfy, .night, .night_level, .menu_font => {},
         }
         const before = self.cfg;
         const patched = switch (kind) {
@@ -939,6 +939,7 @@ const Supervisor = struct {
             .clock_font => self.cfg.patch(.{ .clock_font = messages.enumFromInt(clock.Font, @as(u8, @truncate(m.value))) orelse return }),
             .generator => self.cfg.patch(.{ .generator = messages.enumFromInt(scene.Generator, @as(u8, @truncate(m.value))) orelse return }),
             .ip_mode => self.cfg.patch(.{ .ip_mode = messages.enumFromInt(ip.Mode, @as(u8, @truncate(m.value))) orelse return }),
+            .menu_font => self.cfg.patch(.{ .menu_font = messages.enumFromInt(canvas.Font, @as(u8, @truncate(m.value))) orelse return }),
             .mqtt => blk: {
                 var next = self.cfg.mqtt;
                 next.enabled = m.value != 0;

@@ -1344,6 +1344,10 @@ pub const Arbiter = struct {
             .ntfy => |on| {
                 self.device.ntfy_on = on;
             },
+            // the menu already draws in it; the copy here is what the next menu opens with
+            .menu_font => |f| {
+                self.device.menu_font = f;
+            },
             .power_off => {
                 self.power = false;
             },
@@ -1374,7 +1378,9 @@ pub const Arbiter = struct {
         self.device = st;
         if (self.menu_state) |*m| {
             m.status = st;
-            if (m.font != st.menu_font) {
+            // on its own item the menu's font is the one being chosen: a push from before the
+            // choice landed would snap the preview back
+            if (m.item != .menu_font and m.font != st.menu_font) {
                 m.font = st.menu_font;
                 self.dirty = true;
             }
@@ -1915,4 +1921,19 @@ test "a ramped brightness eases what is shown while the target is reported at on
     _ = a.apply(.{ .brightness_ramp = .{ .value = 33, .ms = 0 } }, 40 * s_ns);
     a.tick(40 * s_ns, 0);
     try std.testing.expectEqual(@as(u8, 33), a.shownBrightness());
+}
+
+test "a status push does not undo the menu font being chosen on the menu font item" {
+    var a = fresh();
+    a.setDeviceStatus(.{ .menu_font = .mini });
+    a.openMenu(0);
+    a.menu_state.?.item = .menu_font;
+    a.action(.knob_short, 0); // a click opens it for editing
+    a.action(.rotate_cw, 10 * std.time.ns_per_ms);
+    try std.testing.expectEqual(canvas.Font.chunky6, a.menu_state.?.font);
+    a.setDeviceStatus(.{ .menu_font = .mini }); // the periodic push, from before the change landed
+    try std.testing.expectEqual(canvas.Font.chunky6, a.menu_state.?.font);
+    a.menu_state.?.item = .brightness; // elsewhere in the menu the setting is the truth again
+    a.setDeviceStatus(.{ .menu_font = .light6 });
+    try std.testing.expectEqual(canvas.Font.light6, a.menu_state.?.font);
 }
