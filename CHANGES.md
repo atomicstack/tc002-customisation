@@ -30,6 +30,9 @@ refuses a version this file does not know. the github releases carry the same no
   saved settings and the persisted canvas until the flashed image carries this build. this build
   itself loads an unknown `clock_font` as `classic` and an unknown or too-tall `menu_font` as
   `mini`, so the next face added will not repeat the trap.
+- **ntfy messages keep their accents.** the subscriber used to fold every message to printable
+  ascii, so `café` arrived as `caf?`; it now passes utf-8 through whole (a character no face has
+  still draws as `?`), keeps line breaks, and cuts at the 128-byte limit between characters.
 - **the clock's digits keep still.** an imported face sets each digit centred in a slot as wide as
   its widest digit, so the four proportional `light` faces no longer shift the colons a pixel as
   a `1` comes and goes. the hand-drawn faces never did: their digits are all one width.

@@ -3,6 +3,7 @@
 const std = @import("std");
 // zig 0.17 removed `**`; `@splat` covers one element, this covers a longer unit
 const repeat = @import("../repeat.zig");
+const face = @import("../scene/face.zig");
 
 pub const max_text = 128;
 pub const max_id = 32;
@@ -45,23 +46,27 @@ pub fn colourFor(priority: u8) [3]u8 {
     };
 }
 
-/// copy printable ascii into `out`, folding whitespace to a space, replacing other characters
-/// (one per utf-8 sequence) with '?', stopping at the capacity; returns the length
+/// copy the text into `out` as the panel takes it: utf-8 kept whole, a line break kept, other
+/// whitespace folded to a space, del, the c1 controls and anything malformed replaced with `?`,
+/// stopping at the capacity before a character that would not fit whole; returns the length
 fn sanitise(out: []u8, parts: []const []const u8) usize {
     var n: usize = 0;
     for (parts) |part| {
-        for (part) |b| {
-            if (n == out.len) return n;
-            if (b >= 0x20 and b <= 0x7e) {
-                out[n] = b;
-                n += 1;
-            } else if (b == '\n' or b == '\r' or b == '\t') {
-                out[n] = ' ';
-                n += 1;
-            } else if (b >= 0xc0 or b < 0x20) {
-                out[n] = '?';
-                n += 1;
-            } // 0x80..0xbf: continuation bytes of a sequence already replaced
+        var i: usize = 0;
+        while (i < part.len) {
+            const len = std.unicode.utf8ByteSequenceLength(part[i]) catch 0;
+            const whole = len > 0 and i + len <= part.len and std.unicode.utf8ValidateSlice(part[i .. i + len]);
+            const cp: u21 = if (whole) std.unicode.utf8Decode(part[i .. i + len]) catch unreachable else 0xfffd;
+            const bytes: []const u8 = if (!whole) "?" else switch (cp) {
+                '\n' => "\n",
+                0x09, 0x0d => " ",
+                0...0x08, 0x0b, 0x0c, 0x0e...0x1f, 0x7f...0x9f => "?",
+                else => part[i .. i + len],
+            };
+            if (n + bytes.len > out.len) return n;
+            @memcpy(out[n..][0..bytes.len], bytes);
+            n += bytes.len;
+            i += if (whole) len else 1;
         }
     }
     return n;
@@ -75,8 +80,8 @@ pub fn parse(line: []const u8, arena: []u8) error{Invalid}!Parsed {
     if (event != .message) return .{ .event = event, .notification = null };
     var n = Notification{ .colour = colourFor(l.priority) };
     n.len = @intCast(if (l.title.len > 0) sanitise(&n.text, &.{ l.title, ": ", l.message }) else sanitise(&n.text, &.{l.message}));
-    // trim the spaces folding may have left at the ends
-    const trimmed = std.mem.trim(u8, n.text[0..n.len], " ");
+    // trim the spaces and line breaks left at the ends
+    const trimmed = std.mem.trim(u8, n.text[0..n.len], " \n");
     if (trimmed.len == 0) return .{ .event = event, .notification = null };
     std.mem.copyForwards(u8, n.text[0..trimmed.len], trimmed);
     n.len = @intCast(trimmed.len);
@@ -101,10 +106,19 @@ test "a message with a title and a priority becomes coloured text; other events 
     try std.testing.expectError(error.Invalid, parse("not json", &arena));
 }
 
-test "text is printable ascii, folded, replaced and bounded; an empty message is dropped" {
+test "text keeps its utf-8 and its line breaks, folds other whitespace and is bounded; an empty message is dropped" {
     var arena: [4096]u8 = undefined;
-    const u = try parse("{\"event\":\"message\",\"message\":\"caf\\u00e9\\n\\ttime \\ud83d\\ude00!\"}", &arena);
-    try std.testing.expectEqualStrings("caf?  time ?!", u.notification.?.textSlice());
+    const u = try parse("{\"event\":\"message\",\"message\":\"caf\\u00e9 20\\u00b0C\\n\\ttime \\ud83d\\ude00!\"}", &arena);
+    try std.testing.expectEqualStrings("café 20°C\n time 😀!", u.notification.?.textSlice());
+    try std.testing.expect(face.validText(u.notification.?.textSlice()));
+    // what the panel would refuse becomes something it takes: del and the c1 controls are a `?`
+    const c = try parse("{\"event\":\"message\",\"message\":\"a\\u007fb\\u0085c\\rd\"}", &arena);
+    try std.testing.expectEqualStrings("a?b?c d", c.notification.?.textSlice());
+    try std.testing.expect(face.validText(c.notification.?.textSlice()));
+    // a limit falling inside a character stops before it rather than cutting it in half
+    const cut = try parse("{\"event\":\"message\",\"message\":\"" ++ repeat.bytes("x", max_text - 1) ++ "\\u00e9\"}", &arena);
+    try std.testing.expectEqual(@as(u8, max_text - 1), cut.notification.?.len);
+    try std.testing.expect(face.validText(cut.notification.?.textSlice()));
     const long = "{\"event\":\"message\",\"message\":\"" ++ repeat.bytes("x", 200) ++ "\"}";
     const l = try parse(long, &arena);
     try std.testing.expectEqual(@as(u8, max_text), l.notification.?.len);

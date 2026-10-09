@@ -1030,7 +1030,8 @@ as a notification. `GET /ntfy` and `PUT /ntfy` (admin) carry the settings;
 the settings are part of the saved configuration (`POST /config/save`); the ca is
 kept beside the tokens in the credentials directory (root only) and handed to
 the subscriber over ipc. a message shows as `title: message` (or the message
-alone), folded to printable ascii and at most 128 characters, coloured by
+alone) in utf-8, its line breaks kept and other whitespace folded to a space,
+at most 128 bytes and never cut inside a character, coloured by
 priority: min and low grey, default white, high orange, urgent red. it
 arrives with the default transition and leaves like any notification.
 
