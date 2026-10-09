@@ -385,7 +385,7 @@ class Device:
         return {"epoch": self.epoch, "revision": self.revision, "renderer": "running", "base": self.base,
                 "generator": self.generator, "seed": self.seed, "overlay": self.overlay, "brightness": self.brightness,
                 "power": self.power,
-                "clock": dict(self.clock), "ip_mode": self.ip_mode,
+                "clock": dict(self.clock), "ip_mode": self.ip_mode, "menu_font": self.config["menu_font"],
                 "presented": self.presented(), "fps": fps, "uptime_s": int(time.monotonic() - self.started),
                 "memory_available_kb": 16084, "memory_total_kb": 35840, "memory_free_kb": 9216,
                 "tmpfs_used_kb": 1024, "tmpfs_total_kb": 17920,

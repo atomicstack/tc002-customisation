@@ -1343,6 +1343,8 @@ const Netd = struct {
         o.add("},\"clock\":");
         clockJson(o, st.clock);
         o.fmt(",\"ip_mode\":\"{s}\"", .{enumName(ip.Mode, st.ip_mode)});
+        // the setting as netd last had it from the supervisor, which pushes every change
+        o.fmt(",\"menu_font\":\"{s}\"", .{@tagName(self.cfg.menu_font)});
         o.add(",\"menu\":");
         menuJson(o, &st);
         o.add(",\"night\":");

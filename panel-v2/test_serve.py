@@ -398,6 +398,7 @@ class EndToEndTests(unittest.TestCase):
         status, doc = self.call("PATCH", "config", {"menu_font": "light6"})
         self.assertEqual(status, 200, doc)
         self.assertEqual(self.call("GET", "config")[1]["menu_font"], "light6")
+        self.assertEqual(self.call("GET", "status")[1]["menu_font"], "light6", "status reports it beside ip_mode")
         status, doc = self.call("PATCH", "config", {"menu_font": "phoenix"})
         self.assertEqual((status, doc["error"]), (400, "invalid_menu_font"))
         self.call("PATCH", "config", {"menu_font": "mini"})
