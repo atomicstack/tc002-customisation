@@ -57,10 +57,11 @@ case "$verb" in
         [[ ($watch == staging || $watch == image) && $bytes =~ ^[1-9][0-9]*$ ]] \
             || { echo "tc002-notice.sh: watch is staging or image, followed by the bytes it will total" >&2; exit 2; }
     fi
-    # rows 2-6 the word, 9-14 the bar: four rows of white inside a one-pixel dark grey border
+    # rows 2-6 the word, 9-14 the bar: four rows of white inside a one-pixel dark grey border.
+    # 0a lands just above the led driver's floor of 50, and survives brightness down to about 10
     word='{"id":"l1","type":"text","at":[0,2],"size":[52,5],"font":"mini","align":"centre","colour":"ff8000",
            "text":"'"$text"'","animate":{"kind":"pulse","ms":1600}}'
-    frame='{"id":"frame","type":"rect","at":[0,9],"size":[52,6],"colour":"404040"}'
+    frame='{"id":"frame","type":"rect","at":[0,9],"size":[52,6],"colour":"0a0a0a"}'
     bar='{"id":"bar","type":"bar","at":[1,10],"size":[50,4],"colour":"ffffff",
           "watch":"'"$watch"'","bytes":'"${bytes:-0}"'}'
     alone='{"id":"l1","type":"text","at":[0,5],"size":[52,5],"font":"mini","align":"centre","colour":"ff8000",

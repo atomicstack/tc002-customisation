@@ -564,6 +564,8 @@ class NoticeScriptTests(unittest.TestCase):
         self.assertEqual(len(frames), 1, body)
         self.assertEqual((frames[0]["at"], frames[0]["size"], frames[0].get("filled", False)), ([0, 9], [52, 6], False))
         self.assertLess(body["elements"].index(frames[0]), body["elements"].index(bars[0]))
+        # just above the driver's floor at full brightness, and still lit down to about 10%
+        self.assertEqual(frames[0]["colour"], "0a0a0a")
         words = [e for e in body["elements"] if e["type"] == "text"]
         self.assertEqual(words[0]["at"], [0, 2])
         self.assertTrue(any(e.get("text") == "Flashing..." for e in body["elements"]))
