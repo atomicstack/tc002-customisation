@@ -178,7 +178,9 @@ wait_back() {
     local n=0 up
     say "waiting for $ip to come back"
     while :; do
-        up=$("$PY" "$CTL" -s "$ip" --token-file "$1" status 2>/dev/null | "$PY" -c 'import json,sys
+        # a rebooting clock does not answer at all. `|| true` keeps that from failing the whole
+        # pipeline under pipefail, which set -e took as the end of the script
+        up=$({ "$PY" "$CTL" -s "$ip" --token-file "$1" status 2>/dev/null || true; } | "$PY" -c 'import json,sys
 try: print(int(json.load(sys.stdin).get("uptime_s", 0)))
 except Exception: print(-1)')
         [[ $up =~ ^[0-9]+$ ]] && (( up < 120 )) && break

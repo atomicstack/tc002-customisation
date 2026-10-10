@@ -359,6 +359,13 @@ elif "status" in sys.argv:
     # answers with the uptime it had before the reboot
     still = pathlib.Path(os.environ["TEST_ADB_LOG"] + ".still-up")
     left = int(still.read_text()) if still.exists() else 0
+    # and then it is down: for as many calls as `.down` says, nothing answers at all
+    down = pathlib.Path(os.environ["TEST_ADB_LOG"] + ".down")
+    gone = int(down.read_text()) if down.exists() else 0
+    if left == 0 and gone > 0:
+        down.write_text(str(gone - 1))
+        print("error: no route to host", file=sys.stderr)
+        sys.exit(1)
     if left > 0:
         still.write_text(str(left - 1))
         print('{{"uptime_s":78215,"build":"fake","base":"art"}}')
@@ -509,6 +516,19 @@ class UpdateScriptTests(unittest.TestCase):
             root, bindir, log = fake_checkout(d)
             Path(str(log) + ".wedge").write_text("2")
             Path(str(log) + ".still-up").write_text("2")   # two answers from before the reboot
+            r = run_update(root, bindir, log, "--in-place", "--device", "10.0.0.5", "--no-build", "--keep-settings")
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+            self.assertIn("adb answers again", r.stdout)
+
+    def test_a_clock_that_does_not_answer_while_it_reboots_is_waited_for(self):
+        # matt's clock #2, 2026-10-10: the wait ended the update with exit 1 and no message the
+        # first time the rebooting clock did not answer at all. under pipefail the failed status
+        # call fails the whole `up=$(status | python)` however well the python copes, and set -e
+        # takes that as the end of the script
+        with tempfile.TemporaryDirectory() as d:
+            root, bindir, log = fake_checkout(d)
+            Path(str(log) + ".wedge").write_text("2")
+            Path(str(log) + ".down").write_text("2")   # two calls nobody answers
             r = run_update(root, bindir, log, "--in-place", "--device", "10.0.0.5", "--no-build", "--keep-settings")
             self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
             self.assertIn("adb answers again", r.stdout)

@@ -16,6 +16,12 @@ refuses a version this file does not know. the github releases carry the same no
   address page do the same. the dip is taken in what the leds show, so it is still there at a
   night level.
 
+- **an update waits for a clock that does not answer while it reboots.** the wait for a rebooted
+  clock still ended the update with exit 1 and no message the first time the clock did not answer
+  at all: under `pipefail` the failed status call failed the line that read the uptime, and
+  `set -e` ended the script there. v0.3.7's fix covered a clock still answering from before the
+  reboot, which is all the test's stand-in clock ever did.
+
 ## v0.3.7 — twenty pixel faces, and an update you can watch (2026-10-10)
 
 v0.3.6 was recorded here but never published; its changes ship in this release.
