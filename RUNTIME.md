@@ -1283,7 +1283,8 @@ for ten seconds, far longer than the wait, so that **if the exec fails the notic
 expires by itself** and the clock returns rather than the device sitting on a
 lie. A battery notice due in the same window stands aside. The updaters'
 `Updating...` (in place) and `Flashing...` (a flash), each over a bar watching its own transfer
-(the staging directory, the staged image) so it fills with what has actually arrived, are one held
+(the staging directory, the staged image) so it fills with what has actually arrived and turning to
+`Working...` once the copy is across and the panel is about to freeze, are one held
 notification named `updating` for a related reason: a
 notification lives in the renderer's memory, so the restart or reboot that ends
 the update drops it, and nothing is left on the canvas.

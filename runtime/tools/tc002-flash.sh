@@ -296,6 +296,11 @@ WANT=$(( $(wc -c < "$IMG" | tr -d ' ') ))
 GOT=$(sh_ "ls -l /data/update.img" | awk '{print $5}')
 [ "$WANT" = "$GOT" ] || die "the staged image is $GOT bytes, expected $WANT"
 say "staged $GOT bytes"
+# the bar is full and the panel is about to freeze through the write: the same notice, posted
+# again, now says it is working rather than still flashing, changing in place
+if [ "$noticed" -eq 1 ]; then
+    "$HERE/tc002-notice.sh" "127.0.0.1:$API_PORT" "$TOKENS" show "Working..." image "$WANT" >/dev/null 2>&1 || true
+fi
 
 say "arm the flasher (dir before flag: the flag is the trigger and the dir must already be set)"
 adb -s "$DEV" shell "setprop persist.zkupgrade.dir /data" >/dev/null 2>&1

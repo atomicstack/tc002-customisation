@@ -250,6 +250,10 @@ in_place() {
         stage
     fi
     if (( running )); then
+        # everything is across and the bar is full: the panel is about to freeze on this frame
+        # through the swap, so it says it is working rather than still updating. the same
+        # notice posted again changes in place, the bar staying full
+        (( noticed )) && "$HERE/tc002-notice.sh" "$ip" "$(token_file)" show Working... staging "$(staged_bytes)" >/dev/null 2>&1
         say "halting the running runtime and swapping the new binaries in (the notice freezes on the glass until the new one draws)"
     fi
     local out

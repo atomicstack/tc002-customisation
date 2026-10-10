@@ -457,6 +457,11 @@ class UpdateScriptTests(unittest.TestCase):
                 self.assertTrue(pushes, "the binaries are staged beside the running runtime, not over it")
                 # notice, then the staged copy while it pulses, then the halt that swaps it in
                 self.assertTrue(halts and notices[0] < pushes[0] < halts[0], (notices, pushes, halts))
+                # once everything is across, the same notice says it is working rather than
+                # updating, since the panel is about to freeze on it through the swap
+                working = [i for i, c in enumerate(calls) if c["command"] == "curl" and "/notify" in " ".join(c["args"])
+                           and '"text":"Working..."' in " ".join(c["args"]) and '"name":"updating"' in " ".join(c["args"])]
+                self.assertTrue(working and pushes[-1] < working[0] < halts[0], (pushes, working, halts))
                 self.assertFalse(stops, "an in-place update must not hand the panel back between runtimes")
                 # and the notice is taken down by name once the new runtime is up; the scene is never touched
                 restores = [i for i, c in enumerate(calls) if c["command"] == "curl" and "/notify/dismiss" in " ".join(c["args"]) and '"name":"updating"' in " ".join(c["args"])]
@@ -595,6 +600,16 @@ class NoticeScriptTests(unittest.TestCase):
                 r = subprocess.run([str(ROOT / "runtime/tools/tc002-notice.sh"), "10.0.0.9", str(tokens), "show", "Updating...", *extra],
                                    env={**os.environ, "CURL": "/usr/bin/false"}, capture_output=True, text=True, timeout=30)
                 self.assertEqual(r.returncode, 2, r.stderr)
+
+    def test_a_flash_says_working_once_the_image_is_across_and_before_the_flasher_runs(self):
+        # the flasher itself cannot run here, so this pins the order in the script: the staged
+        # size is checked, the notice turns to Working..., and only then is the flasher armed
+        text = (ROOT / "runtime/tools/tc002-flash.sh").read_text()
+        staged = text.index('say "staged $GOT bytes"')
+        working = text.index('show "Working..." image')
+        armed = text.index('setprop sys.zkupgrade.flag 255')
+        self.assertLess(staged, working)
+        self.assertLess(working, armed)
 
     def test_a_flash_reads_flashing(self):
         sent = self.show("Flashing...")

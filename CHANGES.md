@@ -7,9 +7,10 @@ refuses a version this file does not know. the github releases carry the same no
 ## unreleased
 
 - **the update bar is the panel's width, white, and fades in.** the bar under `Updating...` and
-  `Flashing...` is four rows of white inside a one-pixel dark grey border the width of the panel,
+  `Flashing...` is four rows of white inside a one-pixel border of `0a0a0a`, just above the driver's floor, the width of the panel,
   over the panel's own black, and a moving bar's leading pixel lights by how far the fill has
-  reached into it, so each new pixel fades in.
+  reached into it, so each new pixel fades in. once the copy is across the word turns to
+  `Working...`, since that is the frame the panel freezes on through the swap or the write.
 
 - **every face fades.** `clock_fade` used to touch only `block`; every other face cut hard at the
   second. the hand-drawn faces now blend their changing glyphs the way `block` does, and the
