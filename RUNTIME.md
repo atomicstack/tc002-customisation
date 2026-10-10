@@ -1263,7 +1263,7 @@ the current item lit.
 | `ntfy` | the subscriber on or off | yes |
 | `menu font` | the face the menus are drawn in, from the six that fit; the menu redraws in each as the dial turns | yes, as `menu_font` |
 | `info` | wifi, battery, time sync and uptime | read only |
-| `reboot` | asks first, defaulting to no; the panel then reads [`rebooting...`](#the-reboot-notice) | n/a |
+| `reboot` | asks first, defaulting to no; the panel then reads [`Rebooting...`](#the-reboot-notice) | n/a |
 | `exit` | closes the menu | n/a |
 
 `exit` is last, so it is one counter-clockwise click from the item the menu
@@ -1287,8 +1287,8 @@ A reboot takes the device away for about twenty seconds. This used to blank the
 display on the way out, on the reasoning that a dark panel beats a frozen clock.
 Both are worse than a word, because a dark panel and a dead one look identical.
 
-So the supervisor draws `rebooting...` across the panel first — the `mini` face,
-centred, in rgb 58 110 165 — waits 1.2 s, and only then runs `/bin/reboot`. The
+So the supervisor draws `Rebooting...` across the panel first — in tiny5, the
+update notices' face, centred on its ink, in rgb 58 110 165 — waits 1.2 s, and only then runs `/bin/reboot`. The
 wait is the point: the renderer has to receive the frame, draw it and latch it,
 and killing the process that does that in the same breath would leave whatever
 was there before. The panel holds its last latched frame while nothing is
@@ -1606,7 +1606,7 @@ read-only storage; connection buffers stay the same size.
 | `GET` | `/config` | `status` | | the [settings document](#settings) |
 | `PATCH` | `/config` | `settings` | any subset of the settings fields plus `expected_revision`? | the settings document after the patch |
 | `POST` | `/config/save` | `settings` | `{"revision":u32}` or an empty body, `application/json` either way | `{"status":"saved","saved_revision":n}` |
-| `POST` | `/reboot` | `reboot` | none (an empty body or `{}`) | `{"status":"applied","revision":n,"request_id":…}`; the "rebooting..." notice goes up and `/bin/reboot` runs about a second later. not reachable over mqtt |
+| `POST` | `/reboot` | `reboot` | none (an empty body or `{}`) | `{"status":"applied","revision":n,"request_id":…}`; the "Rebooting..." notice goes up and `/bin/reboot` runs about a second later. not reachable over mqtt |
 | `GET` | `/icons` | `status` | | `{"size":8,"names":[…]}`: the built-in [icon](#the-canvas) names |
 | `GET` | `/sprites` | `status` | | `{"slots":8,"sprites":[{"id","width","height"}…]}` |
 | `PUT` | `/sprites/{id}` | `content` | `application/octet-stream`, 192 or 768 bytes of rgb888 | the sprite list |

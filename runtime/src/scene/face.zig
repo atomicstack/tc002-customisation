@@ -274,7 +274,11 @@ fn lookup(n: faces.Name, cp: u21) ?Glyph {
 }
 
 fn importedGlyph(n: faces.Name, cp: u21) ?Glyph {
-    return lookup(n, cp) orelse lookup(n, replacement) orelse lookup(n, '?');
+    // not one `orelse` chain: evaluated at compile time (the supervisor's reboot notice) a lookup
+    // that is known to succeed is not optional, and the next `orelse` does not compile
+    if (lookup(n, cp)) |g| return g;
+    if (lookup(n, replacement)) |g| return g;
+    return lookup(n, '?');
 }
 
 /// the byte a hand-drawn face draws for a codepoint

@@ -22,6 +22,11 @@ refuses a version this file does not know. the github releases carry the same no
   `set -e` ended the script there. v0.3.7's fix covered a clock still answering from before the
   reboot, which is all the test's stand-in clock ever did.
 
+- **the reboot notice reads `Rebooting...` in tiny5,** the update notices' face, centred on its
+  ink, instead of `rebooting...` in mini. the supervisor draws it at compile time, so the change
+  costs it nothing: its binary is 6 kb smaller, where drawing at run time would have carried every
+  imported face (210 kb).
+
 ## v0.3.7 — twenty pixel faces, and an update you can watch (2026-10-10)
 
 v0.3.6 was recorded here but never published; its changes ship in this release.

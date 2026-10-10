@@ -38,7 +38,7 @@ commands:
   screen [--out FILE] [--ascii]       the framebuffer as shown: metadata, raw rgb to a file, or a preview
   logs [after] [--follow]             the log ring after a sequence number; --follow polls every second
   config                              effective settings (admin token needed for patch/save)
-  reboot                              reboot the clock behind its "rebooting..." notice (admin)
+  reboot                              reboot the clock behind its "Rebooting..." notice (admin)
   tokens                              list named client tokens (admin)
   token-new NAME --scope notify [--scope display ...]   issue one; the secret is shown once (admin)
   token-rotate NAME [--scope ...]        new secret in place; shown once (admin)

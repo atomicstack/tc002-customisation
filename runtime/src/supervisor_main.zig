@@ -86,9 +86,17 @@ const netd_restart_ns: u64 = 1 * ns_per_s;
 /// loses it is halted rather than retried.
 const panel_wait_ns: u64 = 45 * ns_per_s;
 /// what the panel says on its way down, and for the twenty-odd seconds it is dark afterwards
-const reboot_notice_text = "rebooting...";
+const reboot_notice_text = "Rebooting...";
 /// matt picked it: rgb 58 110 165
 const reboot_notice_colour = [3]u8{ 58, 110, 165 };
+/// the notice, drawn at compile time: the text and colour are constants, and drawing it here
+/// keeps every imported face's glyphs (about 210 kb of them) out of the supervisor
+const reboot_notice_frame: geometry.Rgb = blk: {
+    @setEvalBranchQuota(1_000_000);
+    var frame: geometry.Rgb = geometry.black_rgb;
+    banner.draw(&frame, reboot_notice_text, reboot_notice_colour);
+    break :blk frame;
+};
 /// how long the notice gets before /bin/reboot runs. the renderer paces at 60 fps and the panel
 /// latches a frame in well under a tenth of a second; the rest is slack for a busy renderer.
 const reboot_notice_ns: u64 = 1200 * std.time.ns_per_ms;
@@ -849,8 +857,6 @@ const Supervisor = struct {
     fn rebootNow(self: *Supervisor) void {
         if (self.reboot_at_ns != null) return; // already on the way down; do not restart the clock
         const now = sys.monotonicNs();
-        var frame: geometry.Rgb = geometry.black_rgb;
-        banner.draw(&frame, reboot_notice_text, reboot_notice_colour);
         self.notice_stream_seq +%= 1;
         _ = self.sendRenderer(.{
             .stream_frame = .{
@@ -858,7 +864,7 @@ const Supervisor = struct {
                 // outlast the delay by a wide margin: if the exec fails the notice expires on its own
                 // and the clock comes back, rather than the device sitting on a lie.
                 .timeout_ms = reboot_notice_hold_ms,
-                .rgb = frame,
+                .rgb = reboot_notice_frame,
             },
         }, 0, lifecycle.epoch);
         self.reboot_at_ns = now + reboot_notice_ns;

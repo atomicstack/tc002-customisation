@@ -143,7 +143,7 @@ pub const Op = union(enum) {
     config_get,
     config_patch: ConfigPatch,
     config_save: struct { revision: ?u32 },
-    /// reboot the device: the menu's own path, behind its "rebooting..." notice. its own scope,
+    /// reboot the device: the menu's own path, behind its "Rebooting..." notice. its own scope,
     /// its own route, and deliberately not a body kind, so the mqtt command topics cannot reach it
     reboot: struct { request_id: u64 },
     mqtt_get,

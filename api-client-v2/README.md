@@ -80,7 +80,7 @@ the new secret once; use `--out` to save the response when appropriate.
 | `sounds list`, `sounds upload`, `sounds delete`, `sounds play`, `sounds stop` | stored sounds and playback | read; admin for upload/delete; control for playback |
 | `berry`, `scripts list`, `scripts get`, `scripts put`, `scripts run`, `scripts delete` | berry interpreter and script store | control for `berry` and `scripts list`; **`scripts` (admin) for get, put, run and delete** — reading a script back is not a control route |
 | `tokens list`, `tokens create`, `tokens rotate`, `tokens revoke` | named tokens | admin |
-| `reboot` | reboot the clock behind its "rebooting..." notice | admin (the `reboot` scope) |
+| `reboot` | reboot the clock behind its "Rebooting..." notice | admin (the `reboot` scope) |
 | `request <method> <path>` | direct request beneath `/api/v1` | route-dependent; use `--admin` when needed |
 | `completion <bash\|zsh>` | print completion script | offline |
 

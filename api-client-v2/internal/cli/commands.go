@@ -228,7 +228,7 @@ func addControl(root *cobra.Command, o *options) {
 	dismiss.Args = func(c *cobra.Command, args []string) error { return usage(cobra.MaximumNArgs(1)(c, args)) }
 	addFields(dismiss, identityFields)
 	root.AddCommand(dismiss)
-	// the runtime puts "rebooting..." on the panel and reboots. the route takes no body and
+	// the runtime puts "Rebooting..." on the panel and reboots. the route takes no body and
 	// needs the reboot scope, which only the admin token holds among the built-in pair.
 	o.simple(root, "reboot", "reboot the clock behind its notice (admin)", "POST", "/reboot", true)
 	inputFields := slices.Concat(identityFields, []field{numberField("steps", 1, 16)})
