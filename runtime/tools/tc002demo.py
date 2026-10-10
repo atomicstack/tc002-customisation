@@ -65,7 +65,7 @@ class Device:
         return self.request("PUT", f"/sprites/{sprite_id}", raw_body=bytes(rgb), admin=True)
 
     def delete_sprite(self, sprite_id):
-        return self.request("DELETE", f"/sprites/{sprite_id}")
+        return self.request("DELETE", f"/sprites/{sprite_id}", admin=True)  # the same scope as the upload
 
     def sprites(self):
         return self.request("GET", "/sprites")
