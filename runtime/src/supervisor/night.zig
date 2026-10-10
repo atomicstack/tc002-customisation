@@ -55,6 +55,32 @@ const days = 3; // yesterday, today and tomorrow, so every instant is bracketed
 
 const Anchor = struct { at: i64, level: u8 };
 
+/// when the schedule is looked at: every ten seconds, and at once when the clock first comes to
+/// know the time or the renderer first comes up. after a restart the panel starts in daylight and
+/// the time arrives some seconds later; looking only on the tick left it at full brightness for up
+/// to ten seconds more, in the middle of the night.
+pub const Cadence = struct {
+    pub const period_ns: u64 = 10 * std.time.ns_per_s;
+
+    next_ns: u64 = 0,
+    knew_time: bool = false,
+    renderer_up: bool = false,
+
+    pub fn due(self: *Cadence, now_ns: u64, knows_time: bool, renderer_up: bool) bool {
+        const arrived = (knows_time and !self.knew_time) or (renderer_up and !self.renderer_up);
+        self.knew_time = knows_time;
+        self.renderer_up = renderer_up;
+        if (!arrived and now_ns < self.next_ns) return false;
+        self.next_ns = now_ns + period_ns;
+        return true;
+    }
+
+    /// a settings change takes effect now rather than at the next tick
+    pub fn now(self: *Cadence) void {
+        self.next_ns = 0;
+    }
+};
+
 pub const Schedule = struct {
     settings: Settings = .{},
     /// where the device is: from the timezone's own reference point, or set by hand
@@ -71,6 +97,15 @@ pub const Schedule = struct {
             self.override_until = null;
         }
         return p.brightness;
+    }
+
+    /// the clock is about to learn the time (`new_unix`) with the panel at `shown`: the level to
+    /// fade down to *before* the time appears, when the schedule wants it dimmer. the panel waits
+    /// for the time at its ordinary brightness; at night the time must never be shown bright, so
+    /// the fade comes first and the time is revealed already at the night level.
+    pub fn fadeFirst(self: *Schedule, new_unix: i64, shown: u8) ?u8 {
+        const want = self.target(new_unix) orelse return null;
+        return if (want < shown) want else null;
     }
 
     /// a brightness arrived from somewhere else (the knob, the api, mqtt): stand aside until the
@@ -276,4 +311,36 @@ test "every brightness on the way through a year is between the two levels" {
         const b = arctic.plan(t).?.brightness;
         try std.testing.expect(b >= 10 and b <= 50);
     }
+}
+
+test "the schedule is looked at every ten seconds, and at once when the time or the renderer arrives" {
+    var c = Cadence{};
+    const s = std.time.ns_per_s;
+    try std.testing.expect(c.due(0, false, false)); // the first look
+    try std.testing.expect(!c.due(1 * s, false, false));
+    // the renderer comes up a moment later: look again now, not at the next tick
+    try std.testing.expect(c.due(1 * s, false, true));
+    try std.testing.expect(!c.due(2 * s, false, true));
+    // the time arrives mid-tick: at once, so night comes with the time rather than ten seconds on
+    try std.testing.expect(c.due(3 * s, true, true));
+    try std.testing.expect(!c.due(4 * s, true, true));
+    try std.testing.expect(c.due(13 * s, true, true)); // and then the ordinary tick again
+    try std.testing.expect(!c.due(14 * s, true, true));
+}
+
+test "a clock about to learn the time at night fades down first; by day, or already dim, it does not" {
+    const midday = spring.sunset.? - 6 * 3600;
+    const midnight = spring.sunset.? + 6 * 3600;
+    var s = schedule();
+    // the panel is at its default while it waits for the time; at night it goes to 10 before
+    // the time is shown, so the time never appears bright
+    try std.testing.expectEqual(@as(?u8, 10), s.fadeFirst(midnight, 50));
+    try std.testing.expectEqual(@as(?u8, null), s.fadeFirst(midday, 50));
+    try std.testing.expectEqual(@as(?u8, null), s.fadeFirst(midnight, 10)); // already there
+    var off = schedule();
+    off.settings.enabled = false;
+    try std.testing.expectEqual(@as(?u8, null), off.fadeFirst(midnight, 50));
+    var unplaced = schedule();
+    unplaced.point = null;
+    try std.testing.expectEqual(@as(?u8, null), unplaced.fadeFirst(midnight, 50));
 }

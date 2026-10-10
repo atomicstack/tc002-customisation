@@ -6,6 +6,12 @@ refuses a version this file does not know. the github releases carry the same no
 
 ## unreleased
 
+- **a restart at night never shows the time bright.** the panel waits for the time at its ordinary
+  brightness; when the time arrives and it is night, it fades down first and only then shows the
+  time, already dim. the schedule is also consulted the moment the time is known and the moment
+  the renderer comes up, instead of up to ten seconds later, and a restart that kept the time is
+  revealed at the night level directly.
+
 - **the update bar is the panel's width, white, and fades in.** the bar under `Updating...` and
   `Flashing...` is four rows of white inside a one-pixel border of `0a0a0a`, just above the driver's floor, the width of the panel,
   over the panel's own black, and a moving bar's leading pixel lights by how far the fill has

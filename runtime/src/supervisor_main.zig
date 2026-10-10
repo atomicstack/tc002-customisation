@@ -63,7 +63,6 @@ const Tag = enum(u64) { timer = 1, signals = 2, ipc = 3, keys = 4, netd = 5, mcu
 const tick_ns: u64 = 100_000_000;
 /// how often the night schedule is consulted: a ramp of tens of minutes over a hundred steps moves
 /// no faster than this, and asking costs a few dozen floating point operations
-const night_poll_ns: u64 = 10 * ns_per_s;
 /// the build id, widened to the wire field once at startup
 var snapshot_build: [messages.build_id_max]u8 = @splat(0);
 /// the low-battery policy is evaluated every second so a countdown can report every second, and
@@ -319,6 +318,10 @@ const SntpLink = struct {
     consecutive_failures: u32 = 0,
     /// so a retry loop does not fill the ring with the same line
     open_failed_logged: bool = false,
+    /// the first step of a clock that has never known the time, held back while the panel fades
+    /// to the night level: the kernel clock stays unset, so the face shows no time until it is dim
+    deferred_offset_ns: ?i128 = null,
+    deferred_at: u64 = 0,
 
     fn nextNonce(self: *SntpLink) u32 {
         var x = self.nonce;
@@ -430,12 +433,19 @@ const SntpLink = struct {
         const how = sntp.correctionFor(r.offset_ns);
         switch (how) {
             .step => {
-                const target: i128 = @as(i128, sys.realtimeNs()) + r.offset_ns;
-                sys.clockSetRealtime(@intCast(@max(target, 0))) catch |e| {
-                    log.err("sntp: clock_settime failed: {s}", .{sys.errText(e)});
+                // the clock learning the time for the first time, at night: fade the panel down
+                // first and only then let the time appear, so it is never shown bright at night
+                const was_unset = @divFloor(@as(i64, @intCast(sys.realtimeNs())), std.time.ns_per_s) < night.clock_set_floor;
+                const new_unix: i64 = @intCast(@divFloor(@as(i128, sys.realtimeNs()) + r.offset_ns, std.time.ns_per_s));
+                if (was_unset and s.snapshot.renderer_state == 2) if (s.night.fadeFirst(new_unix, s.snapshot.brightness)) |level| {
+                    s.send(.{ .brightness = .{ .value = level, .ramp_ms = night_ramp_ms } });
+                    self.deferred_offset_ns = r.offset_ns;
+                    self.deferred_at = now + @as(u64, night_ramp_ms) * std.time.ns_per_ms;
+                    log.info("sntp: the time is night; fading to {d} before showing it", .{level});
+                    self.consecutive_failures = 0;
                     return;
                 };
-                s.send(.time_corrected);
+                if (!self.stepBy(s, r.offset_ns)) return;
             },
             .slew => {
                 sys.adjtimeOffset(@intCast(@divTrunc(r.offset_ns, 1000))) catch |e| {
@@ -449,6 +459,28 @@ const SntpLink = struct {
         }
         log.info("sntp: offset {d} ms, delay {d} ms, stratum {d}, {s}", .{ @divTrunc(r.offset_ns, 1_000_000), @divTrunc(r.delay_ns, 1_000_000), r.stratum, if (how == .step) "stepped" else "slewing" });
         self.consecutive_failures = 0;
+        self.publish(s, now);
+        s.sendNetd(.{ .status = s.snapshot }, 0);
+    }
+
+    /// move the system clock by `offset_ns` and tell the renderer, whose deadline it rearms
+    fn stepBy(_: *SntpLink, s: *Supervisor, offset_ns: i128) bool {
+        const target: i128 = @as(i128, sys.realtimeNs()) + offset_ns;
+        sys.clockSetRealtime(@intCast(@max(target, 0))) catch |e| {
+            log.err("sntp: clock_settime failed: {s}", .{sys.errText(e)});
+            return false;
+        };
+        s.send(.time_corrected);
+        return true;
+    }
+
+    /// the held-back first step, once the fade to the night level has had its time
+    fn pollDeferred(self: *SntpLink, s: *Supervisor, now: u64) void {
+        const offset = self.deferred_offset_ns orelse return;
+        if (now < self.deferred_at) return;
+        self.deferred_offset_ns = null;
+        if (!self.stepBy(s, offset)) return;
+        log.info("sntp: offset {d} ms, stepped after the fade", .{@divTrunc(offset, 1_000_000)});
         self.publish(s, now);
         s.sendNetd(.{ .status = s.snapshot }, 0);
     }
@@ -589,7 +621,8 @@ const Supervisor = struct {
     canvas_saved: u32 = 0,
     /// the night brightness schedule; the phase it is in lives in the snapshot
     night: night.Schedule = .{},
-    next_night_poll: u64 = 0,
+    /// when the night schedule is next looked at; see `night.Cadence`
+    night_cadence: night.Cadence = .{},
     /// the low-battery policy, and when it was last asked
     power_policy: power.Policy = .{},
     next_power_poll: u64 = 0,
@@ -996,7 +1029,7 @@ const Supervisor = struct {
         if (!std.meta.eql(before.ntp_server, c.ntp_server) or before.ntp_interval_s != c.ntp_interval_s) self.sntp_link.configure(self, sys.monotonicNs()); // sntp
         const was_running = self.night.settings.enabled and self.night.point != null;
         self.syncNight();
-        self.next_night_poll = 0; // a settings change takes effect now rather than at the next tick
+        self.night_cadence.now(); // a settings change takes effect now rather than at the next tick
         if (was_running and !(self.night.settings.enabled and self.night.point != null)) {
             // the schedule was driving the panel and has just stopped: give the settings' own
             // brightness back, because nothing else will
@@ -2757,7 +2790,9 @@ const Supervisor = struct {
                     log.info("renderer ready {d} ms after spawn", .{(now - self.child_spawned_ns) / 1_000_000});
                     if (self.last_ip) |a| self.send(.{ .ip_changed = .{ .present = 1, .addr = a } });
                     // saved defaults become the renderer's state; the renderer's revision counts from here
-                    self.send(.{ .brightness = .{ .value = self.cfg.brightness } });
+                    // with the time known (a restart that kept it), what the schedule wants now, so
+                    // the reveal goes straight to the night level; without it, the default
+                    self.send(.{ .brightness = .{ .value = self.night.target(unixNow()) orelse self.cfg.brightness } });
                     self.send(.{ .set_base = .{ .base = self.cfg.base, .generator = self.cfg.generator, .seed = 0 } });
                     self.send(.{ .set_timezone = config.Text.init(self.cfg.tzRule()) });
                     self.send(.{ .clock_style = messages.ClockStyle.full(self.cfg.clockStyle()) });
@@ -3077,10 +3112,11 @@ const Supervisor = struct {
     /// would: the settings keep the daylight brightness, and nothing is written to flash by a ramp
     /// that runs every evening.
     fn pollNight(self: *Supervisor, now: u64) void {
-        if (now < self.next_night_poll) return;
-        self.next_night_poll = now + night_poll_ns;
-        if (self.snapshot.renderer_state != 2) return;
         const unix = unixNow();
+        // every ten seconds, and at once when the time is first known or the renderer first up:
+        // at night a restart then eases down as the time appears, not a tick later
+        if (!self.night_cadence.due(now, unix >= night.clock_set_floor, self.snapshot.renderer_state == 2)) return;
+        if (self.snapshot.renderer_state != 2) return;
         const want = self.night.target(unix); // null while a hand-set brightness still stands
         const plan = self.night.plan(unix);
         const phase: u8 = if (plan) |p| @as(u8, @backingInt(p.phase)) + 1 else 0;
@@ -3466,6 +3502,7 @@ fn run(cfg_in: cli.Config, environ: anytype, args: []const [:0]const u8) !u8 {
         s.reapNetup();
         s.pollNetwork(now);
         s.pushDeviceStatus(now);
+        s.sntp_link.pollDeferred(&s, now);
         s.pollNight(now);
         s.pollPower(now);
         s.pollBatteryNotice(now);

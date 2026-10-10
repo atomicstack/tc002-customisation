@@ -380,8 +380,18 @@ the schedule drives the panel **transiently**, exactly as an api client does.
 nothing it decides is written to flash, so a ramp that runs every evening
 costs no jffs2 wear and the settings keep meaning the daylight brightness. it
 is consulted every ten seconds, which is finer than a ramp of tens of minutes
-over a hundred steps can move. a clock that has not been set yet (1970, before
+over a hundred steps can move, and at once when the renderer comes up or the
+clock first learns the time. a clock that has not been set yet (1970, before
 sntp has answered) holds daylight rather than guessing.
+
+**at night the time is never shown bright.** when sntp first answers a clock
+that has never known the time, the supervisor works out what the schedule
+wants at the time it is about to set. if that is dimmer than the panel, it
+eases the panel down first and holds the clock step back for the two seconds
+the ease takes, so the face keeps showing no time while it dims and the time
+appears already at the night level. a renderer that starts when the time is
+already known (an in-place restart) is revealed straight at the level the
+schedule wants, not at daylight.
 
 **a level the schedule sends is eased on the panel over two seconds** rather
 than stepped. an evening step is a level or two every ten seconds and barely
