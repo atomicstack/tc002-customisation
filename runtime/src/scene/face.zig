@@ -128,11 +128,27 @@ test "line heights are the trimmed boxes" {
     try testing.expectEqual(@as(u8, 11), lineHeight(.{ .imported = .@"robotron-a7100" }));
 }
 
-test "width is the sum of advances" {
+test "an imported line is as wide as its ink: every advance but the last, then the last glyph's ink" {
+    // the hand-drawn faces never counted the gap after their last glyph; the imported ones do
+    // not either, so text whose ink is exactly the panel's width fits rather than scrolling
     const f = Face{ .imported = .phoenix };
-    try testing.expectEqual(@as(u32, 8 * 5), textWidth(f, "12:34"));
-    try testing.expectEqual(@as(u32, 8 * 3), textWidth(f, "☺°α")); // cp437's graphics are reachable
+    try testing.expectEqual(@as(u32, 8 * 4) + @as(u32, @intCast(@as(i32, importedGlyph(.phoenix, '4').?.x) + inkColumns(importedGlyph(.phoenix, '4').?).?)), textWidth(f, "12:34"));
+    try testing.expect(textWidth(.{ .imported = .chunky8 }, "HH") < advanceWidth(.{ .imported = .chunky8 }, "HH")); // a gap inside the advance
+    try testing.expectEqual(@as(u32, 8 * 5), advanceWidth(f, "12:34")); // the pen's travel, for slots
     try testing.expectEqual(@as(u32, 0), textWidth(f, ""));
+    // a line ending in a space still takes the space's advance: a gap someone typed is kept
+    try testing.expectEqual(advanceWidth(f, "12 "), textWidth(f, "12 "));
+    // and every imported face: drawn, the ink ends exactly where the width says
+    inline for (@typeInfo(faces.Name).@"enum".field_names) |name| {
+        const g = Face{ .imported = @field(faces.Name, name) };
+        var rgb = geometry.black_rgb;
+        blit(&rgb, 0, 0, g, "Hi1", white);
+        var right: u32 = 0;
+        for (0..geometry.height) |y| for (0..geometry.width) |x| {
+            if (rgb[geometry.pixelOffset(x, y)] != 0) right = @max(right, @as(u32, @intCast(x)) + 1);
+        };
+        try testing.expectEqual(right, textWidth(g, "Hi1"));
+    }
 }
 
 test "a codepoint a face lacks falls back to u+fffd, then ?" {
@@ -145,7 +161,7 @@ test "a codepoint a face lacks falls back to u+fffd, then ?" {
     blit(&b, 0, 0, f, "Ж", white);
     try testing.expectEqualSlices(u8, &a, &b);
     try testing.expect(lookup(.@"ibm-vga", 0x0416) != null); // pxplus has zhe
-    try testing.expectEqual(@as(u32, 8), textWidth(.{ .imported = .@"ibm-vga" }, "Ж"));
+    try testing.expectEqual(@as(u32, 8), advanceWidth(.{ .imported = .@"ibm-vga" }, "Ж")); // its own glyph, a full cell
 }
 
 test "a phoenix glyph lands where the source drew it" {
@@ -285,9 +301,6 @@ pub fn lineHeight(f: Face) u8 {
     };
 }
 
-/// pixel width of a line. the hand-drawn faces measure as they always have, without a trailing
-/// gap; an imported face's width is the plain sum of its advances, because each source keeps its
-/// gap inside the advance.
 /// rows between one line of a text and the next
 pub const leading = 1;
 
@@ -314,7 +327,42 @@ pub fn blockHeight(f: Face, text: []const u8) i32 {
     return n * @as(i32, lineHeight(f)) + (n - 1) * leading;
 }
 
+/// pixel width of a line, to the right edge of its ink: no trailing gap, in any face. an imported
+/// face keeps its gap inside each glyph's advance, so its line is every advance but the last and
+/// then the last glyph's ink (or its whole advance when it has none: a typed trailing space stays).
 pub fn lineWidth(f: Face, text: []const u8) u32 {
+    if (f == .imported) {
+        var pen: i32 = 0;
+        var end: i32 = 0;
+        var i: usize = 0;
+        while (i < text.len) {
+            const g = importedGlyph(f.imported, nextCodepoint(text, &i)) orelse continue;
+            end = pen + if (inkColumns(g)) |cols| @as(i32, g.x) + cols else g.advance;
+            pen += g.advance;
+        }
+        return @intCast(@max(end, 0));
+    }
+    return advanceWidth(f, text);
+}
+
+/// how many of a glyph's columns reach its rightmost lit pixel, or null for a glyph with no ink.
+/// glyphs are cropped to their ink rows, not columns, so `w` can still end in blank ones
+fn inkColumns(g: Glyph) ?i32 {
+    var right: ?i32 = null;
+    var bit: usize = 0;
+    for (0..g.h) |_| {
+        for (0..g.w) |c| {
+            defer bit += 1;
+            if ((g.bits[bit / 8] >> @intCast(7 - bit % 8)) & 1 != 0) right = @max(right orelse 0, @as(i32, @intCast(c)) + 1);
+        }
+    }
+    return right;
+}
+
+/// how far the pen travels over a line: for an imported face the plain sum of its advances, which
+/// is what a fixed slot (the clock's digits) has to be measured in; the hand-drawn faces have no
+/// trailing gap to count and measure as `lineWidth`
+pub fn advanceWidth(f: Face, text: []const u8) u32 {
     var w: u32 = 0;
     var i: usize = 0;
     var first = true;

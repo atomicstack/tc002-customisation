@@ -1,7 +1,7 @@
 # panel.text takes a face by name, and panel.text_width measures in it
 assert(panel.text_width('12:34') == 29, 'small is five columns a glyph and one between: ' + str(panel.text_width('12:34')))
-assert(panel.text_width('12:34', 'phoenix') == 40, 'phoenix is eight a glyph')
-assert(panel.text_width('20°C', 'ibm-vga') == 32, 'utf-8 is measured in characters')
+assert(panel.text_width('12:34', 'phoenix') == 39, 'phoenix is eight a glyph, and the width ends at the last ink')
+assert(panel.text_width('20°C', 'ibm-vga') == 31, 'utf-8 is measured in characters')
 assert(panel.text_width('') == 0, 'nothing is nothing wide')
 
 panel.clear()

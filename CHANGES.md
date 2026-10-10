@@ -6,6 +6,11 @@ refuses a version this file does not know. the github releases carry the same no
 
 ## unreleased
 
+- **imported text is as wide as its ink.** a line in an imported face used to count the blank
+  column each glyph keeps after itself, so text whose ink was exactly the panel's width scrolled
+  and centred text sat half a column left. widths now end at the last lit column, as the
+  hand-drawn faces' always did; the clock's digit slots still use the full advance.
+
 - **`build` in `/status` is the revision the binaries were built from.** it was read once when
   zig configured the build, and zig 0.17 keeps that configuration between builds, so fresh
   binaries reported a commit weeks old; it is now asked of git on every build.
