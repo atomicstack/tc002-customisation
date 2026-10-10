@@ -11,6 +11,11 @@ refuses a version this file does not know. the github releases carry the same no
   one the other way, so about one clockwise click in five put the menu back where it was. a detent
   now counts only when both of its halves arrive in order.
 
+- **a menu value being changed breathes instead of turning amber.** it stays white and pulses
+  lightly, full as the edit starts, so it reads as easily as before; a colour's frame and the
+  address page do the same. the dip is taken in what the leds show, so it is still there at a
+  night level.
+
 ## v0.3.7 — twenty pixel faces, and an update you can watch (2026-10-10)
 
 v0.3.6 was recorded here but never published; its changes ship in this release.

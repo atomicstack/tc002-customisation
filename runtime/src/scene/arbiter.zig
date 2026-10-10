@@ -1581,7 +1581,10 @@ pub const Arbiter = struct {
     }
 
     pub fn render(self: *Arbiter, wall_ns: u64, rgb: *geometry.Rgb) void {
-        if (self.menu_state) |*m| return m.render(self.last_tick_ns, rgb);
+        if (self.menu_state) |*m| {
+            m.brightness = self.shownBrightness();
+            return m.render(self.last_tick_ns, rgb);
+        }
         switch (self.overlay) {
             .notify => |n| self.renderNotify(&n, rgb),
             .raw => |r| rgb.* = r.rgb,

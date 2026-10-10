@@ -1273,7 +1273,8 @@ and are now parameters of their own scenes, reached by the short press.
 - **the knob** turns to move between items, clockwise moving rightwards along
   the dot row (which fades away a few seconds after the last turn, like every
   other page indicator), and its click acts on the one showing: a toggle flips, an adjustable opens for editing (turn to change,
-  click to finish), an action runs.
+  click to finish; while it is open its value stays white and breathes lightly,
+  losing about a third of its light at the deepest), an action runs.
 - **the left and right buttons** change the showing item's value in place,
   without opening it for editing; **middle** backs out, and closes the menu
   when nothing is open for editing.

@@ -9,6 +9,7 @@
 //! applies the preview and forwards the request to the supervisor, which owns the settings.
 const std = @import("std");
 const geometry = @import("../panel/geometry.zig");
+const pack = @import("../panel/pack.zig");
 const font = @import("font.zig");
 const clockfont = @import("clockfont.zig");
 const canvas = @import("canvas.zig");
@@ -134,8 +135,13 @@ pub const idle_close_ns = 15_000 * ns_per_ms;
 
 const dim: [3]u8 = .{ 96, 96, 96 };
 const bright: [3]u8 = .{ 255, 255, 255 };
-const amber: [3]u8 = .{ 255, 128, 0 };
 const warn: [3]u8 = .{ 255, 32, 32 };
+
+/// one breath of a value being changed
+pub const edit_pulse_ns: u64 = 1600 * std.time.ns_per_ms;
+/// how far the breath dips, as a share of the light the leds give out (255 = none): a third
+/// less light marks the edit without making the value harder to read
+const edit_pulse_floor: u32 = 180;
 
 pub const Menu = struct {
     kind: Kind = .device,
@@ -163,6 +169,11 @@ pub const Menu = struct {
     scroll_start_ns: u64 = 0,
     /// when the item last changed; the dot row fades in from there and away again
     pages_at: u64 = 0,
+    /// when the value being changed started changing; its pulse starts there, at full
+    adjust_at: u64 = 0,
+    /// the panel's brightness, so the edit pulse dips by what the leds show rather than by a
+    /// byte the driver's floor would swallow at a night level. the arbiter sets it each frame.
+    brightness: u8 = 100,
 
     pub fn open(values: Values, status: Status, now: u64) Menu {
         return .{ .kind = .device, .settings = values, .status = status, .font = status.menu_font, .last_input_ns = now, .scroll_start_ns = now, .pages_at = now };
@@ -336,7 +347,7 @@ pub const Menu = struct {
                     },
                     .mqtt, .ntfy => return self.step(true, now),
                     else => {
-                        if (self.item.adjustable()) self.state = .adjusting;
+                        if (self.item.adjustable()) self.startAdjusting(now);
                         return .none;
                     },
                 },
@@ -375,7 +386,7 @@ pub const Menu = struct {
                         self.commitNow();
                         return .close;
                     }
-                    self.state = .adjusting;
+                    self.startAdjusting(now);
                     return .none;
                 },
             },
@@ -407,6 +418,22 @@ pub const Menu = struct {
         return pages.alphaAt(now -| self.pages_at) > 0;
     }
 
+    fn startAdjusting(self: *Menu, now: u64) void {
+        self.state = .adjusting;
+        self.adjust_at = now;
+    }
+
+    /// a value being changed: white, breathing lightly from full. the dip is taken in what the
+    /// leds show (`pack.faded`), so it is the same breath at a night level as at full
+    fn editColour(self: *const Menu, now: u64) [3]u8 {
+        const into = (now -| self.adjust_at) % edit_pulse_ns;
+        const turn: u8 = @truncate(into * 256 / edit_pulse_ns +% 64); // cos: full at the start
+        const up: u32 = @intCast(1000 + scene.sin1000(turn)); // 0..2000
+        const alpha: u8 = @intCast(edit_pulse_floor + (255 - edit_pulse_floor) * up / 2000);
+        const v = pack.faded(255, alpha, self.brightness);
+        return .{ v, v, v };
+    }
+
     pub fn render(self: *const Menu, now: u64, rgb: *geometry.Rgb) void {
         @memset(rgb, 0);
         if (self.state == .confirming) {
@@ -415,7 +442,7 @@ pub const Menu = struct {
             drawAnswer(rgb, self.font, yes_centre, "yes", if (self.confirm_yes) warn else dim);
             return;
         }
-        const colour = if (self.state == .adjusting) amber else bright;
+        const colour = if (self.state == .adjusting) self.editColour(now) else bright;
         var buf: [24]u8 = undefined;
         if (self.kind == .scene) {
             const name = if (self.onExit()) "exit" else self.table[self.entry].name;
@@ -423,7 +450,7 @@ pub const Menu = struct {
             if (self.current()) |p| {
                 if (p.kind == .colour) {
                     // a swatch, because six hex digits tell you nothing about a colour
-                    swatch(rgb, param.valueRgb(self.values[self.entry]), self.state == .adjusting);
+                    swatch(rgb, param.valueRgb(self.values[self.entry]), if (self.state == .adjusting) colour else dim);
                 } else {
                     drawLine(rgb, self.font, valueY(self.font), p.valueText(self.values[self.entry], &buf), colour, now, self.scroll_start_ns);
                 }
@@ -437,7 +464,7 @@ pub const Menu = struct {
             // the address takes the whole panel, drawn by the scene that used to be a base: a
             // label over it would leave no room for the layouts that fill the height
             var state = ip.State{ .addr = self.status.address, .mode = self.settings.ip_mode };
-            state.colour = if (self.state == .adjusting) amber else bright;
+            state.colour = colour;
             state.render(now, rgb);
             pages.draw(rgb, count, @backingInt(self.item), pages.alphaAt(now -| self.pages_at));
             return;
@@ -509,16 +536,15 @@ fn setPixel(rgb: *geometry.Rgb, x: i32, y: i32, colour: [3]u8) void {
     rgb[i + 2] = colour[2];
 }
 
-/// a block of the colour itself, framed while it is being changed so the edit is obvious
-fn swatch(rgb: *geometry.Rgb, c: [3]u8, editing: bool) void {
+/// a block of the colour itself in a frame, which breathes while it is being changed
+fn swatch(rgb: *geometry.Rgb, c: [3]u8, edge: [3]u8) void {
     const x0: usize = 9;
     const x1: usize = geometry.width - 9;
     for (9..14) |y| {
         for (x0..x1) |x| setPixel(rgb, @intCast(x), @intCast(y), c);
     }
     // always framed: a black colour is a legitimate choice and would otherwise look like an
-    // empty screen. the frame turns amber while it is being changed, like any other value.
-    const edge = if (editing) amber else dim;
+    // empty screen. the frame breathes while it is being changed, like any other value.
     for (x0 - 1..x1 + 1) |x| {
         setPixel(rgb, @intCast(x), 8, edge);
         setPixel(rgb, @intCast(x), 14, edge);
@@ -891,7 +917,7 @@ test "a browsing frame shows the label, the value and the position dots" {
     // turning brings it back
     _ = m.input(.next, pages.total_ns);
     try std.testing.expect(m.indicatorShowing(pages.total_ns + pages.fade_in_ns));
-    // adjusting the brightness replaces the dots with a bar and turns the value amber
+    // adjusting the brightness replaces the dots with a bar
     m.item = .brightness;
     _ = m.input(.click, 0);
     var adj: geometry.Rgb = undefined;
@@ -904,6 +930,46 @@ test "a browsing frame shows the label, the value and the position dots" {
     try std.testing.expectEqual(@as(usize, 26), lit); // 50% of 52
 }
 
+
+test "a value being changed stays white and pulses lightly, from full" {
+    // matt, 2026-10-10: the amber that marked a value being changed was ugly. the value stays
+    // white and breathes instead: full as the edit starts, never so faint it is hard to read
+    const t0: u64 = 5 * std.time.ns_per_s;
+    var m = Menu.open(.{}, .{}, 0);
+    m.item = .night_level; // a value, not the brightness bar, so row 15 stays dark
+    m.brightness = 100;
+    _ = m.input(.click, t0);
+    try std.testing.expectEqual(State.adjusting, m.state);
+    const Ink = struct {
+        fn range(menu: *const Menu, now: u64) ![2]u8 {
+            var rgb: geometry.Rgb = undefined;
+            menu.render(now, &rgb);
+            var lo: u8 = 255;
+            var hi: u8 = 0;
+            for (0..geometry.height - 1) |y| for (0..geometry.width) |x| {
+                const i = geometry.pixelOffset(x, y);
+                if (rgb[i] == 0 and rgb[i + 1] == 0 and rgb[i + 2] == 0) continue;
+                // never a colour: every lit pixel of a value or a label is a grey
+                if (rgb[i] != rgb[i + 1] or rgb[i + 1] != rgb[i + 2]) return error.ColouredPixel;
+                if (y >= valueY(menu.font)) {
+                    lo = @min(lo, rgb[i]);
+                    hi = @max(hi, rgb[i]);
+                }
+            };
+            return .{ lo, hi };
+        }
+    };
+    try std.testing.expectEqual([2]u8{ 255, 255 }, try Ink.range(&m, t0)); // full as it starts
+    const deepest = try Ink.range(&m, t0 + edit_pulse_ns / 2);
+    try std.testing.expect(deepest[1] < 255); // it does breathe
+    try std.testing.expect(deepest[1] >= 160); // but lightly
+    try std.testing.expectEqual([2]u8{ 255, 255 }, try Ink.range(&m, t0 + edit_pulse_ns)); // and back
+    // at a night level the dip is taken in what the leds show, so it does not vanish into the
+    // driver's floor
+    m.brightness = 10;
+    const night = try Ink.range(&m, t0 + edit_pulse_ns / 2);
+    try std.testing.expect(night[1] < 255);
+}
 
 test "the menu fits faces up to seven rows and lays its rows out from the face" {
     try std.testing.expect(fits(.mini) and fits(.small) and fits(.chunky6) and fits(.light6x));
@@ -919,7 +985,9 @@ test "the menu fits faces up to seven rows and lays its rows out from the face" 
 }
 
 test "a menu drawn in mini is pixel for pixel what it was before faces" {
-    // the hashes of these four frames were taken from the menu as it was, before it learned faces
+    // the hashes of these four frames were taken from the menu as it was, before it learned faces.
+    // the second, a value being changed, was taken again when its amber became white (2026-10-10):
+    // the same frame with every amber pixel white, and nothing else moved
     const H = struct {
         fn of(m: *const Menu, now: u64) u64 {
             var rgb: geometry.Rgb = undefined;
@@ -930,7 +998,7 @@ test "a menu drawn in mini is pixel for pixel what it was before faces" {
     var m = opened();
     try std.testing.expectEqual(@as(u64, 1915902073185877388), H.of(&m, pages.total_ns));
     _ = m.input(.click, pages.total_ns);
-    try std.testing.expectEqual(@as(u64, 4534094539998982079), H.of(&m, pages.total_ns));
+    try std.testing.expectEqual(@as(u64, 1849335341789815223), H.of(&m, pages.total_ns));
     var r = opened();
     r.item = .reboot;
     _ = r.input(.click, 0);
