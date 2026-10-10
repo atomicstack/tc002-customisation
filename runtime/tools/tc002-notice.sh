@@ -59,7 +59,7 @@ case "$verb" in
     fi
     word='{"id":"l1","type":"text","at":[0,3],"size":[52,5],"font":"mini","align":"centre","colour":"ff8000",
            "text":"'"$text"'","animate":{"kind":"pulse","ms":1600}}'
-    bar='{"id":"bar","type":"bar","at":[6,10],"size":[40,2],"colour":"ff8000","background":"241200",
+    bar='{"id":"bar","type":"bar","at":[0,10],"size":[52,2],"colour":"ffffff",
           "watch":"'"$watch"'","bytes":'"${bytes:-0}"'}'
     alone='{"id":"l1","type":"text","at":[0,5],"size":[52,5],"font":"mini","align":"centre","colour":"ff8000",
            "text":"'"$text"'","animate":{"kind":"pulse","ms":1600}}'

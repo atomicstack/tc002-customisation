@@ -555,7 +555,7 @@ so something can be animated in from off-panel. `tile: n, of: m` is the column s
 | `line` | `to: [x,y]` | bresenham, so a diagonal has no gaps |
 | `circle` | `r`, `filled` | `at` is the centre |
 | `pixel` | | the cheap escape hatch |
-| `bar` | `value` 0-100, `background`, `vertical`, `watch`, `bytes` | rounds so 1% of a wide bar still lights a pixel and 99% leaves one dark; vertical fills from the bottom. `watch` (`staging` or `image`, with `bytes` of at least 1) fills it instead from a transfer tc002d measures itself every 100 ms — the files in `/tmp/tc002.new` summed, or the size of `/data/update.img` — easing to each reading over 400 ms; the paths are fixed in the renderer, never named by a caller |
+| `bar` | `value` 0-100, `background`, `vertical`, `watch`, `bytes` | rounds so 1% of a wide bar still lights a pixel and 99% leaves one dark; vertical fills from the bottom. `watch` (`staging` or `image`, with `bytes` of at least 1) fills it instead from a transfer tc002d measures itself every 100 ms — the files in `/tmp/tc002.new` summed, or the size of `/data/update.img` — easing to each reading over 400 ms; the paths are fixed in the renderer, never named by a caller. a moving bar (watching or `glide`) fills to a fraction of a pixel, its leading pixel lit by how far the fill has got into it |
 | `sparkline` | `data` or `data_hex`, `style` (`line`/`bars`/`area`), `min`, `max`, `threshold`, `over` | `min` equal to `max` scales to whatever the samples span; a flat line sits on the floor; samples at or above `threshold` draw in `over` |
 | `icon` | `icon` | one of the built-in 8x8 glyphs by name, in the element's colour; `GET /icons` lists them |
 | `sprite` | `sprite` | an uploaded picture by id, drawn in its own colours; black is transparent |

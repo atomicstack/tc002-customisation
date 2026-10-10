@@ -555,6 +555,10 @@ class NoticeScriptTests(unittest.TestCase):
         bars = [e for e in body["elements"] if e["type"] == "bar"]
         self.assertEqual(len(bars), 1, body)
         self.assertEqual((bars[0]["watch"], bars[0]["bytes"]), ("image", 8388608))
+        # the whole width of the panel, white, over nothing: the panel's own black
+        self.assertEqual((bars[0]["at"][0], bars[0]["size"][0]), (0, 52))
+        self.assertEqual(bars[0]["colour"], "ffffff")
+        self.assertNotIn("background", bars[0])
         self.assertTrue(any(e.get("text") == "Flashing..." for e in body["elements"]))
 
     def test_an_older_runtime_that_refuses_the_bar_still_gets_the_word(self):

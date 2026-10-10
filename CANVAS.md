@@ -205,7 +205,9 @@ a bar can instead **watch a transfer the device measures for itself**: `"watch":
 staging directory an in-place update copies the next build into, every file in it summed) or
 `"watch":"image"` (the image a flash copies to `/data`), with `"bytes"` the size it will reach.
 the renderer measures it every 100 ms while the bar is on the panel and eases to each reading
-over 400 ms, so the bar moves as one continuous motion with what has actually arrived. the watch
+over 400 ms, so the bar moves as one continuous motion with what has actually arrived. a moving bar
+(watching or gliding) is filled to a fraction of a pixel: its leading pixel lights by how far the
+fill has got into it, so each new pixel fades in instead of switching on. the watch
 is one of those two names, never a path. a renderer that cannot measure (the console's preview)
 draws `value`. this is the bar under the update tools' `Updating...` and `Flashing...`.
 

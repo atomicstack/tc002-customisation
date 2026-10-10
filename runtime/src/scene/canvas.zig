@@ -633,17 +633,31 @@ fn drawBar(rgb: *geometry.Rgb, e: *const Element, permille: u16, offset: [2]i32,
     const x0: i32 = @as(i32, e.box.x) + offset[0];
     const y0: i32 = @as(i32, e.box.y) + offset[1];
     const pm: i32 = permille;
-    // the filled extent, rounded so 1% of a wide bar still lights a pixel and 99% leaves one dark
-    const span = if (b.vertical) @divTrunc(pm * h + 999, 1000) else @divTrunc(pm * w + 999, 1000);
+    const len = if (b.vertical) h else w;
+    // a still bar: the filled extent rounded so 1% of a wide bar still lights a pixel and 99%
+    // leaves one dark. a moving one (gliding, watching) is filled to the thousandth of a pixel,
+    // its leading pixel lit by how far the fill has got into it, so each one fades in rather
+    // than switching on
+    const soft = glideMs(e) != null;
+    const reach = pm * len; // thousandths of a pixel
+    const span = if (soft) @divTrunc(reach, 1000) else @divTrunc(reach + 999, 1000);
+    const part: u32 = if (soft) @intCast(@mod(reach, 1000)) else 0;
     var y: i32 = y0;
     while (y < y0 + h) : (y += 1) {
         var x: i32 = x0;
         while (x < x0 + w) : (x += 1) {
-            const on = if (b.vertical) (y >= y0 + h - span) else (x < x0 + span);
-            const paint = if (on) colour else b.background;
-            if (on or !std.meta.eql(b.background, [3]u8{ 0, 0, 0 })) setPx(rgb, x, y, paint);
+            const p = if (b.vertical) y0 + h - 1 - y else x - x0; // how far along the fill
+            const paint = if (p < span) colour else if (p == span and part > 0) mix(b.background, colour, part) else b.background;
+            if (!std.meta.eql(paint, [3]u8{ 0, 0, 0 }) or !std.meta.eql(b.background, [3]u8{ 0, 0, 0 })) setPx(rgb, x, y, paint);
         }
     }
+}
+
+/// `a` to `b` by `k` thousandths
+fn mix(a: [3]u8, b: [3]u8, k: u32) [3]u8 {
+    var out: [3]u8 = undefined;
+    for (0..3) |c| out[c] = @intCast((@as(u32, a[c]) * (1000 - k) + @as(u32, b[c]) * k) / 1000);
+    return out;
 }
 
 fn drawIcon(rgb: *geometry.Rgb, index: u8, x0: i32, y0: i32, colour: [3]u8) void {
@@ -2554,4 +2568,28 @@ test "a watching bar round-trips the wire" {
     const back = try decode(buf[0..n]);
     try std.testing.expectEqual(Watch.image, back.elements[0].body.bar.watch);
     try std.testing.expectEqual(@as(u32, 123456789), back.elements[0].body.bar.bytes);
+}
+
+test "a moving bar's leading pixel lights by how far the fill has got into it" {
+    var s = State{};
+    s.install(try watching(.staging, 1000), 0);
+    s.setWatched(.staging, 505, 0); // 50.5% of 50 columns: 25 lit, the 26th a quarter of the way
+    var rgb: geometry.Rgb = undefined;
+    s.render(10 * std.time.ns_per_s, &rgb);
+    const px = struct {
+        fn at(buf: *const geometry.Rgb, x: usize) u8 {
+            return buf[geometry.pixelOffset(x, 0)];
+        }
+    };
+    try std.testing.expectEqual(@as(u8, 255), px.at(&rgb, 24));
+    const edge = px.at(&rgb, 25);
+    try std.testing.expect(edge > 0 and edge < 255);
+    try std.testing.expectEqual(@as(u8, 0), px.at(&rgb, 26));
+    // a still bar keeps its plain rounding: whole pixels only
+    var still = State{};
+    var d = Document{};
+    try d.add(.{ .box = .{ .x = 0, .y = 0, .w = 50, .h = 2 }, .colour = white, .body = .{ .bar = .{ .value = 51 } } });
+    still.install(d, 0);
+    still.render(0, &rgb);
+    for (0..50) |x| try std.testing.expect(px.at(&rgb, x) == 0 or px.at(&rgb, x) == 255);
 }
