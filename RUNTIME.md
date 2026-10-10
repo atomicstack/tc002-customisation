@@ -922,7 +922,7 @@ they ignore it and stay solid, and so do the imported faces. it is a clock param
 panel, over `PUT /scene` as `clock.digits` and in the settings as
 `clock_digit`.
 
-**fade** is a toggle for the `block` face, off by default. with it on, the
+**fade** is a toggle for every face, off by default. with it on, the
 digits do not switch at the second boundary: over the last 400 ms of every
 second, each digit that is about to change turns into the next one pixel by
 pixel, and lands on the new time exactly as the second turns. the strokes the
@@ -932,7 +932,9 @@ fading out while the upper-left stroke fades in. it is timed to the boundary
 rather than from it so the panel never shows a stale time: at every instant
 it shows either the current second or a blend on its way to the next. the
 face draws at 60 fps through the window and sleeps between windows as it
-always has. the other faces ignore it. the blend is shaped for the led driver,
+always has. the hand-drawn faces blend each changing glyph cell by cell as
+above; an imported face crossfades instead, the old character fading out as
+the new one fades in within the same slot. the blend is shaped for the led driver,
 not the frame byte: the driver's level curve has a floor of 50 (see
 [`LED-SPI.md`](LED-SPI.md)), so a changing pixel is driven at a straight share
 of its lit level and goes off, rather than hanging at the floor, once that share

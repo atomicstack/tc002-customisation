@@ -6,6 +6,10 @@ refuses a version this file does not know. the github releases carry the same no
 
 ## unreleased
 
+- **every face fades.** `clock_fade` used to touch only `block`; every other face cut hard at the
+  second. the hand-drawn faces now blend their changing glyphs the way `block` does, and the
+  imported faces crossfade each changing character in its slot.
+
 - **the clock face is `block` unless you say otherwise.** a fresh clock, a settings file with no
   face in it and a face a build does not know all come up as `block` now, where they came up as
   `classic`. the face enum keeps its order: that order is the number in the settings file.

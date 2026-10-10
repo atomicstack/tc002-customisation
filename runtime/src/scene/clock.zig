@@ -8,6 +8,7 @@ const font = @import("font.zig");
 const clockfont = @import("clockfont.zig");
 const face = @import("face.zig");
 const faces = @import("faces.zig");
+const pack = @import("../panel/pack.zig");
 const tz = @import("tz.zig");
 const scene = @import("scene.zig");
 
@@ -183,10 +184,10 @@ pub fn pulseAlpha(elapsed_ns: u64) u8 {
 /// how long before the second turns the digits start to turn with it
 pub const fade_ns: u64 = 400 * std.time.ns_per_ms;
 
-/// is the face fading at this wall instant: only the block face, only once the clock is set,
-/// and only inside the window before the next boundary
+/// is the face fading at this wall instant: any face, only once the clock is set, and only inside
+/// the window before the next boundary
 pub fn fadeActive(style: Style, wall_ns: u64) bool {
-    if (!style.fade or style.font != .block or isUnset(wall_ns)) return false;
+    if (!style.fade or isUnset(wall_ns)) return false;
     return wall_ns % std.time.ns_per_s >= std.time.ns_per_s - fade_ns;
 }
 
@@ -304,6 +305,42 @@ fn blitSet(rgb: *geometry.Rgb, x0: i32, y: i32, n: faces.Name, text: []const u8,
     }
 }
 
+/// where a character starts: a digit centred in its slot, anything else at the pen
+fn slotX(pen: i32, c: u8, slot: i32, f: face.Face) i32 {
+    if (!std.ascii.isDigit(c)) return pen;
+    return pen + @divFloor(slot - @as(i32, @intCast(face.textWidth(f, &[1]u8{c}))), 2);
+}
+
+/// an imported face's line on its way to the next second's: a character that stays is drawn as it
+/// is, one that changes fades out as its successor fades in, in the same slot. the in-between
+/// levels are shaped for the driver, as the hand-drawn faces' blend is
+fn blitSetBlend(rgb: *geometry.Rgb, x0: i32, y: i32, n: faces.Name, from: []const u8, to: []const u8, t: u8, painter: anytype, brightness: u8) void {
+    const f = face.Face{ .imported = n };
+    const slot: i32 = @intCast(digitSlot(n));
+    const mark = clockfont.Solid{ .colour = .{ 255, 255, 255 } };
+    var going = geometry.black_rgb;
+    var coming = geometry.black_rgb;
+    var x = x0;
+    for (from, 0..) |ch, i| {
+        const next = if (i < to.len) to[i] else ch;
+        const step: i32 = if (std.ascii.isDigit(ch)) slot else @intCast(face.textWidth(f, &[1]u8{ch}));
+        if (next == ch) {
+            face.blit(rgb, slotX(x, ch, slot, f), y, f, &[1]u8{ch}, painter);
+        } else {
+            face.blit(&going, slotX(x, ch, slot, f), y, f, &[1]u8{ch}, mark);
+            face.blit(&coming, slotX(x, next, slot, f), y, f, &[1]u8{next}, mark);
+        }
+        x += step;
+    }
+    for (0..geometry.height) |py| for (0..geometry.width) |px| {
+        const o = geometry.pixelOffset(px, py);
+        const a: u16 = (if (going[o] != 0) @as(u16, 255 - t) else 0) + (if (coming[o] != 0) @as(u16, t) else 0);
+        if (a == 0) continue;
+        const colour = painter.at(@intCast(px), @intCast(py));
+        rgb[o..][0..3].* = if (a >= 255) colour else .{ pack.faded(colour[0], @intCast(a), brightness), pack.faded(colour[1], @intCast(a), brightness), pack.faded(colour[2], @intCast(a), brightness) };
+    };
+}
+
 pub const State = struct {
     rule: tz.Rule,
     style: Style = .{},
@@ -355,7 +392,7 @@ pub const State = struct {
         for (lines) |l| {
             // an imported face has no digit styles and no fade: it is drawn plainly by face.zig
             if (clockfont.importedOf(l.font)) |n| {
-                blitSet(rgb, l.x, l.y, n, l.text, painter);
+                if (l.to) |to| blitSetBlend(rgb, l.x, l.y, n, l.text, to, t, painter, brightness) else blitSet(rgb, l.x, l.y, n, l.text, painter);
                 continue;
             }
             if (l.to) |to| clockfont.blitBlend(rgb, l.x, l.y, l.font, l.text, to, t, painter, digit, brightness) else clockfont.blitStyled(rgb, l.x, l.y, l.font, l.text, painter, digit);
@@ -505,7 +542,7 @@ pub const State = struct {
         const boundary = nextBoundaryWallNs(wall_ns);
         // a fading face draws every frame through the window, and otherwise sleeps until the
         // window opens rather than until the second turns
-        if (self.style.fade and self.style.font == .block) {
+        if (self.style.fade) {
             if (fadeActive(self.style, wall_ns)) return .{ .continuous = scene.frame_period_ns };
             return .{ .at_wall_ns = boundary - fade_ns };
         }
@@ -976,20 +1013,7 @@ test "the fade moves every frame: two instants inside the window draw differentl
     try std.testing.expect(!std.mem.eql(u8, &a, &b));
 }
 
-test "fade only touches the block face, and never an unset clock" {
-    const sec = test_wall_base + (8 * 3600 + 8 * 60 + 9) * std.time.ns_per_s;
-    const mid = sec + std.time.ns_per_s - fade_ns / 2;
-    for ([_]Font{ .classic, .mini, .segment, .big, .hires }) |f| {
-        var c = State.init(tz.utc);
-        c.style.font = f;
-        var plain = geometry.black_rgb;
-        c.render(mid, &plain);
-        c.style.fade = true;
-        var fading = geometry.black_rgb;
-        c.render(mid, &fading);
-        try std.testing.expectEqualSlices(u8, &plain, &fading);
-        try std.testing.expectEqual(scene.Cadence{ .at_wall_ns = nextBoundaryWallNs(mid) }, State.init(tz.utc).cadence(mid));
-    }
+test "fade never touches an unset clock" {
     var unset = State.init(tz.utc);
     unset.style = .{ .font = .block, .fade = true };
     try std.testing.expect(!fadeActive(unset.style, std.time.ns_per_s - fade_ns / 2));
@@ -1076,4 +1100,44 @@ test "a proportional face's narrow digit sits centred in a slot as wide as its w
         }
     }
     try std.testing.expectEqualSlices(u8, &expected, &rgb);
+}
+
+test "every face fades its changing digits into the next second, not only block" {
+    // a minute turning, so the faces that show only hours and minutes change too
+    const at = test_wall_base + (10 * 3600 + 8 * 60 + 59) * std.time.ns_per_s;
+    const mid = at + std.time.ns_per_s - fade_ns / 2;
+    inline for (.{ Font.classic, Font.mini, Font.segment, Font.block, Font.chunky8, Font.light6, Font.@"ibm-vga" }) |f| {
+        var c = State.init(tz.utc);
+        c.style.font = f;
+        c.style.fade = true;
+        var now = geometry.black_rgb;
+        var next = geometry.black_rgb;
+        var fading = geometry.black_rgb;
+        c.render(at, &now);
+        c.render(at + std.time.ns_per_s, &next);
+        c.render(mid, &fading);
+        std.testing.expect(fadeActive(c.style, mid)) catch |e| {
+            std.debug.print("{s} does not fade\n", .{@tagName(f)});
+            return e;
+        };
+        // part way there: neither second's frame, and some led somewhere between off and full
+        try std.testing.expect(!std.mem.eql(u8, &now, &fading) and !std.mem.eql(u8, &next, &fading));
+        var between = false;
+        for (fading) |v| between = between or (v > 0 and v < 255);
+        std.testing.expect(between) catch |e| {
+            std.debug.print("{s} has nothing part-lit\n", .{@tagName(f)});
+            return e;
+        };
+    }
+}
+
+test "any fading face asks for the frames its fade needs" {
+    inline for (.{ Font.classic, Font.light6, Font.@"ibm-vga" }) |f| {
+        var c = State.init(tz.utc);
+        c.style = .{ .font = f, .fade = true };
+        const sec = test_wall_base + (8 * 3600 + 8 * 60 + 9) * std.time.ns_per_s;
+        const window = sec + std.time.ns_per_s - fade_ns;
+        try std.testing.expectEqual(scene.Cadence{ .at_wall_ns = window }, c.cadence(sec + 100 * std.time.ns_per_ms));
+        try std.testing.expectEqual(scene.Cadence{ .continuous = scene.frame_period_ns }, c.cadence(window + std.time.ns_per_ms));
+    }
 }
