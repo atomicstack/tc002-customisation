@@ -306,7 +306,7 @@ fn run(state_dir: []const u8) !u8 {
 
 pub fn main(init: std.process.Init.Minimal) u8 {
     log.program = "tc002-audiod";
-    log.info("build {s}", .{build_options.build_id});
+    log.info("build {s}", .{@import("build_id").build_id});
     var state_dir: []const u8 = "/data/tc002/state";
     var i: usize = 1;
     while (i < init.args.vector.len) : (i += 1) {

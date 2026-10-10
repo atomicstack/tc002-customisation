@@ -49,34 +49,33 @@ fn addBerry(b: *std.Build, m: *std.Build.Module) void {
     });
 }
 
-/// what this build is, for a device to report back.
+/// what this build is, for a device to report back: a module `build_id` with one declaration,
+/// `pub const build_id = "<git describe --always --dirty>";`.
 ///
-/// `git describe --always --dirty`, resolved once when the build graph is made. it is deliberately
-/// **not** a timestamp: a value that changed every build would invalidate the options module and
-/// rebuild all six binaries on every `zig build`, and the question this answers is "which source is
-/// running", which a clock cannot tell you anyway.
+/// it is made by a **build step that runs on every build**, not by running git while the graph is
+/// configured. zig 0.17 caches the configure phase, and a command run there does not invalidate
+/// that cache, so an id taken at configure time froze at whatever commit last reconfigured the
+/// build -- fresh binaries reported a revision weeks old. the step's output is a small source
+/// file whose content only changes when the id does, so an unchanged id rebuilds nothing.
 ///
-/// `-dirty` is the honest part. these binaries are usually built from a worktree with uncommitted
-/// changes, and a bare hash would then claim a provenance the tree does not have. two builds of the
-/// same dirty tree share an id, which is the limit of what a commit hash can say; when that matters,
-/// commit.
+/// deliberately **not** a timestamp: a value that changed every build would rebuild all six
+/// binaries every time, and the question this answers is "which source is running". `-dirty` is
+/// the honest part: binaries are usually built from a worktree with uncommitted changes, and a bare
+/// hash would claim a provenance the tree does not have.
 ///
 /// no git, no repository, or a git that fails: "unknown". a build id is a convenience and must
 /// never be the reason a build does not happen.
-fn buildId(b: *std.Build) []const u8 {
+fn buildIdModule(b: *std.Build) *std.Build.Module {
     // b.root is the directory holding build.zig, which is the repository this id describes
     const root = b.root.toString(b.allocator) catch @panic("out of memory");
-    const argv = [_][]const u8{ "git", "-C", root, "describe", "--always", "--dirty", "--abbrev=12" };
-    var code: u8 = 0;
-    // `runAllowFail` rather than `run`: `run` aborts the build when the command fails, and a
-    // missing git is not a reason to refuse to compile a clock
-    const out = b.runAllowFail(&argv, &code, .ignore) catch return "unknown";
-    if (code != 0) return "unknown";
-    const text = std.mem.trim(u8, out, " \t\r\n");
-    if (text.len == 0) return "unknown";
-    // no cap here on purpose: `messages.build_id_max` is the one that decides how much of this
-    // reaches a device, and a second number here could only ever disagree with it
-    return b.dupe(text);
+    const gen = b.addSystemCommand(&.{
+        "/bin/sh", "-c",
+        \\id=$(git -C "$1" describe --always --dirty --abbrev=12 2>/dev/null); printf 'pub const build_id = "%s";\n' "${id:-unknown}"
+        , "build-id", root,
+    });
+    gen.has_side_effects = true; // every build asks git again
+    const source = gen.captureStdOut(.{ .basename = "build_id.zig" });
+    return b.createModule(.{ .root_source_file = source });
 }
 
 pub fn build(b: *std.Build) void {
@@ -96,7 +95,7 @@ pub fn build(b: *std.Build) void {
     options.addOption([]const u8, "supervisor_path", supervisor_path);
     options.addOption([]const u8, "bin_dir", bin_dir);
     options.addOption([]const u8, "netup_dir", if (netup) bin_dir else "");
-    options.addOption([]const u8, "build_id", buildId(b));
+    const build_id = buildIdModule(b);
 
     const device = b.resolveTargetQuery(.{
         .cpu_arch = .arm,
@@ -122,6 +121,7 @@ pub fn build(b: *std.Build) void {
             .linkage = .static,
         });
         exe.root_module.addOptions("build_options", options);
+        exe.root_module.addImport("build_id", build_id);
         b.installArtifact(exe);
     }
 
@@ -180,6 +180,7 @@ pub fn build(b: *std.Build) void {
     });
     audiod.root_module.linkSystemLibrary("dl", .{});
     audiod.root_module.addOptions("build_options", options);
+    audiod.root_module.addImport("build_id", build_id);
     b.installArtifact(audiod);
 
     // a diagnostic: walks the audio control plane and prints what each ioctl returned
@@ -217,6 +218,7 @@ pub fn build(b: *std.Build) void {
     });
     addBerry(b, berryd.root_module);
     berryd.root_module.addOptions("build_options", options);
+    berryd.root_module.addImport("build_id", build_id);
     b.installArtifact(berryd);
 
     // a diagnostic rather than part of the runtime: proves the vendored interpreter links for the

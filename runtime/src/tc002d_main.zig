@@ -723,7 +723,7 @@ fn run(cfg: cli.Config) !u8 {
 
 pub fn main(init: std.process.Init.Minimal) u8 {
     log.program = "tc002d";
-    log.info("build {s}", .{build_options.build_id});
+    log.info("build {s}", .{@import("build_id").build_id});
     var args: [32][:0]const u8 = undefined;
     const raw = init.args.vector;
     const n = @min(raw.len -| 1, args.len);

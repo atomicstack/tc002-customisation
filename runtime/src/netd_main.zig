@@ -2349,7 +2349,7 @@ fn run(stats: bool) !u8 {
 
 pub fn main(init: std.process.Init.Minimal) u8 {
     log.program = "tc002-netd";
-    log.info("build {s}", .{build_options.build_id});
+    log.info("build {s}", .{@import("build_id").build_id});
     var stats = false;
     for (init.args.vector[1..]) |a| {
         const s = std.mem.span(a);

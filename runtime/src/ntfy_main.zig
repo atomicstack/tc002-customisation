@@ -235,7 +235,7 @@ fn subscribe(st: *State) Failure!void {
 pub fn main(init: std.process.Init.Minimal) u8 {
     _ = init;
     log.program = "tc002-ntfy";
-    log.info("build {s}", .{build_options.build_id});
+    log.info("build {s}", .{@import("build_id").build_id});
     var st = State{ .cfg = waitConfig() catch |e| {
         log.err("no settings received: {s}", .{sys.errText(e)});
         return 1;

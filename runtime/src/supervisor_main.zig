@@ -3325,7 +3325,7 @@ fn run(cfg_in: cli.Config, environ: anytype, args: []const [:0]const u8) !u8 {
     // right place when a run fails before it gets this far; this one goes to `GET /logs`, where
     // every child's build line lands too, so one call shows the whole set. the check is worth
     // nothing if the supervisor is the one binary missing from it.
-    log.info("build {s}", .{build_options.build_id});
+    log.info("build {s}", .{@import("build_id").build_id});
     // --tz may be an iana zone name; the renderer only speaks posix rules
     var cfg = cfg_in;
     var tz_buf: [config.text_max + 1]u8 = undefined;
@@ -3416,7 +3416,7 @@ fn run(cfg_in: cli.Config, environ: anytype, args: []const [:0]const u8) !u8 {
 
     // what is running, carried in the status document so a device can be asked rather than inferred
     {
-        const id = build_options.build_id;
+        const id = @import("build_id").build_id;
         const n = @min(id.len, messages.build_id_max);
         @memcpy(snapshot_build[0..n], id[0..n]);
     }
@@ -3549,7 +3549,7 @@ fn run(cfg_in: cli.Config, environ: anytype, args: []const [:0]const u8) !u8 {
 
 pub fn main(init: std.process.Init.Minimal) u8 {
     log.program = "tc002-supervisor";
-    log.info("build {s}", .{build_options.build_id});
+    log.info("build {s}", .{@import("build_id").build_id});
     var args: [32][:0]const u8 = undefined;
     const raw = init.args.vector;
     const n = @min(raw.len, args.len);

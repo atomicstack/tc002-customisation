@@ -152,7 +152,7 @@ fn runAutoexec(vm: *berry.Vm, handler_ms: u16) void {
 pub fn main(init: std.process.Init.Minimal) u8 {
     _ = init;
     log.program = "tc002-berryd";
-    log.info("build {s}", .{build_options.build_id});
+    log.info("build {s}", .{@import("build_id").build_id});
 
     const cfg = waitConfig() orelse {
         log.err("no settings arrived; nothing to run", .{});
