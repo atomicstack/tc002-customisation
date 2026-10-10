@@ -6,6 +6,10 @@ refuses a version this file does not know. the github releases carry the same no
 
 ## unreleased
 
+- **`build` in `/status` is the revision the binaries were built from.** it was read once when
+  zig configured the build, and zig 0.17 keeps that configuration between builds, so fresh
+  binaries reported a commit weeks old; it is now asked of git on every build.
+
 - **a restart at night never shows the time bright.** the panel waits for the time at its ordinary
   brightness; when the time arrives and it is night, it fades down first and only then shows the
   time, already dim. the schedule is also consulted the moment the time is known and the moment

@@ -1670,7 +1670,10 @@ the clients that hand-roll their json:
 ### which build is running
 
 `GET /status` reports `build`: `git describe --always --dirty --abbrev=12`,
-resolved when the build graph is made and compiled into every binary.
+asked of git by a build step on every build and compiled into every binary.
+it used to be read while zig configured the build, and zig 0.17 caches that
+phase without noticing git's answer change, so fresh binaries reported a
+revision weeks old.
 
 it exists because there was no way to answer the question. `boot_id` changes on
 every runtime start, so it says the thing restarted, not what it restarted into;
