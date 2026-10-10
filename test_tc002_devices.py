@@ -355,7 +355,15 @@ if "reboot" in sys.argv:
         wedge.unlink()
     print('{{"status":"applied"}}')
 elif "status" in sys.argv:
-    print('{{"uptime_s":7,"build":"fake","base":"art"}}')
+    # a clock takes a moment to go down: for as many status calls as `.still-up` says, it still
+    # answers with the uptime it had before the reboot
+    still = pathlib.Path(os.environ["TEST_ADB_LOG"] + ".still-up")
+    left = int(still.read_text()) if still.exists() else 0
+    if left > 0:
+        still.write_text(str(left - 1))
+        print('{{"uptime_s":78215,"build":"fake","base":"art"}}')
+    else:
+        print('{{"uptime_s":7,"build":"fake","base":"art"}}')
 else:
     print("{{}}")
 """
@@ -392,7 +400,9 @@ def fake_checkout(directory, payload=b"\x7fELF the supervisor, built for /tmp/tc
 def run_update(root, bindir, log, *args, script="tc002-update.sh"):
     env = dict(os.environ, PATH=f"{bindir}:{os.environ['PATH']}", TEST_ADB_LOG=str(log), CURL=str(bindir / "curl"))
     env.pop("TC002_DEVICE", None)
-    return subprocess.run(["/bin/bash", str(root / "runtime" / "tools" / script), *args],
+    # the bash the script's own `#!/usr/bin/env bash` finds, not /bin/bash: macos ships 3.2 there,
+    # which does not apply set -e to (( )) and so hid an exit that every real run takes
+    return subprocess.run(["/usr/bin/env", "bash", str(root / "runtime" / "tools" / script), *args],
                           env=env, text=True, capture_output=True)
 
 
@@ -491,6 +501,17 @@ class UpdateScriptTests(unittest.TestCase):
             self.assertEqual(len(halts), 1, halts)
             self.assertEqual(len(starts), 1, starts)
             self.assertTrue(reboots[0] < pushes[-1] < halts[0] < starts[0], (reboots, pushes, halts, starts))
+
+    def test_a_clock_slow_to_go_down_is_waited_for_rather_than_ending_the_update(self):
+        # the first wait for the clock to come back used to end the update with exit 1 and no
+        # message: under set -e, `(( n++ ))` with n at 0 evaluates to 0, which is a failure
+        with tempfile.TemporaryDirectory() as d:
+            root, bindir, log = fake_checkout(d)
+            Path(str(log) + ".wedge").write_text("2")
+            Path(str(log) + ".still-up").write_text("2")   # two answers from before the reboot
+            r = run_update(root, bindir, log, "--in-place", "--device", "10.0.0.5", "--no-build", "--keep-settings")
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+            self.assertIn("adb answers again", r.stdout)
 
     def test_a_wedge_during_the_start_is_a_failure_not_a_report_of_the_old_build(self):
         # if adbd gives out between the halt and the start, the clock is left running nothing or

@@ -182,13 +182,13 @@ wait_back() {
 try: print(int(json.load(sys.stdin).get("uptime_s", 0)))
 except Exception: print(-1)')
         [[ $up =~ ^[0-9]+$ ]] && (( up < 120 )) && break
-        (( n++ )); (( n >= 60 )) && die "$ip did not come back within two minutes of the reboot"
+        (( ++n )); (( n >= 60 )) && die "$ip did not come back within two minutes of the reboot"
         sleep 2
     done
     n=0
     adb disconnect "$device" >/dev/null 2>&1 || true
     while ! { adb connect "$device" >/dev/null 2>&1 && adb_ok; }; do
-        (( n++ )); (( n >= 30 )) && die "$ip is back but adb is not answering"
+        (( ++n )); (( n >= 30 )) && die "$ip is back but adb is not answering"
         sleep 2
     done
     echo "   back after ${up}s of uptime; adb answers again"
@@ -208,7 +208,7 @@ connect() {
         adb connect "$device" >/dev/null 2>&1 || true
         local n=0
         while ! adb get-state >/dev/null 2>&1; do
-            (( n++ )); (( n >= 40 )) && die "no adb device at $device (is the clock on the network?)"
+            (( ++n )); (( n >= 40 )) && die "no adb device at $device (is the clock on the network?)"
             sleep 0.25
         done
     fi
@@ -372,7 +372,7 @@ flash() {
     say "verify"
     local n=0
     until adb connect "$device" >/dev/null 2>&1 && dsh 'ls /res/bin/tc002-supervisor 2>/dev/null' | grep -q tc002-supervisor; do
-        (( n++ )); (( n >= 30 )) && die "the clock came back without /res/bin/tc002-supervisor; the image did not take"
+        (( ++n )); (( n >= 30 )) && die "the clock came back without /res/bin/tc002-supervisor; the image did not take"
         sleep 5
     done
     echo "   /res/bin/tc002-supervisor is in flash"
