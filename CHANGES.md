@@ -6,6 +6,9 @@ refuses a version this file does not know. the github releases carry the same no
 
 ## unreleased
 
+- **a `font` beside `elements` on a notification is refused** (`400 invalid_font`) instead of
+  dropped without a word: a document's text elements each name their own face.
+
 - **imported text is as wide as its ink.** a line in an imported face used to count the blank
   column each glyph keeps after itself, so text whose ink was exactly the panel's width scrolled
   and centred text sat half a column left. widths now end at the last lit column, as the

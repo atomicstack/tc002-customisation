@@ -695,6 +695,8 @@ class Device:
             raise Reject(400, "invalid_duration", "duration_s must be 1..300")
         if body.get("colour") is not None and parse_colour(body["colour"]) is None:
             raise Reject(400, "invalid_colour", "colour must be rrggbb hex")
+        if body.get("font") is not None and body.get("elements") is not None:
+            raise Reject(400, "invalid_font", "font sets a text notification's face; give each text element its own font instead")
         if body.get("font") is not None and body["font"] not in FACES:
             raise Reject(400, "invalid_font", "no font by that name; CANVAS.md lists every face")
         self.check_epoch(body.get("epoch"), True)

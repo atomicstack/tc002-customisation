@@ -386,6 +386,9 @@ class EndToEndTests(unittest.TestCase):
         self.assertEqual((status, doc.get("status")), (200, "applied"), doc)
         status, doc = self.call("POST", "notify", {"text": "hi", "font": "comic", "epoch": st["epoch"]})
         self.assertEqual((status, doc["error"]), (400, "invalid_font"))
+        # a document's text elements name their own face; a font beside them is refused
+        status, doc = self.call("POST", "notify", {"font": "tiny5", "elements": [{"type": "text", "at": [0, 0], "text": "hi"}], "epoch": st["epoch"]})
+        self.assertEqual((status, doc.get("error")), (400, "invalid_font"), doc)
         status, doc = self.call("POST", "notify", {"text": "two\nlines", "epoch": st["epoch"]})
         self.assertEqual((status, doc.get("status")), (200, "applied"), doc)
         for bad in ("a\x01b", "a\x85b", "a\x7fb", "a\rb", "a\tb", "lone \ud800"):

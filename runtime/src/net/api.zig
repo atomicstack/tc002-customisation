@@ -1196,6 +1196,9 @@ pub fn parseBody(kind: BodyKind, body: []const u8, arena: *Arena, generated_id: 
             if (doc == null and text.len == 0) return bad("invalid_text", "text must be 1..128 bytes of utf-8 without control characters but a newline");
             if (text.len > 128 or !face.validText(text)) return bad("invalid_text", "text must be 1..128 bytes of utf-8 without control characters but a newline");
             if (b.duration_s < 1 or b.duration_s > 300) return bad("invalid_duration", "duration_s must be 1..300");
+            // the face of a text notification; a document's text elements each name their own, and
+            // a font beside elements used to be dropped without a word
+            if (doc != null and b.font != null) return bad("invalid_font", "font sets a text notification's face; give each text element its own font instead");
             const font = if (b.font) |f| (enumByName(canvas.Font, f) orelse return bad("invalid_font", "no font by that name; CANVAS.md lists every face")) else canvas.Font.small;
             const colour = if (b.colour) |c| (parseColour(c) orelse return bad("invalid_colour", "colour must be rrggbb hex")) else [3]u8{ 255, 255, 255 };
             const rid = if (b.request_id) |t| (parseRequestId(t) orelse return bad("invalid_request_id", "request_id must be 1..16 hex digits")) else generated_id;
@@ -2504,4 +2507,14 @@ test "a bar may watch a transfer by name, with the bytes it expects, and nothing
     try std.testing.expectEqualStrings("invalid_watch", parseBody(.canvas_put, "{\"elements\":[{\"type\":\"bar\",\"watch\":\"image\"}]}", &arena, 0).reject.code);
     try std.testing.expectEqualStrings("invalid_watch", parseBody(.canvas_put, "{\"elements\":[{\"type\":\"bar\",\"watch\":\"image\",\"bytes\":0}]}", &arena, 0).reject.code);
     try std.testing.expectEqualStrings("invalid_element_field", parseBody(.canvas_put, "{\"elements\":[{\"type\":\"rect\",\"watch\":\"image\",\"bytes\":5}]}", &arena, 0).reject.code);
+}
+
+test "a font on a document notification is refused: each text element names its own" {
+    const c = testCreds();
+    var arena: Arena = undefined;
+    var origins = OriginPolicy{};
+    try expectReject(route(testReq(.POST, "/api/v1/notify", "", control_header, "application/json", null), "{\"font\":\"tiny5\",\"elements\":[{\"type\":\"text\",\"at\":[0,0],\"text\":\"hi\"}]}", &c, &no_clients, &origins, &arena, test_minted), 400, "invalid_font");
+    // on text it is the face, as before
+    const ok = route(testReq(.POST, "/api/v1/notify", "", control_header, "application/json", null), "{\"font\":\"tiny5\",\"text\":\"hi\"}", &c, &no_clients, &origins, &arena, test_minted);
+    try std.testing.expect(ok == .op);
 }
