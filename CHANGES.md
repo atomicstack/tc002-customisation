@@ -6,6 +6,10 @@ refuses a version this file does not know. the github releases carry the same no
 
 ## unreleased
 
+- **picking a clock from the web UI's device list connects to it.** a clock discovery found is
+  connected the moment it is chosen; connect (or enter) is only needed for an address typed by
+  hand, and typing one that happens to match a listed clock still waits to be told.
+
 - **a knob click that springs back is no longer a click.** the knob's driver reports each detent as
   two halves, and a half detent started and abandoned as the knob is let go was counted as a whole
   one the other way, so about one clockwise click in five put the menu back where it was. a detent

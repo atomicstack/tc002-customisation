@@ -2317,6 +2317,15 @@ async function refreshDevices() {
 }
 // on focus rather than on a timer: the list matters at the moment it is about to be opened
 $('host').addEventListener('focus', () => { if (Date.now() - devicesAt > DEVICES_STALE_MS) refreshDevices(); });
+// picking a discovered clock is the whole decision, so it connects at once; connect and enter are
+// for an address typed by hand. a datalist pick is an input event with inputType
+// insertReplacementText (a plain event with none in some browsers), keystrokes are insertText, so
+// typing an address that happens to spell a listed clock still waits to be told
+$('host').addEventListener('input', e => {
+  if (e.inputType && e.inputType !== 'insertReplacementText') return;
+  const v = host();
+  if (v && [...$('hostlist').options].some(o => o.value === v)) loadAll();
+});
 $('reload').addEventListener('click', loadAll);
 $('host').addEventListener('keydown', e => { if (e.key === 'Enter') loadAll(); });
 

@@ -770,6 +770,47 @@ test('the device field offers the clocks discovery found, and still takes a type
   assert.equal(afterFailure.readOnly, false);
 });
 
+// picking a discovered clock is the whole decision, so it connects there and then. typing is not:
+// an address is only finished when you say so, even one that happens to spell a listed clock on
+// the way, so a typed address still waits for connect or enter. a datalist pick arrives as an
+// input event whose inputType is insertReplacementText (or none at all, in browsers that send a
+// plain event); keystrokes are insertText.
+test('picking a discovered clock connects to it, typing an address does not',
+  { skip: chromeAvailable ? false : 'google chrome is not installed' }, async () => {
+  await cdp.setWidth(1200);
+  const calls = await cdp.eval(`(async () => {
+    const el = document.getElementById('host');
+    const was = el.value;
+    const real = window.fetch, realLoad = window.loadAll;
+    window.fetch = (u, o) => String(u) === '/devices'
+      ? Promise.resolve(new Response(JSON.stringify([
+          { ip: '10.0.0.68', name: 'tc002-ccc4b2779e85', tokens: true }]),
+          { headers: { 'content-type': 'application/json' } }))
+      : real(u, o);
+    const seen = [];
+    window.loadAll = () => { seen.push(el.value); };
+    try {
+      await refreshDevices();
+      const out = {};
+      el.value = '10.0.0.68';
+      el.dispatchEvent(new InputEvent('input', { inputType: 'insertReplacementText', bubbles: true }));
+      out.picked = seen.slice();
+      seen.length = 0;
+      el.value = '10.0.0.68';
+      el.dispatchEvent(new InputEvent('input', { inputType: 'insertText', data: '8', bubbles: true }));
+      out.typedMatch = seen.slice();
+      seen.length = 0;
+      el.value = '10.0.0.6';
+      el.dispatchEvent(new InputEvent('input', { inputType: 'insertReplacementText', bubbles: true }));
+      out.notListed = seen.slice();
+      return out;
+    } finally { window.fetch = real; window.loadAll = realLoad; el.value = was; }
+  })()`);
+  assert.deepEqual(calls.picked, ['10.0.0.68'], 'picking a listed clock should connect to it without the connect button');
+  assert.deepEqual(calls.typedMatch, [], 'a typed address must wait for connect or enter, even when it matches a listed clock');
+  assert.deepEqual(calls.notListed, [], 'only an address the list offers counts as a pick');
+});
+
 // a retracted toast must be gone, not merely parked below the fold. sliding it past the bottom
 // edge leaves it in the layout, so whether any of it shows comes down to rounding and to how the
 // browser treats a fixed box hanging off the viewport — it came back twice, and the second time
