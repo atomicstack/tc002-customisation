@@ -885,6 +885,23 @@ test('picking a discovered clock connects to it, typing an address does not',
   }
 });
 
+// how well the preview agrees with the panel is a debugging figure, not something a user of the
+// page acts on, so the caption under the preview does not carry it. the comparison itself still
+// runs, and shadowNote() reports it from the browser's devtools console for whoever needs it
+test('the preview caption does not report the comparison with the panel',
+  { skip: chromeAvailable ? false : 'google chrome is not installed' }, async () => {
+  const seen = await cdp.eval(`(async () => {
+    const was = shadowMatch;
+    shadowMatch = { exact: false, sameShape: false, pixelsDiffering: 17, maxDelta: 40, fraction: 0.98 };
+    try {
+      await new Promise(r => setTimeout(r, 700));    // a few caption redraws
+      return { cap: document.getElementById('cap').textContent, note: shadowNote() };
+    } finally { shadowMatch = was; }
+  })()`);
+  assert.doesNotMatch(seen.cap, /pixels differ|the panel/, `the caption still carries the comparison: ${seen.cap}`);
+  assert.match(seen.note, /17 of 832 pixels differ from the panel/, 'the comparison should stay available to debug with');
+});
+
 // which clock the page is talking to belongs where the page is named, not only in the field: the
 // field can be edited (or picked from the list) without connecting, so it is not proof of anything.
 // the header shows the address of the last connect that succeeded, and nothing while it is not

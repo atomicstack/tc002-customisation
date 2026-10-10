@@ -296,8 +296,9 @@ developing without a device.
 ![the panel-v2 console: the preview, the remote controls and the readings with bars for brightness, memory, flash and cpu, above the scene tab holding the clock face's own controls](panel-v2/screenshots/console.png)
 
 the caption under the preview is the honest one: it names the revision it is
-following, how far behind it is, and how many of the 832 pixels differ from the
-frame the device last returned.
+following and how far behind it is. how well the preview agrees with the frame
+the device last returned is a debugging figure, so it is not on the page:
+`shadowNote()` in the browser's devtools console reports it.
 
 the send tab puts a notification or a single frame on the panel — a colour, or
 an image scaled to 52×16 — each with its own duration, transition, direction

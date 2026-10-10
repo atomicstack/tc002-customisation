@@ -6,6 +6,10 @@ refuses a version this file does not know. the github releases carry the same no
 
 ## unreleased
 
+- **the web UI's preview caption no longer counts the pixels that differ from the panel.** it was
+  a debugging figure. the comparison still runs, and `shadowNote()` in the browser's devtools
+  console reports it.
+
 - **the web UI's device list shows every clock it found as soon as the field is focused.** it
   used to be the browser's own suggestion list, which only offers what matches the text already
   in the field, and the field nearly always holds the clock you are connected to, so the others

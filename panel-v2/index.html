@@ -921,7 +921,7 @@ function draw() {
       const following = streamState === 'live'
         ? `following · rev ${S.revision()} · ${MIRROR_DELAY_MS}ms behind${lastStatement ? ' · ' + lastStatement : ''}`
         : `polling (${streamState})`;
-      $('cap').textContent = `${following} · ${c.label}${powerOff ? ' · power off' : ''}${shadowNote()}`;
+      $('cap').textContent = `${following} · ${c.label}${powerOff ? ' · power off' : ''}`;
       nextDrawAt = nowMs + (c.cadenceMs == null ? 250 : c.cadenceMs);
     }
   }
@@ -930,7 +930,9 @@ function draw() {
 
 // how well the shadow agrees with the panel. /screen is up to 500 ms old, so on a scene that
 // redraws faster than that the two frames are simply from different instants and a difference
-// says nothing; the figure is only a verdict when the scene is holding still.
+// says nothing; the figure is only a verdict when the scene is holding still. a debugging aid, not
+// something a user of the page acts on, so it is not on the caption: call shadowNote() from the
+// browser's devtools console. pollScreen keeps shadowMatch current whether anyone asks or not.
 function shadowNote() {
   if (local.pending) return '';
   // an animated canvas only matches the panel if the device told us how old its animation clocks
