@@ -2329,12 +2329,16 @@ async function loadAll() {
 
    the list is the page's own, not a datalist: a datalist only offers what matches the text in the
    field, and the field nearly always holds the clock already connected to, so the others never
-   showed. focusing the field offers every clock; typing narrows it by address or name. */
+   showed. a click on the field offers every clock (so does arrow down); typing narrows it by
+   address or name. a click and not focus: picking a clock keeps focus in the field, so the next
+   click on it brings no focus event, and a list that opened on focus stayed shut. */
 let devicesAt = 0;
 const DEVICES_STALE_MS = 20000;
 let DEVICES = [];          // what the last /devices answered
-let hostFilter = '';       // '' on focus (everything), the typed text once typing starts
+let hostFilter = '';       // '' when opened by a click or a key (everything), the typed text once typing starts
 let hostActive = -1;       // the option the arrow keys are on
+let hostWanted = false;    // asked for (a click, a key, typing) and not dismissed since: an empty
+                           // list is shut, but should open when discovery answers the ask
 const hostOptions = () => [...$('hostlist').querySelectorAll('[role=option]')];
 function closeHostList() {
   $('hostlist').hidden = true;
@@ -2373,9 +2377,10 @@ function moveHostActive(step) {
 }
 // picking a discovered clock is the whole decision, so it connects at once; connect and enter are
 // for an address typed by hand, and typing one that happens to spell a listed clock still waits
+function dismissHostList() { hostWanted = false; closeHostList(); }
 function pickHost(ip) {
   $('host').value = ip;
-  closeHostList();
+  dismissHostList();
   loadAll();
 }
 async function refreshDevices() {
@@ -2384,30 +2389,35 @@ async function refreshDevices() {
     if (!Array.isArray(rows)) return;
     devicesAt = Date.now();
     DEVICES = rows.filter(r => r && r.ip);
-    if (document.activeElement === $('host')) openHostList();
+    // a list someone asked for takes in what arrived, even if it was empty until now; a list
+    // nobody asked for stays shut
+    if (hostWanted) openHostList();
   } catch { /* no proxy, no lister, no lan: the field is a text box, as it always was */ }
 }
-$('host').addEventListener('focus', () => {
+// everything, whatever the field holds, and a fresh probe if the last is old: on opening rather
+// than on a timer, since the list matters at the moment it is about to be looked at
+function offerAllHosts() {
+  hostWanted = true;
   hostFilter = '';
   openHostList();
-  // on focus rather than on a timer: the list matters at the moment it is about to be opened
   if (Date.now() - devicesAt > DEVICES_STALE_MS) refreshDevices();
-});
-$('host').addEventListener('blur', closeHostList);
-$('host').addEventListener('input', () => { hostFilter = $('host').value; openHostList(); });
+}
+$('host').addEventListener('click', () => { if ($('hostlist').hidden) offerAllHosts(); });
+$('host').addEventListener('blur', dismissHostList);
+$('host').addEventListener('input', () => { hostWanted = true; hostFilter = $('host').value; openHostList(); });
 $('host').addEventListener('keydown', e => {
   const open = !$('hostlist').hidden;
   if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
     e.preventDefault();
-    if (!open) openHostList();
+    if (!open) offerAllHosts();
     moveHostActive(e.key === 'ArrowDown' ? 1 : -1);
   } else if (e.key === 'Escape' && open) {
     e.preventDefault();
-    closeHostList();
+    dismissHostList();
   } else if (e.key === 'Enter') {
     const opt = open && hostActive >= 0 ? hostOptions()[hostActive] : null;
     if (opt) pickHost(opt.dataset.ip);
-    else { closeHostList(); loadAll(); }
+    else { dismissHostList(); loadAll(); }
   }
 });
 // mousedown would move focus off the field and close the list before the click lands

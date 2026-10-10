@@ -10,11 +10,12 @@ refuses a version this file does not know. the github releases carry the same no
   a debugging figure. the comparison still runs, and `shadowNote()` in the browser's devtools
   console reports it.
 
-- **the web UI's device list shows every clock it found as soon as the field is focused.** it
-  used to be the browser's own suggestion list, which only offers what matches the text already
-  in the field, and the field nearly always holds the clock you are connected to, so the others
-  never showed. it is the page's own list now: every discovered clock on focus, narrowed by
-  address or name as you type, picked by click or by the arrow keys and enter, closed with escape.
+- **the web UI's device list shows every clock it found when the field is clicked.** it used to
+  be the browser's own suggestion list, which only offers what matches the text already in the
+  field, and the field nearly always holds the clock you are connected to, so the others never
+  showed. it is the page's own list now: every discovered clock on a click (or arrow down),
+  narrowed by address or name as you type, picked by click or by the arrow keys and enter, closed
+  with escape. a click before discovery has answered opens it when the answer arrives.
 
 - **the web UI's proxy logs a useful line per request.** each line starts with the local date and
   time to the millisecond and carries the browser's address, the status, the body sizes in and

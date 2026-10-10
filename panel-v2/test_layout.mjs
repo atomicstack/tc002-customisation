@@ -142,7 +142,7 @@ test.before(async () => {
   cdp = await Cdp.attach(cdpPort);
   await cdp.send('Page.enable');
   // a headless page is never the focused window, so focus() moves activeElement without firing
-  // focus events; the device list opens on focus, so the page has to believe it has it
+  // focus events; the device list closes on blur, so the page has to believe it has focus
   await cdp.send('Emulation.setFocusEmulationEnabled', { enabled: true });
   await cdp.send('Page.navigate', { url: `http://127.0.0.1:${proxyPort}/?host=127.0.0.1:${mockPort}` });
   // wait for the page to actually be ready rather than guessing how long it takes. a fixed sleep
@@ -747,7 +747,7 @@ const SHOWN = `(() => {
            ips: open ? [...list.querySelectorAll('[role=option]')].map(o => o.dataset.ip) : [] };
 })()`;
 
-test('focusing the device field offers every clock discovery found, whatever the field holds',
+test('clicking the device field offers every clock discovery found, whatever the field holds',
   { skip: chromeAvailable ? false : 'google chrome is not installed' }, async () => {
   await cdp.setWidth(1200);
   const field = await cdp.eval(`(() => {
@@ -765,16 +765,20 @@ test('focusing the device field offers every clock discovery found, whatever the
   const was = await cdp.eval(`document.getElementById('host').value`);
   try {
     await cdp.eval(`refreshDevices()`);
-    // the field holds one clock's address, as it does whenever the page is connected
+    // the field holds one clock's address, as it does whenever the page is connected. focus on its
+    // own (a tab into the field) leaves the list shut; a click opens it
     const shown = await cdp.eval(`(() => {
       const el = document.getElementById('host');
       el.blur(); el.value = '10.0.0.68'; el.focus();
-      return ${SHOWN};
+      const onFocus = ${SHOWN}.open;
+      el.click();
+      return { ...${SHOWN}, onFocus };
     })()`);
-    assert.ok(shown.open, 'focusing the field should open the list');
+    assert.equal(shown.onFocus, false, 'focus alone should not open the list; a click or arrow down does');
+    assert.ok(shown.open, 'clicking the field should open the list');
     assert.equal(shown.expanded, 'true');
     assert.deepEqual(shown.ips, ['10.0.0.68', '10.0.0.111'],
-      'every discovered clock must be offered on focus, not only the ones matching the field');
+      'every discovered clock must be offered on a click, not only the ones matching the field');
     const text = await cdp.eval(`[...document.querySelectorAll('#hostlist [role=option]')].map(o => o.textContent)`);
     assert.match(text[0], /tc002-ccc4b2779e85/, 'the clock should be offered by name, not only by address');
     assert.match(text[1], /token/i, 'a clock the proxy has no tokens for should say so before it is picked');
@@ -800,14 +804,17 @@ test('focusing the device field offers every clock discovery found, whatever the
     // escape and leaving the field both close it
     const closed = await cdp.eval(`(() => {
       const el = document.getElementById('host');
-      el.blur(); el.value = '10.0.0.68'; el.focus();
+      el.blur(); el.value = '10.0.0.68'; el.focus(); el.click();
       const opened = ${SHOWN}.open;
       el.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
       const afterEscape = ${SHOWN}.open;
-      el.blur(); el.focus(); el.blur();
-      return { opened, afterEscape, afterBlur: ${SHOWN}.open };
+      el.click();
+      const reopened = ${SHOWN}.open;
+      el.blur();
+      return { opened, afterEscape, reopened, afterBlur: ${SHOWN}.open };
     })()`);
-    assert.deepEqual(closed, { opened: true, afterEscape: false, afterBlur: false });
+    assert.deepEqual(closed, { opened: true, afterEscape: false, reopened: true, afterBlur: false },
+      'escape closes the list, a click on the field opens it again, leaving the field closes it');
   } finally {
     await cdp.eval(DEVICES_UNSTUB);
     await cdp.eval(`(() => { const el = document.getElementById('host'); el.blur(); el.value = ${JSON.stringify(was)}; })()`);
@@ -830,6 +837,38 @@ test('focusing the device field offers every clock discovery found, whatever the
   assert.equal(afterFailure.readOnly, false);
 });
 
+// the first click on a fresh page usually comes before discovery has answered: the list has
+// nothing to show yet, and has to open when the answer lands rather than wait for another click
+test('a click before discovery answers opens the list once it does',
+  { skip: chromeAvailable ? false : 'google chrome is not installed' }, async () => {
+  await cdp.setWidth(1200);
+  const was = await cdp.eval(`document.getElementById('host').value`);
+  try {
+    const seen = await cdp.eval(`(async () => {
+      const el = document.getElementById('host');
+      const real = window.fetch;
+      let answer;
+      const answered = new Promise(r => { answer = r; });
+      window.fetch = (u, o) => String(u) === '/devices'
+        ? answered.then(() => new Response(JSON.stringify([{ ip: '10.0.0.68', name: 'tc002-ccc4b2779e85', tokens: true }]),
+            { headers: { 'content-type': 'application/json' } }))
+        : real(u, o);
+      try {
+        DEVICES = []; devicesAt = 0;
+        el.blur(); el.focus(); el.click();
+        const before = ${SHOWN}.open;
+        answer();
+        await new Promise(r => setTimeout(r, 100));
+        return { before, after: ${SHOWN}.ips };
+      } finally { window.fetch = real; el.blur(); }
+    })()`);
+    assert.equal(seen.before, false, 'with nothing discovered yet there is nothing to show');
+    assert.deepEqual(seen.after, ['10.0.0.68'], 'the list should open when discovery answers the click that asked');
+  } finally {
+    await cdp.eval(`(() => { const el = document.getElementById('host'); el.blur(); el.value = ${JSON.stringify(was)}; })()`);
+  }
+});
+
 // picking a discovered clock is the whole decision, so it connects there and then: a click, or the
 // arrow keys and enter. typing is not: an address is only finished when you say so, even one that
 // happens to spell a listed clock on the way, so a typed address still waits for connect or enter.
@@ -848,13 +887,18 @@ test('picking a discovered clock connects to it, typing an address does not',
       try {
         await refreshDevices();
         const out = {};
-        el.blur(); el.value = '10.0.0.68'; el.focus();
+        el.blur(); el.value = '10.0.0.68'; el.focus(); el.click();
         const second = document.querySelector('#hostlist [data-ip="10.0.0.111"]');
         second.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true }));
         second.dispatchEvent(new MouseEvent('click', { bubbles: true }));
         out.clicked = take();
         out.closedAfterPick = ${SHOWN}.open === false;
         out.focusKept = document.activeElement === el;
+        // the field kept focus through the pick, so no focus event will come: a click on it has
+        // to bring the whole list back by itself
+        el.click();
+        out.afterPickClick = ${SHOWN}.ips;
+        el.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
 
         el.blur(); el.value = '10.0.0.111'; el.focus();
         el.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }));
@@ -875,6 +919,8 @@ test('picking a discovered clock connects to it, typing an address does not',
     assert.deepEqual(calls.clicked, ['10.0.0.111'], 'clicking a listed clock should connect to it without the connect button');
     assert.ok(calls.closedAfterPick, 'the list should close once a clock is picked');
     assert.ok(calls.focusKept, 'a click on the list must not steal focus from the field');
+    assert.deepEqual(calls.afterPickClick, ['10.0.0.68', '10.0.0.111'],
+      'clicking the field after a pick, still focused, should offer every clock again');
     assert.equal(calls.active, '10.0.0.68', 'arrow down should highlight the first clock');
     assert.deepEqual(calls.keyed, ['10.0.0.68'], 'enter on a highlighted clock should connect to that clock');
     assert.deepEqual(calls.typedMatch, [], 'a typed address must wait for connect or enter, even when it matches a listed clock');
