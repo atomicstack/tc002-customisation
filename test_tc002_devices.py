@@ -555,10 +555,17 @@ class NoticeScriptTests(unittest.TestCase):
         bars = [e for e in body["elements"] if e["type"] == "bar"]
         self.assertEqual(len(bars), 1, body)
         self.assertEqual((bars[0]["watch"], bars[0]["bytes"]), ("image", 8388608))
-        # the whole width of the panel, white, over nothing: the panel's own black
-        self.assertEqual((bars[0]["at"][0], bars[0]["size"][0]), (0, 52))
+        # four rows of white inside a one-pixel dark grey border the width of the panel, over the
+        # panel's own black: the border is an outline drawn before the bar
+        self.assertEqual((bars[0]["at"], bars[0]["size"]), ([1, 10], [50, 4]))
         self.assertEqual(bars[0]["colour"], "ffffff")
         self.assertNotIn("background", bars[0])
+        frames = [e for e in body["elements"] if e["type"] == "rect"]
+        self.assertEqual(len(frames), 1, body)
+        self.assertEqual((frames[0]["at"], frames[0]["size"], frames[0].get("filled", False)), ([0, 9], [52, 6], False))
+        self.assertLess(body["elements"].index(frames[0]), body["elements"].index(bars[0]))
+        words = [e for e in body["elements"] if e["type"] == "text"]
+        self.assertEqual(words[0]["at"], [0, 2])
         self.assertTrue(any(e.get("text") == "Flashing..." for e in body["elements"]))
 
     def test_an_older_runtime_that_refuses_the_bar_still_gets_the_word(self):

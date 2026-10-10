@@ -57,14 +57,16 @@ case "$verb" in
         [[ ($watch == staging || $watch == image) && $bytes =~ ^[1-9][0-9]*$ ]] \
             || { echo "tc002-notice.sh: watch is staging or image, followed by the bytes it will total" >&2; exit 2; }
     fi
-    word='{"id":"l1","type":"text","at":[0,3],"size":[52,5],"font":"mini","align":"centre","colour":"ff8000",
+    # rows 2-6 the word, 9-14 the bar: four rows of white inside a one-pixel dark grey border
+    word='{"id":"l1","type":"text","at":[0,2],"size":[52,5],"font":"mini","align":"centre","colour":"ff8000",
            "text":"'"$text"'","animate":{"kind":"pulse","ms":1600}}'
-    bar='{"id":"bar","type":"bar","at":[0,10],"size":[52,2],"colour":"ffffff",
+    frame='{"id":"frame","type":"rect","at":[0,9],"size":[52,6],"colour":"404040"}'
+    bar='{"id":"bar","type":"bar","at":[1,10],"size":[50,4],"colour":"ffffff",
           "watch":"'"$watch"'","bytes":'"${bytes:-0}"'}'
     alone='{"id":"l1","type":"text","at":[0,5],"size":[52,5],"font":"mini","align":"centre","colour":"ff8000",
            "text":"'"$text"'","animate":{"kind":"pulse","ms":1600}}'
     # a runtime older than the watching bar refuses the field; it still gets the word on its own
-    if [[ -n $watch ]] && api POST /notify '{"name":"updating","hold":true,"elements":['"$word"','"$bar"']}' | grep -q applied; then
+    if [[ -n $watch ]] && api POST /notify '{"name":"updating","hold":true,"elements":['"$word"','"$frame"','"$bar"']}' | grep -q applied; then
         :
     else
         api POST /notify '{"name":"updating","hold":true,"elements":['"$alone"']}' | grep -q applied \
