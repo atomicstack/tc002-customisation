@@ -6,6 +6,10 @@ refuses a version this file does not know. the github releases carry the same no
 
 ## unreleased
 
+- **the web UI's header names the clock it is connected to,** beside its title. it is the address
+  of the last connect that worked, not whatever is in the device field, and it is blank while the
+  clock is not answering.
+
 - **picking a clock from the web UI's device list connects to it.** a clock discovery found is
   connected the moment it is chosen; connect (or enter) is only needed for an address typed by
   hand, and typing one that happens to match a listed clock still waits to be told.

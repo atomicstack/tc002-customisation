@@ -811,6 +811,34 @@ test('picking a discovered clock connects to it, typing an address does not',
   assert.deepEqual(calls.notListed, [], 'only an address the list offers counts as a pick');
 });
 
+// which clock the page is talking to belongs where the page is named, not only in the field: the
+// field can be edited (or picked from the list) without connecting, so it is not proof of anything.
+// the header shows the address of the last connect that succeeded, and nothing while it is not
+// connected
+test('the header names the clock the page is connected to',
+  { skip: chromeAvailable ? false : 'google chrome is not installed' }, async () => {
+  await cdp.setWidth(1200);
+  const seen = await cdp.eval(`(() => {
+    const brand = () => document.querySelector('.top .brand').textContent;
+    const el = document.getElementById('host');
+    const was = el.value;
+    const out = { connected: brand() };
+    el.value = '10.0.0.222';
+    out.edited = brand();
+    setConn('off', 'unreachable');
+    out.down = brand();
+    setConn('on', 'connected');
+    out.back = brand();
+    el.value = was;
+    return out;
+  })()`);
+  assert.match(seen.connected, new RegExp(`127\\.0\\.0\\.1:${mockPort}`), `the header should name the connected clock, it reads ${seen.connected}`);
+  assert.match(seen.connected, /runtime console/);
+  assert.doesNotMatch(seen.edited, /10\.0\.0\.222/, 'an address typed but not connected to is not the connected clock');
+  assert.doesNotMatch(seen.down, /127\.0\.0\.1/, 'a clock that stopped answering is not one the page is connected to');
+  assert.match(seen.back, new RegExp(`127\\.0\\.0\\.1:${mockPort}`), 'the address comes back when the clock does');
+});
+
 // a retracted toast must be gone, not merely parked below the fold. sliding it past the bottom
 // edge leaves it in the layout, so whether any of it shows comes down to rounding and to how the
 // browser treats a fixed box hanging off the viewport — it came back twice, and the second time

@@ -32,6 +32,9 @@ body{margin:0;background:var(--bg);color:var(--ink);font:14px/1.5 var(--body)}
 .brand{display:flex;align-items:baseline;gap:10px}
 .logo{font-family:var(--display);font-weight:700;font-size:18px;letter-spacing:.14em}
 .brand small{color:var(--muted);font-size:13px}
+#connhost{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px}
+#connhost:empty{display:none}
+#connhost::before{content:"\00b7";margin-right:10px;font-family:var(--body)}
 .devbar{display:flex;align-items:center;gap:10px;margin-left:auto;font-size:13px;flex-wrap:wrap}
 .devbar label{color:var(--muted)}
 #host{width:150px}
@@ -226,7 +229,7 @@ input[type=file]{font:12px var(--body);color:var(--muted);max-width:220px}
 <body>
 <div class="wrap">
   <header class="top">
-    <div class="brand"><span class="logo">TC002</span><small>runtime console</small></div>
+    <div class="brand"><span class="logo">TC002</span><small>runtime console</small><small id="connhost"></small></div>
     <div class="devbar">
       <label for="host">Device</label>
       <input type="text" id="host" placeholder="device ip" autocomplete="off" spellcheck="false" list="hostlist">
@@ -526,7 +529,13 @@ function toast(msg, isErr) {
   t.className = 'show' + (isErr ? ' err' : '');
   clearTimeout(t._t); t._t = setTimeout(() => t.className = '', 3200);
 }
-function setConn(cls, text) { $('conn').className = 'pill ' + cls; $('conn').textContent = text; }
+// the clock the last successful connect reached. not host(): the field can be edited, or picked
+// from the list, without connecting, and the header says what the page is talking to
+let connectedHost = '';
+function setConn(cls, text) {
+  $('conn').className = 'pill ' + cls; $('conn').textContent = text;
+  $('connhost').textContent = cls === 'on' ? connectedHost : '';
+}
 const rid = () => { const b = new Uint8Array(8); crypto.getRandomValues(b); return [...b].map(x => x.toString(16).padStart(2, '0')).join(''); };
 
 /* ---------- api plumbing ---------- */
@@ -2259,6 +2268,7 @@ async function loadAll() {
   await loadTokens();
   if (scriptEditor.active) scriptEditor.activate();
   if (!TOKENS.control) { setConn('off', 'no tokens'); toast('serve.py has no tokens: restart it with --token-file or --adb-pull', true); return; }
+  connectedHost = '';
   setConn('', 'connecting…');
   try {
     STATUS = null;
@@ -2283,6 +2293,7 @@ async function loadAll() {
     cvIcons().then(cvInit);
     if (TOKENS.admin) loadClientTokens();   // not awaited: the panel does not need it to be usable
     await mqttStatus();
+    connectedHost = host();
     setConn('on', 'connected');
     pollScreen();
     startPolling();
