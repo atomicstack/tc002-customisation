@@ -141,6 +141,9 @@ test.before(async () => {
     `--user-data-dir=${join(tmp, 'profile')}`, `--remote-debugging-port=${cdpPort}`, 'about:blank'], { stdio: 'ignore' });
   cdp = await Cdp.attach(cdpPort);
   await cdp.send('Page.enable');
+  // a headless page is never the focused window, so focus() moves activeElement without firing
+  // focus events; the device list opens on focus, so the page has to believe it has it
+  await cdp.send('Emulation.setFocusEmulationEnabled', { enabled: true });
   await cdp.send('Page.navigate', { url: `http://127.0.0.1:${proxyPort}/?host=127.0.0.1:${mockPort}` });
   // wait for the page to actually be ready rather than guessing how long it takes. a fixed sleep
   // raced the slowest of connect / fetch /scenes / draw the readings, and failed intermittently
@@ -720,38 +723,95 @@ for (const width of [1440, 1200, 950, 700, 390]) {
 }
 
 // the clocks advertise themselves over mdns, so the device field offers what is on the lan
-// instead of asking you to remember an address. a datalist and not a select: the list is a
-// convenience over a text box, and typing an address that discovery never found has to keep
-// working — a clock with its mdns switch off, a clock on another subnet, a fresh one.
-test('the device field offers the clocks discovery found, and still takes a typed address',
+// instead of asking you to remember an address. the list is the page's own and not a datalist: a
+// datalist only offers what matches the text already in the field, and the field nearly always
+// holds the clock you are connected to, so the other clocks never showed. typing an address that
+// discovery never found has to keep working — a clock with its mdns switch off, a clock on
+// another subnet, a fresh one.
+const DEVICES_STUB = `(() => {
+  window.__realFetch = window.__realFetch || window.fetch;
+  const real = window.__realFetch;
+  window.fetch = (u, o) => String(u) === '/devices'
+    ? Promise.resolve(new Response(JSON.stringify([
+        { ip: '10.0.0.68', name: 'tc002-ccc4b2779e85', tokens: true },
+        { ip: '10.0.0.111', name: 'tc002-ccc4b277a282', tokens: false }]),
+        { headers: { 'content-type': 'application/json' } }))
+    : real(u, o);
+})()`;
+const DEVICES_UNSTUB = `(() => { if (window.__realFetch) window.fetch = window.__realFetch; })()`;
+// what the open list shows: the visible options in order, by address
+const SHOWN = `(() => {
+  const list = document.getElementById('hostlist');
+  const open = !list.hidden && list.getBoundingClientRect().height > 0;
+  return { open, expanded: document.getElementById('host').getAttribute('aria-expanded'),
+           ips: open ? [...list.querySelectorAll('[role=option]')].map(o => o.dataset.ip) : [] };
+})()`;
+
+test('focusing the device field offers every clock discovery found, whatever the field holds',
   { skip: chromeAvailable ? false : 'google chrome is not installed' }, async () => {
   await cdp.setWidth(1200);
   const field = await cdp.eval(`(() => {
     const el = document.getElementById('host');
-    const list = el.getAttribute('list');
-    const dl = list && document.getElementById(list);
-    return { list, isDatalist: !!dl && dl.tagName === 'DATALIST', type: el.tagName, readOnly: el.readOnly };
+    return { type: el.tagName, readOnly: el.readOnly, role: el.getAttribute('role'),
+             controls: el.getAttribute('aria-controls'), list: el.getAttribute('list') };
   })()`);
   assert.equal(field.type, 'INPUT', 'the device field must stay an input that can be typed into');
   assert.equal(field.readOnly, false);
-  assert.ok(field.isDatalist, `the device field should name a datalist, its list attribute is ${field.list}`);
+  assert.equal(field.list, null, 'a datalist filters by the field text; the field must not name one');
+  assert.equal(field.role, 'combobox');
+  assert.equal(field.controls, 'hostlist');
 
-  // the proxy answers /devices from the lan; stand in for it so the test does not need one
-  const options = await cdp.eval(`(async () => {
-    const real = window.fetch;
-    window.fetch = (u, o) => String(u) === '/devices'
-      ? Promise.resolve(new Response(JSON.stringify([
-          { ip: '10.0.0.68', name: 'tc002-ccc4b2779e85', tokens: true },
-          { ip: '10.0.0.111', name: 'tc002-ccc4b277a282', tokens: false }]),
-          { headers: { 'content-type': 'application/json' } }))
-      : real(u, o);
-    try { await refreshDevices(); } finally { window.fetch = real; }
-    return [...document.querySelectorAll('#hostlist option')].map(o => ({ value: o.value, label: o.label }));
-  })()`);
-  assert.deepEqual(options.map(o => o.value), ['10.0.0.68', '10.0.0.111'],
-    'the option values must be the addresses, which is what the field and tokens-<host> are keyed on');
-  assert.match(options[0].label, /tc002-ccc4b2779e85/, 'the clock should be offered by name, not only by address');
-  assert.match(options[1].label, /token/i, 'a clock the proxy has no tokens for should say so before it is picked');
+  await cdp.eval(DEVICES_STUB);
+  const was = await cdp.eval(`document.getElementById('host').value`);
+  try {
+    await cdp.eval(`refreshDevices()`);
+    // the field holds one clock's address, as it does whenever the page is connected
+    const shown = await cdp.eval(`(() => {
+      const el = document.getElementById('host');
+      el.blur(); el.value = '10.0.0.68'; el.focus();
+      return ${SHOWN};
+    })()`);
+    assert.ok(shown.open, 'focusing the field should open the list');
+    assert.equal(shown.expanded, 'true');
+    assert.deepEqual(shown.ips, ['10.0.0.68', '10.0.0.111'],
+      'every discovered clock must be offered on focus, not only the ones matching the field');
+    const text = await cdp.eval(`[...document.querySelectorAll('#hostlist [role=option]')].map(o => o.textContent)`);
+    assert.match(text[0], /tc002-ccc4b2779e85/, 'the clock should be offered by name, not only by address');
+    assert.match(text[1], /token/i, 'a clock the proxy has no tokens for should say so before it is picked');
+
+    // typing narrows it, by address or by name
+    const narrowed = await cdp.eval(`(() => {
+      const el = document.getElementById('host');
+      el.value = '111';
+      el.dispatchEvent(new InputEvent('input', { inputType: 'insertText', data: '1', bubbles: true }));
+      const byIp = ${SHOWN}.ips;
+      el.value = '9e85';
+      el.dispatchEvent(new InputEvent('input', { inputType: 'insertText', data: '5', bubbles: true }));
+      const byName = ${SHOWN}.ips;
+      el.value = '10.0.0.222';
+      el.dispatchEvent(new InputEvent('input', { inputType: 'insertText', data: '2', bubbles: true }));
+      const none = ${SHOWN};
+      return { byIp, byName, none };
+    })()`);
+    assert.deepEqual(narrowed.byIp, ['10.0.0.111']);
+    assert.deepEqual(narrowed.byName, ['10.0.0.68']);
+    assert.equal(narrowed.none.open, false, 'nothing matching closes the list rather than showing an empty box');
+
+    // escape and leaving the field both close it
+    const closed = await cdp.eval(`(() => {
+      const el = document.getElementById('host');
+      el.blur(); el.value = '10.0.0.68'; el.focus();
+      const opened = ${SHOWN}.open;
+      el.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+      const afterEscape = ${SHOWN}.open;
+      el.blur(); el.focus(); el.blur();
+      return { opened, afterEscape, afterBlur: ${SHOWN}.open };
+    })()`);
+    assert.deepEqual(closed, { opened: true, afterEscape: false, afterBlur: false });
+  } finally {
+    await cdp.eval(DEVICES_UNSTUB);
+    await cdp.eval(`(() => { const el = document.getElementById('host'); el.blur(); el.value = ${JSON.stringify(was)}; })()`);
+  }
 
   // and discovery failing changes nothing about the field. the device this page is pointed at is
   // put back afterwards: every test that follows shares this page and talks to that address
@@ -770,45 +830,59 @@ test('the device field offers the clocks discovery found, and still takes a type
   assert.equal(afterFailure.readOnly, false);
 });
 
-// picking a discovered clock is the whole decision, so it connects there and then. typing is not:
-// an address is only finished when you say so, even one that happens to spell a listed clock on
-// the way, so a typed address still waits for connect or enter. a datalist pick arrives as an
-// input event whose inputType is insertReplacementText (or none at all, in browsers that send a
-// plain event); keystrokes are insertText.
+// picking a discovered clock is the whole decision, so it connects there and then: a click, or the
+// arrow keys and enter. typing is not: an address is only finished when you say so, even one that
+// happens to spell a listed clock on the way, so a typed address still waits for connect or enter.
 test('picking a discovered clock connects to it, typing an address does not',
   { skip: chromeAvailable ? false : 'google chrome is not installed' }, async () => {
   await cdp.setWidth(1200);
-  const calls = await cdp.eval(`(async () => {
-    const el = document.getElementById('host');
-    const was = el.value;
-    const real = window.fetch, realLoad = window.loadAll;
-    window.fetch = (u, o) => String(u) === '/devices'
-      ? Promise.resolve(new Response(JSON.stringify([
-          { ip: '10.0.0.68', name: 'tc002-ccc4b2779e85', tokens: true }]),
-          { headers: { 'content-type': 'application/json' } }))
-      : real(u, o);
-    const seen = [];
-    window.loadAll = () => { seen.push(el.value); };
-    try {
-      await refreshDevices();
-      const out = {};
-      el.value = '10.0.0.68';
-      el.dispatchEvent(new InputEvent('input', { inputType: 'insertReplacementText', bubbles: true }));
-      out.picked = seen.slice();
-      seen.length = 0;
-      el.value = '10.0.0.68';
-      el.dispatchEvent(new InputEvent('input', { inputType: 'insertText', data: '8', bubbles: true }));
-      out.typedMatch = seen.slice();
-      seen.length = 0;
-      el.value = '10.0.0.6';
-      el.dispatchEvent(new InputEvent('input', { inputType: 'insertReplacementText', bubbles: true }));
-      out.notListed = seen.slice();
-      return out;
-    } finally { window.fetch = real; window.loadAll = realLoad; el.value = was; }
-  })()`);
-  assert.deepEqual(calls.picked, ['10.0.0.68'], 'picking a listed clock should connect to it without the connect button');
-  assert.deepEqual(calls.typedMatch, [], 'a typed address must wait for connect or enter, even when it matches a listed clock');
-  assert.deepEqual(calls.notListed, [], 'only an address the list offers counts as a pick');
+  await cdp.eval(DEVICES_STUB);
+  const was = await cdp.eval(`document.getElementById('host').value`);
+  try {
+    const calls = await cdp.eval(`(async () => {
+      const el = document.getElementById('host');
+      const realLoad = window.loadAll;
+      const seen = [];
+      window.loadAll = () => { seen.push(el.value); };
+      const take = () => seen.splice(0);
+      try {
+        await refreshDevices();
+        const out = {};
+        el.blur(); el.value = '10.0.0.68'; el.focus();
+        const second = document.querySelector('#hostlist [data-ip="10.0.0.111"]');
+        second.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true }));
+        second.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+        out.clicked = take();
+        out.closedAfterPick = ${SHOWN}.open === false;
+        out.focusKept = document.activeElement === el;
+
+        el.blur(); el.value = '10.0.0.111'; el.focus();
+        el.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }));
+        out.active = el.getAttribute('aria-activedescendant') &&
+          document.getElementById(el.getAttribute('aria-activedescendant')).dataset.ip;
+        el.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+        out.keyed = take();
+
+        el.blur(); el.value = ''; el.focus();
+        el.value = '10.0.0.68';
+        el.dispatchEvent(new InputEvent('input', { inputType: 'insertText', data: '8', bubbles: true }));
+        out.typedMatch = take();
+        el.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+        out.typedEnter = take();
+        return out;
+      } finally { window.loadAll = realLoad; }
+    })()`);
+    assert.deepEqual(calls.clicked, ['10.0.0.111'], 'clicking a listed clock should connect to it without the connect button');
+    assert.ok(calls.closedAfterPick, 'the list should close once a clock is picked');
+    assert.ok(calls.focusKept, 'a click on the list must not steal focus from the field');
+    assert.equal(calls.active, '10.0.0.68', 'arrow down should highlight the first clock');
+    assert.deepEqual(calls.keyed, ['10.0.0.68'], 'enter on a highlighted clock should connect to that clock');
+    assert.deepEqual(calls.typedMatch, [], 'a typed address must wait for connect or enter, even when it matches a listed clock');
+    assert.deepEqual(calls.typedEnter, ['10.0.0.68'], 'enter with nothing highlighted connects to what was typed');
+  } finally {
+    await cdp.eval(DEVICES_UNSTUB);
+    await cdp.eval(`(() => { const el = document.getElementById('host'); el.blur(); el.value = ${JSON.stringify(was)}; })()`);
+  }
 });
 
 // which clock the page is talking to belongs where the page is named, not only in the field: the

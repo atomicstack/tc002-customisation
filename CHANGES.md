@@ -6,6 +6,12 @@ refuses a version this file does not know. the github releases carry the same no
 
 ## unreleased
 
+- **the web UI's device list shows every clock it found as soon as the field is focused.** it
+  used to be the browser's own suggestion list, which only offers what matches the text already
+  in the field, and the field nearly always holds the clock you are connected to, so the others
+  never showed. it is the page's own list now: every discovered clock on focus, narrowed by
+  address or name as you type, picked by click or by the arrow keys and enter, closed with escape.
+
 - **the web UI's proxy logs a useful line per request.** each line starts with the local date and
   time to the millisecond and carries the browser's address, the status, the body sizes in and
   out, how long the request took, the user agent and, for a proxied route, the clock, whether the
