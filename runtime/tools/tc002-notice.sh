@@ -6,8 +6,8 @@
 #   runtime/tools/tc002-notice.sh <host[:port]> <token-file> restore [--once]
 #
 # `show` posts the notice as a **held notification named `updating`**: a canvas document (the
-# `mini` face -- 3x5, fits 13 characters; "Updating..." is 11, and it has one case, so the capital
-# is for the reader of this script -- centred, orange, pulsing every 1.6 s) under the notification
+# word in the `tiny5` face, white, centred, pulsing every 1.6 s, over a bar the clock fills itself
+# when a watch is given; `mini` on its own for a runtime too old for the bar) under the notification
 # lifecycle, held until dismissed. it used to be the canvas base, back when a notification could
 # only be a line of text and expired on its own timer; that left "Updating..." as the canvas
 # document, on flash, for the canvas button to show for ever after. a notification lives in the
@@ -46,7 +46,7 @@ admin=$(token_of)
 
 case "$verb" in
   show)
-    # 13 characters fit the mini face; the word goes into json as is, so no quotes or backslashes
+    # 13 characters fit either face; the word goes into json as is, so no quotes or backslashes
     text=${1:-Updating...}
     [[ ${#text} -le 13 && $text != *[\"\\]* ]] || { echo "tc002-notice.sh: the notice must be 13 plain characters at most" >&2; exit 2; }
     # a bar under the word, filled by the clock itself from what has arrived of a transfer: it
@@ -57,14 +57,18 @@ case "$verb" in
         [[ ($watch == staging || $watch == image) && $bytes =~ ^[1-9][0-9]*$ ]] \
             || { echo "tc002-notice.sh: watch is staging or image, followed by the bytes it will total" >&2; exit 2; }
     fi
-    # rows 2-6 the word, 9-14 the bar: four rows of white inside a one-pixel dark grey border.
-    # 0a lands just above the led driver's floor of 50, and survives brightness down to about 10
-    word='{"id":"l1","type":"text","at":[0,2],"size":[52,5],"font":"mini","align":"centre","colour":"ff8000",
+    # the word in tiny5, white and breathing: its line box starts two rows above the panel so the
+    # ink of all three words (Updating..., Flashing..., Working...) sits on rows 1-7, in the same
+    # place whichever is showing. rows 8-9 empty, 10-15 the bar: four rows of white inside a
+    # one-pixel border of 0a0a0a, which lands just above the led driver's floor of 50 and still
+    # lights down to about 10% brightness
+    word='{"id":"l1","type":"text","at":[0,-2],"size":[52,11],"font":"tiny5","align":"centre","colour":"ffffff",
            "text":"'"$text"'","animate":{"kind":"pulse","ms":1600}}'
-    frame='{"id":"frame","type":"rect","at":[0,9],"size":[52,6],"colour":"0a0a0a"}'
-    bar='{"id":"bar","type":"bar","at":[1,10],"size":[50,4],"colour":"ffffff",
+    frame='{"id":"frame","type":"rect","at":[0,10],"size":[52,6],"colour":"0a0a0a"}'
+    bar='{"id":"bar","type":"bar","at":[1,11],"size":[50,4],"colour":"ffffff",
           "watch":"'"$watch"'","bytes":'"${bytes:-0}"'}'
-    alone='{"id":"l1","type":"text","at":[0,5],"size":[52,5],"font":"mini","align":"centre","colour":"ff8000",
+    # the word alone, in mini: a runtime that predates the watching bar may predate tiny5 as well
+    alone='{"id":"l1","type":"text","at":[0,5],"size":[52,5],"font":"mini","align":"centre","colour":"ffffff",
            "text":"'"$text"'","animate":{"kind":"pulse","ms":1600}}'
     # a runtime older than the watching bar refuses the field; it still gets the word on its own
     if [[ -n $watch ]] && api POST /notify '{"name":"updating","hold":true,"elements":['"$word"','"$frame"','"$bar"']}' | grep -q applied; then

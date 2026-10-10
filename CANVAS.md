@@ -209,7 +209,8 @@ over 400 ms, so the bar moves as one continuous motion with what has actually ar
 (watching or gliding) is filled to a fraction of a pixel: its leading pixel lights by how far the
 fill has got into it, so each new pixel fades in instead of switching on. the watch
 is one of those two names, never a path. a renderer that cannot measure (the console's preview)
-draws `value`. this is the bar under the update tools' `Updating...` and `Flashing...`.
+gets no readings and draws the bar empty; `value` is ignored while a bar watches. this is the bar
+under the update tools' `Updating...`, `Flashing...` and `Working...`.
 
 ![three horizontal bars labelled cpu, mem and disk at 25, 60 and 93 percent in green, amber and red](runtime/screenshots/canvas/bar-horizontal.png)
 ![seven vertical bars rising in steps from ten to a hundred percent](runtime/screenshots/canvas/bar-vertical.png)
@@ -394,7 +395,7 @@ it by, `stack` to queue it behind the current one — and its arrival animations
 it is shown, not when it was queued. the base scene comes back when it leaves, and a restart drops
 it, because notifications live in the renderer's memory and never on flash. `tc002 notify --data
 @doc.json` sends one; the console's canvas builder has a "send as notification" button; the
-`Updating...` the update tools show is one of these, the mini face pulsing over a gliding bar of
+`Updating...` the update tools show is one of these, white tiny5 pulsing over a gliding bar of
 how much has been copied, held until the new runtime is up.
 
 **posting a document under the name of the one showing updates it in place**: no transition, its

@@ -207,7 +207,8 @@ pub const Body = union(Kind) {
     circle: struct { r: u8 = 1, filled: bool = false },
     pixel: void,
     /// `watch` other than none fills the bar from a transfer the renderer measures for itself:
-    /// what has arrived of `bytes`. `value` is then only what a renderer that cannot measure draws
+    /// what has arrived of `bytes`, and `value` is ignored. a renderer that cannot measure (the
+    /// console's preview) gets no readings, so there the bar stays empty
     bar: struct { value: u8 = 0, background: [3]u8 = .{ 0, 0, 0 }, vertical: bool = false, watch: Watch = .none, bytes: u32 = 0 },
     sparkline: struct {
         span: Span = .{},

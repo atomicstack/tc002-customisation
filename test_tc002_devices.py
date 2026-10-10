@@ -444,7 +444,7 @@ class UpdateScriptTests(unittest.TestCase):
                 # goes up before the copy so it pulses while the binaries arrive. it is not a canvas
                 # document, because that outlived the update it announced
                 notices = [i for i, c in enumerate(calls) if c["command"] == "curl" and "/notify" in " ".join(c["args"])
-                           and '"font":"mini"' in " ".join(c["args"]) and '"kind":"pulse"' in " ".join(c["args"])
+                           and '"font":"tiny5"' in " ".join(c["args"]) and '"kind":"pulse"' in " ".join(c["args"])
                            and '"hold":true' in " ".join(c["args"]) and '"name":"updating"' in " ".join(c["args"])]
                 self.assertTrue(notices, "no held mini-font pulsing notification was posted")
                 # with a bar the clock fills from the staging directory, out of what is being sent
@@ -562,17 +562,19 @@ class NoticeScriptTests(unittest.TestCase):
         self.assertEqual((bars[0]["watch"], bars[0]["bytes"]), ("image", 8388608))
         # four rows of white inside a one-pixel dark grey border the width of the panel, over the
         # panel's own black: the border is an outline drawn before the bar
-        self.assertEqual((bars[0]["at"], bars[0]["size"]), ([1, 10], [50, 4]))
+        self.assertEqual((bars[0]["at"], bars[0]["size"]), ([1, 11], [50, 4]))
         self.assertEqual(bars[0]["colour"], "ffffff")
         self.assertNotIn("background", bars[0])
         frames = [e for e in body["elements"] if e["type"] == "rect"]
         self.assertEqual(len(frames), 1, body)
-        self.assertEqual((frames[0]["at"], frames[0]["size"], frames[0].get("filled", False)), ([0, 9], [52, 6], False))
+        self.assertEqual((frames[0]["at"], frames[0]["size"], frames[0].get("filled", False)), ([0, 10], [52, 6], False))
         self.assertLess(body["elements"].index(frames[0]), body["elements"].index(bars[0]))
         # just above the driver's floor at full brightness, and still lit down to about 10%
         self.assertEqual(frames[0]["colour"], "0a0a0a")
+        # tiny5, white, still breathing: its ink on rows 1-7 with two empty rows above the border
         words = [e for e in body["elements"] if e["type"] == "text"]
-        self.assertEqual(words[0]["at"], [0, 2])
+        self.assertEqual((words[0]["font"], words[0]["colour"], words[0]["animate"]["kind"]), ("tiny5", "ffffff", "pulse"))
+        self.assertEqual(words[0]["at"], [0, -2])
         self.assertTrue(any(e.get("text") == "Flashing..." for e in body["elements"]))
 
     def test_an_older_runtime_that_refuses_the_bar_still_gets_the_word(self):
@@ -591,6 +593,9 @@ class NoticeScriptTests(unittest.TestCase):
             sent = log.read_text().splitlines()
             self.assertEqual(len([l for l in sent if "/notify" in l]), 2, sent)
             self.assertNotIn("watch", [l for l in sent if "/notify" in l][-1])
+            # and in mini, which every build has: one that predates the bar may predate tiny5 too
+            self.assertIn('"font":"mini"', [l for l in sent if "/notify" in l][-1])
+            self.assertIn('"colour":"ffffff"', [l for l in sent if "/notify" in l][-1])
 
     def test_a_watch_is_one_of_two_names_and_a_whole_number(self):
         for extra in (("/etc/passwd", "5"), ("image", "lots"), ("image",)):
