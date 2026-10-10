@@ -19,7 +19,7 @@ binds 127.0.0.1 only, but the calls it makes to the clock are lan calls and maco
 those per binary: under a third-party python they fail as "cannot reach" until the terminal app
 holds the local network grant. apple's /usr/bin/python3 is exempt from the gate.
 """
-import argparse, functools, http.server, json, os, re, socketserver, subprocess, sys, tempfile, time, urllib.error, urllib.request
+import argparse, datetime, functools, http.server, json, os, re, socketserver, subprocess, sys, tempfile, time, urllib.error, urllib.request
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 TOKENS = {"control": None, "admin": None}
@@ -208,7 +208,86 @@ def rewrite(path):
     return m.group(1), m.group(2), m.group(3) or ""
 
 
+def stamp(when=None):
+    """'[2026-10-10 04:15:02.123]': local date and time to the millisecond, which is what a log
+    read beside the device's own (or the browser's network tab) needs to line requests up."""
+    when = when or datetime.datetime.now()
+    return "[%s.%03d]" % (when.strftime("%Y-%m-%d %H:%M:%S"), when.microsecond // 1000)
+
+
+def _quoted(text):
+    """text the client chose, made safe for one line: quotes and backslashes escaped, control
+    characters spelt out, so a crafted user-agent cannot forge or split a line."""
+    return '"' + text.encode("unicode_escape").decode("ascii").replace('"', '\\"') + '"'
+
+
+def access_line(client, requestline, status, bytes_in, bytes_out, ms, user_agent,
+                device=None, origin=None, token=None):
+    """one finished request: who asked, what, the status, the body sizes each way, how long it
+    took, and for a proxied route which clock, whether the answer came from it or from this proxy
+    (an unreachable clock, a missing token) and which of the two tokens went with it."""
+    parts = [f"{client[0]}:{client[1]}", _quoted(requestline), str(status),
+             f"in={bytes_in}B", f"out={bytes_out}B", f"{ms:.1f}ms"]
+    if device is not None:
+        parts += [f"device={device}", f"origin={origin}", f"token={token}"]
+    parts.append("ua=" + (_quoted(user_agent) if user_agent else "-"))
+    return " ".join(parts)
+
+
+class _CountingWriter:
+    """the socket writer with a running count of what went through it, so the access line can
+    report a response's size even when it was streamed or copied from a file."""
+    def __init__(self, inner):
+        self._inner, self.count = inner, 0
+
+    def write(self, data):
+        n = self._inner.write(data)
+        self.count += len(data) if n is None else n
+        return n
+
+    def __getattr__(self, name):
+        return getattr(self._inner, name)
+
+
 class Handler(http.server.SimpleHTTPRequestHandler):
+    def setup(self):
+        super().setup()
+        self.wfile = _CountingWriter(self.wfile)
+
+    def handle_one_request(self):
+        # the access line is written here, once the request has finished, rather than from
+        # send_response: only then are the response's size and the time it took known. an event
+        # stream is logged when it closes, and its time is how long it was open
+        self._t0, self._status, self._head_bytes, self._out_at = time.monotonic(), None, 0, self.wfile.count
+        self._device = self._origin = self._token_kind = None
+        try:
+            super().handle_one_request()
+        finally:
+            if self._status is not None:
+                self.log_access()
+
+    def flush_headers(self):
+        # the headers go through wfile too; counted here so out= is the body alone
+        self._head_bytes += sum(len(b) for b in getattr(self, "_headers_buffer", []))
+        super().flush_headers()
+
+    def log_request(self, code="-", size="-"):
+        # send_response calls this as the status goes out; the line itself waits for the end
+        self._status = getattr(code, "value", code)
+
+    def log_access(self):
+        # a request line too long or too broken to parse is answered before any headers are read
+        headers = getattr(self, "headers", None)
+        try:
+            bytes_in = int(headers.get("Content-Length") or 0) if headers else 0
+        except ValueError:
+            bytes_in = 0
+        self.log_message("%s", access_line(
+            self.client_address, getattr(self, "requestline", ""), self._status, bytes_in,
+            max(0, self.wfile.count - self._out_at - self._head_bytes),
+            (time.monotonic() - self._t0) * 1000, headers.get("User-Agent") if headers else None,
+            self._device, self._origin, self._token_kind))
+
     def _json(self, status, obj):
         payload = json.dumps(obj).encode()
         self.send_response(status)
@@ -228,6 +307,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         try:
             r = urllib.request.urlopen(req, timeout=STREAM_TIMEOUT_S)
         except urllib.error.HTTPError as e:
+            self._origin = "device"
             payload = e.read()
             self.send_response(e.code)
             self.send_header("Content-Type", e.headers.get("Content-Type") or "application/json")
@@ -236,6 +316,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             return self.wfile.write(payload)
         except Exception as e:
             return self._json(502, {"error": "proxy", "message": f"cannot reach {host}: {e}"})
+        self._origin = "device"
         with r:
             self.send_response(r.status)
             self.send_header("Content-Type", r.headers.get("Content-Type") or "text/event-stream")
@@ -267,6 +348,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             return self._json(400, {"error": "bad_proxy_path", "message": "expected /api/<host>/v1/<endpoint>"})
         host, endpoint, query = parts
         kind = token_for(method, endpoint)
+        # until the device answers, any answer is this proxy's own
+        self._device, self._origin, self._token_kind = host, "proxy", kind
         try:
             token = self.server.token_store.for_host(host)[kind]
         except (OSError, ValueError) as e:
@@ -288,8 +371,10 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 return self._proxy_stream(req, host)
             with urllib.request.urlopen(req, timeout=DEVICE_TIMEOUT_S) as r:
                 payload, status, ctype, device_date = r.read(), r.status, r.headers.get("Content-Type") or "application/json", r.headers.get("Date")
+            self._origin = "device"
         except urllib.error.HTTPError as e:
             payload, status, ctype, device_date = e.read(), e.code, e.headers.get("Content-Type") or "application/json", e.headers.get("Date")
+            self._origin = "device"
         except Exception as e:
             payload, status, ctype, device_date = json.dumps({"error": "proxy", "message": f"cannot reach {host}: {e}"}).encode(), 502, "application/json", None
         self.send_response(status)
@@ -352,7 +437,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         self.send_error(405)
 
     def log_message(self, fmt, *a):
-        sys.stderr.write("  %s\n" % (fmt % a))
+        sys.stderr.write("%s %s\n" % (stamp(), fmt % a))
 
 
 class Server(socketserver.ThreadingTCPServer):

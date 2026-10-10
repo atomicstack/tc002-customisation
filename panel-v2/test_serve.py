@@ -173,6 +173,36 @@ def load_mock():
     return mod
 
 
+class AccessLogFormatTests(unittest.TestCase):
+    """the proxy's access line, on its own: one line per request, written once it has finished."""
+
+    def test_the_stamp_is_the_local_date_and_time_to_the_millisecond(self):
+        import datetime
+        when = datetime.datetime(2026, 10, 10, 4, 15, 2, 123456)
+        self.assertEqual(serve.stamp(when), "[2026-10-10 04:15:02.123]")
+
+    def test_a_proxied_request_names_the_clock_where_the_answer_came_from_and_the_token(self):
+        line = serve.access_line(client=("127.0.0.1", 54012),
+                                 requestline="GET /api/10.0.0.111/v1/status HTTP/1.1", status=200,
+                                 bytes_in=0, bytes_out=812, ms=12.34, user_agent="Mozilla/5.0 (Macintosh)",
+                                 device="10.0.0.111", origin="device", token="control")
+        self.assertEqual(line, '127.0.0.1:54012 "GET /api/10.0.0.111/v1/status HTTP/1.1" 200 '
+                               'in=0B out=812B 12.3ms device=10.0.0.111 origin=device token=control '
+                               'ua="Mozilla/5.0 (Macintosh)"')
+
+    def test_a_local_route_has_no_device_fields_and_a_missing_agent_is_a_dash(self):
+        line = serve.access_line(client=("127.0.0.1", 1), requestline="GET /tokens HTTP/1.1", status=200,
+                                 bytes_in=0, bytes_out=33, ms=0.4, user_agent=None)
+        self.assertEqual(line, '127.0.0.1:1 "GET /tokens HTTP/1.1" 200 in=0B out=33B 0.4ms ua=-')
+
+    def test_quotes_in_what_the_client_sent_cannot_break_the_line(self):
+        line = serve.access_line(client=("127.0.0.1", 1), requestline='GET /x"y HTTP/1.1', status=404,
+                                 bytes_in=0, bytes_out=0, ms=1, user_agent='evil" agent\n')
+        self.assertIn('"GET /x\\"y HTTP/1.1"', line)
+        self.assertIn('ua="evil\\" agent\\n"', line)
+        self.assertNotIn("\n", line)
+
+
 class MockDeviceTests(unittest.TestCase):
     """pure tests on Device, no server: the log ring's capacity and sequence numbering."""
 
@@ -272,6 +302,60 @@ class EndToEndTests(unittest.TestCase):
                                      method="POST", headers={"Content-Type": "application/json"})
         with urllib.request.urlopen(req, timeout=5) as r:
             return r.status, json.loads(r.read())
+
+    def access_lines(self, do):
+        """run do() and return the access lines the proxy wrote for it. the line is written after
+        the response, so the client can have its answer a moment before the line exists."""
+        import time
+        seen = []
+        with mock_attr(serve.Handler, "log_message", lambda self, fmt, *a: seen.append(fmt % a)):
+            do()
+            deadline = time.monotonic() + 2
+            while not seen and time.monotonic() < deadline:
+                time.sleep(0.01)
+            time.sleep(0.05)
+        return seen
+
+    def test_a_local_route_logs_who_asked_what_it_cost_and_the_agent(self):
+        body = []
+        def do():
+            req = urllib.request.Request(f"http://127.0.0.1:{self.proxy_port}/tokens", headers={"User-Agent": "tc002-test/1"})
+            with urllib.request.urlopen(req, timeout=5) as r:
+                body.append(r.read())
+        lines = self.access_lines(do)
+        self.assertEqual(len(lines), 1, lines)
+        self.assertRegex(lines[0], r'^127\.0\.0\.1:\d+ "GET /tokens HTTP/1\.1" 200 in=0B out=%dB [\d.]+ms ua="tc002-test/1"$' % len(body[0]))
+
+    def test_a_proxied_request_logs_its_body_the_clock_and_the_token_it_used(self):
+        payload = json.dumps({"brightness": 42}).encode()
+        lines = self.access_lines(lambda: self.call("PATCH", "config", payload))
+        self.assertEqual(len(lines), 1, lines)
+        self.assertIn(f'"PATCH /api/127.0.0.1:{self.mock_port}/v1/config HTTP/1.1" 200 in={len(payload)}B', lines[0])
+        self.assertIn(f"device=127.0.0.1:{self.mock_port} origin=device token=admin", lines[0])
+
+    def test_an_answer_the_proxy_made_up_says_so(self):
+        def do():
+            try:
+                urllib.request.urlopen(f"http://127.0.0.1:{self.proxy_port}/api/127.0.0.1:1/v1/status", timeout=5)
+            except urllib.error.HTTPError:
+                pass
+        lines = self.access_lines(do)
+        self.assertEqual(len(lines), 1, lines)
+        self.assertIn(" 502 ", lines[0])
+        self.assertIn("device=127.0.0.1:1 origin=proxy token=control", lines[0])
+
+    def test_a_request_line_too_long_to_parse_is_still_logged(self):
+        # the handler answers 414 before it has read any headers, so the line has none to draw on
+        def do():
+            with socket.create_connection(("127.0.0.1", self.proxy_port), timeout=5) as sock:
+                sock.sendall(b"GET /" + b"a" * 70000 + b" HTTP/1.1\r\n\r\n")
+                sock.recv(4096)
+        # python's own "code 414, message ..." goes through the same logger; the access line is
+        # the one with the sizes
+        lines = [l for l in self.access_lines(do) if " in=" in l]
+        self.assertEqual(len(lines), 1, lines)
+        self.assertIn('"" 414 in=0B', lines[0])
+        self.assertTrue(lines[0].endswith(" ua=-"), lines[0])
 
     def test_tokens_endpoint_reports_presence_only(self):
         with urllib.request.urlopen(f"http://127.0.0.1:{self.proxy_port}/tokens") as r:
@@ -1058,7 +1142,9 @@ class EventStreamTests(unittest.TestCase):
 
     def test_events_arrive_before_the_stream_ends(self):
         url = f"http://127.0.0.1:{self.proxy_port}/api/127.0.0.1:{self.origin_port}/v1/events"
-        with urllib.request.urlopen(url, timeout=5) as r:
+        seen = []
+        with mock_attr(serve.Handler, "log_message", lambda self, fmt, *a: seen.append(fmt % a)), \
+                urllib.request.urlopen(url, timeout=5) as r:
             self.assertEqual(r.status, 200)
             self.assertEqual(r.headers.get("Content-Type"), "text/event-stream")
             self.assertIsNone(r.headers.get("Content-Length"),
@@ -1069,6 +1155,17 @@ class EventStreamTests(unittest.TestCase):
             self.assertEqual(r.readline(), b"\n")
             type(self).written.set()          # let the origin write the second
             self.assertIn(b'"revision":8', r.readline())
+            self.assertEqual(r.readline(), b"\n")
+            self.assertEqual(r.read(), b"", "the origin ends the stream after the second event")
+            # a stream is logged once, when it closes, with everything that went through it
+            import time
+            deadline = time.monotonic() + 2
+            while not seen and time.monotonic() < deadline:
+                time.sleep(0.01)
+        self.assertEqual(len(seen), 1, seen)
+        self.assertRegex(seen[0], r'"GET /api/127\.0\.0\.1:\d+/v1/events HTTP/1\.1" 200 in=0B out=%dB ' % (len(first) + len(b"\n") * 2 + len(
+            b'data: {"revision":8,"age_ms":4,"cmd":"brightness","source":"api","brightness":50}\n')))
+        self.assertIn("origin=device token=control", seen[0])
 
 
 class ConsoleScriptTests(unittest.TestCase):

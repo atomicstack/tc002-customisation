@@ -259,7 +259,18 @@ runtime that could not use `/data` keeps them. the address is typed or given as 
 runtime does not broadcast on udp/55555. `serve.py` serves the page and
 proxies `/api/<device-ip>/v1/<endpoint>` to the device's `/api/v1/<endpoint>`,
 adding the bearer token the route needs, so the browser never holds a token
-and only talks to its own origin. `--adb-pull` takes `--serial <adb-serial>`
+and only talks to its own origin. it writes one line per request to stderr once the
+request has finished, so a slow or failing call can be read off the terminal:
+
+```
+[2026-10-10 23:15:06.482] 127.0.0.1:53375 "GET /api/10.0.0.111/v1/status HTTP/1.1" 200 in=0B out=1104B 0.6ms device=10.0.0.111 origin=device token=control ua="Mozilla/5.0 ..."
+```
+
+local time to the millisecond, the browser's address, the request, the status, the body sizes in
+and out, how long it took, and for a proxied route the clock, `origin=device` or `origin=proxy`
+(the proxy answered itself: the clock did not answer, or there is no token for it) and which token
+went with it. an event stream is logged when it closes, so its time is how long it was open.
+`--adb-pull` takes `--serial <adb-serial>`
 to pick the device when several are attached. the preview is a **replica, not a
 simulation**: `zig build wasm` cross-compiles the runtime's own scene code to
 webassembly, so the page and the device run the same renderer and cannot drift.

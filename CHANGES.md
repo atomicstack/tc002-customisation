@@ -6,6 +6,12 @@ refuses a version this file does not know. the github releases carry the same no
 
 ## unreleased
 
+- **the web UI's proxy logs a useful line per request.** each line starts with the local date and
+  time to the millisecond and carries the browser's address, the status, the body sizes in and
+  out, how long the request took, the user agent and, for a proxied route, the clock, whether the
+  clock or the proxy itself answered, and which token went with it. an event stream is logged
+  when it closes.
+
 - **the web UI's header names the clock it is connected to,** beside its title. it is the address
   of the last connect that worked, not whatever is in the device field, and it is blank while the
   clock is not answering.
