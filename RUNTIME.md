@@ -1809,7 +1809,7 @@ shows up as a revision gap, and the gap is the signal to resync.
 | field | range | live effect |
 |-------|-------|-------------|
 | `brightness` | 1–100 | applied to the renderer at once |
-| `clock_font`, `clock_colour_mode`, `clock_colour`, `clock_colour2`, `clock_gradient`, `clock_spread`, `clock_digit`, `clock_fade`, `clock_hours` | `classic\|mini\|segment\|big\|block\|hires` or an imported face (`chunky6` … `ibm-vga`); `solid\|gradient`; `rrggbb`; `rrggbb`; `horizontal\|vertical\|diagonal`; 0–255; `solid\|outline\|shadow`; bool; `24h\|12h` | applied at once; reported as a `clock` object in `/config` |
+| `clock_font`, `clock_colour_mode`, `clock_colour`, `clock_colour2`, `clock_gradient`, `clock_spread`, `clock_digit`, `clock_fade`, `clock_hours` | `classic\|mini\|segment\|big\|block\|hires` or an imported face (`chunky6` … `ibm-vga`), default `block` — and a face a build does not know loads as `block` too; `solid\|gradient`; `rrggbb`; `rrggbb`; `horizontal\|vertical\|diagonal`; 0–255; `solid\|outline\|shadow`; bool; `24h\|12h` | applied at once; reported as a `clock` object in `/config` |
 | `ip_mode` | `lines\|mini\|scroll\|big` | the layout of the device menu's ip page, applied at once; see [ip layouts](#ip-layouts) |
 | `menu_font` | `small\|mini\|chunky6\|chunky6x\|light6\|light6x` (default `mini`) | the face the on-panel menus are drawn in, applied with the supervisor's next status push (at once on a change), and reported in `GET /status` beside `ip_mode`; the menu's `menu font` item sets it too. see [the settings menu](#the-settings-menu) |
 | `base` | `clock`, `art`, `canvas` | applied at once |

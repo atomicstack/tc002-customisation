@@ -318,6 +318,7 @@ test "physical actions: buttons select the base, rotary and knob depend on the b
     var a = fresh();
     a.action(.left, 0);
     try std.testing.expect(a.base == .clock);
+    a.clock.style.font = .classic; // from the first face, whatever the default is
     a.action(.rotate_cw, 0);
     try std.testing.expectEqual(clock.Font.mini, a.clock.style.font); // the knob pages the faces
     a.action(.rotate_ccw, 0);
@@ -607,6 +608,7 @@ test "the knob pages through generators, clock faces and ip layouts" {
     try std.testing.expectEqual(scene.Generator.popsquares, a.art.generator);
     _ = a.apply(.{ .set_base = .clock }, 0);
     _ = a.takeTransition();
+    a.clock.style.font = .classic; // from the first face, whatever the default is
     a.action(.rotate_cw, 0);
     try std.testing.expectEqual(clock.Font.mini, a.clock.style.font);
     try std.testing.expectEqual(transition.Effect.fade, a.takeTransition().?.effect); // a restyle while the clock shows

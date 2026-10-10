@@ -392,6 +392,9 @@ class EndToEndTests(unittest.TestCase):
             status, doc = self.call("POST", "notify", {"text": bad, "epoch": st["epoch"]})
             self.assertEqual((status, doc["error"]), (400, "invalid_text"), repr(bad))
 
+    def test_a_fresh_clock_shows_the_block_face(self):
+        self.assertEqual(self.call("GET", "config")[1]["clock"]["font"], "block")
+
     def test_menu_font_is_a_setting_limited_to_faces_the_menu_can_lay_out(self):
         status, doc = self.call("GET", "config")
         self.assertEqual(doc["menu_font"], "mini")
@@ -861,7 +864,7 @@ class EndToEndTests(unittest.TestCase):
             self.assertEqual(e.code, 503)
             self.assertEqual(json.loads(e.read())["error"], "not_implemented")
 
-    DEFAULT_CLOCK = {"font": "classic", "colour_mode": "solid", "colour": "ffffff", "colour2": "ffffff",
+    DEFAULT_CLOCK = {"font": "block", "colour_mode": "solid", "colour": "ffffff", "colour2": "ffffff",
                      "gradient": "horizontal", "spread": 255, "digits": "solid"}
 
     def test_ntfy_settings_round_trip_without_secrets(self):

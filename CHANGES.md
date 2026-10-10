@@ -6,6 +6,10 @@ refuses a version this file does not know. the github releases carry the same no
 
 ## unreleased
 
+- **the clock face is `block` unless you say otherwise.** a fresh clock, a settings file with no
+  face in it and a face a build does not know all come up as `block` now, where they came up as
+  `classic`. the face enum keeps its order: that order is the number in the settings file.
+
 - **twenty imported pixel faces.** trip5's matrix fonts (ten faces, 6 and 8 rows), tiny5 with
   its duo and mono cuts, and seven int10h faces (phoenix bios and its doubled and 8×14 forms, ibm
   dos iso8, apricot xen-c, robotron a7100, and the extended ibm vga) can be named wherever a font

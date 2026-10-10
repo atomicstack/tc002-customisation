@@ -39,7 +39,7 @@ CLOCK_DIGITS = SCENES["clock"]["digits"]   # only the faces with a body (block, 
 CLOCK_HOURS = SCENES["clock"]["hours"]
 CLOCK_MAX_SPREAD = SCENES["clock"]["max_spread"]
 DEFAULT_SPREAD = next(p["default"] for p in SCENES["parameters"]["clock"] if p["name"] == "spread")
-DEFAULT_CLOCK = {"font": "classic", "colour_mode": "solid", "colour": "ffffff", "colour2": "ffffff",
+DEFAULT_CLOCK = {"font": "block", "colour_mode": "solid", "colour": "ffffff", "colour2": "ffffff",
                  "gradient": "horizontal", "spread": DEFAULT_SPREAD, "digits": "solid", "fade": False,
                  "hours": "24h"}
 

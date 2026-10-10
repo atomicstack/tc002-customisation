@@ -68,7 +68,7 @@ pub fn setParam(style: *Style, index: usize, value: u32) void {
 }
 
 pub const Style = struct {
-    font: Font = .classic,
+    font: Font = .block,
     mode: ColourMode = .solid,
     colour: [3]u8 = .{ 255, 255, 255 },
     colour2: [3]u8 = .{ 255, 255, 255 },
@@ -532,7 +532,8 @@ test "time of day is formatted as hh:mm:ss in local time, the date as dd/mm" {
 
 test "the classic solid render equals a direct blit of the formatted local time; cadence is the next boundary" {
     const rule = try tz.parse("JST-9");
-    const c = State.init(rule);
+    var c = State.init(rule);
+    c.style.font = .classic;
     const wall_ns: u64 = test_wall_base + (4 * 3600 + 5 * 60 + 6) * std.time.ns_per_s + 700_000_000;
     var rgb = geometry.black_rgb;
     c.render(wall_ns, &rgb);

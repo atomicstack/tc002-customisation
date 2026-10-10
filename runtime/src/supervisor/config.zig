@@ -101,7 +101,9 @@ pub const Config = struct {
     berry: Berry = .{},
     sound: Sound = .{},
     battery: Battery = .{},
-    clock_font: u8 = 0,
+    /// block unless something says otherwise: it is the face this clock is meant to show, so a
+    /// fresh device, a missing field and a face this build lacks all land on it
+    clock_font: u8 = @backingInt(clock.Font.block),
     clock_colour_mode: u8 = 0,
     clock_colour: [3]u8 = .{ 255, 255, 255 },
     clock_colour2: [3]u8 = .{ 255, 255, 255 },
@@ -134,7 +136,7 @@ pub const Config = struct {
     /// the clock style these settings describe (unknown stored values fall back to defaults).
     pub fn clockStyle(self: *const Config) clock.Style {
         return .{
-            .font = enumOr(clock.Font, self.clock_font, .classic),
+            .font = enumOr(clock.Font, self.clock_font, .block),
             .mode = enumOr(clock.ColourMode, self.clock_colour_mode, .solid),
             .colour = self.clock_colour,
             .colour2 = self.clock_colour2,
@@ -620,7 +622,7 @@ const FileForm = struct {
     mdns: bool = true,
     menu_font: []const u8 = "mini",
     origins: []const []const u8 = &.{},
-    clock_font: []const u8 = "classic",
+    clock_font: []const u8 = "block",
     clock_colour_mode: []const u8 = "solid",
     clock_colour: []const u8 = "ffffff",
     clock_colour2: []const u8 = "ffffff",
@@ -719,7 +721,7 @@ pub fn toJson(c: *const Config, out: []u8) error{Overflow}![]u8 {
     var generator_slices: [param.owner_count][]const u32 = undefined;
     for (&generator_slices, 0..) |*slots, i| slots.* = &c.generator_params[i];
     const form = FileForm{
-        .clock_font = @tagName(enumOr(clock.Font, c.clock_font, .classic)),
+        .clock_font = @tagName(enumOr(clock.Font, c.clock_font, .block)),
         .clock_colour_mode = @tagName(enumOr(clock.ColourMode, c.clock_colour_mode, .solid)),
         .clock_colour = std.fmt.bufPrint(&colour_buf, "{x:0>2}{x:0>2}{x:0>2}", .{ c.clock_colour[0], c.clock_colour[1], c.clock_colour[2] }) catch unreachable,
         .clock_colour2 = std.fmt.bufPrint(&colour2_buf, "{x:0>2}{x:0>2}{x:0>2}", .{ c.clock_colour2[0], c.clock_colour2[1], c.clock_colour2[2] }) catch unreachable,
@@ -842,7 +844,7 @@ pub fn fromJson(bytes: []const u8, arena: []u8) error{ Invalid, TooLong }!Config
     if (c.ntfy.duration_s < 1 or c.ntfy.duration_s > 300) return error.Invalid;
     // the font list only grows, so a name a newer build saved may be one this build lacks: that is
     // a face it cannot draw, not a corrupt file, and refusing the file would cost every setting
-    c.clock_font = @backingInt(api.enumByName(clock.Font, f.clock_font) orelse clock.Font.classic);
+    c.clock_font = @backingInt(api.enumByName(clock.Font, f.clock_font) orelse clock.Font.block);
     c.clock_colour_mode = @backingInt(api.enumByName(clock.ColourMode, f.clock_colour_mode) orelse return error.Invalid);
     c.clock_colour = api.parseColour(f.clock_colour) orelse return error.Invalid;
     c.clock_colour2 = api.parseColour(f.clock_colour2) orelse return error.Invalid;
@@ -1067,8 +1069,8 @@ test "json persistence round-trips and rejects junk" {
     try std.testing.expectError(error.Invalid, fromJson("{\"schema\":1,\"clock_hours\":\"13h\"}", &arena));
     try std.testing.expectError(error.Invalid, fromJson("{\"schema\":1,\"timezone\":\"Nowhere/Land\"}", &arena));
     try std.testing.expect(std.mem.indexOf(u8, text, "\"clock_colour\":\"ff8000\"") != null);
-    // an unknown clock font is a face this build lacks, not junk: it loads as classic
-    try std.testing.expectEqual(@backingInt(clock.Font.classic), (try fromJson("{\"schema\":1,\"clock_font\":\"comic\"}", &arena)).clock_font);
+    // an unknown clock font is a face this build lacks, not junk: it loads as block, matt's face
+    try std.testing.expectEqual(@backingInt(clock.Font.block), (try fromJson("{\"schema\":1,\"clock_font\":\"comic\"}", &arena)).clock_font);
     try std.testing.expectError(error.Invalid, fromJson("{\"schema\":1,\"ip_mode\":\"huge\"}", &arena));
     try std.testing.expectError(error.Invalid, fromJson("{\"schema\":1,\"clock_colour\":\"red\"}", &arena));
     try std.testing.expectError(error.Invalid, fromJson("{\"schema\":1,\"brightness\":0}", &arena));
@@ -1365,12 +1367,12 @@ test "menu_font is mini until set, round-trips, and a face too tall for the menu
     try std.testing.expectEqual(canvas.Font.mini, (try fromJson("{\"schema\":1,\"menu_font\":\"from-the-future\"}", &arena)).menu_font);
 }
 
-test "a clock font this build does not know loads as classic rather than refusing the file" {
+test "a clock font this build does not know loads as block rather than refusing the file" {
     // faces are only ever appended, so a file saved by a newer build can name one this build has
     // never heard of. refusing the whole file for it would put the clock back on its defaults
     var arena: [8192]u8 = undefined;
     const c = try fromJson("{\"schema\":1,\"clock_font\":\"from-the-future\",\"timezone\":\"Europe/Amsterdam\",\"brightness\":42}", &arena);
-    try std.testing.expectEqual(@backingInt(clock.Font.classic), c.clock_font);
+    try std.testing.expectEqual(@backingInt(clock.Font.block), c.clock_font);
     try std.testing.expectEqual(@as(u8, 42), c.brightness);
     try std.testing.expectEqualStrings("Europe/Amsterdam", c.timezone.slice());
 }
@@ -1435,4 +1437,17 @@ test "terrain selection and controls round-trip through settings and ipc" {
     const back = try fromJson(try toJson(&decoded, &out), &arena);
     try std.testing.expectEqualStrings("terrain", generator_names[back.generator]);
     try std.testing.expectEqual(@as(u32, 12), back.generator_params[back.generator_params.len - 1][0]);
+}
+
+test "the clock face is block whenever nothing says otherwise" {
+    // a fresh device, a file without the field, and a number this build has no face for all come
+    // out as block: if the preference cannot be read, the clock still shows the face it is set to
+    var arena: [8192]u8 = undefined;
+    try std.testing.expectEqual(clock.Font.block, (Config{}).clockStyle().font);
+    try std.testing.expectEqual(@backingInt(clock.Font.block), (try fromJson("{\"schema\":1}", &arena)).clock_font);
+    var c = Config{};
+    c.clock_font = 250;
+    try std.testing.expectEqual(clock.Font.block, c.clockStyle().font);
+    var buf: [4096]u8 = undefined;
+    try std.testing.expect(std.mem.indexOf(u8, try toJson(&c, &buf), "\"clock_font\":\"block\"") != null);
 }
