@@ -138,6 +138,7 @@ test('the preview counts hours the way the status says: 13:34 in 12h is drawn as
   assert.ok(lit(h12.rgb) < lit(h24.rgb), '"1:34:56" lights fewer leds than "13:34:56"');
   // and a mirrored restyle event carries it too: followed, so the 24h status does not undo it
   W.reset('clock', 'popsquares', 1);
+  W.compose(clockStatus({ hours: '24h' }), localWith(W), WALL);   // the snapshot goes in first, as the console does
   W.setRevision(6);
   W.compose(clockStatus({ hours: '24h' }), localWith(W), WALL, true);
   const r = W.applyStatement({ revision: 7, age_ms: 0, cmd: 'set_clock_style', source: 'api', clock: { hours: '12h' } }, WALL);
@@ -797,6 +798,7 @@ test('a scene change with a transition is composited frame by frame, as the devi
   // the arbiter only records that a transition is pending; the device's renderer runs it through
   // the fader. the wasm runs the same fader, so a preview and a recording show the effect itself
   W.reset('clock', 'popsquares', 1);
+  W.compose(clockStatus(), localWith(W), WALL);   // the classic face, whatever the default
   W.exports.runTransitions(1);
   const t0 = WALL;
   W.exports.frame(t0, t0);
