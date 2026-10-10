@@ -4,7 +4,9 @@ what each release of the custom runtime brought, newest first. the headline is t
 the rest is what it took. every release gets a section here before it is cut: `tc002-mkrelease.sh`
 refuses a version this file does not know. the github releases carry the same notes at length.
 
-## unreleased
+## v0.3.7 — twenty pixel faces, and an update you can watch (2026-10-10)
+
+v0.3.6 was recorded here but never published; its changes ship in this release.
 
 - **a `font` beside `elements` on a notification is refused** (`400 invalid_font`) instead of
   dropped without a word: a document's text elements each name their own face.
@@ -55,14 +57,25 @@ refuses a version this file does not know. the github releases carry the same no
   a degree sign, so tiles and the demos read `21.4°C`.
 - **paired binaries required** for both: the canvas and clock font bytes, the notification
   options, the settings patch, the settings block and the device status each grew.
-- **flash this before saving an imported face.** a clock running this build in place falls back
-  to its flashed build on a power cycle, and every earlier build (v0.3.6 and before) refuses a
-  settings file whose `clock_font` it does not know: it starts on its defaults (utc, the classic
-  face, full brightness, no mqtt) and its next save overwrites the file with them. an earlier
-  build also drops a saved canvas that uses an imported face. so keep imported faces out of the
-  saved settings and the persisted canvas until the flashed image carries this build. this build
-  itself loads an unknown `clock_font` as `classic` and an unknown or too-tall `menu_font` as
-  `mini`, so the next face added will not repeat the trap.
+- **flash this, do not only run it in place.** once this build has saved the settings, every
+  earlier build (v0.3.6 and before) refuses the whole file -- it does not know `menu_font`, let
+  alone an imported face -- and starts on its defaults (utc, the classic face, full brightness, no
+  mqtt), and its next save overwrites the file with them. a clock running this build in place
+  falls back to its flashed build on any reboot, including the one an update makes to clear a
+  spent adbd, so flash it. measured on clock #1: the flashed v0.3.6 came up at revision 0 on
+  defaults, and the flash that followed found the file intact because nothing had saved in
+  between. an earlier build also drops a saved canvas that uses an imported face. this build
+  itself tolerates fields it does not know and loads an unknown face as `block`, so the next
+  addition will not repeat the trap.
+- **the face, base and generator chosen with the knob and buttons are not saved.** they never
+  were: like `PUT /scene` they change the glass, and a restart puts back the saved settings. that,
+  with the saved face still `classic` on both clocks, is what read as the clock reverting after a
+  restart; the face is now saved as `block` on both.
+- **an update waits for a rebooting clock.** when adbd had run out of ptys the update rebooted the
+  clock to clear it and then exited 1 with no message the first time it had to wait for the clock
+  to come back: under `set -e`, `(( n++ ))` with n at 0 is a failure. the tests ran the script
+  with macos's bash 3.2, which does not apply `set -e` there, and now run it with the bash its
+  shebang finds.
 - **the update notice shows how far the copy has got.** under `Updating...` and `Flashing...` sits
   a bar the clock fills itself: a bar may now `watch` the staging directory of an in-place update
   or the image a flash stages, with the `bytes` it will reach, and tc002d measures it every 100 ms
