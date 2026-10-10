@@ -1146,8 +1146,14 @@ a press outside the map (`unmapped keycode N pressed`), so the map can be
 checked from the log route. the vendor's knob driver (the
 `knob` device tree node, `ABS_X` on `event68`) reports state codes rather than
 a counter: one detent is a pair of events, **8 then 1 turning clockwise and 13
-then 11 counter-clockwise**, and the second value of each pair is the step;
-anything else is logged as unexpected. the pairs were measured on 2026-09-09
+then 11 counter-clockwise**, and a detent is a step only once both halves have
+arrived in that order; anything else is logged as unexpected. a lone half is
+not a step: the knob often starts back as it is let go and settles again, which
+the driver reports as a lone 11 85-250 ms after a clockwise detent. until
+2026-10-10 the second value alone was the step, so that lone 11 counted as a
+whole counter-clockwise detent and put about one clockwise click in five back
+where it was (five of eight in one raw capture). turning slowly shows which
+half comes first: the pause at rest comes before the 8 or the 13. the pairs were measured on 2026-09-09
 but assigned to the two directions by inference, the wrong way round; the panel
 settled it on 2026-09-11, when a clockwise turn walked the menu's dot row
 leftwards. everything downstream reads these labels, so `rotate_cw`, the

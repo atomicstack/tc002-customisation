@@ -4,6 +4,13 @@ what each release of the custom runtime brought, newest first. the headline is t
 the rest is what it took. every release gets a section here before it is cut: `tc002-mkrelease.sh`
 refuses a version this file does not know. the github releases carry the same notes at length.
 
+## unreleased
+
+- **a knob click that springs back is no longer a click.** the knob's driver reports each detent as
+  two halves, and a half detent started and abandoned as the knob is let go was counted as a whole
+  one the other way, so about one clockwise click in five put the menu back where it was. a detent
+  now counts only when both of its halves arrive in order.
+
 ## v0.3.7 — twenty pixel faces, and an update you can watch (2026-10-10)
 
 v0.3.6 was recorded here but never published; its changes ship in this release.

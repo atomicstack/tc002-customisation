@@ -514,7 +514,7 @@ const Renderer = struct {
         }
         self.sendEdges(&edges);
         if (self.mapper.abs_unexpected) |v| {
-            log.warn("rotary reported an unexpected value {d} (known: 8 then 1 ccw, 13 then 11 cw)", .{v});
+            log.warn("rotary reported an unexpected value {d} (known: 8 then 1 cw, 13 then 11 ccw)", .{v});
             self.mapper.abs_unexpected = null;
         }
         if (self.mapper.last_press) |p| {

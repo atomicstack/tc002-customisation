@@ -51,14 +51,53 @@ test "rotary state codes become one step per detent, the way the knob actually t
     m.feed(abs(1), 1, &q, &e);
     m.feed(abs(13), 2, &q, &e);
     m.feed(abs(11), 3, &q, &e);
-    m.feed(abs(11), 4, &q, &e); // a pair whose first half was lost still counts once
+    m.feed(abs(13), 4, &q, &e);
+    m.feed(abs(11), 5, &q, &e);
     try std.testing.expectEqualSlices(scene.Action, &.{ .rotate_cw, .rotate_ccw, .rotate_ccw }, q.slice());
     try std.testing.expectEqual(@as(i32, -1), m.position);
     try std.testing.expectEqual(EdgeEvent.cw, e.slice()[0].event);
     q.clear();
-    m.feed(abs(7), 5, &q, &e);
+    m.feed(abs(7), 6, &q, &e);
     try std.testing.expectEqual(@as(usize, 0), q.len);
     try std.testing.expectEqual(@as(?i32, 7), m.abs_unexpected);
+}
+
+test "a half detent that springs back as the knob is let go is not a step" {
+    // matt, 2026-10-10: about one clockwise click in five put the menu back where it was once the
+    // knob was let go. the raw capture from clock #2: eight clockwise detents, five of them
+    // followed 85-250 ms later by a lone 11 -- the knob starting back half a detent and settling
+    // again. counting a lone half as a whole detent turned eight clicks into three
+    var m = Mapper.init(.{});
+    var q = ActionQueue{};
+    var e = EdgeQueue{};
+    const captured = [_]i32{ 8, 1, 8, 1, 8, 1, 11, 8, 1, 8, 1, 11, 8, 1, 11, 8, 1, 11, 8, 1, 11 };
+    for (captured, 0..) |v, i| m.feed(abs(v), i, &q, &e);
+    try std.testing.expectEqual(@as(i32, 8), m.position);
+    try std.testing.expectEqual(@as(usize, 8), q.len);
+    // nor is a second half whose first half belongs to the other direction
+    q.clear();
+    m.feed(abs(8), 100, &q, &e);
+    m.feed(abs(11), 101, &q, &e);
+    m.feed(abs(13), 102, &q, &e);
+    m.feed(abs(1), 103, &q, &e);
+    try std.testing.expectEqual(@as(usize, 0), q.len);
+    try std.testing.expectEqual(@as(i32, 8), m.position);
+}
+
+test "a slow counter-clockwise detent is a step as it lands, not when the next one starts" {
+    // the second capture from clock #2, turning counter-clockwise slowly after the spring-back
+    // fix: the pause at rest always came before a 13 and the 11 followed 50-135 ms later, so a
+    // counter-clockwise detent is 13 then 11. paired the other way round, every step waited for
+    // the next detent to begin and the last of a turn was never taken
+    var m = Mapper.init(.{});
+    var q = ActionQueue{};
+    var e = EdgeQueue{};
+    m.feed(abs(8), 0, &q, &e);
+    m.feed(abs(1), 1, &q, &e);
+    m.feed(abs(13), 2, &q, &e);
+    m.feed(abs(11), 3, &q, &e);
+    try std.testing.expectEqualSlices(scene.Action, &.{ .rotate_cw, .rotate_ccw }, q.slice());
+    try std.testing.expectEqual(@as(i32, 0), m.position);
 }
 
 test "unknown keys and repeats are ignored and the queue is bounded" {
@@ -202,6 +241,9 @@ pub const Mapper = struct {
     last_press: ?struct { code: u16, control: Control } = null,
     /// a rotary value outside the known codes, for the renderer's log (cleared when logged)
     abs_unexpected: ?i32 = null,
+    /// the first half of a rotary detent seen last, waiting for its second half; any other code
+    /// cancels it, so a half detent that springs back is never a step.
+    half: ?enum { cw, ccw } = null,
 
     pub fn init(keymap: evdev.KeyMap) Mapper {
         return .{ .keymap = keymap };
@@ -260,14 +302,19 @@ pub const Mapper = struct {
             evdev.EV_ABS => {
                 // the vendor's knob driver reports state codes on ABS_X, not a counter: one
                 // detent is a pair of events, 8 then 1 turning clockwise and 13 then 11
-                // counter-clockwise. the second value of each pair is the step; anything else is
-                // remembered for the log. (the pairs were measured on 2026-09-09 but assigned to
-                // the two directions by inference, the wrong way round; matt caught it on
-                // 2026-09-11 when a clockwise turn walked the menu leftwards.)
+                // counter-clockwise, and a detent is a step only once both halves have arrived in
+                // that order. a lone half is not a step: as it is let go the knob often starts back
+                // and settles again, which arrives as a lone 11 after a clockwise detent, and
+                // counting that as a step put about one clockwise click in five back where it was
+                // (matt, 2026-10-10). (the pairs were assigned to the directions by inference the
+                // wrong way round once, until matt caught it on 2026-09-11.)
+                const first = self.half;
+                self.half = null;
                 switch (ev.value) {
-                    1 => self.step(true, out, edges),
-                    11 => self.step(false, out, edges),
-                    8, 13 => {},
+                    8 => self.half = .cw,
+                    13 => self.half = .ccw,
+                    1 => if (first == .cw) self.step(true, out, edges),
+                    11 => if (first == .ccw) self.step(false, out, edges),
                     else => self.abs_unexpected = ev.value,
                 }
             },
@@ -349,7 +396,8 @@ test "edges report every press and release, long holds, and rotary steps with th
     m.feed(key(108, 0), 1, &q, &e);
     m.feed(abs(13), 2, &q, &e);
     m.feed(abs(11), 2, &q, &e); // one counter-clockwise detent
-    m.feed(abs(11), 3, &q, &e); // another, its first half lost
+    m.feed(abs(13), 3, &q, &e);
+    m.feed(abs(11), 3, &q, &e); // another
     m.feed(abs(8), 4, &q, &e);
     m.feed(abs(1), 4, &q, &e); // one clockwise detent
     m.feed(key(103, 1), 5, &q, &e);
