@@ -310,7 +310,9 @@ sync is visible on the glass without being a notification. the digits are never
 touched, an unset clock keeps its own breathing instead, and the console
 preview does not mirror the pulse, because a correction is not an event. failures back off 2, 4, 8 … seconds up to the
 interval; a kiss-o'-death `RATE` doubles the wait and `DENY`/`RSTR` stop
-polling until the settings change. the status `time.state` is `unsynced`
+polling until the settings change. these kiss-o'-death replies must first echo
+the outstanding request's transmit timestamp, including its random fraction;
+a mismatch takes the ordinary failure backoff instead. the status `time.state` is `unsynced`
 until the first success, `synced` after it and `stale` when no success arrived
 within one hour (or three intervals, whichever is longer); `time.age_s` counts
 seconds since the last success. there is no frequency discipline: between polls

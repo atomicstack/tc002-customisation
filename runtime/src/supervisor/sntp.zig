@@ -122,6 +122,9 @@ pub fn parseReply(bytes: []const u8, sent: Timestamp, t1_unix_ns: u64, t4_unix_n
     const stratum = bytes[1];
     if (vn != 3 and vn != 4) return .{ .rejected = .version };
     if (mode != 4) return .{ .rejected = .mode };
+    // even a kiss-of-death must echo this request before it can change polling policy.
+    const originate = Timestamp.read(bytes[24..32]);
+    if (!originate.eql(sent)) return .{ .rejected = .originate };
     if (stratum == 0) {
         const code = bytes[12..16];
         if (std.mem.eql(u8, code, "RATE")) return .{ .rejected = .kiss_rate };
@@ -130,8 +133,6 @@ pub fn parseReply(bytes: []const u8, sent: Timestamp, t1_unix_ns: u64, t4_unix_n
     }
     if (li == 3) return .{ .rejected = .alarm };
     if (stratum > 15) return .{ .rejected = .stratum };
-    const originate = Timestamp.read(bytes[24..32]);
-    if (!originate.eql(sent)) return .{ .rejected = .originate };
     const receive = Timestamp.read(bytes[32..40]);
     const transmit = Timestamp.read(bytes[40..48]);
     if (receive.isZero() or transmit.isZero()) return .{ .rejected = .zero_stamp };
@@ -469,6 +470,48 @@ test "timeouts back off 2, 4, 8 ... seconds, capped at the interval; a success r
     try std.testing.expect(c.onReply(&reply, t1 + 2_000_000, now + 2_000_000) == .ok);
     try std.testing.expectEqual(@as(u8, 0), c.attempt);
     try std.testing.expectEqual(now + 2_000_000 + 300 * ns_per_s, c.next_ns);
+}
+
+test "kiss-o'-death with a mismatched originate timestamp cannot deny or rate-limit polling" {
+    const t1: u64 = ref_2026 * ns_per_s;
+    const req = buildRequest(t1, 0xdeadbeef);
+    for ([_][4]u8{ "DENY".*, "RSTR".*, "RATE".*, "INIT".* }) |code| {
+        // check both halves of the echoed timestamp, including the random fraction.
+        for ([_]usize{ 27, 31 }) |byte| {
+            var c = Client{};
+            c.configure(.{ 10, 0, 0, 136 }, 300, 0);
+            c.setNetwork(true, 0);
+            try std.testing.expectEqual(Directive.send, c.poll(0));
+            c.onSent(req.sent, t1, 0);
+            var kiss = serverReply(req.sent, t1 + 1000, t1 + 2000, 0, 0);
+            kiss[12..16].* = code;
+            kiss[byte] ^= 1;
+            try std.testing.expectEqual(Reject.originate, c.onReply(&kiss, t1 + 5000, 1000).rejected);
+            try std.testing.expectEqual(Phase.due, c.phase);
+            try std.testing.expectEqual(@as(u32, 0), c.rate_kisses);
+            try std.testing.expectEqual(@as(u64, 1000 + first_backoff_ns), c.next_ns);
+            try std.testing.expectEqual(Directive.none, c.poll(c.next_ns - 1));
+            try std.testing.expectEqual(Directive.send, c.poll(c.next_ns));
+        }
+    }
+}
+
+test "kiss-o'-death with a matching originate timestamp permits unsynchronised zero server stamps" {
+    const t1: u64 = ref_2026 * ns_per_s;
+    const req = buildRequest(t1, 0xdeadbeef);
+    const cases = .{
+        .{ "RATE", Reject.kiss_rate },
+        .{ "DENY", Reject.kiss_deny },
+        .{ "RSTR", Reject.kiss_deny },
+        .{ "INIT", Reject.kiss_other },
+    };
+    inline for (cases) |case| {
+        var kiss: [packet_len]u8 = @splat(0);
+        kiss[0] = (3 << 6) | (4 << 3) | 4;
+        kiss[12..16].* = case[0].*;
+        req.sent.write(kiss[24..32]);
+        try std.testing.expectEqual(case[1], parseReply(&kiss, req.sent, t1, t1 + 5000, ref_2026).rejected);
+    }
 }
 
 test "kiss-o'-death: rate doubles the wait, deny stops polling until reconfigured" {
