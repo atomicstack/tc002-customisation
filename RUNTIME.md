@@ -1594,7 +1594,7 @@ read-only storage; connection buffers stay the same size.
 | `POST` | `/input` | `input` | `{"control":"left\|middle\|right\|knob\|rotary","event":"press\|release\|click\|long\|cw\|ccw","steps":1..16?,"request_id":hex?,"epoch":u32?}` | as above. `click` is a request for a press and a release and reports as those two edges, never as a third; `long` is any button; `cw`/`ccw` are the rotary only and take `steps` |
 | `GET` | `/screen` | `screen` | | `{"width":52,"height":16,"epoch","revision","brightness","power","rgb_base64":"…"}`: the frame as shown, after fades, and `brightness` is the level it is shown at (mid-ramp, not yet the target `/status` reports), before brightness. `?format=raw` returns the 2,496 rgb bytes as `application/octet-stream` |
 | `GET` | `/logs?after=N` | `logs` | | `{"next":seq,"lines":[{"seq":n,"text":"…"}…]}`: up to 16 lines of the [log ring](#the-log-ring) after sequence number `after` (0 = oldest kept); pass `next` back to continue. a jump in `seq` means lines were evicted |
-| `GET` | `/events` | `logs` | | an [event stream](#the-event-stream): `text/event-stream`, one `data:` frame per statement applied, held open until the client goes away |
+| `GET` | `/events` | `logs` | | an [event stream](#the-event-stream): `text/event-stream`, one `data:` frame per statement applied, held open while the client stays connected and authorised |
 | `GET` | `/sounds` | `status` | | `{"used","budget","sounds":[{"name","bytes"}…]}` |
 | `PUT` | `/sounds/{name}?offset=N&final=1` | `content` | `application/octet-stream`, at most 4,096 bytes | one chunk of a sound. `offset` must be exactly what has already landed; `final=1` commits. see [sound](#sound) |
 | `DELETE` | `/sounds/{name}` | `content` | | `{"status":"ok",…}` |
@@ -1659,8 +1659,9 @@ scene, brightness and generator changes made this way are transient; to make
 them the boot defaults, patch and save the settings.
 
 errors are `{"error":"<code>","message":"…","request_id":"…"}` with a stable
-lowercase code. a number the schema cannot hold names the field it was given
-for — `{"error":"value_out_of_range","message":"spread is outside the range this
+lowercase code. error codes and messages are json-escaped, including quotes,
+backslashes and control bytes in a berry script's error text. a number the schema
+cannot hold names the field it was given for — `{"error":"value_out_of_range","message":"spread is outside the range this
 field allows"}` rather than a blanket "not valid json" — which matters most to
 the clients that hand-roll their json:
 
@@ -1826,6 +1827,12 @@ the route from the idle timeout without writing would have held the slot for
 ever. a subscriber that falls behind further than its buffer is dropped rather
 than buffered without bound, which is safe by construction: the missed statement
 shows up as a revision gap, and the gap is the signal to resync.
+
+when the supervisor sends a complete replacement set of named tokens, netd
+rechecks every open stream against its original bearer token. revoking or
+rotating that token, or removing its `logs` scope, closes the stream and discards
+queued events. unchanged named tokens and the built-in tokens keep their streams.
+an incomplete replacement set does not change stream access.
 
 ### settings
 

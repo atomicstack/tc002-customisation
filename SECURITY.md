@@ -106,7 +106,9 @@ the stock app and its unauthenticated api are not, and the picture changes:
   **named client tokens** ([`RUNTIME.md`](RUNTIME.md#scopes)) give an integration
   its own credential: issued by `POST /api/v1/tokens` under the admin token,
   revocable one at a time by `DELETE /api/v1/tokens/{name}`, taking effect on the
-  next request with no restart. a client token holds a **set of scopes** rather
+  next request with no restart. open `GET /events` streams also close when netd
+  receives the complete replacement token set after revocation, rotation or loss
+  of the `logs` scope. a client token holds a **set of scopes** rather
   than a rank — `notify` alone is a token that can raise a notification and do
   nothing else — and never `tokens`, so it cannot mint more of itself. a command
   from one is named in the log ring, and the secret is returned exactly once.

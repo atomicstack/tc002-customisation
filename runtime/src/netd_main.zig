@@ -130,44 +130,7 @@ const Conn = struct {
 
 const MqttPending = struct { used: bool = false, id: u64 = 0, since_ns: u64 = 0 };
 
-/// a bounded text builder for json responses; overflow is remembered, never written past the end.
-const Out = struct {
-    buf: []u8,
-    len: usize = 0,
-    overflow: bool = false,
-
-    fn add(self: *Out, s: []const u8) void {
-        if (self.len + s.len > self.buf.len) {
-            self.overflow = true;
-            return;
-        }
-        @memcpy(self.buf[self.len .. self.len + s.len], s);
-        self.len += s.len;
-    }
-
-    fn fmt(self: *Out, comptime f: []const u8, args: anytype) void {
-        const r = std.fmt.bufPrint(self.buf[self.len..], f, args) catch {
-            self.overflow = true;
-            return;
-        };
-        self.len += r.len;
-    }
-
-    fn str(self: *Out, s: []const u8) void {
-        self.add("\"");
-        for (s) |c| switch (c) {
-            '"' => self.add("\\\""),
-            '\\' => self.add("\\\\"),
-            0...0x1f => self.fmt("\\u{x:0>4}", .{c}),
-            else => self.add(&[1]u8{c}),
-        };
-        self.add("\"");
-    }
-
-    fn slice(self: *const Out) []const u8 {
-        return self.buf[0..self.len];
-    }
-};
+const Out = @import("net/out.zig").Out;
 
 var conns: [max_conns]Conn = undefined;
 var packet_buf: [codec.max_message]u8 = undefined;
@@ -313,6 +276,25 @@ const Netd = struct {
         c.reset();
     }
 
+    fn installClients(self: *Netd, next: clients.Store) void {
+        self.clients = next;
+        // the complete generation is authoritative for already-open streams too. their request
+        // headers remain in the connection's input buffer for the lifetime of the stream.
+        for (&conns) |*c| {
+            if (c.state != .streaming) continue;
+            const creds = self.creds orelse {
+                self.closeConn(c);
+                continue;
+            };
+            const auth = api.authenticate(&creds, &self.clients, c.req.authorization);
+            const same_client = if (c.client) |name|
+                if (auth.client) |current| std.mem.eql(u8, name.slice(), current.slice()) else false
+            else
+                auth.client == null;
+            if (!same_client or !clients.has(auth.scopes, .logs)) self.closeConn(c);
+        }
+    }
+
     fn respond(self: *Netd, c: *Conn, status: u16, content_type: []const u8, body: []const u8) void {
         _ = self;
         c.static_body = .{ .body = "" };
@@ -324,7 +306,8 @@ const Netd = struct {
     }
 
     fn respondError(self: *Netd, c: *Conn, status: u16, code: []const u8, message: []const u8) void {
-        var body: [256]u8 = undefined;
+        // every byte of a berry error may expand to a six-byte json escape.
+        var body: [256 + 6 * config.text_max]u8 = undefined;
         const b = http.errorBody(&body, code, message, c.client_id);
         if (status >= 400) self.http_rejected += 1;
         self.respond(c, status, "application/json", b);
@@ -1114,7 +1097,7 @@ const Netd = struct {
                     self.incoming_clients = .{};
                     self.expected_clients = r.count;
                     if (r.count == 0) {
-                        self.clients = .{};
+                        self.installClients(.{});
                         log.info("client tokens received: 0", .{});
                     }
                 },
@@ -1133,7 +1116,7 @@ const Netd = struct {
                     }
                     // the set is complete when its indices are; the supervisor sends them in order
                     if (self.incoming_clients.len == self.expected_clients) {
-                        self.clients = self.incoming_clients;
+                        self.installClients(self.incoming_clients);
                         log.info("client tokens received: {d}", .{self.clients.len});
                     }
                 },
@@ -2345,6 +2328,63 @@ fn run(stats: bool) !u8 {
         }
     }
     return 0;
+}
+
+test "installing clients closes streams whose original named credential lost access" {
+    // fd stays -1: exercise the real connection bookkeeping without invoking linux syscalls.
+    const repeat = @import("repeat.zig");
+    const changes = enum { revoked, rotated, scope_removed, renamed };
+    for (std.enums.values(changes)) |change| {
+        for (&conns) |*c| c.* = .{};
+        var n = Netd{ .ep = -1, .timer = -1, .stats = false, .creds = .{ .admin = @splat(0x22), .control = @splat(0x11) } };
+        try n.clients.add("reader", clients.Scope.logs.bit(), @splat(0x33), 0);
+        var next = n.clients;
+        switch (change) {
+            .revoked => try std.testing.expect(next.remove("reader")),
+            .rotated => try std.testing.expect(next.rotate("reader", @splat(0x44), 1, null)),
+            .scope_removed => next.entries[0].scopes = clients.Scope.status.bit(),
+            .renamed => next.entries[0].name = clients.Name.init("replacement"),
+        }
+        conns[0].state = .streaming;
+        conns[0].client = clients.Name.init("reader");
+        conns[0].req = try http.parseHead("GET /api/v1/events HTTP/1.1\r\nAuthorization: Bearer " ++ repeat.bytes("33", 32) ++ "\r\n\r\n");
+        conns[0].out_len = 10; // queued events must be discarded too
+        n.installClients(next);
+        try std.testing.expectEqual(ConnState.free, conns[0].state);
+        try std.testing.expectEqual(@as(usize, 0), conns[0].out_len);
+    }
+}
+
+test "installing clients preserves unchanged streams and built-ins even with an empty set" {
+    const repeat = @import("repeat.zig");
+    for (&conns) |*c| c.* = .{};
+    var n = Netd{ .ep = -1, .timer = -1, .stats = false, .creds = .{ .admin = @splat(0x22), .control = @splat(0x11) } };
+    try n.clients.add("reader", clients.Scope.logs.bit(), @splat(0x33), 0);
+    const headers = .{ repeat.bytes("33", 32), repeat.bytes("22", 32), repeat.bytes("11", 32) };
+    inline for (headers, 0..) |token, i| {
+        conns[i].state = .streaming;
+        conns[i].req = try http.parseHead("GET /api/v1/events HTTP/1.1\r\nAuthorization: Bearer " ++ token ++ "\r\n\r\n");
+    }
+    conns[0].client = clients.Name.init("reader");
+    conns[3].state = .writing; // ordinary replies do not get reauthenticated
+    var next = n.clients;
+    try next.add("other", clients.Scope.status.bit(), @splat(0x44), 0);
+    n.installClients(next);
+    for (conns[0..3]) |*c| try std.testing.expectEqual(ConnState.streaming, c.state);
+    n.installClients(.{});
+    try std.testing.expectEqual(ConnState.free, conns[0].state);
+    for (conns[1..3]) |*c| try std.testing.expectEqual(ConnState.streaming, c.state);
+    try std.testing.expectEqual(ConnState.writing, conns[3].state);
+}
+
+test "script error responses fit the maximum escaped berry error text" {
+    var n = Netd{ .ep = -1, .timer = -1, .stats = false };
+    var c = Conn{};
+    const message: [config.text_max]u8 = @splat(0x01);
+    n.respondError(&c, 400, "script_error", &message);
+    const body_at = (std.mem.indexOf(u8, c.out[0..c.out_len], "\r\n\r\n") orelse return error.MissingHead) + 4;
+    const expected = "{\"error\":\"script_error\",\"message\":\"" ++ @import("repeat.zig").bytes("\\u0001", config.text_max) ++ "\",\"request_id\":\"0000000000000000\"}";
+    try std.testing.expectEqualStrings(expected, c.out[body_at..c.out_len]);
 }
 
 pub fn main(init: std.process.Init.Minimal) u8 {

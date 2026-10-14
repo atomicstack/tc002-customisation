@@ -1,5 +1,6 @@
-//! test aggregator: every pure module is listed here so `zig build test` covers it.
+//! test aggregator: pure modules and netd's socket-free connection state tests.
 test {
+    _ = @import("netd_main.zig");
     _ = @import("repeat.zig");
     _ = @import("sys/civil.zig");
     _ = @import("sys/log.zig");

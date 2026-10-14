@@ -6,6 +6,7 @@
 //! -- the event stream -- writes its own head in `sse.zig`, because it can carry neither a
 //! content-length it cannot know nor a close it must not do.
 const std = @import("std");
+const Out = @import("out.zig").Out;
 
 /// netd's response buffer. it lives here rather than in netd so that anything bounded by "must fit
 /// one response" -- the canvas document, the client listing -- can derive its bound from the same
@@ -84,6 +85,20 @@ test "responses are exact bytes with connection close" {
 
 fn eqlIgnoreCase(a: []const u8, b: []const u8) bool {
     return std.ascii.eqlIgnoreCase(a, b);
+}
+
+test "error bodies escape script-controlled text and never return partial json" {
+    const code = "script\"error\\";
+    const message = "raised \"oops\"\\\n\r\t\x00\x1f café";
+    const expected = "{\"error\":\"script\\\"error\\\\\",\"message\":\"raised \\\"oops\\\"\\\\\\u000a\\u000d\\u0009\\u0000\\u001f café\",\"request_id\":\"0123456789abcdef\"}";
+    var out: [256]u8 = undefined;
+    try std.testing.expectEqualStrings(expected, errorBody(&out, code, message, 0x0123456789abcdef));
+    try std.testing.expectEqualStrings(expected, errorBody(out[0..expected.len], code, message, 0x0123456789abcdef));
+    for (0..expected.len) |len| {
+        @memset(&out, 0xaa);
+        try std.testing.expectEqual(@as(usize, 0), errorBody(out[0..len], code, message, 0x0123456789abcdef).len);
+        try std.testing.expectEqual(@as(u8, 0xaa), out[len]);
+    }
 }
 
 fn trim(s: []const u8) []const u8 {
@@ -173,5 +188,11 @@ pub fn writeResponse(out: []u8, status: u16, content_type: []const u8, body: []c
 
 /// the json error body: stable lowercase code, readable message, request id; no secrets.
 pub fn errorBody(out: []u8, code: []const u8, message: []const u8, request_id: u64) []u8 {
-    return std.fmt.bufPrint(out, "{{\"error\":\"{s}\",\"message\":\"{s}\",\"request_id\":\"{x:0>16}\"}}", .{ code, message, request_id }) catch out[0..0];
+    var o = Out{ .buf = out };
+    o.add("{\"error\":");
+    o.str(code);
+    o.add(",\"message\":");
+    o.str(message);
+    o.fmt(",\"request_id\":\"{x:0>16}\"}}", .{request_id});
+    return if (o.overflow) out[0..0] else out[0..o.len];
 }
