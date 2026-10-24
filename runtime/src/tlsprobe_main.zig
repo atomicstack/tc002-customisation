@@ -1,12 +1,12 @@
-//! tc002-tlsprobe: one mqtt connection over `net/tls_link.zig`, the path netd takes, against a real
-//! broker. it connects without blocking, runs the handshake, sends a CONNECT through the link and
+//! tc002-tlsprobe: makes one MQTT connection to a real broker over `net/tls_link.zig`, the same path
+//! netd uses. It connects without blocking, runs the handshake, sends a CONNECT through the link and
 //! prints the broker's CONNACK, timing each step.
 //!
 //!   tc002-tlsprobe <ipv4> <port> <ca.pem> [username password-file]
 //!
-//! with no credentials a broker that requires them answers return code 5 (not authorised), which
-//! still proves the whole path: a record each way, decrypted and parsed. a diagnostic, built on
-//! request and never installed.
+//! Without credentials, a broker that requires them answers with return code 5 (not authorised).
+//! That still proves the whole path works: a record each way, decrypted and parsed. It's a
+//! diagnostic tool, built on request and never installed on the device.
 const std = @import("std");
 const sys = @import("sys/linux.zig");
 const api = @import("net/api.zig");
@@ -35,7 +35,7 @@ fn msSince(t0: u64) u64 {
     return (sys.monotonicNs() - t0) / std.time.ns_per_ms;
 }
 
-/// wait for `events` on `fd`, at most `ms`
+/// Waits up to `ms` for `events` on `fd`.
 fn waitFor(fd: sys.Fd, events: i16, ms: i32) bool {
     var p = [_]linux.pollfd{.{ .fd = fd, .events = events, .revents = 0 }};
     const rc = linux.poll(&p, 1, ms);
@@ -46,7 +46,7 @@ pub fn main(init: std.process.Init.Minimal) u8 {
     const argv = init.args.vector;
     if (argv.len != 4 and argv.len != 6) return fail("usage: tc002-tlsprobe <ipv4> <port> <ca.pem> [username password-file]", .{});
     const host = std.mem.span(argv[1]);
-    const addr = api.parseIpv4(host) orelse return fail("not a dotted ipv4 address: {s}", .{host});
+    const addr = api.parseIpv4(host) orelse return fail("not a dotted IPv4 address: {s}", .{host});
     const port = std.fmt.parseInt(u16, std.mem.span(argv[2]), 10) catch return fail("bad port", .{});
     const ca = sys.readFile(argv[3], &ca_buf) catch |e| return fail("cannot read {s}: {s}", .{ argv[3], sys.errText(e) });
     var username: ?[]const u8 = null;
@@ -60,15 +60,15 @@ pub fn main(init: std.process.Init.Minimal) u8 {
     const t0 = sys.monotonicNs();
     const fd = sys.tcpConnect(addr, port) catch |e| return fail("connect: {s}", .{sys.errText(e)});
     defer sys.close(fd);
-    if (!waitFor(fd, linux.POLL.OUT, 5000) or !sys.socketConnected(fd)) return fail("tcp connect to {s}:{d} failed", .{ host, port });
-    out("tcp connected in {d} ms", .{msSince(t0)});
+    if (!waitFor(fd, linux.POLL.OUT, 5000) or !sys.socketConnected(fd)) return fail("TCP connect to {s}:{d} failed", .{ host, port });
+    out("TCP connected in {d} ms", .{msSince(t0)});
 
     const t1 = sys.monotonicNs();
     link.handshake(fd, ca, host) catch |e| return fail("{s} ({s})", .{ tls_link.handshakeErrorText(e), link.last_error });
-    out("tls handshake in {d} ms: {s}", .{ msSince(t1), @tagName(link.client.tls_version) });
+    out("TLS handshake in {d} ms: {s}", .{ msSince(t1), @tagName(link.client.tls_version) });
 
     var pkt: [512]u8 = undefined;
-    const n = mqtt.encodeConnect(&pkt, .{ .client_id = "tc002-tlsprobe", .keepalive_s = 30, .username = username, .password = password }) catch return fail("connect packet too large", .{});
+    const n = mqtt.encodeConnect(&pkt, .{ .client_id = "tc002-tlsprobe", .keepalive_s = 30, .username = username, .password = password }) catch return fail("CONNECT packet too large", .{});
     const t2 = sys.monotonicNs();
     var off: usize = 0;
     while (off < n) off += link.encrypt(pkt[off..n]) catch return fail("encrypt failed", .{});
@@ -101,10 +101,10 @@ pub fn main(init: std.process.Init.Minimal) u8 {
         };
         switch (d.packet) {
             .connack => |c| {
-                out("connack in {d} ms: return code {d}{s}", .{ msSince(t2), c.return_code, if (c.return_code == 0) " (accepted)" else if (c.return_code == 5) " (not authorised)" else "" });
+                out("CONNACK in {d} ms: return code {d}{s}", .{ msSince(t2), c.return_code, if (c.return_code == 0) " (accepted)" else if (c.return_code == 5) " (not authorised)" else "" });
                 return 0;
             },
-            else => return fail("expected a connack", .{}),
+            else => return fail("expected a CONNACK", .{}),
         }
     }
 }

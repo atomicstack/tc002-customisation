@@ -1,32 +1,33 @@
-//! mqtt over tls: the standard library's tls client between netd's nonblocking broker socket and
-//! its plaintext mqtt buffers.
+//! MQTT over TLS: the standard library's TLS client, sitting between netd's non-blocking broker
+//! socket and its plaintext MQTT buffers.
 //!
-//! netd is one epoll loop that must never wait on a socket, and `std.crypto.tls.Client` is written
-//! against blocking `std.Io` streams. the two meet at the record boundary:
+//! netd is a single epoll loop that must never wait on a socket, but `std.crypto.tls.Client` is
+//! written for blocking `std.Io` streams. The two meet at the record boundary:
 //!
-//!   - the handshake is the only part that needs a conversation, so it runs blocking, once per
-//!     connection, with a send and receive timeout on the socket. on a lan it is a few round trips
-//!     and a signature check; a broker that stalls costs at most `handshake_timeout_s`.
-//!   - after that, every record names its own length in a five-byte header. netd reads ciphertext
+//!   - The handshake is the only part that needs a back-and-forth, so it runs blocking, once per
+//!     connection, with a send and receive timeout on the socket. On a LAN that's a few round trips
+//!     and a signature check, and a broker that stalls costs at most `handshake_timeout_s`.
+//!   - After that, every record states its own length in a five-byte header. netd reads ciphertext
 //!     into `input` itself, without blocking, and only asks the client to decrypt once a whole
-//!     record is there, so the client never reaches for the socket.
-//!   - writes are encrypted into `output`, a plain buffer, and sent by netd the way it sends
-//!     plaintext: as far as the socket takes it, the rest on the next writable event.
+//!     record has arrived, so the client never touches the socket.
+//!   - Writes are encrypted into `output`, a plain buffer, and netd sends them the same way it sends
+//!     plaintext: as much as the socket will take, and the rest on the next writable event.
 //!
-//! the server is checked against one pem ca (no built-in roots: a lan broker's certificate is
-//! private) and the address netd connected to, which the certificate must carry as an ip
-//! subjectAltName. the runtime has no resolver, so there is no other name to check.
+//! The server is checked against one PEM CA (there are no built-in roots, because a LAN broker's
+//! certificate is private) and against the address netd connected to, which the certificate must
+//! include as an IP subjectAltName. The runtime has no DNS resolver, so there's no other name to
+//! check.
 const std = @import("std");
 const sys = @import("../sys/linux.zig");
 const tls = std.crypto.tls;
 const Certificate = std.crypto.Certificate;
 const linux = std.os.linux;
 
-/// one whole tls record, the most the client can ask for at once
+/// One whole TLS record: the most the client can ask for at once.
 pub const record_len = tls.Client.min_buffer_len;
 pub const handshake_timeout_s = 5;
-/// certificates are dated, and this device has no rtc: until sntp has set the clock a chain cannot
-/// be checked, so the handshake is not attempted before this (2025-01-01)
+/// Certificates have validity dates and this device has no RTC, so a chain can't be checked until
+/// SNTP has set the clock. The handshake isn't attempted before this time (2025-01-01).
 pub const earliest_valid_s: i64 = 1735689600;
 
 pub const HandshakeError = error{ ClockNotSet, NoCa, BadCa, Timeout, Certificate, Handshake };
@@ -44,16 +45,16 @@ pub fn handshakeErrorText(e: HandshakeError) []const u8 {
     };
 }
 
-/// the length of the first whole record in `buf`, or null when it has not all arrived. a header
-/// claiming more than the protocol allows is returned as is; the client then refuses it.
+/// The length of the first whole record in `buf`, or null if it hasn't all arrived yet. A header
+/// claiming more than the protocol allows is returned as is, and the client then rejects it.
 pub fn completeRecord(buf: []const u8) ?usize {
     if (buf.len < tls.record_header_len) return null;
     const len = tls.record_header_len + @as(usize, std.mem.readInt(u16, buf[3..5], .big));
     return if (buf.len >= len) len else null;
 }
 
-/// the der certificates of a pem text, appended to `bundle`. anything outside the
-/// BEGIN/END CERTIFICATE markers is ignored.
+/// Appends the DER certificates from a PEM text to `bundle` and returns how many there were.
+/// Anything outside the BEGIN/END CERTIFICATE markers is ignored.
 pub fn addPem(bundle: *Certificate.Bundle, gpa: std.mem.Allocator, pem: []const u8, now_sec: i64, scratch: []u8) !usize {
     const begin = "-----BEGIN CERTIFICATE-----";
     const end_marker = "-----END CERTIFICATE-----";
@@ -79,31 +80,31 @@ pub fn addPem(bundle: *Certificate.Bundle, gpa: std.mem.Allocator, pem: []const 
     return added;
 }
 
-/// one tls connection's state. about 70 kb, so netd keeps exactly one, statically.
+/// The state of one TLS connection. It's about 70 KB, so netd keeps exactly one, statically.
 pub const Link = struct {
     fd: sys.Fd = -1,
     active: bool = false,
     timed_out: bool = false,
-    /// the name of the last error the client gave, for the log
+    /// The name of the last error the client reported, for the log.
     last_error: []const u8 = "",
     in_buf: [record_len]u8 = undefined,
     out_buf: [record_len]u8 = undefined,
     clear_in: [record_len]u8 = undefined,
     clear_out: [record_len]u8 = undefined,
-    /// the ca bundle's allocations, rebuilt for every handshake
+    /// The CA bundle's allocations, rebuilt for every handshake.
     heap: [24 * 1024]u8 = undefined,
     der: [4096]u8 = undefined,
     input: std.Io.Reader = undefined,
     output: std.Io.Writer = undefined,
-    /// how much of `output.buffered()` the socket has taken
+    /// How much of `output.buffered()` the socket has taken so far.
     sent: usize = 0,
     client: tls.Client = undefined,
 
     const reader_vtable: std.Io.Reader.VTable = .{ .stream = socketStream, .readVec = socketReadVec };
     const writer_vtable: std.Io.Writer.VTable = .{ .drain = socketDrain };
 
-    /// run the handshake on a connected nonblocking socket. blocks for at most
-    /// `handshake_timeout_s` per read or write, and leaves the socket nonblocking again.
+    /// Runs the handshake on a connected non-blocking socket. It blocks for at most
+    /// `handshake_timeout_s` per read or write, and leaves the socket non-blocking again.
     pub fn handshake(self: *Link, fd: sys.Fd, ca_pem: []const u8, host: []const u8) HandshakeError!void {
         self.reset();
         if (ca_pem.len == 0) return error.NoCa;
@@ -144,7 +145,7 @@ pub const Link = struct {
             if (self.timed_out) return error.Timeout;
             return if (std.mem.indexOf(u8, @errorName(e), "Certificate") != null or e == error.TlsAlert) error.Certificate else error.Handshake;
         };
-        // the client flushes its own handshake records; anything still buffered was sent
+        // The client flushes its own handshake records, so anything still buffered has been sent.
         self.output.end = 0;
         self.sent = 0;
         self.active = true;
@@ -158,8 +159,9 @@ pub const Link = struct {
         self.sent = 0;
     }
 
-    /// plaintext from the broker into `dst`: what the client has already decrypted, else the next
-    /// whole record, else whatever the socket has. error.WouldBlock once there is nothing more.
+    /// Reads plaintext from the broker into `dst`: whatever the client has already decrypted,
+    /// otherwise the next whole record, otherwise whatever the socket has. Returns
+    /// error.WouldBlock once there's nothing more.
     pub fn read(self: *Link, dst: []u8) ReadError!usize {
         std.debug.assert(self.active and dst.len > 0);
         while (true) {
@@ -172,8 +174,8 @@ pub const Link = struct {
             }
             if (self.client.eof()) return error.Closed;
             if (completeRecord(self.input.buffered()) != null) {
-                // one record: application data lands in the reader's buffer, a post-handshake
-                // message (a session ticket, a key update) is consumed and leaves nothing
+                // One record. Application data lands in the reader's buffer; a post-handshake
+                // message (a session ticket or a key update) is consumed and leaves nothing.
                 self.client.reader.fillMore() catch |e| switch (e) {
                     error.EndOfStream => return error.Closed,
                     error.ReadFailed => {
@@ -183,7 +185,7 @@ pub const Link = struct {
                 };
                 continue;
             }
-            // compact the partial record to the front, then read more of it
+            // Move the partial record to the front of the buffer, then read more of it.
             if (self.input.seek > 0) {
                 const partial = self.input.buffered();
                 std.mem.copyForwards(u8, self.input.buffer[0..partial.len], partial);
@@ -200,24 +202,24 @@ pub const Link = struct {
         }
     }
 
-    /// true while ciphertext is waiting for the socket; `encrypt` takes nothing until it has gone
+    /// True while ciphertext is waiting for the socket. `encrypt` mustn't be called until it's sent.
     pub fn pending(self: *const Link) bool {
         return self.sent < self.output.end;
     }
 
-    /// encrypt the front of `plain` into one record and return how much of it was taken
+    /// Encrypts the start of `plain` into one record and returns how much of it was used.
     pub fn encrypt(self: *Link, plain: []const u8) WriteError!usize {
         std.debug.assert(self.active and !self.pending());
         self.output.end = 0;
         self.sent = 0;
         const n = @min(plain.len, tls.max_ciphertext_inner_record_len - 256);
-        // both buffers are empty and each holds a whole record, so neither write reaches a vtable
+        // Both buffers are empty and each holds a whole record, so neither write reaches a vtable.
         self.client.writer.writeAll(plain[0..n]) catch return error.Tls;
         self.client.writer.flush() catch return error.Tls;
         return n;
     }
 
-    /// as much of the pending ciphertext as the socket takes
+    /// Sends as much of the pending ciphertext as the socket will take.
     pub fn send(self: *Link) WriteError!void {
         while (self.pending()) {
             const n = sys.write(self.fd, self.output.buffer[self.sent..self.output.end]) catch |e| switch (e) {
@@ -231,9 +233,9 @@ pub const Link = struct {
         self.sent = 0;
     }
 
-    // the socket, as the client sees it during the handshake: blocking with a timeout. after the
-    // handshake these are only a backstop -- `read` hands the client whole records and `encrypt`
-    // leaves room -- and on a nonblocking socket they fail rather than wait.
+    // The socket as the client sees it during the handshake: blocking, with a timeout. After the
+    // handshake these are only a backstop (`read` hands the client whole records and `encrypt`
+    // leaves room), and on a non-blocking socket they fail rather than wait.
     fn socketReadVec(r: *std.Io.Reader, data: [][]u8) std.Io.Reader.Error!usize {
         _ = data;
         const self: *Link = @alignCast(@fieldParentPtr("input", r));
@@ -307,16 +309,16 @@ fn setBlocking(fd: sys.Fd, on: bool) void {
     _ = linux.setsockopt(fd, linux.SOL.SOCKET, linux.SO.SNDTIMEO, @ptrCast(&tv), @sizeOf(linux.timeval));
 }
 
-test "a record is whole only once its header's length has arrived" {
+test "A record is only whole once the length in its header has arrived" {
     try std.testing.expectEqual(@as(?usize, null), completeRecord(""));
     try std.testing.expectEqual(@as(?usize, null), completeRecord(&.{ 0x17, 0x03, 0x03, 0x00 }));
     try std.testing.expectEqual(@as(?usize, null), completeRecord(&.{ 0x17, 0x03, 0x03, 0x00, 0x03, 0xaa, 0xbb }));
     try std.testing.expectEqual(@as(?usize, 8), completeRecord(&.{ 0x17, 0x03, 0x03, 0x00, 0x03, 0xaa, 0xbb, 0xcc }));
-    // a second record behind the first does not change the first's length
+    // A second record behind the first doesn't change the first one's length.
     try std.testing.expectEqual(@as(?usize, 5), completeRecord(&.{ 0x14, 0x03, 0x03, 0x00, 0x00, 0x17, 0x03 }));
 }
 
-// a throwaway self-signed p-256 certificate, valid 2026-10-24 to 2036-10-21, made for this test
+// A throwaway self-signed P-256 certificate made for this test, valid 2026-10-24 to 2036-10-21.
 const test_ca_pem =
     \\-----BEGIN CERTIFICATE-----
     \\MIIBmDCCAT2gAwIBAgIUdyU0imFcpsHbHHQYxwuU68AVwqowCgYIKoZIzj0EAwIw
@@ -331,13 +333,13 @@ const test_ca_pem =
     \\-----END CERTIFICATE-----
 ;
 
-test "a pem ca lands in the bundle, and text that is not one is refused" {
+test "A PEM CA ends up in the bundle, and text that isn't one is rejected" {
     var heap: [24 * 1024]u8 = undefined;
     var fba = std.heap.FixedBufferAllocator.init(&heap);
     const gpa = fba.allocator();
     var scratch: [4096]u8 = undefined;
     var bundle: Certificate.Bundle = .empty;
-    const now_s: i64 = 1795000000; // 2026-11-18, inside the test certificate's validity
+    const now_s: i64 = 1795000000; // 2026-11-18, within the test certificate's validity
     try std.testing.expectEqual(@as(usize, 1), try addPem(&bundle, gpa, "some text first\n" ++ test_ca_pem ++ "\n", now_s, &scratch));
     try std.testing.expectEqual(@as(usize, 0), try addPem(&bundle, gpa, "no certificate here", now_s, &scratch));
     try std.testing.expectError(error.BadPem, addPem(&bundle, gpa, "-----BEGIN CERTIFICATE-----\nAAAA", now_s, &scratch));
