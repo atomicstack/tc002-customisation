@@ -56,6 +56,7 @@ test {
     _ = @import("sound/mi.zig");
     _ = @import("sound/vendor.zig");
     _ = @import("net/api.zig");
+    _ = @import("net/tls_link.zig");
     _ = @import("net/ha.zig");
     _ = @import("net/credfile.zig");
     _ = @import("net/clients.zig");

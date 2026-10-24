@@ -21,7 +21,7 @@ var configFields = []field{
 }
 var mqttFields = []field{
 	boolField("enabled"), textField("host"), numberField("port", 1, 65535), textField("username"), textField("password"),
-	textField("client_id"), textField("prefix"), boolField("tls"),
+	textField("client_id"), textField("prefix"), boolField("tls"), textField("ca"),
 }
 var ntfyFields = []field{
 	boolField("enabled"), textField("url"), textField("topic"), textField("token"), textField("username"), textField("password"),

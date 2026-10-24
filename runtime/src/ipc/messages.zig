@@ -79,6 +79,10 @@ test "every message kind round-trips through a packet" {
         .{ .config_save = .{ .has_revision = 1, .revision = 6 } },
         .{ .save_result = .{ .status = .conflict, .saved_revision = 5 } },
         .{ .mqtt_put = try MqttPut.fromApi(.{ .host = "10.0.0.2", .password = "Pw", .enabled = true }) },
+        .{ .mqtt_put = try MqttPut.fromApi(.{ .port = 8883, .tls = true, .ca = "-----BEGIN CERTIFICATE-----\nAA==\n-----END CERTIFICATE-----\n" }) },
+        .{ .mqtt_put = try MqttPut.fromApi(.{ .ca = "" }) },
+        .{ .mqtt_ca = MqttCa.init("-----BEGIN CERTIFICATE-----\nAA==\n-----END CERTIFICATE-----\n") },
+        .{ .mqtt_ca = MqttCa.init("") },
         .{ .ntfy_put = try NtfyPut.fromApi(.{ .url = "https://ntfy.sh", .topic = "t", .enabled = true, .ca = "-----BEGIN CERTIFICATE-----\nAA==\n-----END CERTIFICATE-----\n" }) },
         .{ .ntfy_put = try NtfyPut.fromApi(.{ .duration_s = 30, .insecure = true, .ca = "" }) },
         .{ .ntfy_config = blk: {
@@ -333,6 +337,8 @@ pub const Kind = enum(u8) {
     config_save = 36,
     save_result = 37,
     mqtt_put = 38,
+    /// supervisor -> netd: the broker's ca certificate
+    mqtt_ca = 87,
     status_get = 39,
     status = 40,
     // supervisor <-> netd (ntfy settings) and supervisor <-> the ntfy subscriber
@@ -2080,8 +2086,10 @@ pub const NtfyStatus = struct {
     }
 };
 
+/// the mqtt settings patch from netd: presence flags, fixed fields and, like `NtfyPut`, a pem
+/// certificate of variable length at the end (0 = not given; presence with length 0 = remove).
 pub const MqttPut = struct {
-    has: u8 = 0,
+    has: u16 = 0,
     enabled: u8 = 0,
     host: config.Text = .{},
     port: u16 = 0,
@@ -2090,19 +2098,22 @@ pub const MqttPut = struct {
     client_id: config.Text = .{},
     prefix: config.Text = .{},
     tls: u8 = 0,
+    ca_len: u16 = 0,
+    ca: [api.max_ca]u8 = undefined,
 
     pub const F = struct {
-        pub const enabled: u8 = 1 << 0;
-        pub const host: u8 = 1 << 1;
-        pub const port: u8 = 1 << 2;
-        pub const username: u8 = 1 << 3;
-        pub const password: u8 = 1 << 4;
-        pub const client_id: u8 = 1 << 5;
-        pub const prefix: u8 = 1 << 6;
-        pub const tls: u8 = 1 << 7;
+        pub const enabled: u16 = 1 << 0;
+        pub const host: u16 = 1 << 1;
+        pub const port: u16 = 1 << 2;
+        pub const username: u16 = 1 << 3;
+        pub const password: u16 = 1 << 4;
+        pub const client_id: u16 = 1 << 5;
+        pub const prefix: u16 = 1 << 6;
+        pub const tls: u16 = 1 << 7;
+        pub const ca: u16 = 1 << 8;
     };
 
-    pub const wire_len = 1 + 1 + 65 + 2 + 4 * 65 + 1;
+    pub const fixed_len = 2 + 1 + 65 + 2 + 4 * 65 + 1 + 2;
 
     pub fn fromApi(p: api.MqttPut) error{TooLong}!MqttPut {
         var w = MqttPut{};
@@ -2138,6 +2149,12 @@ pub const MqttPut = struct {
             w.has |= F.tls;
             w.tls = @intFromBool(v);
         }
+        if (p.ca) |v| {
+            if (v.len > api.max_ca) return error.TooLong;
+            w.has |= F.ca;
+            w.ca_len = @intCast(v.len);
+            @memcpy(w.ca[0..v.len], v);
+        }
         return w;
     }
 
@@ -2152,7 +2169,81 @@ pub const MqttPut = struct {
             .client_id = if (h & F.client_id != 0) self.client_id.slice() else null,
             .prefix = if (h & F.prefix != 0) self.prefix.slice() else null,
             .tls = if (h & F.tls != 0) self.tls != 0 else null,
+            .ca = if (h & F.ca != 0) self.ca[0..self.ca_len] else null,
         };
+    }
+
+    fn put(self: *const MqttPut, out: []u8) usize {
+        var o: usize = 0;
+        std.mem.writeInt(u16, out[o..][0..2], self.has, .little);
+        out[o + 2] = self.enabled;
+        o += 3;
+        putText(out, &o, self.host);
+        std.mem.writeInt(u16, out[o..][0..2], self.port, .little);
+        o += 2;
+        putText(out, &o, self.username);
+        putText(out, &o, self.password);
+        putText(out, &o, self.client_id);
+        putText(out, &o, self.prefix);
+        out[o] = self.tls;
+        std.mem.writeInt(u16, out[o + 1 ..][0..2], self.ca_len, .little);
+        o += 3;
+        @memcpy(out[o .. o + self.ca_len], self.ca[0..self.ca_len]);
+        return o + self.ca_len;
+    }
+
+    fn get(b: []const u8) error{BadPayload}!MqttPut {
+        if (b.len < fixed_len) return error.BadPayload;
+        var m = MqttPut{};
+        var o: usize = 0;
+        m.has = std.mem.readInt(u16, b[o..][0..2], .little);
+        m.enabled = b[o + 2];
+        o += 3;
+        m.host = try getText(b, &o);
+        m.port = std.mem.readInt(u16, b[o..][0..2], .little);
+        o += 2;
+        m.username = try getText(b, &o);
+        m.password = try getText(b, &o);
+        m.client_id = try getText(b, &o);
+        m.prefix = try getText(b, &o);
+        m.tls = b[o];
+        m.ca_len = std.mem.readInt(u16, b[o + 1 ..][0..2], .little);
+        o += 3;
+        if (m.ca_len > api.max_ca or b.len != o + m.ca_len) return error.BadPayload;
+        @memcpy(m.ca[0..m.ca_len], b[o .. o + m.ca_len]);
+        return m;
+    }
+};
+
+/// the broker's ca certificate (pem, may be empty), pushed by the supervisor to netd after spawn
+/// and whenever it changes. it is not part of `config.Config`: like the ntfy ca it lives beside
+/// the tokens rather than in the settings file, and it is too large to ride in every config push.
+pub const MqttCa = struct {
+    len: u16 = 0,
+    pem: [api.max_ca]u8 = undefined,
+
+    pub fn init(bytes: []const u8) MqttCa {
+        var c = MqttCa{ .len = @intCast(@min(bytes.len, api.max_ca)) };
+        @memcpy(c.pem[0..c.len], bytes[0..c.len]);
+        return c;
+    }
+
+    pub fn slice(self: *const MqttCa) []const u8 {
+        return self.pem[0..self.len];
+    }
+
+    fn put(self: *const MqttCa, out: []u8) usize {
+        std.mem.writeInt(u16, out[0..2], self.len, .little);
+        @memcpy(out[2 .. 2 + self.len], self.pem[0..self.len]);
+        return 2 + self.len;
+    }
+
+    fn get(b: []const u8) error{BadPayload}!MqttCa {
+        if (b.len < 2) return error.BadPayload;
+        var c = MqttCa{ .len = std.mem.readInt(u16, b[0..2], .little) };
+        if (c.len > api.max_ca or b.len != 2 + c.len) return error.BadPayload;
+        @memcpy(c.pem[0..c.len], b[2..]);
+        return c;
     }
 };
 
@@ -2309,6 +2400,7 @@ pub const Message = union(Kind) {
     config_save: ConfigSave,
     save_result: SaveResult,
     mqtt_put: MqttPut,
+    mqtt_ca: MqttCa,
     status_get,
     status: StatusSnapshot,
     ntfy_put: NtfyPut,
@@ -2677,22 +2769,8 @@ fn encodePayload(msg: Message, out: []u8) usize {
             std.mem.writeInt(u32, out[1..5], r.saved_revision, .big);
             return 5;
         },
-        .mqtt_put => |m| {
-            var o: usize = 0;
-            out[o] = m.has;
-            out[o + 1] = m.enabled;
-            o += 2;
-            putText(out, &o, m.host);
-            std.mem.writeInt(u16, out[o..][0..2], m.port, .little);
-            o += 2;
-            putText(out, &o, m.username);
-            putText(out, &o, m.password);
-            putText(out, &o, m.client_id);
-            putText(out, &o, m.prefix);
-            out[o] = m.tls;
-            o += 1;
-            return o;
-        },
+        .mqtt_put => |m| return m.put(out),
+        .mqtt_ca => |c| return c.put(out),
         .ntfy_put => |n| return n.put(out),
         .ntfy_config => |n| return n.put(out),
         .ntfy_status => |n| {
@@ -3256,21 +3334,10 @@ pub fn decodePacket(bytes: []const u8) Error!Packet {
             break :blk .{ .save_result = .{ .status = status, .saved_revision = std.mem.readInt(u32, b[1..5], .big) } };
         },
         .mqtt_put => blk: {
-            const b = try fixed(p, MqttPut.wire_len);
-            var m = MqttPut{};
-            var o: usize = 0;
-            m.has = b[o];
-            m.enabled = b[o + 1];
-            o += 2;
-            m.host = try getText(b, &o);
-            m.port = std.mem.readInt(u16, b[o..][0..2], .little);
-            o += 2;
-            m.username = try getText(b, &o);
-            m.password = try getText(b, &o);
-            m.client_id = try getText(b, &o);
-            m.prefix = try getText(b, &o);
-            m.tls = b[o];
-            break :blk .{ .mqtt_put = m };
+            break :blk .{ .mqtt_put = try MqttPut.get(p) };
+        },
+        .mqtt_ca => blk: {
+            break :blk .{ .mqtt_ca = try MqttCa.get(p) };
         },
         .ntfy_put => blk: {
             break :blk .{ .ntfy_put = try NtfyPut.get(p) };

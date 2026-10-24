@@ -267,6 +267,8 @@ pub const MqttPut = struct {
     client_id: ?[]const u8 = null,
     prefix: ?[]const u8 = null,
     tls: ?bool = null,
+    /// the pem certificate the broker's chain must end in when `tls` is on; "" removes it
+    ca: ?[]const u8 = null,
 };
 
 /// what a request becomes before any i/o: an operation or an immediate error response.
@@ -455,6 +457,7 @@ const MqttBody = struct {
     client_id: ?[]const u8 = null,
     prefix: ?[]const u8 = null,
     tls: ?bool = null,
+    ca: ?[]const u8 = null,
 };
 
 fn bad(code: []const u8, message: []const u8) Route {
@@ -1307,7 +1310,8 @@ pub fn parseBody(kind: BodyKind, body: []const u8, arena: *Arena, generated_id: 
             inline for (.{ "username", "password", "client_id", "prefix" }) |name| {
                 if (@field(b, name)) |v| if (v.len > 64) return bad("invalid_" ++ name, name ++ " must be at most 64 characters");
             }
-            return .{ .op = .{ .mqtt_put = .{ .enabled = b.enabled, .host = b.host, .port = b.port, .username = b.username, .password = b.password, .client_id = b.client_id, .prefix = b.prefix, .tls = b.tls } } };
+            if (b.ca) |ca| if (ca.len > max_ca or (ca.len > 0 and std.mem.indexOf(u8, ca, "-----BEGIN CERTIFICATE-----") == null)) return bad("invalid_ca", "ca must be a pem certificate of at most 3500 bytes, or empty to remove it");
+            return .{ .op = .{ .mqtt_put = .{ .enabled = b.enabled, .host = b.host, .port = b.port, .username = b.username, .password = b.password, .client_id = b.client_id, .prefix = b.prefix, .tls = b.tls, .ca = b.ca } } };
         },
         .ntfy_put => {
             const b = json.parse(NtfyBody, body, arena, &where) catch |e| return jsonError(e, where, arena);
@@ -1841,6 +1845,12 @@ test "config, mqtt and streams routes" {
     try expectReject(route(testReq(.GET, "/api/v1/reboot", "", admin_header, null, null), "", &c, &no_clients, &origins, &arena, test_minted), 405, "method_not_allowed");
     const m = route(testReq(.PUT, "/api/v1/mqtt", "", admin_header, "application/json", null), "{\"host\":\"10.0.0.2\",\"port\":1883,\"username\":\"tc002\",\"password\":\"Secret1\",\"enabled\":true}", &c, &no_clients, &origins, &arena, test_minted);
     try std.testing.expectEqualStrings("Secret1", m.op.mqtt_put.password.?);
+    try std.testing.expect(m.op.mqtt_put.ca == null);
+    const mt = route(testReq(.PUT, "/api/v1/mqtt", "", admin_header, "application/json", null), "{\"port\":8883,\"tls\":true,\"ca\":\"-----BEGIN CERTIFICATE-----\\nAA==\\n-----END CERTIFICATE-----\"}", &c, &no_clients, &origins, &arena, test_minted);
+    try std.testing.expect(mt.op.mqtt_put.tls.?);
+    try std.testing.expect(mt.op.mqtt_put.ca.?.len > 20);
+    try std.testing.expectEqual(@as(usize, 0), route(testReq(.PUT, "/api/v1/mqtt", "", admin_header, "application/json", null), "{\"ca\":\"\"}", &c, &no_clients, &origins, &arena, test_minted).op.mqtt_put.ca.?.len);
+    try expectReject(route(testReq(.PUT, "/api/v1/mqtt", "", admin_header, "application/json", null), "{\"ca\":\"not a certificate\"}", &c, &no_clients, &origins, &arena, test_minted), 400, "invalid_ca");
     try expectReject(route(testReq(.GET, "/api/v1/mqtt", "", control_header, null, null), "", &c, &no_clients, &origins, &arena, test_minted), 403, "forbidden");
     try std.testing.expect(route(testReq(.GET, "/api/v1/mqtt/status", "", control_header, null, null), "", &c, &no_clients, &origins, &arena, test_minted).op == .mqtt_status);
     try std.testing.expect(route(testReq(.POST, "/api/v1/streams", "", control_header, "application/json", null), "{}", &c, &no_clients, &origins, &arena, test_minted).op == .streams_create);

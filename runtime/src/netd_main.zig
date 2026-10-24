@@ -21,6 +21,7 @@ const mqtt = @import("net/mqtt.zig");
 const mdns = @import("net/mdns.zig");
 const mdns_owner = @import("net/mdns_owner.zig");
 const identity = @import("net/identity.zig");
+const tls_link = @import("net/tls_link.zig");
 const messages = @import("ipc/messages.zig");
 const codec = @import("ipc/codec.zig");
 const config = @import("supervisor/config.zig");
@@ -138,6 +139,9 @@ var send_buf: [codec.max_message]u8 = undefined;
 var arena: api.Arena = undefined;
 /// sized for the base64 screen document (3,328 characters plus its fields) and a log page
 var json_buf: [12288]u8 = undefined;
+/// the broker connection's tls state when `mqtt.tls` is on: four whole-record buffers, so one
+/// static instance rather than a field of `Netd`
+var mqtt_tls: tls_link.Link = .{};
 
 const Netd = struct {
     ep: sys.Fd,
@@ -175,6 +179,9 @@ const Netd = struct {
     m_out_off: usize = 0,
     m_pending: [mqtt_pending_max]MqttPending = @splat(.{}),
     m_connected: bool = false,
+    /// the broker's ca from the supervisor (`mqtt_ca`); required when `mqtt.tls` is on
+    mqtt_ca: [api.max_ca]u8 = undefined,
+    mqtt_ca_len: u16 = 0,
     berry_topics: [berry_topics_max][messages.BerryEvent.topic_max]u8 = undefined,
     berry_topic_len: [berry_topics_max]u8 = @splat(0),
     berry_topic_count: u8 = 0,
@@ -1090,6 +1097,13 @@ const Netd = struct {
                     self.creds = cr;
                     log.info("credentials received", .{});
                 },
+                .mqtt_ca => |c| {
+                    const changed = !std.mem.eql(u8, c.slice(), self.mqtt_ca[0..self.mqtt_ca_len]);
+                    self.mqtt_ca_len = c.len;
+                    @memcpy(self.mqtt_ca[0..c.len], c.slice());
+                    // a new ca only matters to a tls connection, and it takes effect by reconnecting
+                    if (changed and self.have_cfg and self.cfg.mqtt.tls) self.applyMqttSettings(sys.monotonicNs());
+                },
                 .clients_reset => |r| {
                     // build the incoming generation in a scratch store and swap only when it is
                     // whole, so no request authenticates against half of one set and half of the
@@ -1489,11 +1503,11 @@ const Netd = struct {
         o.str(m.client_id.slice());
         o.add(",\"prefix\":");
         o.str(self.prefix());
-        o.fmt(",\"tls\":{},\"password_set\":{}}}", .{ m.tls, m.password.len > 0 });
+        o.fmt(",\"tls\":{},\"ca_set\":{},\"password_set\":{}}}", .{ m.tls, self.mqtt_ca_len > 0, m.password.len > 0 });
     }
 
     fn mqttStatusJson(self: *Netd, o: *Out, now: u64) void {
-        o.fmt("{{\"enabled\":{},\"connected\":{},\"state\":\"{s}\",\"reconnect_delay_s\":{d},\"reconnects\":{d},\"last_error\":", .{ self.client.enabled, self.m_connected, @tagName(self.client.state), self.client.reconnectDelayS(now), self.client.reconnects });
+        o.fmt("{{\"enabled\":{},\"connected\":{},\"state\":\"{s}\",\"transport\":\"{s}\",\"reconnect_delay_s\":{d},\"reconnects\":{d},\"last_error\":", .{ self.client.enabled, self.m_connected, @tagName(self.client.state), if (self.cfg.mqtt.tls) "tls" else "plaintext", self.client.reconnectDelayS(now), self.client.reconnects });
         o.str(self.m_last_error[0..self.m_last_error_len]);
         o.add("}");
     }
@@ -1563,18 +1577,33 @@ const Netd = struct {
 
     fn applyMqttSettings(self: *Netd, now: u64) void {
         const m = &self.cfg.mqtt;
-        if (m.enabled and m.host.len > 0 and !m.tls) {
+        const tls_ready = !m.tls or self.mqtt_ca_len > 0;
+        if (m.enabled and m.host.len > 0 and tls_ready) {
             if (self.client.enabled) self.mqttClose(self.client.disable());
             self.client = .{ .rng = @truncate(now | 1) };
             self.client.enable(now);
-            log.info("mqtt enabled: {s}:{d} prefix {s}", .{ m.host.slice(), m.port, self.prefix() });
+            log.info("mqtt enabled: {s}:{d} prefix {s}{s}", .{ m.host.slice(), m.port, self.prefix(), if (m.tls) " over tls" else "" });
         } else {
-            if (m.enabled and m.tls) {
-                self.setError("tls is not available in this build");
-                log.warn("mqtt settings ask for tls, which this build cannot provide; staying disconnected rather than falling back", .{});
+            if (m.enabled and !tls_ready) {
+                self.setError(tls_link.handshakeErrorText(error.NoCa));
+                log.warn("mqtt settings ask for tls and no ca is installed; staying disconnected rather than falling back", .{});
             }
             self.mqttClose(self.client.disable());
         }
+    }
+
+    /// the tls handshake on a socket whose connect has just completed. blocking, bounded by
+    /// `tls_link.handshake_timeout_s`; false (with the reason in last_error) on any failure, which
+    /// the client treats like a failed connect and backs off from.
+    fn mqttTlsHandshake(self: *Netd, fd: sys.Fd) bool {
+        const t0 = sys.monotonicNs();
+        mqtt_tls.handshake(fd, self.mqtt_ca[0..self.mqtt_ca_len], self.cfg.mqtt.host.slice()) catch |e| {
+            self.setError(tls_link.handshakeErrorText(e));
+            log.warn("mqtt: {s} ({s})", .{ tls_link.handshakeErrorText(e), mqtt_tls.last_error });
+            return false;
+        };
+        log.info("mqtt: tls handshake in {d} ms", .{(sys.monotonicNs() - t0) / std.time.ns_per_ms});
+        return true;
     }
 
     fn mqttClose(self: *Netd, directive: mqtt.Directive) void {
@@ -1587,6 +1616,7 @@ const Netd = struct {
         self.m_in_len = 0;
         self.m_out_len = 0;
         self.m_out_off = 0;
+        mqtt_tls.reset();
         if (self.m_connected) log.info("mqtt disconnected", .{});
         self.m_connected = false;
     }
@@ -1623,6 +1653,7 @@ const Netd = struct {
 
     fn mqttFlush(self: *Netd) void {
         const fd = self.mfd orelse return;
+        if (mqtt_tls.active) return self.mqttFlushTls(fd);
         while (self.m_out_off < self.m_out_len) {
             const n = sys.write(fd, self.m_out[self.m_out_off..self.m_out_len]) catch |e| switch (e) {
                 error.WouldBlock => {
@@ -1636,6 +1667,32 @@ const Netd = struct {
                 },
             };
             self.m_out_off += n;
+        }
+        self.m_out_len = 0;
+        self.m_out_off = 0;
+        sys.epollMod(self.ep, fd, linux.EPOLL.IN, @backingInt(Tag.mqtt));
+    }
+
+    /// the tls form of `mqttFlush`: plaintext from `m_out` is encrypted a record at a time, and the
+    /// next record only once the socket has taken the last, so the link's buffer never overflows.
+    /// `m_out_off` counts what has been encrypted.
+    fn mqttFlushTls(self: *Netd, fd: sys.Fd) void {
+        while (true) {
+            mqtt_tls.send() catch |e| switch (e) {
+                error.WouldBlock => {
+                    sys.epollMod(self.ep, fd, linux.EPOLL.IN | linux.EPOLL.OUT, @backingInt(Tag.mqtt));
+                    return;
+                },
+                else => {
+                    self.setError("write failed");
+                    return;
+                },
+            };
+            if (self.m_out_off == self.m_out_len) break;
+            self.m_out_off += mqtt_tls.encrypt(self.m_out[self.m_out_off..self.m_out_len]) catch {
+                self.setError("tls encrypt failed");
+                return;
+            };
         }
         self.m_out_len = 0;
         self.m_out_off = 0;
@@ -1746,7 +1803,16 @@ const Netd = struct {
                 self.mqttDirective(self.client.onClosed(now), now);
                 return;
             }
-            const n = sys.read(fd, self.m_in[self.m_in_len..]) catch |e| switch (e) {
+            const n = if (mqtt_tls.active) mqtt_tls.read(self.m_in[self.m_in_len..]) catch |e| switch (e) {
+                error.WouldBlock => break,
+                error.Closed => 0,
+                else => {
+                    self.setError(if (e == error.Tls) "tls record rejected" else "read failed");
+                    if (e == error.Tls) log.warn("mqtt: tls read failed ({s})", .{mqtt_tls.last_error});
+                    self.mqttDirective(self.client.onClosed(now), now);
+                    return;
+                },
+            } else sys.read(fd, self.m_in[self.m_in_len..]) catch |e| switch (e) {
                 error.WouldBlock => break,
                 error.Interrupted => continue,
                 else => {
@@ -2290,8 +2356,9 @@ fn run(stats: bool) !u8 {
                 n.acceptAll(t);
             } else if (tag == @backingInt(Tag.mqtt)) {
                 if (n.client.state == .connecting and ev.events & linux.EPOLL.OUT != 0) {
-                    const ok = if (n.mfd) |fd| sys.socketConnected(fd) else false;
+                    var ok = if (n.mfd) |fd| sys.socketConnected(fd) else false;
                     if (!ok) n.setError("connect failed");
+                    if (ok and n.cfg.mqtt.tls) ok = n.mqttTlsHandshake(n.mfd.?);
                     n.mqttDirective(n.client.onSocket(ok, t), t);
                 } else {
                     if (ev.events & (linux.EPOLL.IN | linux.EPOLL.HUP | linux.EPOLL.ERR) != 0) n.mqttReadable(t);

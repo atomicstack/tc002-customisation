@@ -565,6 +565,9 @@ const Supervisor = struct {
     ntfy_path: [:0]const u8 = undefined,
     ntfy_ca: [api.max_ca]u8 = undefined,
     ntfy_ca_len: u16 = 0,
+    /// the mqtt broker's ca, kept the same way as the ntfy one and pushed to netd as `mqtt_ca`
+    mqtt_ca: [api.max_ca]u8 = undefined,
+    mqtt_ca_len: u16 = 0,
     ntfy_seq: u64 = 0,
     // the script interpreter: a child like the others, spawned only while it is enabled
     berry_pid: ?sys.Pid = null,
@@ -704,7 +707,7 @@ const Supervisor = struct {
             var db: [160]u8 = undefined;
             sys.mkdir(self.statePathIn(&db, d), 0o700) catch {};
         }
-        inline for (.{ "config/config.json", "credentials/tokens", "credentials/ntfy-ca.pem" }) |rel| {
+        inline for (.{ "config/config.json", "credentials/tokens", "credentials/ntfy-ca.pem", "credentials/mqtt-ca.pem" }) |rel| {
             var from_buf: [160]u8 = undefined;
             var to_buf: [160]u8 = undefined;
             var dir_buf: [160]u8 = undefined;
@@ -1097,6 +1100,8 @@ const Supervisor = struct {
         log.info("spawned netd pid {d} as uid {d}", .{ pid, netd_uid });
         self.sendNetd(.{ .credentials = self.creds }, 0);
         self.pushClients();
+        // before the config, so a tls connection the config enables already has its ca
+        self.sendNetd(.{ .mqtt_ca = messages.MqttCa.init(self.mqtt_ca[0..self.mqtt_ca_len]) }, 0);
         self.sendNetd(.{ .config = self.cfg }, 0);
         self.sendNetd(.{ .status = self.snapshot }, 0);
         self.pushBerryTopics();
@@ -1263,6 +1268,31 @@ const Supervisor = struct {
         const path = self.statePathIn(&path_buf, "credentials/ntfy-ca.pem");
         sys.saveFileAtomic(dir, tmp, path, pem) catch |e| log.warn("the ntfy ca could not be stored: {s}", .{sys.errText(e)});
         log.info("ntfy ca {s} ({d} bytes)", .{ if (pem.len > 0) "installed" else "removed", pem.len });
+    }
+
+    /// the broker's ca, beside the tokens like the ntfy one; netd is told at once so the next
+    /// connection uses it
+    fn storeMqttCa(self: *Supervisor, pem: []const u8) void {
+        self.mqtt_ca_len = @intCast(pem.len);
+        @memcpy(self.mqtt_ca[0..pem.len], pem);
+        var dir_buf: [160]u8 = undefined;
+        var tmp_buf: [160]u8 = undefined;
+        var path_buf: [160]u8 = undefined;
+        const dir = self.statePathIn(&dir_buf, "credentials");
+        const tmp = self.statePathIn(&tmp_buf, "credentials/mqtt-ca.pem.tmp");
+        const path = self.statePathIn(&path_buf, "credentials/mqtt-ca.pem");
+        sys.saveFileAtomic(dir, tmp, path, pem) catch |e| log.warn("the mqtt ca could not be stored: {s}", .{sys.errText(e)});
+        log.info("mqtt ca {s} ({d} bytes)", .{ if (pem.len > 0) "installed" else "removed", pem.len });
+        self.sendNetd(.{ .mqtt_ca = messages.MqttCa.init(pem) }, 0);
+    }
+
+    fn loadMqttCa(self: *Supervisor) void {
+        var path_buf: [160]u8 = undefined;
+        const path = self.statePathIn(&path_buf, "credentials/mqtt-ca.pem");
+        if (sys.readFile(path, &self.mqtt_ca)) |bytes| {
+            self.mqtt_ca_len = @intCast(bytes.len);
+            if (bytes.len > 0) log.info("mqtt ca loaded ({d} bytes)", .{bytes.len});
+        } else |_| {}
     }
 
     fn loadNtfyCa(self: *Supervisor) void {
@@ -2053,6 +2083,7 @@ const Supervisor = struct {
                         self.sendNetd(.{ .save_result = .{ .status = .rejected, .saved_revision = self.cfg.saved_revision } }, p.request_id);
                         continue;
                     };
+                    if (w.has & messages.MqttPut.F.ca != 0) self.storeMqttCa(w.ca[0..w.ca_len]);
                     config.reportChanges(&before_mqtt, &self.cfg, LogSink{});
                     self.snapshot.config_revision = self.cfg.revision;
                     self.persistSettings();
@@ -3449,6 +3480,7 @@ fn run(cfg_in: cli.Config, environ: anytype, args: []const [:0]const u8) !u8 {
     s.audio_path = s.paths.audiod;
     s.berry_path = s.paths.berryd;
     s.loadNtfyCa();
+    s.loadMqttCa();
     var boot: [4]u8 = undefined;
     sys.getrandom(&boot) catch {};
     s.boot_id = std.mem.readInt(u32, &boot, .little);

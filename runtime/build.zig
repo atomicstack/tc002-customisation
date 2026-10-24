@@ -141,6 +141,24 @@ pub fn build(b: *std.Build) void {
     const probe_step = b.step("ipcprobe", "build tc002-ipcprobe: the largest datagram the device's ipc socket carries");
     probe_step.dependOn(&b.addInstallArtifact(ipcprobe, .{}).step);
 
+    // a diagnostic rather than part of the runtime: one mqtt connection over tls through the link
+    // netd uses, against a real broker. `-Dtlsprobe_host=true` builds it for this machine instead.
+    const tlsprobe_host = b.option(bool, "tlsprobe_host", "build tc002-tlsprobe for the host instead of the device") orelse false;
+    const tlsprobe = b.addExecutable(.{
+        .name = "tc002-tlsprobe",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/tlsprobe_main.zig"),
+            .target = if (tlsprobe_host) b.graph.host else device,
+            .optimize = optimize,
+            .link_libc = false,
+            .strip = strip,
+            .single_threaded = true,
+        }),
+        .linkage = .static,
+    });
+    const tlsprobe_step = b.step("tlsprobe", "build tc002-tlsprobe: an mqtt connect over tls through netd's tls link");
+    tlsprobe_step.dependOn(&b.addInstallArtifact(tlsprobe, .{}).step);
+
     // a diagnostic rather than part of the runtime: what one message between two processes costs
     const ipcbench = b.addExecutable(.{
         .name = "tc002-ipcbench",

@@ -463,7 +463,8 @@ input[type=file]{font:12px var(--body);color:var(--muted);max-width:220px}
         <div class="field"><label for="mpwd">Password<span class="key">password · never returned</span></label><input type="password" id="mpwd" autocomplete="new-password" placeholder="unchanged"></div>
         <div class="field"><label for="mcid">Client id<span class="key">client_id · empty = tc002-&lt;boot id&gt;</span></label><input type="text" id="mcid" autocomplete="off"></div>
         <div class="field"><label for="mprefix">Topic prefix<span class="key">prefix · empty = tc002</span></label><input type="text" id="mprefix" placeholder="tc002"></div>
-        <div class="field"><label for="mtls">TLS<span class="key">tls · not available in this build: stays disconnected</span></label><input type="checkbox" class="sw" id="mtls"></div>
+        <div class="field"><label for="mtls">TLS<span class="key">tls · needs a ca; never falls back to plaintext</span></label><input type="checkbox" class="sw" id="mtls"></div>
+        <div class="field"><label for="mca">Broker CA<span class="key">ca · pem; the certificate must carry the broker's ip; empty removes it</span></label><textarea id="mca" rows="3" placeholder="-----BEGIN CERTIFICATE-----" spellcheck="false"></textarea></div>
       </div>
       <div class="actions">
         <button class="btn" id="mapply">Apply</button>
@@ -1473,6 +1474,8 @@ function showMqtt(m) {
   $('menabled').checked = !!m.enabled; $('mhost').value = m.host; $('mport').value = m.port;
   $('muser').value = m.username; $('mpwd').value = ''; $('mpwd').placeholder = m.password_set ? 'set (unchanged)' : 'not set';
   $('mcid').value = m.client_id; $('mprefix').value = m.prefix; $('mtls').checked = !!m.tls;
+  $('mca').value = ''; $('mca').dataset.cleared = '';
+  $('mca').placeholder = m.ca_set ? '(a certificate is installed; paste a new one to replace it, clear to remove)' : '-----BEGIN CERTIFICATE-----';
 }
 async function mqttStatus() {
   try {
@@ -1495,6 +1498,9 @@ $('mapply').addEventListener('click', async () => {
   };
   if (host) body.host = host;   // the runtime rejects an empty host outright, even on a field it would otherwise leave unchanged
   if ($('mpwd').value) body.password = $('mpwd').value;
+  const mca = $('mca').value.trim();
+  if (mca) body.ca = mca;
+  else if (MQTT && MQTT.ca_set && $('mca').dataset.cleared === '1') body.ca = '';   // an explicit clear removes it
   if (body.enabled && !host) return toast('a broker address is needed to enable mqtt', true);
   try {
     showMqtt(await call('PUT', 'mqtt', body));
@@ -2231,6 +2237,7 @@ $('napply').addEventListener('click', async () => {
   } catch (e) { toast(e.message, true); }
 });
 $('nca').addEventListener('input', () => { $('nca').dataset.cleared = $('nca').value.trim() ? '' : '1'; });
+$('mca').addEventListener('input', () => { $('mca').dataset.cleared = $('mca').value.trim() ? '' : '1'; });
 $('ncheck').addEventListener('click', ntfyStatus);
 
 /* ---------- logs (the log ring, GET /logs?after=N) ---------- */

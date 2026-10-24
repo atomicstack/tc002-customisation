@@ -226,7 +226,7 @@ exercised on the device (nobody has pressed the knob during a run).
   warning, falls back to `--dir` and keeps running, volatile as before. the
   layout under either directory is the same, so the fallback is a swap.
   the first start with a durable directory carries `config/config.json`,
-  `credentials/tokens` and `credentials/ntfy-ca.pem` over from `--dir` if they
+  `credentials/tokens`, `credentials/ntfy-ca.pem` and `credentials/mqtt-ca.pem` over from `--dir` if they
   are there, which keeps the settings and the tokens an upgrade already had. an
   existing durable file is never overwritten.
 - **credentials**: two 32-byte random tokens (control, admin) generated once
@@ -1617,9 +1617,9 @@ read-only storage; connection buffers stay the same size.
 | `PUT` | `/canvas` | `content` | `{"elements":[…],"persist":bool?}` (`persist` defaults true; false shows without saving) | the document as held, with `persist` |
 | `PATCH` | `/canvas` | `display` | `{"values":[{"id":"…","text"/"data"/"data_hex"/"value"/"colour"}…]}` | the document as stored |
 | `DELETE` | `/canvas` | `display` | | the emptied document |
-| `GET` | `/mqtt` | `settings` | | broker settings; `password_set` instead of the password |
-| `PUT` | `/mqtt` | `settings` | `{"enabled","host","port","username","password","client_id","prefix","tls"}`, any subset | the broker settings |
-| `GET` | `/mqtt/status` | `status` | | `{"enabled","connected","state","reconnect_delay_s","reconnects","last_error"}` |
+| `GET` | `/mqtt` | `settings` | | broker settings; `password_set` instead of the password, `ca_set` instead of the ca |
+| `PUT` | `/mqtt` | `settings` | `{"enabled","host","port","username","password","client_id","prefix","tls","ca"}`, any subset | the broker settings |
+| `GET` | `/mqtt/status` | `status` | | `{"enabled","connected","state","transport","reconnect_delay_s","reconnects","last_error"}` |
 | `GET` | `/tokens` | `tokens` | | `{"clients":[{"name","scopes":[…],"created_s","last_used_s"}],"max":16}`; **never a secret** |
 | `POST` | `/tokens` | `tokens` | `{"name":"kitchen","scopes":["notify","display"]}` | `{"name","scopes","token":"<64 hex>"}` — the only time a token is returned. an empty list, an unknown name or `tokens` is `400 invalid_scope` |
 | `POST` | `/tokens/{name}/rotate` | `tokens` | `{"scopes":[…]}?` (optional) | `{"name","scopes","token"}` — a new secret in place; `created_s` becomes now, `last_used_s` resets, the scopes are unchanged unless supplied |
@@ -2259,9 +2259,8 @@ sustained (720 frames in 12 s) at 5% cpu**, using 22 kb of a 256 kb heap.
 netd runs one mqtt 3.1.1 client when `enabled` is true and `host` is an ipv4
 literal (there is no resolver). keepalive is 30 s, a missed ping response
 within 15 s drops the connection, and reconnects back off from 1 s to 60 s
-with jitter. `tls: true` is accepted as a setting and makes the client **stay
-disconnected** with `last_error: tls is not available in this build`; it
-never falls back to plaintext silently. the client id defaults to the
+with jitter. `tls: true` puts the connection inside tls, described below; it
+never falls back to plaintext. the client id defaults to the
 device's own stable name — `tc002-<mac>`, the same string home assistant
 knows the device by, falling back to `tc002-boot<boot_id>` only in the
 window on a cold boot before `wlan0` exists. it was `tc002-<boot_id>`
@@ -2290,6 +2289,43 @@ retained deliveries are never treated as commands, so a stale retained
 `cmd/*` message cannot replay on reconnect. the same ten-frames-per-second and
 dedup rules as http apply; up to eight mqtt commands wait for the renderer at
 once.
+
+### tls
+
+with `tls: true` the broker connection is tls 1.3 (or 1.2) through the standard library's client,
+inside netd's own epoll loop (`net/tls_link.zig`). the handshake is the one part that has to wait
+for the broker, so it runs blocking when the tcp connect completes, with a five-second send and
+receive timeout on the socket; on the device it takes 140-230 ms against a broker with an
+rsa-3072 chain, and netd answers nothing else meanwhile (the renderer is a different process, so
+the panel does not notice). after it, netd reads ciphertext itself without blocking and hands the
+client one whole record at a time -- every record names its length in a five-byte header -- so
+the client never reaches for the socket; writes are encrypted a record at a time into a buffer
+netd sends the way it sends plaintext.
+
+the server is checked against **one ca you install** and nothing else: no public roots are
+built in, because a lan broker's certificate is private. the ca goes in as pem with
+`PUT /mqtt {"ca":"-----BEGIN CERTIFICATE-----..."}` (at most 3,500 bytes; `""` removes it) and is
+kept beside the tokens in `credentials/mqtt-ca.pem`, root only, reported as `ca_set`. the host
+name checked is the address netd connected to, since there is no resolver and so no other name:
+**the broker certificate must carry that ip address as a subjectAltName.**
+
+```sh
+tc002 --server http://<device> --token-file tokens mqtt set --port 8883 --tls --ca "$(cat ca.pem)"
+```
+
+every failure leaves the client disconnected and backing off as for a failed connect, with the
+reason in `last_error`: `tls needs a ca certificate` (tls on, no ca: the client is not even
+started), `tls waits for the clock to be set` (certificates are dated and the clock has no rtc;
+the handshake is not tried before sntp has set it), `certificate rejected` (a chain that does not
+end in the ca, a certificate that does not name the address, an expired one), `tls handshake
+timed out` and `tls handshake failed` (a plaintext port answers this way). the client's own error
+name is in the log line beside it. `/mqtt/status` reports `transport` as `tls` or `plaintext`.
+
+the cost is netd's size: 1.15 to 2.12 mb uncompressed (about 330 kb more in the xz image),
+because netd now links the tls client, x25519, the aes-gcm and chacha20 ciphers and rsa and ecdsa
+certificate verification. its four record buffers are 66 kb of static memory, used or not.
+`tc002-tlsprobe` (`zig build tlsprobe`, or `-Dtlsprobe_host=true` for this machine) runs the same
+link against a broker from the command line and prints each step's timing.
 
 ### the metrics document
 
@@ -2607,10 +2643,12 @@ all on a warm device that had been up for days, under the lock, on
 
 ## what is not there yet
 
-- **tls.** zig 0.17's standard library has a tls client but no server, and no
-  tls library is vendored. only the plaintext `isolated-lan` profile exists,
-  and `/status` says so (`transport: plaintext`). the tokens are readable by
-  anyone on the network path.
+- **tls for the api.** zig 0.17's standard library has a tls client but no
+  server, and no tls library is vendored, so the http api is plaintext in the
+  only profile there is, `isolated-lan`, and `/status` says so
+  (`transport: plaintext`). the tokens are readable by anyone on the network
+  path. the mqtt connection can use tls (see [mqtt](#tls)); that protects the
+  broker credentials and the traffic to the broker, not the api.
 - **time.** the sntp client trusts one unauthenticated local server, steps
   or slews only when a poll succeeds, and has no drift estimator, so the
   ~70 ppm oscillator error described in [`DEVICE.md`](DEVICE.md#time) is

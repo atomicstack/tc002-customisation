@@ -320,7 +320,7 @@ class Device:
                        "latitude": None, "longitude": None,
                        "generators": {g: {p["name"]: param_default(p) for p in table}
                                       for g, table in GENERATOR_PARAMS.items()}}
-        self.mqtt = {"enabled": False, "host": "", "port": 1883, "username": "", "password": "", "client_id": "", "prefix": "", "tls": False}
+        self.mqtt = {"enabled": False, "host": "", "port": 1883, "username": "", "password": "", "client_id": "", "prefix": "", "tls": False, "ca": ""}
         self.ntfy = {"enabled": False, "url": "", "topic": "", "token": "", "username": "", "password": "", "duration_s": 10, "insecure": False, "ca": ""}
         self.ntfy_messages = 0
         # a hand-set brightness stands in the schedule's way until the next ramp begins
@@ -446,7 +446,7 @@ class Device:
     def mqtt_doc(self):
         m = self.mqtt
         return {"enabled": m["enabled"], "host": m["host"], "port": m["port"], "username": m["username"],
-                "client_id": m["client_id"], "prefix": m["prefix"] or "tc002", "tls": m["tls"], "password_set": bool(m["password"])}
+                "client_id": m["client_id"], "prefix": m["prefix"] or "tc002", "tls": m["tls"], "ca_set": bool(m["ca"]), "password_set": bool(m["password"])}
 
     def ntfy_doc(self):
         n = self.ntfy
@@ -488,11 +488,13 @@ class Device:
 
     def mqtt_status(self):
         m = self.mqtt
-        if m["enabled"] and m["host"] and not m["tls"]:
-            return {"enabled": True, "connected": True, "state": "connected", "reconnect_delay_s": 0, "reconnects": self.reconnects, "last_error": ""}
+        transport = "tls" if m["tls"] else "plaintext"
+        if m["enabled"] and m["host"] and (not m["tls"] or m["ca"]):
+            return {"enabled": True, "connected": True, "state": "connected", "transport": transport, "reconnect_delay_s": 0, "reconnects": self.reconnects, "last_error": ""}
         if m["enabled"] and m["tls"]:
-            return {"enabled": True, "connected": False, "state": "disconnected", "reconnect_delay_s": 0, "reconnects": self.reconnects, "last_error": "tls is not available in this build"}
-        return {"enabled": False, "connected": False, "state": "disconnected", "reconnect_delay_s": 0, "reconnects": self.reconnects, "last_error": ""}
+            # the device stays down rather than fall back to plaintext without a ca
+            return {"enabled": False, "connected": False, "state": "disconnected", "transport": transport, "reconnect_delay_s": 0, "reconnects": self.reconnects, "last_error": "tls needs a ca certificate"}
+        return {"enabled": False, "connected": False, "state": "disconnected", "transport": transport, "reconnect_delay_s": 0, "reconnects": self.reconnects, "last_error": ""}
 
     # commands (all validated; every accepted one bumps the renderer revision)
 
@@ -909,6 +911,11 @@ class Device:
                 if not isinstance(body[k], bool):
                     raise Reject(400, "invalid_json", "the body is not valid json for this schema")
                 m[k] = body[k]
+        if "ca" in body:
+            ca = body["ca"]
+            if not isinstance(ca, str) or len(ca) > 3500 or (ca and "-----BEGIN CERTIFICATE-----" not in ca):
+                raise Reject(400, "invalid_ca", "ca must be a pem certificate of at most 3500 bytes, or empty to remove it")
+            m["ca"] = ca
         if m["enabled"] and not m["host"]:
             raise Reject(400, "rejected", "the settings were rejected")
         self.mqtt = m
@@ -936,7 +943,7 @@ SCHEMAS = {
     # does not keep a second copy of it. PUT sends elements, PATCH sends values
     "canvas": ({"elements", "values", "persist"}, set()),
     "mock/persist": ({"enabled"}, {"enabled"}),
-    "mqtt": ({"enabled", "host", "port", "username", "password", "client_id", "prefix", "tls"}, set()),
+    "mqtt": ({"enabled", "host", "port", "username", "password", "client_id", "prefix", "tls", "ca"}, set()),
     "ntfy": ({"enabled", "url", "topic", "token", "username", "password", "duration_s", "insecure", "ca"}, set()),
 }
 

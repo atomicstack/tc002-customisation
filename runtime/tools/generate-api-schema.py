@@ -168,7 +168,7 @@ def request_schemas():
     for key, val in clock_fields.items():
         update('ConfigBody', **{'clock_' + ('digit' if key == 'digits' else key): val})
     schemas['ConfigBody']['allOf'] = [{'if': nonnull('latitude'), 'then': nonnull('longitude')}, {'if': nonnull('longitude'), 'then': nonnull('latitude')}]
-    update('MqttBody', host=IPV4, port=integer(1, 65535))
+    update('MqttBody', host=IPV4, port=integer(1, 65535), ca=string(maxLength=3500, description='pem ca the broker certificate must chain to when tls is on; the certificate must name the host address as an ip subjectAltName. empty removes it'))
     for name in ('username', 'password', 'client_id', 'prefix'):
         update('MqttBody', **{name: string(maxLength=64, **({'writeOnly': True} if name == 'password' else {}))})
     update('NtfyBody', url=string(maxLength=64, pattern=r'^(?:$|https?://[^\s]+$)', description='empty disables the url; http://host[:port][/prefix] or https://host[:port][/prefix]'), topic=string(maxLength=64, pattern=r'^[A-Za-z0-9_-]*(?![\s\S])'), duration_s=integer(1, 300), ca=string(maxLength=3500, description='pem certificate containing -----BEGIN CERTIFICATE-----, or empty to remove'))
@@ -223,8 +223,8 @@ def response_schemas(schemas):
     model('SoundResult', dict(status={'const': 'ok'}, used=n, budget=n))
     model('BerryResponse', dict(state=enum('off', 'starting', 'running', 'failed'), heap_bytes=n, heap_used=n, heap_high_water=n, alloc_failures=n, stops=n))
     model('NtfyStatus', dict(state=enum('off', 'connecting', 'subscribed', 'error'), messages=n, error=text))
-    model('MqttStatus', dict(enabled=b, connected=b, state=enum_source('net/mqtt.zig', 'State'), reconnect_delay_s=n, reconnects=n, last_error=text))
-    model('MqttResponse', dict(enabled=b, host=text, port=integer(0, 65535), username=text, client_id=text, prefix=text, tls=b, password_set=b))
+    model('MqttStatus', dict(enabled=b, connected=b, state=enum_source('net/mqtt.zig', 'State'), transport=enum('plaintext', 'tls'), reconnect_delay_s=n, reconnects=n, last_error=text))
+    model('MqttResponse', dict(enabled=b, host=text, port=integer(0, 65535), username=text, client_id=text, prefix=text, tls=b, ca_set=b, password_set=b))
     model('NtfyResponse', dict(enabled=b, url=text, topic=text, username=text, token_set=b, password_set=b, duration_s=n, insecure=b, ca_set=b, status=ref('NtfyStatus')))
     model('ConfigResponse', dict(revision=n, saved_revision=n, brightness=n, base=BASE, generator=GENERATOR, timezone=text, ntp=obj(dict(server=nullable(text), interval_s=n)), frame_timeout_ms=n, metrics_interval_s=n, discovery=obj(dict(enabled=b, controls=dict(b, default=False), prefix=text)), clock=clock, ip_mode=enum('lines', 'mini', 'scroll', 'big'), menu_font=menu_fonts(), night=obj(dict(enabled=b, brightness=n, lead_min=n)), latitude=nullable({'type': 'number'}), longitude=nullable({'type': 'number'}), location=nullable(obj(dict(latitude={'type': 'number'}, longitude={'type': 'number'}, source=enum('timezone', 'set')))), generators={'type': 'object', 'additionalProperties': {'type': 'object', 'additionalProperties': {'type': ['string', 'integer']}}}, berry=obj(dict(enabled=b, heap_kb=n, handler_ms=n)), sound=obj(dict(enabled=b, volume=n)), battery=obj(dict(shutdown=b, shutdown_mv=n, grace_s=n)), allowed_origins=array(text)))
     model('ScreenResponse', dict(width={'const': 52}, height={'const': 16}, epoch=n, revision=n, brightness=n, power=b, rgb_base64=string(contentEncoding='base64', contentMediaType='application/octet-stream', minLength=3328, maxLength=3328, description='2496 row-major rgb888 bytes, 52 columns by 16 rows')))
@@ -268,7 +268,7 @@ def build():
         '/tokens/{name}/rotate': 'rotate a named client secret; omitted/empty body preserves scopes. explicit scopes replace the set. the new secret is returned once.',
         '/tokens/{name}': 'revoke a named client token; built-in admin and control tokens are outside this namespace.',
         '/ntfy': 'read redacted subscriber settings or update selected fields. token/password/ca are write-only secrets. the current put response is the full device configuration.',
-        '/mqtt': 'read redacted broker settings or update selected fields. host is a dotted ipv4 address in this profile. password is never returned.',
+        '/mqtt': 'read redacted broker settings or update selected fields. host is a dotted ipv4 address in this profile. password is never returned. tls needs a ca (ca_set); the connection then stays down rather than falling back to plaintext if the ca, the clock or the handshake fails.',
         '/sprites/{id}': 'upload exactly 192 bytes (8 x 8) or 768 bytes (16 x 16) of rgb888, or delete a sprite. eight volatile slots.',
         '/input': 'inject button or rotary events. rotary takes cw/ccw with 1..16 steps; buttons take press/release/click/long with one step. this scope reaches the device menu and its settings/reboot actions.',
     }

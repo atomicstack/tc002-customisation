@@ -155,9 +155,12 @@ the stock app and its unauthenticated api are not, and the picture changes:
   stopped inside its own vm, and a wedged one is a process the supervisor kills.
   gap: scripts are stored in clear on `/data`, readable by root, and anyone with
   the admin token can replace `autoexec`, which runs on every start.
-- **still no tls.** the tokens travel in plain http and plain mqtt; anyone on
+- **still no tls on the api.** the api tokens travel in plain http; anyone on
   the network path can read them. the build reports `transport: plaintext`
-  and is intended for an isolated lan only.
+  and is intended for an isolated lan only. the mqtt connection can use tls
+  against a ca you install (`RUNTIME.md`, mqtt), which keeps the broker
+  password and the broker traffic off the wire; without it they travel in
+  clear too.
 - **adb can be gated by a physical gesture.** in the `hardened` profile the
   supervisor turns `adbd` off at boot and on for fifteen minutes when the
   knob is held for three seconds; the default `dev` profile leaves adbd as
