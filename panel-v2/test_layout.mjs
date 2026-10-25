@@ -171,6 +171,19 @@ test.after(async () => {
   if (tmp) try { rmSync(tmp, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }); } catch { /* a stray profile file is not a test failure */ }
 });
 
+test('the readout names the api transport rather than repeating the field name',
+  { skip: chromeAvailable ? false : 'google chrome is not installed' }, async () => {
+  // /status's top-level `transport` is the http api's, not mqtt's. labelled with its own field
+  // name it read "transport transport plaintext", which said neither what nor which
+  const row = await cdp.eval(`(() => {
+    const r = [...document.querySelectorAll('#now .field')].find(f => f.querySelector('.key')?.textContent === 'transport');
+    return r && { lab: r.querySelector('.lab').firstChild.textContent, val: r.querySelector('.val').textContent };
+  })()`);
+  assert.ok(row, 'the readout has a row for /status transport');
+  assert.equal(row.lab, 'api');
+  assert.equal(row.val, 'plain http');
+});
+
 test('home assistant controls can be enabled and disabled from device settings',
   { skip: chromeAvailable ? false : 'google chrome is not installed' }, async () => {
   await cdp.eval(`document.querySelector('[data-tab="device"]').click(); loadConfig()`);

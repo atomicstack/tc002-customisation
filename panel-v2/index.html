@@ -646,7 +646,8 @@ const NOW_ROWS = [
     const age = typeof s.time.age_s === 'number' ? ` · ${s.time.age_s} s` : '';
     return `${s.time.state}${age}`;
   }, 'time.state · age_s'],
-  ['transport', s => s.transport, 'transport'],
+  // /status's `transport` is the http api's own (mqtt reports its own in /mqtt/status)
+  ['api', s => ({ plaintext: 'plain http' })[s.transport] || s.transport || '—', 'transport'],
   ['settings', s => `revision ${s.config_revision} · saved ${s.saved_revision}${s.config_revision !== s.saved_revision ? ' · write failed' : ''}`, 'config_revision · saved_revision'],
   ['restarts', s => String(s.restarts), 'renderer restarts'],
 ];
