@@ -184,6 +184,19 @@ test('the readout names the api transport rather than repeating the field name',
   assert.equal(row.val, 'plain http');
 });
 
+test('the mqtt card says whether the broker connection is tls or plaintext',
+  { skip: chromeAvailable ? false : 'google chrome is not installed' }, async () => {
+  const pill = async body => cdp.eval(`(async () => {
+    await call('PUT', 'mqtt', ${JSON.stringify(body)});
+    await mqttStatus();
+    return document.getElementById('mqttstate').textContent;
+  })()`);
+  const ca = '-----BEGIN CERTIFICATE-----\nAA==\n-----END CERTIFICATE-----';
+  assert.equal(await pill({ enabled: true, host: '10.0.0.2', tls: true, ca }), 'connected · tls');
+  assert.equal(await pill({ tls: false }), 'connected · plaintext');
+  assert.equal(await pill({ enabled: false }), 'disabled');
+});
+
 test('home assistant controls can be enabled and disabled from device settings',
   { skip: chromeAvailable ? false : 'google chrome is not installed' }, async () => {
   await cdp.eval(`document.querySelector('[data-tab="device"]').click(); loadConfig()`);

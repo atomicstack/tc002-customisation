@@ -1481,7 +1481,8 @@ async function mqttStatus() {
   try {
     const s = await call('GET', 'mqtt/status');
     const el = $('mqttstate');
-    el.textContent = s.connected ? 'connected' : (s.enabled ? s.state : 'disabled');
+    // the broker connection's own transport, tls or plaintext; older runtimes do not report it
+    el.textContent = s.connected ? (s.transport ? `connected · ${s.transport}` : 'connected') : (s.enabled ? s.state : 'disabled');
     el.className = 'pill ' + (s.connected ? 'on' : (s.enabled ? 'off' : ''));
     const bits = [];
     if (s.reconnects) bits.push(`${s.reconnects} reconnects`);
