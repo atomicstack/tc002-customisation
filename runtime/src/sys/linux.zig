@@ -224,6 +224,27 @@ pub fn timerfdDrain(fd: Fd) void {
     _ = linux.read(fd, &expirations, expirations.len);
 }
 
+/// a counter another thread can bump to wake an epoll loop
+pub fn eventfdCreate() Error!Fd {
+    return @intCast(try check(linux.eventfd(0, linux.EFD.CLOEXEC | linux.EFD.NONBLOCK)));
+}
+
+pub fn eventfdSignal(fd: Fd) void {
+    const one = std.mem.toBytes(@as(u64, 1));
+    _ = linux.write(fd, &one, one.len);
+}
+
+pub fn eventfdDrain(fd: Fd) void {
+    var count: [8]u8 = undefined;
+    _ = linux.read(fd, &count, count.len);
+}
+
+/// ends both directions of a socket without releasing the descriptor, which wakes a thread blocked
+/// on it; the descriptor stays valid until whoever owns it closes it
+pub fn shutdown(fd: Fd) void {
+    _ = linux.shutdown(fd, linux.SHUT.RDWR);
+}
+
 /// block the given signals and return a signalfd that reports them.
 pub fn signalfdFor(signals: []const linux.SIG) Error!Fd {
     var set = linux.sigemptyset();

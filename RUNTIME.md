@@ -46,8 +46,9 @@ sit in tmpfs, so their size is ram.
 the split follows one rule: the supervisor is the only privileged process that
 parses nothing from the network, the renderer is the only process that touches
 the panel, and the network daemon can be killed and restarted at any time
-without the display noticing. all three are single-threaded epoll loops with
-static buffers and no steady-state allocation; every state machine, codec and
+without the display noticing. all three are epoll loops with static buffers and
+no steady-state allocation, and single-threaded, except that netd runs one
+bounded worker thread for the mqtt tls handshake (see [tls](#tls)); every state machine, codec and
 scene is a pure module with host tests (461 of them pass under `zig build
 test` on macos).
 
@@ -2293,11 +2294,28 @@ once.
 ### tls
 
 with `tls: true` the broker connection is tls 1.3 (or 1.2) through the standard library's client,
-inside netd's own epoll loop (`net/tls_link.zig`). the handshake is the one part that has to wait
-for the broker, so it runs blocking when the tcp connect completes, with a five-second send and
-receive timeout on the socket; on the device it takes 140-230 ms against a broker with an
-rsa-3072 chain, and netd answers nothing else meanwhile (the renderer is a different process, so
-the panel does not notice). after it, netd reads ciphertext itself without blocking and hands the
+inside netd (`net/tls_link.zig`). the handshake is the one part that has to wait for the broker,
+so it runs on **a worker thread of its own**, started when the tcp connect completes: blocking
+there, with a five-second send and receive timeout on the socket, while netd's loop carries on
+answering the api. on the device it takes 130-280 ms (p-256, p-384, rsa-3072 and rsa-4096
+chains, measured 2026-10-25), nearly all of it cpu. the thread owns the socket until it reports
+back through an eventfd; the client's ten-second connect timeout still bounds the whole
+handshake, and on that or a settings change netd abandons it (a `shutdown` wakes the thread,
+and the socket is closed once it has returned). one handshake runs at a time; a new connect
+that finds the last one still unwinding backs off with `tls handshake still finishing`.
+
+the thread's stack is 384 kib, about one and a half times the deepest handshake measured: 229 kb
+for p-256, 233 kb for p-384, 258 kb for both rsa sizes. it is painted before every handshake,
+and each one logs how deep it went (`mqtt: tls handshake in 135 ms, 229 kb of the worker's
+stack`), so a broker whose chain goes deeper shows up in the log before it can overflow. the
+stack is unmapped when the thread is joined, so between connects it costs nothing. netd is the
+one binary built with threads; it turns off std's 256 kib per-thread signal stack, which only
+the segfault handler netd already leaves out would use.
+
+against a broker that accepts the connection and then says nothing, `/health` answers in
+11-15 ms throughout; with the handshake on netd's own loop it took 4.6-5.0 s on every attempt.
+
+after the handshake, netd reads ciphertext itself without blocking and hands the
 client one whole record at a time -- every record names its length in a five-byte header -- so
 the client never reaches for the socket; writes are encrypted a record at a time into a buffer
 netd sends the way it sends plaintext.
@@ -2321,9 +2339,13 @@ end in the ca, a certificate that does not name the address, an expired one), `t
 timed out` and `tls handshake failed` (a plaintext port answers this way). the client's own error
 name is in the log line beside it. `/mqtt/status` reports `transport` as `tls` or `plaintext`.
 
-the cost is netd's size: 1.15 to 2.12 mb uncompressed (about 330 kb more in the xz image),
-because netd now links the tls client, x25519, the aes-gcm and chacha20 ciphers and rsa and ecdsa
-certificate verification. its four record buffers are 66 kb of static memory, used or not.
+the cost is mostly netd's size: 1.15 to 2.21 mb uncompressed (about 330 kb more in the xz
+image), because netd now links the tls client, x25519, the aes-gcm and chacha20 ciphers, rsa and
+ecdsa certificate verification and std's thread support. in place that size is ram, since
+`/tmp` is a ramdisk: about 1 mb, 3 % of the clock's 33,168 kb. its four record buffers are 66 kb
+of static memory, used or not. measured on clock #2 with tls connected, netd's anonymous memory
+was 252 kb against 184 kb on plaintext, and the worker's stack adds up to 352 kb more only while
+a handshake runs.
 `tc002-tlsprobe` (`zig build tlsprobe`, or `-Dtlsprobe_host=true` for this machine) runs the same
 link against a broker from the command line and prints each step's timing.
 

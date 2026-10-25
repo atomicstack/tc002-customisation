@@ -46,6 +46,9 @@ cd runtime
 zig build            # all seven binaries into zig-out/bin plus zig-out/lib/libtc002-bootstrap.so
                      # (arm; static and no-libc except tc002-berryd and tc002-audiod)
 zig build test       # host unit tests of every pure module
+zig build test-device # the tests that need the device's kernel (threads, sockets, an eventfd),
+                     # built for arm into zig-out/bin/tc002-device-tests; push it with adb and run
+                     # it there (the host suite skips them); about 1.3 mb, so push it to /tmp alone
 /usr/bin/python3 -m unittest discover -s tools -p 'test_*.py' -v  # host cli request tests
 zig build check      # elf sanity of the bootstrap: arm et_dyn, no dt_needed, has init_array
 zig build wasm       # the scene code as wasm for the console preview -> ../panel-v2/tc002-panel.wasm

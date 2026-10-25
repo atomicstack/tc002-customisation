@@ -116,7 +116,9 @@ pub fn build(b: *std.Build) void {
                 .optimize = optimize,
                 .link_libc = false,
                 .strip = strip,
-                .single_threaded = true,
+                // netd runs the mqtt tls handshake on a worker thread (net/tls_link.zig), so it
+                // is the one binary built with threads; the rest stay single-threaded
+                .single_threaded = !std.mem.eql(u8, spec[0], "tc002-netd"),
             }),
             .linkage = .static,
         });
@@ -316,6 +318,19 @@ pub fn build(b: *std.Build) void {
     }) });
     const test_step = b.step("test", "run host unit tests");
     test_step.dependOn(&b.addRunArtifact(tests).step);
+
+    // the tests that need the device's own kernel (threads, sockets, an eventfd), built for the
+    // device and run there: `adb push zig-out/bin/tc002-device-tests /tmp/ && adb shell /tmp/tc002-device-tests`.
+    // the host suite skips them.
+    const device_tests = b.addTest(.{ .name = "tc002-device-tests", .filters = &.{"on the worker"}, .root_module = b.createModule(.{
+        .root_source_file = b.path("src/root.zig"),
+        .target = device,
+        .optimize = optimize,
+        .link_libc = false,
+        .strip = strip,
+    }) });
+    const device_test_step = b.step("test-device", "build the tests that run on the device into zig-out/bin");
+    device_test_step.dependOn(&b.addInstallArtifact(device_tests, .{}).step);
 
     // the vendored interpreter, exercised on the host: .be fixtures through the same c the device
     // runs. kept out of `zig build test` on purpose -- the aggregator's tests are pure zig and must

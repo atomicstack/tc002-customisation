@@ -44,8 +44,10 @@ const linux = std.os.linux;
 /// dwarf unwinder and its tables out of the binary (it more than halves .text).
 // simple_panic, with the one function 0.17.0 cannot compile replaced
 pub const panic = @import("sys/panic.zig");
-/// and no segfault handler: it would drag the dwarf unwinder back in.
-pub const std_options: std.Options = .{ .enable_segfault_handler = false };
+/// and no segfault handler: it would drag the dwarf unwinder back in. nor its signal stack, which
+/// only that handler runs on: netd is built with threads (the tls handshake worker), so std's
+/// default 256 kib stack became thread-local storage, resident in every thread for nothing.
+pub const std_options: std.Options = .{ .enable_segfault_handler = false, .signal_stack_size = null };
 
 const ns_per_s = std.time.ns_per_s;
 
@@ -75,7 +77,7 @@ const mqtt_pending_max = 8;
 const frames_per_second_max = 10;
 const mqtt_frame_envelope = 8 + 4 + 2 + geometry.rgb_bytes;
 
-const Tag = enum(u64) { timer = 1, supervisor = 2, listener = 3, mqtt = 4, mdns = 5, conn_base = 16 };
+const Tag = enum(u64) { timer = 1, supervisor = 2, listener = 3, mqtt = 4, mdns = 5, tls_done = 6, conn_base = 16 };
 
 const ConnState = enum { free, reading, relaying, writing, streaming };
 const Awaiting = enum { none, renderer_result, status, config, save_result, screen, logs, canvas, sprites, berry_scripts, berry_source, berry_result, sound_list, sound_result, client_result };
@@ -142,6 +144,12 @@ var json_buf: [12288]u8 = undefined;
 /// the broker connection's tls state when `mqtt.tls` is on: four whole-record buffers, so one
 /// static instance rather than a field of `Netd`
 var mqtt_tls: tls_link.Link = .{};
+/// the thread the handshake runs on, so a slow or silent broker never holds up the http api
+var mqtt_handshake: tls_link.Worker = .{ .link = &mqtt_tls };
+
+comptime {
+    std.debug.assert(api.max_ca <= tls_link.ca_max and config.text_max <= tls_link.host_max);
+}
 
 const Netd = struct {
     ep: sys.Fd,
@@ -1592,31 +1600,64 @@ const Netd = struct {
         }
     }
 
-    /// the tls handshake on a socket whose connect has just completed. blocking, bounded by
-    /// `tls_link.handshake_timeout_s`; false (with the reason in last_error) on any failure, which
-    /// the client treats like a failed connect and backs off from.
-    fn mqttTlsHandshake(self: *Netd, fd: sys.Fd) bool {
-        const t0 = sys.monotonicNs();
-        mqtt_tls.handshake(fd, self.mqtt_ca[0..self.mqtt_ca_len], self.cfg.mqtt.host.slice()) catch |e| {
+    /// starts the tls handshake on a socket whose connect has just completed. it runs on the
+    /// worker thread, and the socket leaves epoll until `mqttTlsDone`, so nothing on this side
+    /// reads or writes it meanwhile. the client stays `connecting`, so its connect timeout still
+    /// bounds the whole handshake: `mqttClose` then abandons it.
+    fn mqttTlsStart(self: *Netd, fd: sys.Fd, now: u64) void {
+        sys.epollDel(self.ep, fd);
+        mqtt_handshake.start(fd, self.mqtt_ca[0..self.mqtt_ca_len], self.cfg.mqtt.host.slice()) catch |e| {
+            // busy: an abandoned handshake is still unwinding, so this attempt backs off and retries
+            self.setError(if (e == error.Busy) "tls handshake still finishing" else "tls handshake could not start");
+            log.warn("mqtt: tls handshake not started ({s})", .{@errorName(e)});
+            self.mqttDirective(self.client.onSocket(false, now), now);
+        };
+    }
+
+    /// the worker has finished: the connection carries on in the loop, or is closed.
+    fn mqttTlsDone(self: *Netd, now: u64) void {
+        const o = mqtt_handshake.finish() orelse return;
+        const ms = o.elapsed_ns / std.time.ns_per_ms;
+        if (o.abandoned) {
+            // given up while it ran (the connect timeout, new settings); the socket only comes
+            // back here to be closed
+            if (o.result) |_| {} else |e| log.warn("mqtt: abandoned tls handshake ended after {d} ms: {s} ({s})", .{ ms, tls_link.handshakeErrorText(e), mqtt_tls.last_error });
+            mqtt_tls.reset();
+            sys.close(o.fd);
+            return;
+        }
+        o.result catch |e| {
             self.setError(tls_link.handshakeErrorText(e));
             log.warn("mqtt: {s} ({s})", .{ tls_link.handshakeErrorText(e), mqtt_tls.last_error });
-            return false;
+            self.mqttDirective(self.client.onSocket(false, now), now);
+            return;
         };
-        log.info("mqtt: tls handshake in {d} ms", .{(sys.monotonicNs() - t0) / std.time.ns_per_ms});
-        return true;
+        log.info("mqtt: tls handshake in {d} ms, {d} kb of the worker's stack", .{ ms, o.stack_used / 1024 });
+        sys.epollAdd(self.ep, o.fd, linux.EPOLL.IN, @backingInt(Tag.mqtt)) catch {
+            self.setError("tls handshake done, but the socket could not be watched");
+            self.mqttDirective(self.client.onSocket(false, now), now);
+            return;
+        };
+        self.mqttDirective(self.client.onSocket(true, now), now);
     }
 
     fn mqttClose(self: *Netd, directive: mqtt.Directive) void {
         _ = directive;
         if (self.mfd) |fd| {
-            sys.epollDel(self.ep, fd);
-            sys.close(fd);
+            if (mqtt_handshake.busy() and mqtt_handshake.fd == fd) {
+                // the worker owns the socket and the link until it finishes; wake it, and let
+                // `mqttTlsDone` close the socket
+                mqtt_handshake.abandon();
+            } else {
+                sys.epollDel(self.ep, fd);
+                sys.close(fd);
+            }
             self.mfd = null;
         }
         self.m_in_len = 0;
         self.m_out_len = 0;
         self.m_out_off = 0;
-        mqtt_tls.reset();
+        if (!mqtt_handshake.busy()) mqtt_tls.reset();
         if (self.m_connected) log.info("mqtt disconnected", .{});
         self.m_connected = false;
     }
@@ -1653,6 +1694,7 @@ const Netd = struct {
 
     fn mqttFlush(self: *Netd) void {
         const fd = self.mfd orelse return;
+        if (mqtt_handshake.busy()) return; // nothing is queued before the connect, and the worker owns the socket
         if (mqtt_tls.active) return self.mqttFlushTls(fd);
         while (self.m_out_off < self.m_out_len) {
             const n = sys.write(fd, self.m_out[self.m_out_off..self.m_out_len]) catch |e| switch (e) {
@@ -2321,6 +2363,9 @@ fn run(stats: bool) !u8 {
     try sys.epollAdd(ep, listener_fd, linux.EPOLL.IN, @backingInt(Tag.listener));
     const sigfd = try sys.signalfdFor(&.{ .TERM, .INT });
     sys.setSignalDisposition(.PIPE, linux.SIG.IGN);
+    // after the signal mask above, which the worker thread inherits
+    mqtt_handshake.done_fd = try sys.eventfdCreate();
+    try sys.epollAdd(ep, mqtt_handshake.done_fd, linux.EPOLL.IN, @backingInt(Tag.tls_done));
     var n = Netd{ .ep = ep, .timer = timer, .stats = stats };
     log.info("netd up: uid {d}, plaintext http on the inherited listener, mqtt on demand", .{linux.getuid()});
     var events: [16]sys.Event = undefined;
@@ -2350,16 +2395,17 @@ fn run(stats: bool) !u8 {
                 sys.timerfdDrain(timer);
             } else if (tag == @backingInt(Tag.supervisor)) {
                 n.drainSupervisor(t);
+            } else if (tag == @backingInt(Tag.tls_done)) {
+                n.mqttTlsDone(t);
             } else if (tag == @backingInt(Tag.mdns)) {
                 n.mdnsReadable(t);
             } else if (tag == @backingInt(Tag.listener)) {
                 n.acceptAll(t);
             } else if (tag == @backingInt(Tag.mqtt)) {
                 if (n.client.state == .connecting and ev.events & linux.EPOLL.OUT != 0) {
-                    var ok = if (n.mfd) |fd| sys.socketConnected(fd) else false;
+                    const ok = if (n.mfd) |fd| sys.socketConnected(fd) else false;
                     if (!ok) n.setError("connect failed");
-                    if (ok and n.cfg.mqtt.tls) ok = n.mqttTlsHandshake(n.mfd.?);
-                    n.mqttDirective(n.client.onSocket(ok, t), t);
+                    if (ok and n.cfg.mqtt.tls) n.mqttTlsStart(n.mfd.?, t) else n.mqttDirective(n.client.onSocket(ok, t), t);
                 } else {
                     if (ev.events & (linux.EPOLL.IN | linux.EPOLL.HUP | linux.EPOLL.ERR) != 0) n.mqttReadable(t);
                     if (ev.events & linux.EPOLL.OUT != 0) n.mqttFlush();

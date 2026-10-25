@@ -18,6 +18,7 @@
 //! include as an IP subjectAltName. The runtime has no DNS resolver, so there's no other name to
 //! check.
 const std = @import("std");
+const builtin = @import("builtin");
 const sys = @import("../sys/linux.zig");
 const tls = std.crypto.tls;
 const Certificate = std.crypto.Certificate;
@@ -300,6 +301,118 @@ pub const Link = struct {
     }
 };
 
+/// The largest CA and host name a worker copies in. netd checks its own limits against these.
+pub const ca_max = 4096;
+pub const host_max = 64;
+
+/// The handshake on a thread of its own. It's the one exchange that has to wait for the broker,
+/// and on netd's loop that wait stopped the HTTP API as well: a broker that accepted the
+/// connection and then said nothing held every request for the full timeout, on every retry.
+///
+/// One handshake at a time. While it runs, the thread owns the socket and the `Link`, and netd
+/// touches neither until `finish`. To give up early netd calls `abandon`, which wakes the thread
+/// without taking the descriptor away from it; the descriptor comes back from `finish` to be closed.
+pub const Worker = struct {
+    link: *Link,
+    /// Bumped by the thread as its last act, so the result arrives as an epoll event.
+    done_fd: sys.Fd = -1,
+    thread: ?std.Thread = null,
+    abandoned: bool = false,
+    // The inputs, copied so netd can change its own while the handshake runs.
+    fd: sys.Fd = -1,
+    ca: [ca_max]u8 = undefined,
+    ca_len: usize = 0,
+    host: [host_max]u8 = undefined,
+    host_len: usize = 0,
+    // The outputs, written by the thread before it signals.
+    result: HandshakeError!void = {},
+    elapsed_ns: u64 = 0,
+    stack_used: usize = 0,
+
+    pub const Outcome = struct {
+        fd: sys.Fd,
+        abandoned: bool,
+        result: HandshakeError!void,
+        elapsed_ns: u64,
+        /// How deep the handshake went into the thread's stack, measured by painting it first.
+        stack_used: usize,
+    };
+
+    pub fn busy(self: *const Worker) bool {
+        return self.thread != null;
+    }
+
+    /// Starts the handshake on a connected socket and returns at once.
+    pub fn start(self: *Worker, fd: sys.Fd, ca_pem: []const u8, host: []const u8) error{ Busy, TooLong, Spawn }!void {
+        if (self.busy()) return error.Busy;
+        if (ca_pem.len > ca_max or host.len > host_max) return error.TooLong;
+        @memcpy(self.ca[0..ca_pem.len], ca_pem);
+        self.ca_len = ca_pem.len;
+        @memcpy(self.host[0..host.len], host);
+        self.host_len = host.len;
+        self.fd = fd;
+        self.abandoned = false;
+        self.result = {};
+        self.thread = std.Thread.spawn(.{ .stack_size = stack_size }, run, .{self}) catch return error.Spawn;
+    }
+
+    /// Wakes a thread blocked on the socket and marks its result as unwanted.
+    pub fn abandon(self: *Worker) void {
+        if (!self.busy() or self.abandoned) return;
+        self.abandoned = true;
+        sys.shutdown(self.fd);
+    }
+
+    /// Called once `done_fd` is readable. The thread has signalled as its last act, so the join only
+    /// waits for it to return.
+    pub fn finish(self: *Worker) ?Outcome {
+        sys.eventfdDrain(self.done_fd);
+        const thread = self.thread orelse return null;
+        thread.join();
+        self.thread = null;
+        return .{ .fd = self.fd, .abandoned = self.abandoned, .result = self.result, .elapsed_ns = self.elapsed_ns, .stack_used = self.stack_used };
+    }
+
+    fn run(self: *Worker) void {
+        const top = paintStack();
+        const t0 = sys.monotonicNs();
+        self.result = self.link.handshake(self.fd, self.ca[0..self.ca_len], self.host[0..self.host_len]);
+        self.stack_used = stackUsed(top);
+        self.elapsed_ns = sys.monotonicNs() - t0;
+        sys.eventfdSignal(self.done_fd);
+    }
+};
+
+/// The worker thread's stack. The handshake's own depth is logged after every connect (see
+/// `stack_used`). On the device it went 229 KB deep against a P-256 chain, 233 KB for P-384 and
+/// 258 KB for RSA-3072 and RSA-4096 (2026-10-25), so this is about one and a half times the
+/// deepest. Only the pages a handshake touches become resident, and they're freed at the join.
+pub const stack_size = 384 * 1024;
+/// How much of the stack is painted before the handshake, below the thread's first frames and
+/// clear of the guard page.
+const paint_len = stack_size - 32 * 1024;
+const paint_word: usize = 0x5aa5a55a;
+
+/// Fills the stack below the caller with a pattern and returns the address the depth is measured
+/// from. The thread's stack is fresh, so nothing below here is in use yet.
+noinline fn paintStack() usize {
+    var marker: u8 = 0;
+    const top = std.mem.alignBackward(usize, @intFromPtr(&marker), @alignOf(usize));
+    const words: [*]volatile usize = @ptrFromInt(top - paint_len);
+    for (0..(paint_len - 1024) / @sizeOf(usize)) |i| words[i] = paint_word;
+    return top;
+}
+
+/// How far below `top` the stack was written since `paintStack`. A result of `paint_len` means
+/// the pattern was overwritten all the way down: at least that much was used.
+noinline fn stackUsed(top: usize) usize {
+    const words: [*]const volatile usize = @ptrFromInt(top - paint_len);
+    const n = (paint_len - 1024) / @sizeOf(usize);
+    var i: usize = 0;
+    while (i < n and words[i] == paint_word) i += 1;
+    return paint_len - i * @sizeOf(usize);
+}
+
 fn setBlocking(fd: sys.Fd, on: bool) void {
     const flags = linux.fcntl(fd, linux.F.GETFL, 0);
     const nonblock: usize = @as(u32, @bitCast(linux.O{ .NONBLOCK = true }));
@@ -343,4 +456,38 @@ test "A PEM CA ends up in the bundle, and text that isn't one is rejected" {
     try std.testing.expectEqual(@as(usize, 1), try addPem(&bundle, gpa, "some text first\n" ++ test_ca_pem ++ "\n", now_s, &scratch));
     try std.testing.expectEqual(@as(usize, 0), try addPem(&bundle, gpa, "no certificate here", now_s, &scratch));
     try std.testing.expectError(error.BadPem, addPem(&bundle, gpa, "-----BEGIN CERTIFICATE-----\nAAAA", now_s, &scratch));
+}
+
+test "A handshake on the worker returns at once, and abandoning it wakes the thread" {
+    // real threads, sockets and an eventfd: this runs on the device (see runtime/README.md), and
+    // the host suite skips it
+    if (builtin.os.tag != .linux or builtin.single_threaded) return error.SkipZigTest;
+    const S = struct {
+        var link: Link = .{};
+    };
+    var fds: [2]i32 = undefined;
+    try std.testing.expectEqual(@as(usize, 0), linux.socketpair(linux.AF.UNIX, linux.SOCK.STREAM | linux.SOCK.CLOEXEC, 0, &fds));
+    defer sys.close(fds[1]);
+    var worker: Worker = .{ .link = &S.link, .done_fd = try sys.eventfdCreate() };
+    defer sys.close(worker.done_fd);
+    var pfd = [_]linux.pollfd{.{ .fd = worker.done_fd, .events = linux.POLL.IN, .revents = 0 }};
+
+    // the peer never answers, so a handshake on the caller's thread would block here for the
+    // whole timeout
+    const t0 = sys.monotonicNs();
+    try worker.start(fds[0], test_ca_pem, "10.0.0.2");
+    try std.testing.expect(sys.monotonicNs() - t0 < 50 * std.time.ns_per_ms);
+    try std.testing.expectError(error.Busy, worker.start(fds[0], test_ca_pem, "10.0.0.2"));
+    try std.testing.expectEqual(@as(usize, 0), linux.poll(&pfd, 1, 300));
+
+    const t1 = sys.monotonicNs();
+    worker.abandon();
+    try std.testing.expectEqual(@as(usize, 1), linux.poll(&pfd, 1, 2000));
+    try std.testing.expect(sys.monotonicNs() - t1 < std.time.ns_per_s);
+    const o = worker.finish().?;
+    defer sys.close(o.fd);
+    try std.testing.expect(o.abandoned);
+    try std.testing.expect(std.meta.isError(o.result));
+    try std.testing.expect(!worker.busy());
+    try std.testing.expect(o.stack_used > 0 and o.stack_used < paint_len);
 }
