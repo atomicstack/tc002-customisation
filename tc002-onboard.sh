@@ -301,7 +301,9 @@ echo ""
 say "backup     $BACKUP ($(wc -c < "$BACKUP" | tr -d ' ') bytes)"
 
 # the gate that matters: a backup that does not unpack is not a backup
-unsquashfs -l "$BACKUP" 2>/dev/null | grep -q 'lib/libzkgui.so' \
+# (no grep -q: its early exit SIGPIPEs unsquashfs mid-listing, and under pipefail a good
+# backup then reads as bad)
+unsquashfs -l "$BACKUP" 2>/dev/null | grep 'lib/libzkgui.so' >/dev/null \
   || die "the backup does not unpack, or does not contain lib/libzkgui.so.
      refusing to go further: without a good backup there is no way back.
      nothing has been written to your device."

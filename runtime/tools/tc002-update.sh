@@ -350,7 +350,10 @@ flash() {
         done
         rm -f "$work/.chunk"; dsh '/tmp/busybox rm -f /tmp/chunk' >/dev/null
         echo "   $base_image ($(wc -c < "$base_image" | tr -d ' ') bytes)"
-        unsquashfs -l "$base_image" 2>/dev/null | grep -q 'lib/libzkgui.so' \
+        # no grep -q here: it exits on the first match, and under pipefail the unsquashfs that
+        # is still writing the rest of the listing dies of SIGPIPE, so a good dump reads as
+        # missing lib/libzkgui.so. without -q, grep reads to the end and the pipe closes clean.
+        unsquashfs -l "$base_image" 2>/dev/null | grep 'lib/libzkgui.so' >/dev/null \
             || die "this clock's res no longer carries lib/libzkgui.so, so it cannot be the base of a new image.
    pass --base-image <its stock res dump> (look in ~/tc002-firmware); the dump just taken is kept at
    $base_image"
