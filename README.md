@@ -110,6 +110,7 @@ docs, one topic each:
 | [`SCRIPTING.md`](SCRIPTING.md) | running berry scripts on the device: the `tc002` and `panel` api, events from the buttons, mqtt and ntfy, drawing and the sixty-frame-a-second stream, the script store, and what a script is not allowed to do |
 | [`SECURITY.md`](SECURITY.md) | every security observation in one place, with mitigations |
 | [`SETUP.md`](SETUP.md) | the setup-ap, discovery and adoption flow that replaces ulanzi studio |
+| [`TEARDOWN.md`](TEARDOWN.md) | how the case opens and what it holds, photographed: the regulatory label (fcc id `2BTBM-TC002`), the boards and what is printed on them (the soc is an `SSD210`, there is a `GND RX TX` header beside it), the battery, the mic, speaker and antenna, and what each photo confirms of what the software found |
 
 tools:
 
@@ -434,19 +435,20 @@ home for it. full detail in [`SECURITY.md`](SECURITY.md).
 everything below was read off a running unit (`/proc`, `/sys`, the device
 tree, the kernel command line, module and firmware listings, and strings in
 the app library) unless marked *spec*, which means ulanzi's product page.
-the case was not opened.
+the case was not opened for any of it; it has been since, and the photographs, with what they
+settle, are in [`TEARDOWN.md`](TEARDOWN.md).
 
 ### compute
 
 | | |
 |---|---|
-| soc | sigmastar **ssd21x** ("pioneer3" family, chip id `0xf5` rev 1, board string `PIONEER3 SSC021A-S01A-S`). the firmware calls it `ssd21x_ulanzi_I008` |
+| soc | sigmastar **ssd21x** ("pioneer3" family, chip id `0xf5` rev 1, board string `PIONEER3 SSC021A-S01A-S`). the firmware calls it `ssd21x_ulanzi_I008`. the package itself reads **`SSD210`** ([`TEARDOWN.md`](TEARDOWN.md)) |
 | cpu | **2 × arm cortex-a7** (armv7-a, part `0xc07` r0p5), neon, vfpv4, lpae, smp |
 | clock | **1.0 ghz fixed**: the device tree has a single operating point (1 000 000 khz @ 1.0 v) and no cpufreq driver is bound. core vid selects 0.9 v / 1.0 v |
 | dram | **64 mb in-package**, 62 mib mapped to the kernel. of that, 24 mib is reserved for sigmastar's media heap (`mma_heap`) and 3 mib for a framebuffer, leaving **~35 mib for linux** (`MemTotal` 36 240 kb). ~~~14 mib is free~~ **measured `MemAvailable` is 12,552 kb** with the stock app running, 16,084 kb with the custom runtime ([`RUNTIME.md`](RUNTIME.md)) |
 | load | the stock app keeps the two cores at a load average of about 3 while idle, so there is little headroom for anything running alongside it |
 | thermal | no thermal zone or temperature sensor is exposed |
-| kernel | linux 4.9.84 smp preempt, build #1624, compiled 2026-05-27 with openwrt gcc 9.1.0. console on `ttyS0` at 115200 (whether pads are reachable was not checked) |
+| kernel | linux 4.9.84 smp preempt, build #1624, compiled 2026-05-27 with openwrt gcc 9.1.0. console on `ttyS0` at 115200. ~~whether pads are reachable was not checked~~ the main board has three unpopulated through-hole pads silkscreened **`GND RX TX`** beside the soc, almost certainly this console; not yet connected to ([`TEARDOWN.md`](TEARDOWN.md)) |
 | platform | flythings v2.1 ("zkos") from zkswe, easyui 2.4.0, system 2.6.2, build `20260527` git `b8c8ecf`. app `1.1.1`, mcu `V1.0.17` |
 
 ### storage
